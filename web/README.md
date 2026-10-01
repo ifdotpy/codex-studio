@@ -40,6 +40,21 @@ and creates the production bundle. `npm test` builds that bundle and checks it i
 a separate headless Chrome process against an isolated server and database.
 Set `CHROME_BIN` if Chrome uses another executable path.
 
+## Component workbench
+
+Storybook runs inside this package and reads stories colocated with components
+under `src/`. Start the local workbench with `npm run storybook`, create its
+static bundle with `npm run build-storybook`, and run story interaction tests in
+headless Chromium with `CHROME_BIN=/path/to/chromium npm run test:storybook`.
+The Storybook config and package scripts disable telemetry. The Vitest addon
+runs each story's play function in a local browser; no hosted Storybook service
+is used. Keep story props typed from the component or a small typed harness, and
+include representative keyboard and disabled/loading states for interactive UI.
+
+`npm run test:prompt-composer` remains the production composer regression check.
+It verifies the actual prompt input and draft subscription path independently
+from the isolated Storybook stories.
+
 ## Source
 
 - `src/App.tsx`: screen selection, drafts, conversation actions, imports, and team panel.
@@ -51,11 +66,14 @@ Set `CHROME_BIN` if Chrome uses another executable path.
 - `src/components/WorkerOverview.tsx`: worker assignments, reports, and team counts.
 - `src/components/Requests.tsx`: active questions, deferral, and answer history.
 - `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
-- `src/components/TeamChats.tsx`: messages in order by recipient and team channel.
-- `src/components/UserMessages.tsx`: user requests, replies, and review decisions.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
 - `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.
 - `src/hooks.ts`: server snapshots and transcript updates.
+
+Shared UI views live beside their callers in the feature folders above. Typed presentational components
+have colocated `*.stories.tsx` files; the application imports those same
+components. Their callers keep request handling, draft storage, scrolling, and
+focus behavior.
 
 The sidebar renders 60 rows initially and adds rows as the user scrolls.
 Unread markers and drafts remain in browser storage. Chat names remain in SQLite.
@@ -102,19 +120,35 @@ The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
 
-Managed conversations use `/api/transcript/stream`, a server-sent event stream.
-The server sends a snapshot on connection and changed records after that.
-It waits on a condition while idle and sends a heartbeat every 15 seconds.
-Fast notifications are coalesced with an 80 ms delay between frames.
+Managed conversations use the workspace sync projection. One tab holds the
+exclusive browser lock and owns `/api/sync/stream?protocol=2`, then shares its
+scoped generation notices with other tabs in the same browser profile. Each tab
+still pulls only the projection it uses. The browser lock prevents duplicate
+streams even if RxDB reports duplicate leaders.
+A bounded `/api/sync/generations` poll recovers when coordination or the lock is
+unavailable. Managed transcript views use `transcript:<id>` pulls;
+the legacy `/api/transcript/stream` route remains available to older clients.
 These UI updates do not call the model.
 
 The client shows bounded cached history when a managed chat is reopened.
-Fresh events replace it. A delayed initial stream falls back to HTTP after 200 ms.
+Fresh scoped pulls replace it. If no local projection is available after 200 ms,
+the client makes one transcript read to show the missing or unavailable result.
 Cached history never supplies the current agent status.
 
-The client reconnects with a fresh snapshot. It uses the transcript GET endpoint
-as a fallback during connection loss. Agent rooms and the team list retain their
+The lock-owning tab reconnects after network or page resume and forces a refresh so
+peers do not rely on notices missed while asleep. If coordination cannot be
+established, each tab polls the compact generation row every three seconds; this
+does not fetch transcript bodies unless that transcript's generation changed.
+A tab that becomes hidden releases the stream lock so a visible peer can take
+over; other tabs use bounded polling while the owner changes.
+Cached transcript pages remain available offline and historical paging keeps
+using the transcript page endpoint. Agent rooms and the team list retain their
 existing refresh intervals.
+
+In plain terms, eight tabs do not each phone the server. One tab listens for
+updates and tells the other seven which small piece changed. The other tabs then
+ask for only that piece. If the tabs cannot pass those notes, they check a tiny
+change counter on a timer instead.
 
 Assistant text and incomplete code appear as they arrive. Complete sentences use
 a short fade. Earlier text nodes stay mounted as new text arrives.

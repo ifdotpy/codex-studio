@@ -1301,6 +1301,7 @@ class WorkspaceMixin:
                 defer=True,
                 draft=True,
                 _validate_only=True,
+                _accepted_provider_operation=True,
             )
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))

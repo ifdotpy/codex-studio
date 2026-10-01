@@ -104,6 +104,7 @@ class AccountStore:
                     }
                 },
                 "logins": {},
+                "deleteReceipts": {},
             }
             self._save()
 
@@ -190,7 +191,8 @@ class AccountStore:
     def list(self):
         with self.lock:
             return [self.get(key) for key, row in self.data["accounts"].items()
-                    if not key.startswith("login-") or row.get("status") == "ready"]
+                    if (not key.startswith("login-") or row.get("status") == "ready")
+                    and not row.get("deleted")]
 
     def snapshot(self):
         if not self.discovered:
@@ -199,16 +201,19 @@ class AccountStore:
             logins = self.login_receipts()
             return {
                 "accounts": self.list(),
+                "archivedAccounts": [self.get(key) for key, row in self.data["accounts"].items()
+                                     if row.get("deleted")],
                 "defaultAccountKey": self.data["defaultAccountKey"],
                 "logins": logins,
                 "supportsDisconnect": True,
+                "supportsDelete": True,
             }
 
     def default(self, key=None):
         with self.lock:
             if key is not None:
                 row = self.get(key)
-                if row["status"] != "ready" or row.get("disconnected"):
+                if row["status"] != "ready" or row.get("disconnected") or row.get("deleted"):
                     raise ValueError("Sign in to this account first")
                 self.data["defaultAccountKey"] = key
                 self._save()
@@ -224,12 +229,40 @@ class AccountStore:
                 replacement = next((other for other in self.data["accounts"]
                                     if other != key
                                     and not self.data["accounts"][other].get("disconnected")
+                                    and not self.data["accounts"][other].get("deleted")
                                     and not self.data["accounts"][other].get("duplicateOf")
                                     and self.get(other).get("status") == "ready"), None)
                 if replacement is None:
                     raise ValueError("Connect another account before disconnecting the application default.")
                 self.data["defaultAccountKey"] = replacement
             row["disconnected"] = True
+            self._save()
+            return self.snapshot()
+
+    def delete(self, key, request_id):
+        """Hide an account from new choices while retaining its native identity for old chats."""
+        try:
+            request = str(uuid.UUID(request_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Supply a UUID request_id") from None
+        with self.lock:
+            receipts = self.data.setdefault("deleteReceipts", {})
+            previous = receipts.get(request)
+            if previous:
+                if previous.get("accountKey") != key:
+                    raise ValueError("This delete request id has different content")
+                return self.snapshot()
+            row = self._row(key)
+            if self.data["defaultAccountKey"] == key:
+                replacement = next((other for other, value in self.data["accounts"].items()
+                                    if other != key and not value.get("deleted")
+                                    and not value.get("disconnected") and not value.get("duplicateOf")
+                                    and self.get(other).get("status") == "ready"), None)
+                if replacement is None:
+                    raise ValueError("Add another connected account before deleting the application default.")
+                self.data["defaultAccountKey"] = replacement
+            row["deleted"] = True
+            receipts[request] = {"accountKey": key, "deletedAt": time.time()}
             self._save()
             return self.snapshot()
 
@@ -242,7 +275,7 @@ class AccountStore:
             self._save()
             return self.snapshot()
 
-    def register(self, home):
+    def register(self, home, *, restore_deleted=True):
         if not isinstance(home, str) or not home.strip():
             raise ValueError("Supply a Codex profile directory")
         path = Path(home).expanduser().resolve()
@@ -258,6 +291,9 @@ class AccountStore:
                     or metadata.get("accountId")
                     and row.get("accountId") == metadata["accountId"]
                 ):
+                    if row.get("deleted") and restore_deleted:
+                        row.pop("deleted", None)
+                        self._save()
                     return row["id"]
             key = "profile-" + hashlib.sha256(str(path).encode()).hexdigest()[:20]
             label = (
@@ -295,7 +331,40 @@ class AccountStore:
                     raise ValueError("Restore this profile's original Claude login")
                 if existing.get("claudeOptions") != options:
                     raise ValueError("This Claude configuration already exists. Update its settings")
+                if existing.get("deleted"):
+                    self.data["accounts"][key].pop("deleted", None)
+                    self._save()
                 return key
+            # The discovered default Claude account predates explicit profile
+            # registration and uses the stable key ``claude-local``. Reuse that
+            # native identity when Add targets the same default config, including
+            # after it was tombstoned; otherwise Add would leave the deleted row
+            # hidden and create a second account for the same credentials.
+            local = self.data["accounts"].get("claude-local")
+            if local and local.get("provider") == "claude":
+                local_options = profile_options(local.get("claudeOptions"))
+                same_paths = all(
+                    local_options.get(field, "") == options.get(field, "")
+                    for field in ("binaryPath", "configDir")
+                )
+                same_login = (
+                    not local.get("accountId")
+                    or local.get("accountId") == metadata.get("accountId")
+                )
+                if same_paths and same_login:
+                    default_options = profile_options({})
+                    if options != default_options:
+                        if local_options != default_options and local_options != options:
+                            raise ValueError(
+                                "This Claude configuration already exists. Update its settings"
+                            )
+                        local["claudeOptions"] = options
+                    local.update(metadata)
+                    if label is not None:
+                        local["label"] = label.strip()
+                    local.pop("deleted", None)
+                    self._save()
+                    return "claude-local"
             self.data["accounts"][key] = {
                 "id": key, "provider": "claude", "claudeOptions": options,
                 "home": options.get("configDir") or os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),
@@ -338,7 +407,7 @@ class AccountStore:
         for path in candidates:
             if (path / "auth.json").is_file():
                 try:
-                    self.register(str(path))
+                    self.register(str(path), restore_deleted=False)
                 except ValueError:
                     continue
         from codex_claude import installed, auth_metadata as claude_auth
@@ -425,6 +494,7 @@ class AccountStore:
                 for field in ("userCode", "verificationUrl"):
                     receipt.pop(field, None)
                 if duplicate:
+                    self.data["accounts"][duplicate].pop("deleted", None)
                     self.data["accounts"][key].update(status="duplicate", duplicateOf=duplicate)
                 else:
                     self.data["accounts"][key]["label"] = row.get("email") or "Codex account"

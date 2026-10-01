@@ -346,7 +346,8 @@ try {
   );
   await selectLead();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator("#team-toggle").click();
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Team", exact: true }).click();
   await search.waitFor({ state: "visible" });
   await search.fill("exact response receipt");
   await card(1).waitFor({ state: "visible" });

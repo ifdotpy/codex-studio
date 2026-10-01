@@ -8,15 +8,15 @@ Measurements on 2026-09-28. Live requests were GET-only. Live SQLite inspection 
 
 The copied fixture held 895,350 `analytics_limits` rows (819,883,649 bytes of record JSON), 2,954 selected-agent turns, 200,654 selected-agent items and 43,642 usage samples. It reproduced a 100,500,148-byte decoded baseline response. Warm measurements, including analytics method, JSON serialization and gzip, were:
 
-| Phase | Before | After |
-|---|---:|---:|
-| Analytics read/decode | 7,650 ms | 3,349 ms |
-| Analytics response build | 2,969 ms | 1,564 ms |
-| JSON serialization | 386 ms | 18.5 ms |
-| gzip | 120 ms | 11.5 ms |
-| End-to-end method + JSON + gzip | 11.416 s | 5.125 s (second warm run: 5.541 s) |
-| Decoded response | 100,500,148 B | 4,633,580 B |
-| Gzip response | 3,603,953 B | 531,194 B |
+| Phase                           |        Before |                              After |
+| ------------------------------- | ------------: | ---------------------------------: |
+| Analytics read/decode           |      7,650 ms |                           3,349 ms |
+| Analytics response build        |      2,969 ms |                           1,564 ms |
+| JSON serialization              |        386 ms |                            18.5 ms |
+| gzip                            |        120 ms |                            11.5 ms |
+| End-to-end method + JSON + gzip |      11.416 s | 5.125 s (second warm run: 5.541 s) |
+| Decoded response                | 100,500,148 B |                        4,633,580 B |
+| Gzip response                   |   3,603,953 B |                          531,194 B |
 
 These are fixture timings, not a live post-install measurement; network transfer is excluded. The response shrank about 95.4% decoded and 85.3% compressed, but the 1 s target is not met. Profiling the changed fixture path found about 249k JSON decodes and 2.23 s cumulative in `json.loads`; `analytics_items` still requires the selected agent's 200k rows to preserve the existing summaries. The current `analytics_limits` count and page selection also scan the table. Thus the copied fixture does not reproduce all of the live 36 GB file's cache and locking conditions, but the remaining multi-second work is measurable locally.
 

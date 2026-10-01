@@ -19,14 +19,17 @@ const server = spawn(
     env: {
       ...process.env,
       EXECUTION_SETTINGS_CATALOG: JSON.stringify(
-        ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map((model) => ({
-          model,
-          defaultReasoningEffort: "low",
-          supportedReasoningEfforts: [
-            { reasoningEffort: "low" },
-            { reasoningEffort: "max" },
-          ],
-        })),
+        ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map(
+          (model) => ({
+            model,
+            defaultReasoningEffort: "low",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "low" },
+              { reasoningEffort: "high" },
+              { reasoningEffort: "max" },
+            ],
+          }),
+        ),
       ),
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -329,6 +332,10 @@ try {
   console.log("PASS browser storage failure prevents an unrepeatable command");
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Chat settings", exact: true })
+    .click();
   await modeSwitch.waitFor();
   assert.equal(await modeSwitch.isEnabled(), true);
   assert(

@@ -226,7 +226,10 @@ class AccountTransfers:
                     rt.changed.set()
                     return op
                 raise ValueError('Finish or cancel the current transfer first')
-            if rt.accounts.get(target).get("disconnected"):
+            target_account = rt.accounts.get(target)
+            if target_account.get("deleted"):
+                raise ValueError("This account was deleted. Select another destination")
+            if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
             members = [a for a in rt.records(db, 'agents')
                        if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]

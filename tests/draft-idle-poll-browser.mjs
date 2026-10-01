@@ -8,23 +8,36 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const { chromium } = createRequire(join(root, "web/package.json"))("playwright-core");
+const { chromium } = createRequire(join(root, "web/package.json"))(
+  "playwright-core",
+);
 const directory = await mkdtemp(join(tmpdir(), "studio-draft-idle-"));
-const fixture = spawn("python3", ["-B", join(root, "tests/simple-ui-fixture.py"), directory],
-  { stdio: ["pipe", "pipe", "pipe"] });
+const fixture = spawn(
+  "python3",
+  ["-B", join(root, "tests/simple-ui-fixture.py"), directory],
+  { stdio: ["pipe", "pipe", "pipe"] },
+);
 let browser;
 let errorLog = "";
-fixture.stderr.on("data", (chunk) => { errorLog += chunk; });
+fixture.stderr.on("data", (chunk) => {
+  errorLog += chunk;
+});
 try {
   const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
+    fixture.stdout.once("data", (chunk) =>
+      resolve(Number(String(chunk).trim())),
+    );
     fixture.once("exit", () => reject(new Error(errorLog)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const state = await (await fetch(origin + "/api/state?view=chat")).json();
   const lead = state.threads.find((agent) => agent.name === "Release lead");
-  browser = await chromium.launch({ headless: true,
-    executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  browser = await chromium.launch({
+    headless: true,
+    executablePath:
+      process.env.CHROME_BIN ||
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  });
   const page = await browser.newPage();
   const requests = [];
   page.on("request", (request) => {
@@ -37,25 +50,42 @@ try {
   await page.waitForTimeout(1500);
   requests.length = 0;
   for (let index = 0; index < 12; index++) {
-    fixture.stdin.write(JSON.stringify({ method: "fixture/agent-status", params: {
-      agent: lead.id, status: index % 2 ? "waiting" : "completed",
-    } }) + "\n");
+    fixture.stdin.write(
+      JSON.stringify({
+        method: "fixture/agent-status",
+        params: {
+          agent: lead.id,
+          status: index % 2 ? "waiting" : "completed",
+        },
+      }) + "\n",
+    );
     await page.waitForTimeout(500);
   }
   await page.waitForTimeout(1500);
-  const draftPulls = requests.filter((path) =>
-    new URL(path, origin).searchParams.get("scope") === "drafts").length;
+  const draftPulls = requests.filter(
+    (path) => new URL(path, origin).searchParams.get("scope") === "drafts",
+  ).length;
   const sessions = requests.filter((path) => path === "/api/session").length;
   assert.ok(draftPulls <= 1, `Unchanged drafts pulled ${draftPulls} times`);
   assert.ok(sessions <= 1, `Session polled ${sessions} times`);
-  console.log(JSON.stringify({ runtimeWrites: 12, intervalMs: 500,
-    observationMs: 7500, draftPulls, sessions }));
+  console.log(
+    JSON.stringify({
+      runtimeWrites: 12,
+      intervalMs: 500,
+      observationMs: 7500,
+      draftPulls,
+      sessions,
+    }),
+  );
 } finally {
   await browser?.close();
   fixture.stdin.end();
   if (fixture.exitCode === null)
     await new Promise((resolve) => {
       fixture.once("exit", resolve);
-      setTimeout(() => { fixture.kill("SIGTERM"); resolve(); }, 3000).unref();
+      setTimeout(() => {
+        fixture.kill("SIGTERM");
+        resolve();
+      }, 3000).unref();
     });
 }

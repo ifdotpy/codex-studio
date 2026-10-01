@@ -46,7 +46,7 @@ const server = await createServer({
           );
         if (id !== entry) return;
         return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';
-import AccountSignIn from '/src/components/AccountSignIn.tsx';import Accounts from '/src/components/Accounts.tsx';import Workspace from '/src/components/Workspace.tsx';
+import AccountSignIn from '/src/components/AccountSignIn.tsx';import Accounts from '/src/components/Accounts.tsx';import Workspace from '/src/components/shell/Workspace.tsx';
 const initial=${JSON.stringify(failure)};const agent={id:'lead',rootId:'lead',isLead:true,source:'managed',status:'idle',model:'gpt-6',name:'Fixture lead',created:1,cwd:'/fixture'};
 localStorage.setItem('account-sign-in:fixture',JSON.stringify('request'));
 function Harness(){const [error,setError]=useState(initial);const [surface,setSurface]=useState('signin');window.changeError=setError;window.showSurface=setSurface;

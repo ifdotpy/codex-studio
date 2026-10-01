@@ -107,7 +107,7 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(server.resolvedUrls.local[0]);
-  const toggle = page.getByRole("button", {
+  const _toggle = page.getByRole("button", {
     name: "Account limits",
     exact: true,
   });

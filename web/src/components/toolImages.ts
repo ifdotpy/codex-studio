@@ -12,6 +12,7 @@ const inlineImage = /^data:image\/(png|jpeg|gif|webp);base64,/i;
 export function toolImages(payload: Json): ToolImage[] {
   const images: ToolImage[] = [];
   const path = (value: unknown) => {
+    // oxlint-disable-next-line no-control-regex -- Reject control characters in paths.
     if (typeof value !== "string" || !value || /[\u0000-\u001f]/.test(value))
       return;
     images.push({

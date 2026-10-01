@@ -1,7 +1,7 @@
 {
   "name": "codex-agents-web",
-  "private": true,
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --force --host 127.0.0.1",
@@ -28,7 +28,10 @@
     "benchmark:prompt-composer": "npm run build && node src/components/prompt-composer/benchmark.mjs",
     "benchmark:prompt-composer:paired": "npm run build && node src/components/prompt-composer/paired-benchmark.mjs",
     "test:diagnostics": "npm run build && node --experimental-strip-types ../tests/error-presentation-contract.mjs && node ../tests/http-error-diagnostics-browser.mjs && node ../tests/account-settings-errors-browser.mjs && node ../tests/structured-operational-errors-ui.mjs && node ../tests/native-error-ui.mjs",
-    "test:responsiveness": "npm run build && node --experimental-strip-types ../tests/transcript-identity-contract.mjs && node ../tests/draft-render-performance-browser.mjs && node ../tests/transcript-render-performance-browser.mjs && node ../tests/completed-markdown-cache-browser.mjs && node ../tests/scroll-restart-browser.mjs && node ../tests/ui-responsiveness-browser.mjs"
+    "test:responsiveness": "npm run build && node --experimental-strip-types ../tests/transcript-identity-contract.mjs && node ../tests/draft-render-performance-browser.mjs && node ../tests/transcript-render-performance-browser.mjs && node ../tests/completed-markdown-cache-browser.mjs && node ../tests/scroll-restart-browser.mjs && node ../tests/ui-responsiveness-browser.mjs",
+    "storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --config-dir .storybook --disable-telemetry --host 127.0.0.1 --no-open",
+    "build-storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",
+    "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.config.ts --project=storybook"
   },
   "dependencies": {
     "@mantine/core": "9.6.0",
@@ -45,12 +48,17 @@
     "rxjs": "7.8.2"
   },
   "devDependencies": {
+    "@storybook/addon-vitest": "10.6.1",
+    "@storybook/react-vite": "10.6.1",
     "@types/node": "^26.4.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@vitest/browser-playwright": "5.0.3",
+    "playwright": "1.63.0",
     "playwright-core": "1.63.0",
-    "prettier": "3.6.2",
+    "storybook": "10.6.1",
     "typescript": "^5.9.0",
-    "vite": "8.2.2"
+    "vite": "8.2.2",
+    "vitest": "5.0.3"
   }
 }

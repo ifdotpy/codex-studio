@@ -43,7 +43,9 @@ from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_safety_buffering import active as safety_retry_active
-from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
+from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
+
+from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
 def uid():
     return str(uuid.uuid4())
@@ -953,6 +955,75 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
+class _RuntimeWalKeeper:
+    """Keep a primed, idle SQLite connection alive until Runtime shutdown.
+
+    The dedicated thread owns the connection for its full lifetime. Its one
+    consumed schema read joins the WAL without leaving a read transaction open.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._ready = threading.Event()
+        self._release = threading.Event()
+        self._closed = threading.Event()
+        self._close_lock = threading.Lock()
+        self._startup_error = None
+        self._close_error = None
+        self._idle = False
+        self._thread = threading.Thread(
+            target=self._hold, name="runtime-sqlite-wal-keeper", daemon=True)
+        self._thread.start()
+        self._ready.wait()
+        if self._startup_error is not None:
+            self._thread.join()
+            raise RuntimeError("Could not initialize the runtime SQLite WAL keeper") from self._startup_error
+
+    @property
+    def idle(self):
+        return self._idle and not self._closed.is_set()
+
+    def _hold(self):
+        connection = None
+        try:
+            connection = sqlite3.connect(self.path, timeout=15)
+            cursor = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+            cursor.fetchall()
+            cursor.close()
+            if connection.in_transaction:
+                raise RuntimeError("Runtime SQLite WAL keeper retained a read transaction")
+        except BaseException as error:
+            self._startup_error = error
+            if connection is not None:
+                try:
+                    connection.close()
+                except BaseException as close_error:
+                    self._close_error = close_error
+            self._ready.set()
+            self._closed.set()
+            return
+        self._idle = True
+        self._ready.set()
+        self._release.wait()
+        try:
+            connection.close()
+        except BaseException as error:
+            self._close_error = error
+        finally:
+            self._idle = False
+            self._closed.set()
+
+    def close(self):
+        if threading.current_thread() is self._thread:
+            raise RuntimeError("The runtime SQLite WAL keeper cannot join its owner thread")
+        with self._close_lock:
+            self._release.set()
+            self._thread.join()
+            if self._close_error is not None:
+                raise RuntimeError("Could not close the runtime SQLite WAL keeper") from self._close_error
+
+
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
@@ -973,6 +1044,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
+        self._wal_keeper = None
+        self._shutdown_writers_drained = False
         self.server = None
         self.servers = {}
         self.connection_ids = {}
@@ -1133,6 +1206,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     r["status"] = "expired"
                     self.put(db, "requests", r)
             startup_memory_mark("restart-recovery")
+            from codex_budget import budget_init
+            budget_init(db)
             self.analytics_init(db)
             self.analytics_history_init(db)
             startup_memory_mark("analytics-schema")
@@ -1169,15 +1244,83 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
         os.chmod(self.db_path, 0o600)
         os.chmod(self.analytics_db_path, 0o600)
-        if server_factory is AppServer:
-            self.search_migration_start()
-        self.scheduler = threading.Thread(target=self.schedule, daemon=True)
-        self.scheduler.start()
-        startup_memory_mark("runtime-init-complete")
-        if server_factory is AppServer:
-            self.analytics_history_start()
-            from codex_analytics_storage import start as start_analytics_migration
-            start_analytics_migration(self)
+        try:
+            self._wal_keeper = _RuntimeWalKeeper(self.db_path)
+            if server_factory is AppServer:
+                self.search_migration_start()
+            self.scheduler = threading.Thread(target=self.schedule, daemon=True)
+            self.scheduler.start()
+            startup_memory_mark("runtime-init-complete")
+            if server_factory is AppServer:
+                self.analytics_history_start()
+                from codex_analytics_storage import start as start_analytics_migration
+                start_analytics_migration(self)
+        except BaseException as error:
+            self._cleanup_failed_initialization(error)
+            raise
+
+    def _cleanup_failed_initialization(self, original_error):
+        errors = []
+        self.closed = True
+        self.changed.set()
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is not None and scheduler.ident is not None and scheduler.is_alive():
+            try:
+                scheduler.join()
+            except BaseException as error:
+                errors.append(error)
+        for name in ("analytics_history_thread", "analytics_migration_thread", "search_migration_thread"):
+            worker = getattr(self, name, None)
+            if worker is not None and worker.ident is not None and worker is not threading.current_thread():
+                try:
+                    worker.join()
+                except BaseException as error:
+                    errors.append(error)
+                if worker.is_alive():
+                    original_error.add_note("Runtime initialization cleanup could not drain " + name + "; keeper and lease retained")
+                    return
+        keeper = self._wal_keeper
+        if keeper is not None:
+            try:
+                keeper.close()
+            except BaseException as error:
+                errors.append(error)
+            self._wal_keeper = None
+        for executor_name in ("pool", "tool_pool", "coordination_pool", "recovery_pool"):
+            executor = getattr(self, executor_name, None)
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except BaseException as error:
+                    errors.append(error)
+        if not self.lease.closed:
+            try:
+                fcntl.flock(self.lease, fcntl.LOCK_UN)
+            except BaseException as error:
+                errors.append(error)
+            try:
+                self.lease.close()
+            except BaseException as error:
+                errors.append(error)
+        for error in errors:
+            original_error.add_note(f"Runtime initialization cleanup failed: {error}")
+
+    def _close_wal_keeper(self):
+        with self.lock:
+            keeper = self._wal_keeper
+        if keeper is not None:
+            keeper.close()
+            with self.lock:
+                if self._wal_keeper is keeper:
+                    self._wal_keeper = None
+
+    def _release_lease(self):
+        with self.lock:
+            if self.lease.closed:
+                return
+            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            self.lease.close()
+
 
     def voice(self):
         with self.lock:
@@ -1258,7 +1401,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @contextmanager
     def analytics_db(self):
         """Open analytics on its own WAL connection and attach runtime state read-only."""
-        db = sqlite_connect(self.analytics_db_path, timeout=15, site="Runtime.analytics")
+        db = sqlite_connect(self.analytics_db_path, uri=True, timeout=15, site="Runtime.analytics")
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA journal_mode=WAL")
@@ -1994,7 +2137,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 **({"accountKey": account} if account is not None else {})}
 
     def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None,
-               _validate_only=False, _capacity_validated_root=None):
+               _validate_only=False, _capacity_validated_root=None, _accepted_provider_operation=False):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         if parent and "yolo_mode" in data:
@@ -2071,6 +2214,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 assert_delegation(root)
             account_key = catalog_account
             account = self.accounts.get(account_key)
+            if account.get("deleted") and not _accepted_provider_operation:
+                raise ValueError("This account was deleted. Select another account for new chats")
             if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
             if p and account_key != p.get("accountKey", "default") and account.get("status") != "ready":
@@ -2253,6 +2398,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 account_key = data["account_key"] if "account_key" in data else self.project_account(cwd, db=db)
                 if catalog_account is not None and account_key != catalog_account:
                     raise ValueError("The account changed. Select the model again")
+                if self.accounts.get(account_key).get("deleted"):
+                    raise ValueError("This account was deleted. Select another account for new chats")
                 if self.accounts.get(account_key).get("disconnected"):
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
@@ -2311,6 +2458,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 directory = str(Path(cwd).expanduser().resolve())
             if a.get("accountKey", "default") == account_key and directory == a["cwd"]:
                 return a
+            if self.accounts.get(account_key).get("deleted"):
+                raise ValueError("This account was deleted. Select another account")
             if self.accounts.get(account_key).get("disconnected"):
                 raise ValueError("Reconnect this account before selecting it")
             if not self.empty_lead(db, a) or a.get("inFlight"):
@@ -3083,6 +3232,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def dispatch_all(self):
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
+        from codex_provider_versions import tick as provider_version_tick
+        provider_version_tick(self)
         from codex_native_release import tick as native_release_tick
         native_release_tick(self)
         self.analytics_history_ensure_running()
@@ -4120,8 +4271,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
             captured_tokens = None
-            for sample in samples or [p]:
-                captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
+            if method == "item/agentMessage/delta" and samples and len(samples) > 1:
+                self.analytics_delta_batch_safe(db, a, samples)
+            else:
+                for sample in samples or [p]:
+                    captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
@@ -6263,7 +6417,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if r["agent"] in {a["id"] for a in agents}
             ],
             "rateLimits": self.rate_limits.copy(),
-            "nativeNotices": account_notices(self, db),
+            "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],
             "rateLimitsByAccount": {k: value.copy() for k, value in self.rate_limits_by_account.copy().items()},
             "events": events,
             "connected": bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
@@ -6680,5 +6834,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A final import batch can still need self.lock and the database.
             # Retain the runtime lease until that writer has stopped.
             history_thread.join()
+        for name in ("analytics_migration_thread", "search_migration_thread"):
+            worker = getattr(self, name, None)
+            if worker is not None and worker is not threading.current_thread():
+                worker.join()
+        self._shutdown_writers_drained = True
+        self._close_wal_keeper()
         fcntl.flock(self.lease, fcntl.LOCK_UN)
         self.lease.close()

@@ -16,7 +16,7 @@ Local evidence:
 - [Runtime](scripts/codex_runtime.py): `TOOLS`, `send`, `start`, `record_task`, `native_action`, `prepare_locked`.
 - [Conversation](web/src/components/Conversation.tsx): text composer, pending messages, copy, and approval controls.
 - [Sidebar](web/src/components/Sidebar.tsx): search over names and recent previews, without full transcript search or archive.
-- [Task panel](web/src/components/BackgroundTasks.tsx): process and tool history, monitor approval and cancellation.
+- [Task panel](web/src/components/shell/BackgroundTasks.tsx): process and tool history, monitor approval and cancellation.
 - Resource board (`scripts/codex-board`, since removed): command-line resource claims, renewal, release, and wait queues at the baseline.
 - [Native tool evidence](UI-AND-TOOLS.md#tool-evidence): tool parity and prior live inventory. Configuration controls actual availability.
 

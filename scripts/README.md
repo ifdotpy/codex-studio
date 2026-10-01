@@ -9,6 +9,12 @@ configuration and defaults in their owning modules. Run the component's checks
 and the affected integration contracts before delivery.
 
 - [Analytics](analytics/README.md): rollout translation, local tests, and benchmarks.
+- [Native notifications](native_notifications/README.md): route notices to the
+  right account and chat without reading every agent.
+- [Transcript storage](transcript_storage/README.md): keep full text durable while
+  limiting repeated search-index work.
+- [UI synchronization](sync/README.md): refresh the data that changed and preserve
+  reconnect and offline behavior.
 - [Benchmark scenarios](benchmarks/README.md): measurements spanning backend components.
 - `codex_canvas.py`: HTTP entry point and request handling.
 - `codex_runtime.py`: agent lifecycle and provider coordination.

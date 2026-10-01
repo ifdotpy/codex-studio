@@ -692,116 +692,12 @@ export function useMessages(
       if (!stopped && !streamLive)
         timer = setTimeout(poll, managed || kind === "room" ? 2000 : 900);
     };
-    if (!id || !managed || kind !== "agent") {
-      void poll();
-      return () => {
-        stopped = true;
-        clearTimeout(timer);
-      };
-    }
-    let records = new Map<string, Message>();
-    let streamVersion = 0;
-    let recordOrder: string[] = [];
-    let source: EventSource;
-    const fallback = () => {
-      clearTimeout(timer);
-      if (!stopped) void poll();
-    };
-    // Do not leave a newly opened chat blank for seconds when SSE is delayed.
-    timer = setTimeout(fallback, 200);
-    const connect = () => {
-      if (stopped) return;
-      source?.close();
-      source = new EventSource(
-        `/api/transcript/stream?id=${encodeURIComponent(id)}`,
-      );
-      source.onmessage = (event) => {
-        if (stopped || active.current !== scope || syncActive.current === scope)
-          return;
-        try {
-          const d = JSON.parse(event.data);
-          if (d.version !== undefined) {
-            if (
-              !Number.isSafeInteger(d.version) ||
-              (!d.replace && d.version !== streamVersion + 1)
-            ) {
-              source.close();
-              streamLive = false;
-              setConnection("reconnecting");
-              connect();
-              return;
-            }
-            if (d.replace) {
-              records = new Map();
-              streamVersion = 0;
-            }
-            for (const change of d.items || []) {
-              if (change.replace) records.set(change.id, change.replace);
-              else if (typeof change.append === "string") {
-                const prior = records.get(change.id);
-                if (!prior || typeof prior.text !== "string")
-                  throw Error("Transcript delta has no base");
-                records.set(change.id, {
-                  ...prior,
-                  text: prior.text + change.append,
-                });
-              }
-            }
-            if (d.order) recordOrder = d.order;
-            streamVersion = d.version;
-          } else {
-            if (d.replace) records = new Map();
-            for (const item of d.items || []) records.set(item.id, item);
-            if (d.order) recordOrder = d.order;
-          }
-          if (recordOrder.length) {
-            const ordered: Message[] = [];
-            for (const key of recordOrder) {
-              const item = records.get(key);
-              if (item) ordered.push(item);
-            }
-            records = new Map(ordered.map((item) => [item.id, item] as const));
-          }
-          clearTimeout(timer);
-          streamLive = true;
-          setConnection("live");
-          accept({ ...d, items: [...records.values()] });
-        } catch {
-          streamLive = false;
-          setConnection("reconnecting");
-          fallback();
-        }
-      };
-      source.onerror = () => {
-        if (stopped) return;
-        streamLive = false;
-        setConnection("reconnecting");
-        fallback();
-      };
-      source.addEventListener("unavailable", (event) => {
-        source.close();
-        stopped = true;
-        clearTimeout(timer);
-        setLoadedId(scope);
-        setConnection("unavailable");
-        setNotice(JSON.parse((event as MessageEvent).data).error);
-      });
-    };
-    const offline = () => {
-      source.close();
-      streamLive = false;
-      setConnection("reconnecting");
-      fallback();
-    };
-    connect();
-    window.addEventListener("offline", offline);
-    const stopResume = onResume(connect);
+    // Managed sessions use the shared sync transport. Until its first page is
+    // available, bounded HTTP reads keep the selected conversation visible.
+    void poll();
     return () => {
       stopped = true;
       clearTimeout(timer);
-      source.close();
-      window.removeEventListener("offline", offline);
-      stopResume();
     };
   }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
   useEffect(() => {

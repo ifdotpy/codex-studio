@@ -46,7 +46,7 @@ const server = await createServer({
       load(id) {
         if (
           process.env.BASELINE === "1" &&
-          id === join(root, "src/components/ExecutionSettings.tsx")
+          id === join(root, "src/components/agents/ExecutionSettings.tsx")
         )
           return execFileSync(
             "git",
@@ -54,7 +54,7 @@ const server = await createServer({
             { cwd: root, encoding: "utf8" },
           );
         if (id !== entry) return;
-        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/ExecutionSettings.tsx';
+        return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
 const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
 const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
 window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferFail)throw new TypeError('Connection lost');return new Response(JSON.stringify({id:body.request_id,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
@@ -289,56 +289,118 @@ try {
     assert.equal(await account.inputValue(), "claude", "optimistic account");
     await dialog
       .getByRole("status")
-      .filter({ hasText: "Moving 1 subagent to Claude. 2 subagents stay on codex: Codex worker, Second codex worker." })
+      .filter({
+        hasText:
+          "Moving 1 subagent to Claude. 2 subagents stay on codex: Codex worker, Second codex worker.",
+      })
       .waitFor();
-    await dialog.getByRole("status").filter({ hasText: /^Saved/ }).waitFor();
+    await dialog
+      .getByRole("status")
+      .filter({ hasText: /^Saved/ })
+      .waitFor();
     assert.deepEqual(
-      await page.evaluate(() => window.transfers.map((row) => [row.account_key, row.scope])),
+      await page.evaluate(() =>
+        window.transfers.map((row) => [row.account_key, row.scope]),
+      ),
       [["claude", "subagents"]],
     );
-    assert.equal(await page.evaluate(() => window.calls.length), 0, "no settings save before the catalog");
+    assert.equal(
+      await page.evaluate(() => window.calls.length),
+      0,
+      "no settings save before the catalog",
+    );
     await page.evaluate(() =>
       window.setAgent({
         ...window.agent,
-        workerDefaults: { accountKey: "claude", model: "gpt-5.6-luna", effort: "high", fastMode: false },
-        accountTransfer: { id: window.transfers[0].request_id, scope: "subagents", status: "completed", targetAccountKey: "claude", completed: 2, moved: 2, total: 3, leftOnSource: [{ id: "w-claude", name: "Claude worker", provider: "claude", reason: "Uses claude" }] },
+        workerDefaults: {
+          accountKey: "claude",
+          model: "gpt-5.6-luna",
+          effort: "high",
+          fastMode: false,
+        },
+        accountTransfer: {
+          id: window.transfers[0].request_id,
+          scope: "subagents",
+          status: "completed",
+          targetAccountKey: "claude",
+          completed: 2,
+          moved: 2,
+          total: 3,
+          leftOnSource: [
+            {
+              id: "w-claude",
+              name: "Claude worker",
+              provider: "claude",
+              reason: "Uses claude",
+            },
+          ],
+        },
       }),
     );
-    await dialog.getByText("Claude worker left on source (claude): Uses claude").waitFor();
-    assert.equal(await modelValue(model), "gpt-5.6-luna", "current value shows while the catalog loads");
-    assert.equal(await model.isDisabled(), false, "the catalog never blocks the control");
+    await dialog
+      .getByText("Claude worker left on source (claude): Uses claude")
+      .waitFor();
+    assert.equal(
+      await modelValue(model),
+      "gpt-5.6-luna",
+      "current value shows while the catalog loads",
+    );
+    assert.equal(
+      await model.isDisabled(),
+      false,
+      "the catalog never blocks the control",
+    );
     await page.waitForFunction(() => !!window.catalogRelease);
     await page.evaluate(() => window.catalogRelease());
     // The stored model is not in the target catalog: the account default replaces it, in one line.
     await dialog
       .getByRole("status")
-      .filter({ hasText: "Saved · Luna is not available on Claude. Using Claude Opus 4.6, the account default." })
+      .filter({
+        hasText:
+          "Saved · Luna is not available on Claude. Using Claude Opus 4.6, the account default.",
+      })
       .waitFor();
-    assert.deepEqual(await page.evaluate(() => window.calls[0].worker_defaults), {
-      account_key: "claude",
-      model: "claude-opus-4-6",
-      effort: null,
-      fast_mode: false,
-      daybreak_enabled: false,
-    });
+    assert.deepEqual(
+      await page.evaluate(() => window.calls[0].worker_defaults),
+      {
+        account_key: "claude",
+        model: "claude-opus-4-6",
+        effort: null,
+        fast_mode: false,
+        daybreak_enabled: false,
+      },
+    );
     // One background refresh after the transfer, one after the model save.
     await page.waitForFunction(() => window.refreshCount === 2);
     await page.evaluate(() =>
       window.setAgent({
         ...window.agent,
-        workerDefaults: { accountKey: "claude", model: "claude-opus-4-6", effort: null, fastMode: false },
+        workerDefaults: {
+          accountKey: "claude",
+          model: "claude-opus-4-6",
+          effort: null,
+          fastMode: false,
+        },
       }),
     );
     assert.equal(await modelValue(model), "claude-opus-4-6");
     // A lost transfer response reverts the account; Retry reuses the request id.
     await page.evaluate(() => (window.transferFail = true));
     await account.selectOption("second");
-    await page.getByRole("alert").filter({ hasText: "Connection lost" }).waitFor();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "Connection lost" })
+      .waitFor();
     assert.equal(await account.inputValue(), "claude", "revert on failure");
     await page.evaluate(() => (window.transferFail = false));
     await dialog.getByRole("button", { name: "Retry", exact: true }).click();
-    await dialog.getByRole("status").filter({ hasText: /^Saved/ }).waitFor();
-    const ids = await page.evaluate(() => window.transfers.map((row) => row.request_id));
+    await dialog
+      .getByRole("status")
+      .filter({ hasText: /^Saved/ })
+      .waitFor();
+    const ids = await page.evaluate(() =>
+      window.transfers.map((row) => row.request_id),
+    );
     assert.equal(ids.length, 3);
     assert.equal(ids[1], ids[2], "retry keeps the request id");
     assert.notEqual(ids[0], ids[1]);
@@ -347,12 +409,20 @@ try {
     await page.evaluate(() => {
       window.reply = {
         ...window.agent,
-        workerDefaults: { accountKey: null, model: "gpt-5.6-luna", effort: "high", fastMode: false },
+        workerDefaults: {
+          accountKey: null,
+          model: "gpt-5.6-luna",
+          effort: "high",
+          fastMode: false,
+        },
       };
     });
     await account.selectOption("");
     await page.waitForFunction(() => window.calls.length === 2);
-    assert.equal(await page.evaluate(() => window.calls[1].worker_defaults.account_key), null);
+    assert.equal(
+      await page.evaluate(() => window.calls[1].worker_defaults.account_key),
+      null,
+    );
     assert.equal(await page.evaluate(() => window.transfers.length), 3);
     await reset();
     assert.equal(await account.count(), 0);

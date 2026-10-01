@@ -85,11 +85,20 @@ try {
   await notices.first().waitFor();
   const notice = notices.filter({ hasText: "Usage limit reached" }).first();
   const authNotice = notices.nth(1);
-  assert.equal(await notices.filter({ hasText: "Waiting for the account sign-in" }).count(), 1);
+  assert.equal(
+    await notices
+      .filter({ hasText: "Waiting for the account sign-in" })
+      .count(),
+    1,
+  );
   assert.match(await notice.textContent(), /Automatic resume planned for/);
   assert.match(await authNotice.textContent(), /Next account check/);
-  await authNotice.getByRole("button", { name: "Turn off automatic resume" }).click();
-  await authNotice.getByRole("button", { name: "Turn on automatic resume" }).waitFor();
+  await authNotice
+    .getByRole("button", { name: "Turn off automatic resume" })
+    .click();
+  await authNotice
+    .getByRole("button", { name: "Turn on automatic resume" })
+    .waitFor();
   assert.match(await authNotice.textContent(), /Automatic resume is off/);
   assert.ok(
     (await notice

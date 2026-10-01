@@ -149,13 +149,15 @@ if (typeof window !== "undefined")
   window.addEventListener("codex-sync-entities", (event: Event) => {
     const detail = (event as CustomEvent).detail;
     if (!detail || !Array.isArray(detail.documents)) return;
-    void syncDatabase().then(async ({ db, workspaceId }) => {
-      if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-      for (const document of detail.documents as SyncDocument[]) {
-        if (!document.id.startsWith("entity:")) continue;
-        await persistProjection(db.projections, document);
-      }
-    }).catch(() => {});
+    void syncDatabase()
+      .then(async ({ db, workspaceId }) => {
+        if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
+        for (const document of detail.documents as SyncDocument[]) {
+          if (!document.id.startsWith("entity:")) continue;
+          await persistProjection(db.projections, document);
+        }
+      })
+      .catch(() => {});
   });
 
 async function pull(
@@ -168,11 +170,12 @@ async function pull(
   priorityId?: string | null,
 ) {
   await verifyWorkspace();
-  const fresh = initialHigh !== undefined
-    ? `&fresh=1&initialHigh=${initialHigh}`
-    : "";
+  const fresh =
+    initialHigh !== undefined ? `&fresh=1&initialHigh=${initialHigh}` : "";
   const reset = scope === "state:entities:v1" ? "&reset=1" : "";
-  const priority = priorityId ? `&priorityId=${encodeURIComponent(priorityId)}` : "";
+  const priority = priorityId
+    ? `&priorityId=${encodeURIComponent(priorityId)}`
+    : "";
   const result = await api(
     `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}${reset}${priority}`,
   );
@@ -180,224 +183,367 @@ async function pull(
     throw new Error("The server workspace changed. Reload to synchronize.");
   return result;
 }
-// Legacy projections share one stream and one fallback clock. Drafts use their
-// own sequence so unrelated runtime writes do not pull the same draft cursor.
-const invalidations = new Set<() => void>();
+// All projections and drafts share one stream with scope-aware callbacks.
+// A background PWA must not retain one HTTP connection per conversation.
+const invalidations = new Map<() => void, string>();
 let stopInvalidations: (() => void) | undefined;
-const entityInvalidations = new Set<() => void>();
-let stopEntityInvalidations: (() => void) | undefined;
-const draftInvalidations = new Set<() => void>();
-let stopDraftInvalidations: (() => void) | undefined;
-const transcriptInvalidations = new Map<string, Set<() => void>>();
-const stopTranscriptInvalidations = new Map<string, () => void>();
-function watchTranscriptInvalidations(id: string, resync: () => void) {
-  let subscribers = transcriptInvalidations.get(id);
-  if (!subscribers) transcriptInvalidations.set(id, (subscribers = new Set()));
-  subscribers.add(resync);
-  if (!stopTranscriptInvalidations.has(id)) {
-    let source: EventSource | undefined;
-    let previous: number | undefined;
-    const available = () => !document.hidden && navigator.onLine !== false;
-    const close = () => {
-      source?.close();
-      source = undefined;
-    };
-    const connect = () => {
-      if (!available() || source) return;
-      source = new EventSource(`/api/sync/stream?scope=${encodeURIComponent(`transcript:${id}`)}`);
-      source.onmessage = (event) => {
-        const current = Number(event.data);
-        if (!Number.isSafeInteger(current) || current < 0) return;
-        if (previous === undefined || current > previous) {
-          previous = current;
-          for (const callback of transcriptInvalidations.get(id) || []) callback();
-        }
-      };
-    };
-    const suspend = () => {
-      if (!available()) close();
-    };
-    const resume = () => {
-      close();
-      previous = undefined;
-      connect();
-    };
-    window.addEventListener("offline", suspend);
-    document.addEventListener("visibilitychange", suspend);
-    const stopResume = onResume(resume);
-    connect();
-    stopTranscriptInvalidations.set(id, () => {
-      close();
-      stopResume();
-      window.removeEventListener("offline", suspend);
-      document.removeEventListener("visibilitychange", suspend);
-    });
-  }
-  return () => {
-    subscribers?.delete(resync);
-    if (subscribers?.size) return;
-    transcriptInvalidations.delete(id);
-    stopTranscriptInvalidations.get(id)?.();
-    stopTranscriptInvalidations.delete(id);
-  };
-}
 export function watchSyncInvalidations(
   resync: () => void,
-  scope: "legacy" | "entities" | "drafts" = "legacy",
+  scope?: string,
+): () => void;
+export function watchSyncInvalidations(
+  scope: string,
+  resync: () => void,
+): () => void;
+export function watchSyncInvalidations(
+  first: string | (() => void),
+  second: string | (() => void) = "legacy",
 ) {
-  const subscribers = scope === "entities"
-    ? entityInvalidations
-    : scope === "drafts"
-      ? draftInvalidations
-      : invalidations;
-  subscribers.add(resync);
-  if (scope === "drafts" && !stopDraftInvalidations) {
-    let source: EventSource | undefined;
-    let previous: number | undefined;
-    const available = () => !document.hidden && navigator.onLine !== false;
-    const close = () => {
-      source?.close();
-      source = undefined;
-    };
-    const connect = () => {
-      if (!available() || source) return;
-      source = new EventSource("/api/sync/stream?scope=drafts");
-      source.onmessage = (event) => {
-        const current = Number(event.data);
-        if (!Number.isSafeInteger(current) || current < 0) return;
-        if (previous === undefined || current > previous) {
-          previous = current;
-          for (const callback of draftInvalidations) callback();
-        }
-      };
-    };
-    const suspend = () => {
-      if (!available()) close();
-    };
-    const resume = () => {
-      close();
-      previous = undefined;
-      connect();
-    };
-    window.addEventListener("offline", suspend);
-    document.addEventListener("visibilitychange", suspend);
-    const stopResume = onResume(resume);
-    connect();
-    stopDraftInvalidations = () => {
-      close();
-      stopResume();
-      window.removeEventListener("offline", suspend);
-      document.removeEventListener("visibilitychange", suspend);
-    };
-  }
-  if (scope === "entities" && !stopEntityInvalidations) {
-    let source: EventSource | undefined;
-    let previous: number | undefined;
+  const scope = typeof first === "string" ? first : String(second);
+  const resync = (typeof first === "function" ? first : second) as () => void;
+  const generationScope =
+    scope === "state" ||
+    scope === "state:chat" ||
+    scope === "entities" ||
+    scope === "legacy"
+      ? "state"
+      : scope.startsWith("transcript:")
+        ? "transcripts"
+        : scope;
+  invalidations.set(resync, generationScope);
+  if (!stopInvalidations) {
+    const fallbackPollMs = 3000;
+    const heartbeatMs = 1000;
+    const coordinatorTimeoutMs = 3500;
     let stopped = false;
-    const close = () => {
-      source?.close();
-      source = undefined;
-    };
-    const available = () => !document.hidden && navigator.onLine !== false;
-    const connect = () => {
-      if (!available() || source || stopped) return;
-      source = new EventSource(
-        "/api/sync/stream?scope=state%3Aentities%3Av1",
-      );
-      source.onmessage = (event) => {
-        const current = Number(event.data);
-        if (!Number.isSafeInteger(current) || current < 0) return;
-        if (previous === undefined || current > previous) {
-          previous = current;
-          for (const callback of entityInvalidations) callback();
-        }
-      };
-    };
-    const suspend = () => {
-      if (!available()) close();
-    };
-    const resume = () => {
-      close();
-      previous = undefined;
-      connect();
-    };
-    window.addEventListener("offline", suspend);
-    document.addEventListener("visibilitychange", suspend);
-    const stopResume = onResume(resume);
-    connect();
-    stopEntityInvalidations = () => {
-      stopped = true;
-      close();
-      stopResume();
-      window.removeEventListener("offline", suspend);
-      document.removeEventListener("visibilitychange", suspend);
-    };
-  }
-  if (scope === "legacy") {
-    if (!stopInvalidations) {
     let source: EventSource | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let channel: BroadcastChannel | undefined;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+    let lastGenerations: Record<string, number> | undefined;
+    let lastWorkspaceId: string | undefined;
+    let pendingScopes = new Set<string>();
+    let pendingFullRefresh = false;
+    let openedStream = false;
+    let workspaceId: string | undefined;
+    let isOwner = false;
+    let lastHeartbeatAt = 0;
+    let ownerLockPending = false;
+    let releaseOwnerLock: (() => void) | undefined;
     const available = () => !document.hidden && navigator.onLine !== false;
-    const notify = () => {
-      if (!available() || timer !== undefined) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        if (available()) for (const callback of invalidations) callback();
+    const notify = (changed?: Set<string>) => {
+      if (!available()) return;
+      if (changed)
+        for (const changedScope of changed) pendingScopes.add(changedScope);
+      else pendingFullRefresh = true;
+      if (flushTimer !== undefined) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined;
+        const fullRefresh = pendingFullRefresh;
+        const scopes = pendingScopes;
+        pendingFullRefresh = false;
+        pendingScopes = new Set();
+        if (available())
+          for (const [callback, subscribed] of invalidations)
+            if (fullRefresh || scopes.has(subscribed)) callback();
       }, 50);
     };
-    const close = () => {
+    const applyGenerations = (current: Record<string, number>) => {
+      const changed = new Set(
+        Object.keys(current).filter(
+          (changedScope) =>
+            lastGenerations?.[changedScope] !== current[changedScope],
+        ),
+      );
+      lastGenerations = current;
+      notify(changed);
+    };
+    const applyGenerationState = (value: {
+      protocol?: number;
+      workspaceId?: string;
+      generations?: Record<string, number>;
+    }) => {
+      const generations = value?.generations;
+      const expected = ["drafts", "state", "transcripts"];
+      const valid =
+        value?.protocol === 2 &&
+        /^[a-f0-9]{32}$/.test(value.workspaceId || "") &&
+        generations &&
+        Object.keys(generations).sort().join(",") === expected.join(",") &&
+        expected.every(
+          (changedScope) =>
+            Number.isSafeInteger(generations[changedScope]) &&
+            generations[changedScope] >= 0,
+        );
+      if (!valid || (workspaceId && value.workspaceId !== workspaceId)) {
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+        return false;
+      }
+      if (
+        (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
+        (lastGenerations &&
+          expected.some(
+            (changedScope) =>
+              generations[changedScope] < lastGenerations![changedScope],
+          ))
+      ) {
+        lastGenerations = undefined;
+        notify();
+      }
+      lastWorkspaceId = value.workspaceId;
+      applyGenerations(generations!);
+      return true;
+    };
+    const broadcast = (message: Record<string, unknown>) => {
+      try {
+        channel?.postMessage({ protocol: 2, ...message, workspaceId });
+      } catch {
+        // A closed channel is treated as a lost coordinator; polling recovers it.
+        releaseStreamLease();
+        startFallbackPolling();
+      }
+    };
+    const stopFallbackPolling = () => {
+      if (pollTimer !== undefined) clearInterval(pollTimer);
+      pollTimer = undefined;
+    };
+    const pollGenerations = () => {
+      if (!available()) return;
+      void api<{
+        protocol: number;
+        workspaceId: string;
+        generations: Record<string, number>;
+      }>("/api/sync/generations")
+        .then((value) => {
+          if (stopped) return;
+          const accepted = applyGenerationState(value);
+          if (isOwner)
+            broadcast(
+              accepted
+                ? { kind: "generations", ...value }
+                : { kind: "invalidate" },
+            );
+        })
+        .catch(() => {});
+    };
+    const startFallbackPolling = () => {
+      if (pollTimer !== undefined || stopped) return;
+      pollGenerations();
+      pollTimer = setInterval(pollGenerations, fallbackPollMs);
+    };
+    const publishHeartbeat = () => {
+      if (!isOwner || stopped || !available()) return;
+      broadcast({ kind: "heartbeat", generations: lastGenerations });
+    };
+    const closeSource = () => {
       source?.close();
       source = undefined;
-      clearTimeout(timer);
-      timer = undefined;
+    };
+    const releaseStreamLease = () => {
+      isOwner = false;
+      closeSource();
+      const release = releaseOwnerLock;
+      releaseOwnerLock = undefined;
+      release?.();
+      if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+      stopFallbackPolling();
     };
     const connect = () => {
-      if (!available() || source) return;
-      source = new EventSource("/api/sync/stream");
-      source.onopen = notify;
-      source.onmessage = notify;
+      if (!available() || !isOwner || source) return;
+      try {
+        source = new EventSource("/api/sync/stream?protocol=2");
+      } catch {
+        // The elected lock holder already polls the compact generation row.
+        return;
+      }
+      source.onopen = () => {
+        if (openedStream) {
+          notify();
+          broadcast({ kind: "invalidate" });
+        }
+        openedStream = true;
+      };
+      source.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (
+            message?.protocol === 2 &&
+            message.generations &&
+            typeof message.generations === "object"
+          ) {
+            const accepted = applyGenerationState(message);
+            broadcast(
+              accepted
+                ? { kind: "generations", ...message }
+                : { kind: "invalidate" },
+            );
+            return;
+          }
+        } catch {
+          // Legacy RESYNC data and unknown protocol values invalidate all.
+        }
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+        broadcast({ kind: "invalidate" });
+      };
     };
+    const resume = () => {
+      if (available() && isOwner) {
+        // A socket can remain OPEN after mobile suspension but never deliver again.
+        closeSource();
+        connect();
+        notify();
+        broadcast({ kind: "invalidate" });
+      } else if (available()) {
+        notify();
+        if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs)
+          startFallbackPolling();
+        if (channel) startAsOwner();
+      } else closeSource();
+    };
+    const stopResume = onResume(resume);
     const suspend = () => {
-      if (!available()) close();
+      if (!available()) {
+        if (document.hidden && isOwner) releaseStreamLease();
+        else closeSource();
+      }
     };
-    const stopResume = onResume(() => {
-      // A socket can remain OPEN after mobile suspension but never deliver again.
-      close();
-      connect();
-      notify();
-    });
     window.addEventListener("offline", suspend);
     document.addEventListener("visibilitychange", suspend);
-    // File-backed state still needs periodic reconciliation without SSE events.
-    const fallback = setInterval(notify, 3000);
-    connect();
+    const startAsOwner = () => {
+      if (stopped || isOwner || ownerLockPending) return;
+      const locks = navigator.locks;
+      if (!locks || !workspaceId) {
+        startFallbackPolling();
+        return;
+      }
+      ownerLockPending = true;
+      void locks
+        .request(
+          `codex-sync-stream:${location.origin}:${workspaceId}`,
+          { mode: "exclusive", ifAvailable: true },
+          async (lock) => {
+            ownerLockPending = false;
+            if (stopped || !lock || !available()) {
+              if (!stopped) startFallbackPolling();
+              return;
+            }
+            isOwner = true;
+            stopFallbackPolling();
+            publishHeartbeat();
+            heartbeatTimer = setInterval(publishHeartbeat, heartbeatMs);
+            pollGenerations();
+            pollTimer = setInterval(pollGenerations, fallbackPollMs);
+            connect();
+            await new Promise<void>((resolve) => {
+              releaseOwnerLock = resolve;
+            });
+            releaseOwnerLock = undefined;
+            isOwner = false;
+            closeSource();
+            if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+            heartbeatTimer = undefined;
+          },
+        )
+        .catch(() => {
+          ownerLockPending = false;
+          startFallbackPolling();
+        });
+    };
+    const receive = (event: MessageEvent) => {
+      if (stopped) return;
+      const message = event.data;
+      if (
+        !message ||
+        message.workspaceId !== workspaceId ||
+        message.protocol !== 2 ||
+        typeof message.kind !== "string"
+      ) {
+        notify();
+        return;
+      }
+      lastHeartbeatAt = Date.now();
+      stopFallbackPolling();
+      if (message.kind === "heartbeat") {
+        if (message.generations) applyGenerationState(message);
+        return;
+      }
+      if (message.kind === "invalidate") {
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+        return;
+      }
+      if (message.kind === "generations") applyGenerationState(message);
+      else notify();
+    };
+    const initialize = async () => {
+      try {
+        const identity = await syncDatabase();
+        if (stopped) return;
+        workspaceId = identity.workspaceId;
+        if (typeof BroadcastChannel === "undefined") {
+          startFallbackPolling();
+          return;
+        }
+        try {
+          channel = new BroadcastChannel(
+            `codex-sync-${location.origin}-${workspaceId}`,
+          );
+          channel.onmessage = receive;
+        } catch {
+          channel = undefined;
+          startFallbackPolling();
+          return;
+        }
+        watchdogTimer = setInterval(() => {
+          if (stopped || isOwner || !available()) return;
+          if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs) {
+            startFallbackPolling();
+            startAsOwner();
+          }
+        }, heartbeatMs);
+        startAsOwner();
+      } catch {
+        // Cached clients remain useful offline; bounded polling retries discovery.
+        startFallbackPolling();
+      }
+    };
     stopInvalidations = () => {
-      close();
-      clearInterval(fallback);
+      stopped = true;
+      releaseStreamLease();
+      clearTimeout(flushTimer);
+      stopFallbackPolling();
+      if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+      if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
       stopResume();
       window.removeEventListener("offline", suspend);
       document.removeEventListener("visibilitychange", suspend);
+      if (channel) {
+        channel.onmessage = null;
+        channel.close();
+        channel = undefined;
+      }
     };
-    }
+    notify();
+    void initialize();
   }
   return () => {
-    subscribers.delete(resync);
-    if (scope === "entities" && !entityInvalidations.size) {
-      stopEntityInvalidations?.();
-      stopEntityInvalidations = undefined;
-    }
-    if (scope === "drafts" && !draftInvalidations.size) {
-      stopDraftInvalidations?.();
-      stopDraftInvalidations = undefined;
-    }
-    if (scope === "legacy") {
     invalidations.delete(resync);
     if (!invalidations.size) {
       stopInvalidations?.();
       stopInvalidations = undefined;
     }
-    }
   };
+}
+function watchTranscriptInvalidations(id: string, resync: () => void) {
+  return watchSyncInvalidations(`transcript:${id}`, resync);
 }
 // Pull-only projections never run RxDB's upstream scan of every cached chat.
 // The storage revision is a compare-and-swap across tabs; retry conflicts against
@@ -435,7 +581,8 @@ async function persistProjectionBatch(
   const pending = new Map(documents.map((row) => [row.id, row]));
   while (pending.size) {
     const existing = await collection.storageInstance.findDocumentsById(
-      [...pending.keys()], true,
+      [...pending.keys()],
+      true,
     );
     const byId = new Map(existing.map((row) => [row.id, row]));
     const writes = [];
@@ -456,7 +603,8 @@ async function persistProjectionBatch(
     }
     if (!writes.length) return;
     const result = await collection.storageInstance.bulkWrite(
-      writes, "studio-projection-pull",
+      writes,
+      "studio-projection-pull",
     );
     const failure = result.error.find((row) => row.status !== 409);
     if (failure) throw failure;
@@ -465,19 +613,29 @@ async function persistProjectionBatch(
 }
 async function writeProjectionRows(
   collection: RxCollection<SyncDocument>,
-  rows: Array<{ previous?: RxDocumentData<SyncDocument>; document: RxDocumentData<SyncDocument> }>,
+  rows: Array<{
+    previous?: RxDocumentData<SyncDocument>;
+    document: RxDocumentData<SyncDocument>;
+  }>,
 ) {
   if (!rows.length) return;
-  const result = await collection.storageInstance.bulkWrite(rows, "studio-projection-reset");
+  const result = await collection.storageInstance.bulkWrite(
+    rows,
+    "studio-projection-reset",
+  );
   if (result.error.length)
     throw new Error("Could not reset the local entity projection safely.");
 }
-async function resetEntityProjection(
-  collection: RxCollection<SyncDocument>,
-) {
+async function resetEntityProjection(collection: RxCollection<SyncDocument>) {
   const markerId = "state:entities:ready";
   const found = await collection.storageInstance.findDocumentsById(
-    [markerId, "state:entities:checkpoint", "state:entities:initial", "state:entities:complete"], true,
+    [
+      markerId,
+      "state:entities:checkpoint",
+      "state:entities:initial",
+      "state:entities:complete",
+    ],
+    true,
   );
   const byId = new Map(found.map((row) => [row.id, row]));
   const marker = byId.get(markerId);
@@ -485,33 +643,51 @@ async function resetEntityProjection(
   const initial = byId.get("state:entities:initial");
   const complete = byId.get("state:entities:complete");
   const markerSeq = Math.max(0, marker?.seq ?? 0);
-  const raw = (id: string, payload: string, seq: number, deleted = false,
-    previous?: RxDocumentData<SyncDocument>) => ({
-      previous,
-      document: {
-        id, payload, seq, _deleted: deleted, _attachments: {},
-        _meta: { lwt: 1 }, _rev: "",
-      } as RxDocumentData<SyncDocument>,
-    });
+  const raw = (
+    id: string,
+    payload: string,
+    seq: number,
+    deleted = false,
+    previous?: RxDocumentData<SyncDocument>,
+  ) => ({
+    previous,
+    document: {
+      id,
+      payload,
+      seq,
+      _deleted: deleted,
+      _attachments: {},
+      _meta: { lwt: 1 },
+      _rev: "",
+    } as RxDocumentData<SyncDocument>,
+  });
   // Hide the current projection first. The marker stays hidden until every
   // replacement page has been stored, so observers never see a partial set.
   await writeProjectionRows(collection, [
     raw(markerId, "resetting", markerSeq + 1, false, marker),
     raw("state:entities:checkpoint", "{}", 0, false, checkpoint),
     ...(initial ? [raw("state:entities:initial", "{}", 0, true, initial)] : []),
-    ...(complete ? [raw("state:entities:complete", "{}", 0, true, complete)] : []),
+    ...(complete
+      ? [raw("state:entities:complete", "{}", 0, true, complete)]
+      : []),
   ]);
-  const docs = await collection.find({
-    selector: { id: { $gte: "entity:", $lt: "entity;" } },
-  }).exec();
+  const docs = await collection
+    .find({
+      selector: { id: { $gte: "entity:", $lt: "entity;" } },
+    })
+    .exec();
   const stored = await collection.storageInstance.findDocumentsById(
-    docs.map((doc: any) => doc.id), true,
+    docs.map((doc: any) => doc.id),
+    true,
   );
   const rows = stored.map((previous) => {
     return raw(previous.id, previous.payload, 0, true, previous);
   });
   for (let offset = 0; offset < rows.length; offset += ENTITY_BATCH_SIZE)
-    await writeProjectionRows(collection, rows.slice(offset, offset + ENTITY_BATCH_SIZE));
+    await writeProjectionRows(
+      collection,
+      rows.slice(offset, offset + ENTITY_BATCH_SIZE),
+    );
   return markerSeq + 2;
 }
 type TranscriptProjectionMeta = {
@@ -543,7 +719,9 @@ function readTranscriptMeta(payload: string): TranscriptProjectionMeta | null {
       value.itemRevisions
     )
       return value as TranscriptProjectionMeta;
-  } catch { /* An older client stored the full page at this key. */ }
+  } catch {
+    /* An older client stored the full page at this key. */
+  }
   return null;
 }
 async function cacheStoredTranscript(
@@ -597,48 +775,58 @@ async function persistTranscriptProjection(
 ) {
   const id = scope.slice("transcript:".length);
   const base = previous?.payload ? readTranscriptMeta(previous.payload) : null;
-  const legacyBase = previous?.payload && !base
-    ? JSON.parse(previous.payload)
-    : null;
+  const legacyBase =
+    previous?.payload && !base ? JSON.parse(previous.payload) : null;
   const incoming = document._deleted ? {} : JSON.parse(document.payload);
   const startingItems = base
     ? []
     : Array.isArray(legacyBase?.items)
       ? legacyBase.items
       : [];
-  const oldOrder: string[] = base?.order || startingItems
-    .map((item: any) => item.id)
-    .filter((key: unknown): key is string => typeof key === "string");
+  const oldOrder: string[] =
+    base?.order ||
+    startingItems
+      .map((item: any) => item.id)
+      .filter((key: unknown): key is string => typeof key === "string");
   const isDelta = !document._deleted && incoming.delta === true;
   if (isDelta && !base && !legacyBase?.items)
     throw new Error("Transcript delta has no local item base.");
 
   const changedItems = document._deleted
     ? []
-    : (incoming.items || []).filter((item: any) => typeof item?.id === "string");
+    : (incoming.items || []).filter(
+        (item: any) => typeof item?.id === "string",
+      );
   const removed: string[] = document._deleted
     ? oldOrder
     : isDelta
-      ? (incoming.removed || []).filter((key: unknown) => typeof key === "string")
+      ? (incoming.removed || []).filter(
+          (key: unknown) => typeof key === "string",
+        )
       : [];
   const order = document._deleted
     ? []
     : Array.isArray(incoming.order)
       ? incoming.order.filter((key: unknown) => typeof key === "string")
       : isDelta
-        ? oldOrder.filter((key) => !removed.includes(key)).concat(
-            changedItems.map((item: any) => item.id).filter((key: string) => !oldOrder.includes(key)),
-          )
+        ? oldOrder
+            .filter((key) => !removed.includes(key))
+            .concat(
+              changedItems
+                .map((item: any) => item.id)
+                .filter((key: string) => !oldOrder.includes(key)),
+            )
         : changedItems.map((item: any) => item.id);
   if (!document._deleted && !isDelta)
     removed.push(...oldOrder.filter((key) => !order.includes(key)));
-  const previousMetadata = base?.metadata || transcriptMetadata(legacyBase || {});
+  const previousMetadata =
+    base?.metadata || transcriptMetadata(legacyBase || {});
   const metadata = document._deleted
     ? {}
     : { ...previousMetadata, ...transcriptMetadata(incoming) };
   const itemRevisions = document._deleted
     ? {}
-    : { ...(base?.itemRevisions || {}), ...(incoming.itemRevisions || {}) };
+    : { ...base?.itemRevisions, ...incoming.itemRevisions };
   for (const itemId of removed) delete itemRevisions[itemId];
   const nextMeta: TranscriptProjectionMeta = {
     format: 2,
@@ -651,12 +839,14 @@ async function persistTranscriptProjection(
     payload: JSON.stringify(item),
     seq: document.seq,
   }));
-  rows.push(...removed.map((itemId) => ({
-    id: transcriptItemId(scope, itemId),
-    payload: "{}",
-    seq: document.seq,
-    _deleted: true,
-  })));
+  rows.push(
+    ...removed.map((itemId) => ({
+      id: transcriptItemId(scope, itemId),
+      payload: "{}",
+      seq: document.seq,
+      _deleted: true,
+    })),
+  );
   if (rows.length) await persistProjectionBatch(collection, rows);
   const metaDocument: SyncDocument = {
     id: scope,
@@ -701,6 +891,12 @@ type ProjectionState = {
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
 const ENTITY_BATCH_SIZE = 500;
+// Projection refresh retries only read-only pulls, never send or draft writes.
+const syncReadRetryBaseMs = 250;
+const syncReadRetryMaxMs = 8000;
+const syncReadRetryMaxExponent = 5;
+const isTransientSyncReadFailure = (error: unknown) =>
+  error instanceof ApiError && error.status >= 500 && error.status < 600;
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,
@@ -714,19 +910,58 @@ async function acquireProjection(
   let state = scopes.get(scope);
   if (!state) {
     const listeners = new Set<(error: unknown | null) => void>();
-    const report = (error: unknown | null) =>
-      listeners.forEach((listener) => listener(error));
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
     let resetReadySeq: number | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryAttempt = 0;
+    let retryableError: unknown;
+    const retryAvailable = () => !document.hidden && navigator.onLine !== false;
+    const clearRetry = () => {
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      retryTimer = undefined;
+    };
+    const retry = () => {
+      if (
+        stopped ||
+        retryTimer !== undefined ||
+        retryableError === undefined ||
+        !retryAvailable()
+      )
+        return;
+      const exponent = Math.min(retryAttempt, syncReadRetryMaxExponent);
+      const delay = Math.min(
+        syncReadRetryBaseMs * 2 ** exponent,
+        syncReadRetryMaxMs,
+      );
+      retryAttempt++;
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        if (retryAvailable()) void refresh().catch(() => {});
+      }, delay);
+    };
+    const retryWhenAvailable = () => {
+      if (retryableError !== undefined && retryAvailable()) retry();
+    };
+    window.addEventListener("online", retryWhenAvailable);
+    document.addEventListener("visibilitychange", retryWhenAvailable);
+    const report = (error: unknown | null) => {
+      if (error === null) {
+        retryableError = undefined;
+        retryAttempt = 0;
+        clearRetry();
+      }
+      listeners.forEach((listener) => listener(error));
+    };
+
     const checkpointId =
       remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
     const refresh = (): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
-      do {
+        do {
           invalidated = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
@@ -734,23 +969,44 @@ async function acquireProjection(
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
-          const markers = remoteScope === "state:entities:v1"
-            ? await db.projections.storageInstance.findDocumentsById(
-                ["state:entities:ready", "state:entities:initial", "state:entities:complete"], true)
-            : [];
-          const ready = markers.find((row) => row.id === "state:entities:ready" &&
-            !row._deleted && row.payload === "ready");
-          const initialMarker = markers.find((row) => row.id === "state:entities:initial" && !row._deleted);
-          const readyMarker = markers.find((row) => row.id === "state:entities:ready");
-          let complete = markers.find((row) => row.id === "state:entities:complete" && !row._deleted);
-          if (readyMarker?.payload === "resetting" && resetReadySeq === undefined) {
+          const markers =
+            remoteScope === "state:entities:v1"
+              ? await db.projections.storageInstance.findDocumentsById(
+                  [
+                    "state:entities:ready",
+                    "state:entities:initial",
+                    "state:entities:complete",
+                  ],
+                  true,
+                )
+              : [];
+          const ready = markers.find(
+            (row) =>
+              row.id === "state:entities:ready" &&
+              !row._deleted &&
+              row.payload === "ready",
+          );
+          const initialMarker = markers.find(
+            (row) => row.id === "state:entities:initial" && !row._deleted,
+          );
+          const readyMarker = markers.find(
+            (row) => row.id === "state:entities:ready",
+          );
+          let complete = markers.find(
+            (row) => row.id === "state:entities:complete" && !row._deleted,
+          );
+          if (
+            readyMarker?.payload === "resetting" &&
+            resetReadySeq === undefined
+          ) {
             resetReadySeq = await resetEntityProjection(db.projections);
             complete = undefined;
           }
           let readyPublished = !!ready;
-          let initialHigh: number | undefined = remoteScope === "state:entities:v1" && !complete
-            ? initialMarker?.seq ?? 0
-            : undefined;
+          let initialHigh: number | undefined =
+            remoteScope === "state:entities:v1" && !complete
+              ? (initialMarker?.seq ?? 0)
+              : undefined;
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -760,8 +1016,11 @@ async function acquireProjection(
             const after = previous?.seq ?? 0;
             if (initialHigh !== undefined && previous?.payload) {
               try {
-                initialHigh = initialMarker?.seq ?? (JSON.parse(previous.payload).initialHigh || 0);
-              } catch { /* An old checkpoint continues with delta semantics. */
+                initialHigh =
+                  initialMarker?.seq ??
+                  (JSON.parse(previous.payload).initialHigh || 0);
+              } catch {
+                /* An old checkpoint continues with delta semantics. */
                 initialHigh = undefined;
               }
             }
@@ -772,7 +1031,9 @@ async function acquireProjection(
               workspaceId,
               verifyWorkspace,
               initialHigh,
-              remoteScope === "state:entities:v1" && after === 0 && initialHigh !== undefined &&
+              remoteScope === "state:entities:v1" &&
+                after === 0 &&
+                initialHigh !== undefined &&
                 window.matchMedia("(max-width: 760px)").matches
                 ? saved<string | null>("codex-mobile-opened", null)
                 : null,
@@ -783,7 +1044,10 @@ async function acquireProjection(
               initialHigh = 0;
               continue;
             }
-            if (remoteScope === "state:entities:v1" && initialHigh !== undefined)
+            if (
+              remoteScope === "state:entities:v1" &&
+              initialHigh !== undefined
+            )
               await persistProjection(db.projections, {
                 id: "state:entities:initial",
                 payload: "{}",
@@ -832,10 +1096,10 @@ async function acquireProjection(
                 );
                 continue;
               }
-              await persistProjection(
-                db.projections,
-                { ...document, id: scope },
-              );
+              await persistProjection(db.projections, {
+                ...document,
+                id: scope,
+              });
             }
             if (remoteScope === "state:entities:v1") {
               await persistProjectionBatch(db.projections, entityBatch);
@@ -853,7 +1117,8 @@ async function acquireProjection(
                 readyPublished = true;
               }
               initialHigh = result.initialHigh;
-              more = result.documents.length === ENTITY_BATCH_SIZE &&
+              more =
+                result.documents.length === ENTITY_BATCH_SIZE &&
                 result.checkpoint.seq < result.maxSeq;
             } else {
               more = false;
@@ -875,15 +1140,21 @@ async function acquireProjection(
         }
       })()
         .catch((error) => {
+          retryableError = isTransientSyncReadFailure(error)
+            ? error
+            : undefined;
           report(error);
           throw error;
         })
         .finally(() => {
           pending = undefined;
+          retry();
         });
       return pending;
     };
-    const transcriptId = scope.startsWith("transcript:") ? scope.slice(11) : null;
+    const transcriptId = scope.startsWith("transcript:")
+      ? scope.slice(11)
+      : null;
     let stopInvalidation: (() => void) | undefined;
     const activateInvalidation = () => {
       if (stopInvalidation) return;
@@ -892,10 +1163,13 @@ async function acquireProjection(
             invalidated = true;
             void refresh().catch(() => {});
           })
-        : watchSyncInvalidations(() => {
-            invalidated = true;
-            void refresh().catch(() => {});
-          }, remoteScope === "state:entities:v1" ? "entities" : "legacy");
+        : watchSyncInvalidations(
+            () => {
+              invalidated = true;
+              void refresh().catch(() => {});
+            },
+            remoteScope === "state:entities:v1" ? "entities" : "legacy",
+          );
     };
     if (!background || !transcriptId) activateInvalidation();
     state = {
@@ -906,6 +1180,9 @@ async function acquireProjection(
       activateInvalidation,
       stop: async () => {
         stopped = true;
+        clearRetry();
+        window.removeEventListener("online", retryWhenAvailable);
+        document.removeEventListener("visibilitychange", retryWhenAvailable);
         stopInvalidation?.();
         await pending?.catch(() => {});
       },
@@ -935,7 +1212,8 @@ async function acquireProjection(
         [scope],
         true,
       );
-      if (doc) void cacheStoredTranscript(db.projections, workspaceId, scope, doc);
+      if (doc)
+        void cacheStoredTranscript(db.projections, workspaceId, scope, doc);
     }
     return { db, workspaceId, state, release };
   } catch (error) {
@@ -955,49 +1233,56 @@ export async function watchProjection(
   const stopCache = id
     ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
     : () => {};
-  const subscription = scope === "state"
-    ? (() => {
-        const projection = emptyEntityProjection();
-        let ready = false;
-        let entitiesLoaded = false;
-        let latestRows: any[] = [];
-        const publishCurrent = () => {
-          if (!ready || !entitiesLoaded) return;
-          const next = applyEntityRows(projection, latestRows, true);
-          if (next) accept(next);
-        };
-        const publish = (documents: any[]) => {
-          entitiesLoaded = true;
-          latestRows = documents.map((document) =>
-            document.toJSON ? document.toJSON() : document,
-          );
-          publishCurrent();
-        };
-        const entities = db.projections
-          .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
-          .$.subscribe(publish);
-        const marker = db.projections
-          .findOne("state:entities:ready")
-          .$.subscribe((document: any) => {
-            const row = document?.toJSON ? document.toJSON() : document;
-            ready = row?.payload === "ready" && !row?._deleted;
+  const subscription =
+    scope === "state"
+      ? (() => {
+          const projection = emptyEntityProjection();
+          let ready = false;
+          let entitiesLoaded = false;
+          let latestRows: any[] = [];
+          const publishCurrent = () => {
+            if (!ready || !entitiesLoaded) return;
+            const next = applyEntityRows(projection, latestRows, true);
+            if (next) accept(next);
+          };
+          const publish = (documents: any[]) => {
+            entitiesLoaded = true;
+            latestRows = documents.map((document) =>
+              document.toJSON ? document.toJSON() : document,
+            );
             publishCurrent();
-          });
-        return {
-          unsubscribe() {
-            entities.unsubscribe();
-            marker.unsubscribe();
-          },
-        };
-      })()
-    : db.projections.findOne(scope).$.subscribe((doc: any) => {
-    if (!id) {
-      accept(doc ? JSON.parse(doc.payload) : null);
-      return;
-    }
-    if (doc) void cacheStoredTranscript(db.projections, workspaceId, `transcript:${id}`, doc);
-    else if (!peekTranscript(workspaceId, id)) accept(null);
-  });
+          };
+          const entities = db.projections
+            .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+            .$.subscribe(publish);
+          const marker = db.projections
+            .findOne("state:entities:ready")
+            .$.subscribe((document: any) => {
+              const row = document?.toJSON ? document.toJSON() : document;
+              ready = row?.payload === "ready" && !row?._deleted;
+              publishCurrent();
+            });
+          return {
+            unsubscribe() {
+              entities.unsubscribe();
+              marker.unsubscribe();
+            },
+          };
+        })()
+      : db.projections.findOne(scope).$.subscribe((doc: any) => {
+          if (!id) {
+            accept(doc ? JSON.parse(doc.payload) : null);
+            return;
+          }
+          if (doc)
+            void cacheStoredTranscript(
+              db.projections,
+              workspaceId,
+              `transcript:${id}`,
+              doc,
+            );
+          else if (!peekTranscript(workspaceId, id)) accept(null);
+        });
   return () => {
     subscription.unsubscribe();
     stopCache();
@@ -1043,12 +1328,13 @@ export function prefetchTranscript(
       const subscription = handle.db.projections
         .findOne(`transcript:${id}`)
         .$.subscribe((doc: any) => {
-          if (doc) void cacheStoredTranscript(
-            handle.db.projections,
-            workspaceId,
-            `transcript:${id}`,
-            doc,
-          );
+          if (doc)
+            void cacheStoredTranscript(
+              handle.db.projections,
+              workspaceId,
+              `transcript:${id}`,
+              doc,
+            );
         });
       stopCache = () => subscription.unsubscribe();
       await handle.state.refresh();
@@ -1116,7 +1402,8 @@ export async function startDraftReplication(
     },
   });
   const stopInvalidation = watchSyncInvalidations(
-    () => replication.reSync(), "drafts",
+    () => replication.reSync(),
+    "drafts",
   );
   const errors = replication.error$.subscribe((error) => {
     const direction =

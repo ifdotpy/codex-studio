@@ -14,7 +14,9 @@ const root = await mkdtemp(join(tmpdir(), "codex-limits-ui-"));
 const fixture = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["pipe", "pipe", "pipe"] },
+  {
+    stdio: ["pipe", "pipe", "pipe"],
+  },
 );
 let log = "",
   browser;
@@ -212,17 +214,24 @@ try {
     await page.locator(".session-cost-summary").getAttribute("title"),
     /anthropic/,
   );
-  selectedChat = initial.threads.find((agent) => agent.name === "Other project");
+  selectedChat = initial.threads.find(
+    (agent) => agent.name === "Other project",
+  );
   sessionCostValue = 0.84;
   holdSessionCost = true;
   await page.locator(`[data-chat="${selectedChat.id}"]`).click();
   for (let n = 0; n < 100 && !pendingSessionCost; n++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(pendingSessionCost, "team refresh waits in the fixture");
-  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate updating/);
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate updating/,
+  );
   assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
   holdSessionCost = false;
-  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
   pendingSessionCost = undefined;
   await page.getByText("Session estimate: $0.84", { exact: false }).waitFor();
 
@@ -233,10 +242,15 @@ try {
   for (let n = 0; n < 100 && !pendingSessionCost; n++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(pendingSessionCost, "switch refresh waits in the fixture");
-  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$0\.42/);
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$0\.42/,
+  );
   assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
   holdSessionCost = false;
-  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
   pendingSessionCost = undefined;
   await page.getByText("Session estimate: $1.26", { exact: false }).waitFor();
 
@@ -246,10 +260,15 @@ try {
   for (let n = 0; n < 100 && !pendingSessionCost; n++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(pendingSessionCost, "reload refresh waits in the fixture");
-  assert.match(await page.locator("#usage-footer").innerText(), /Session estimate: \$1\.26/);
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$1\.26/,
+  );
   assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
   holdSessionCost = false;
-  await pendingSessionCost.fulfill({ json: sessionCostResult(selectedChat.id) });
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
   pendingSessionCost = undefined;
   await page.getByText("Session estimate: $1.68", { exact: false }).waitFor();
   await page.getByRole("button", { name: "Chat context", exact: true }).click();

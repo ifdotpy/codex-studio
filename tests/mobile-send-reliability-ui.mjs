@@ -368,7 +368,9 @@ try {
   await page.reload();
   await input.waitFor();
   await page.waitForFunction(
-    (name) => document.querySelector("#conversation-title")?.textContent?.trim() === name,
+    (name) =>
+      document.querySelector("#conversation-title")?.textContent?.trim() ===
+      name,
     failedChatName,
   );
   await input.fill(failedBody.text);

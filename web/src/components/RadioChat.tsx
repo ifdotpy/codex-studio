@@ -3,10 +3,10 @@ import { useRef, useState } from "react";
 import { api, ApiError, errorText, save, saved } from "../api";
 import { useMessages } from "../hooks";
 import type { Json, Room, Snapshot } from "../types";
-import AgentAvatar from "./AgentAvatar";
-import MessageDate from "./MessageDate";
-import Requests from "./Requests";
-import StreamingText from "./StreamingText";
+import AgentAvatar from "./agents/AgentAvatar";
+import MessageDate from "./conversation/transcript/MessageDate";
+import Requests from "./questions/Requests";
+import StreamingText from "./conversation/transcript/StreamingText";
 import { useConversationScroll } from "./useConversationScroll";
 import {
   usePromptDraft,

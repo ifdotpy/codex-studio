@@ -1,7 +1,8 @@
-import { ActionIcon, Button, Loader } from "@mantine/core";
+import { Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "../api";
+import { IconAction } from "./ui/actions/IconAction";
 import FilePreview from "./FilePreview";
 
 export interface Attachment {
@@ -60,12 +61,12 @@ export default function ComposerAttachments(p: {
           void saveFiles(Array.from(event.currentTarget.files || []));
         }}
       />
-      <ActionIcon
+      <IconAction
         type="button"
         size={28}
         variant="subtle"
         className="attach-button"
-        aria-label="Attach files"
+        label="Attach files"
         title="Attach files"
         disabled={p.disabled || p.uploading || p.assets.length >= 8}
         onClick={() => {
@@ -95,7 +96,7 @@ export default function ComposerAttachments(p: {
         }}
       >
         {p.uploading ? <Loader size={13} /> : <Paperclip size={16} />}
-      </ActionIcon>
+      </IconAction>
       {saveError && (
         <p role="status">
           {saveError}{" "}
@@ -131,14 +132,14 @@ export default function ComposerAttachments(p: {
                 )}
                 <span>{asset.name}</span>
               </button>
-              <ActionIcon
+              <IconAction
                 type="button"
                 size="xs"
-                aria-label={`Remove ${asset.name}`}
+                label={`Remove ${asset.name}`}
                 onClick={() => p.remove(asset.id)}
               >
                 <X size={12} />
-              </ActionIcon>
+              </IconAction>
             </div>
           ))}
         </div>

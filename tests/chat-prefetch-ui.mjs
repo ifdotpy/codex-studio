@@ -52,9 +52,11 @@ try {
   let entityMaxSeq = 0;
   let entityCursor = 0;
   do {
-    const result = await (await fetch(
-      `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=100`,
-    )).json();
+    const result = await (
+      await fetch(
+        `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=100`,
+      )
+    ).json();
     for (const document of result.documents || [])
       entityDocuments.set(document.id, document);
     entityMaxSeq = result.maxSeq || entityMaxSeq;
@@ -268,14 +270,17 @@ try {
     await route.fulfill({
       json: {
         workspaceId,
-        documents: after < value.seq || forcedStale
-          ? [{
-              id: scope,
-              payload: JSON.stringify(value.data),
-              seq: value.seq,
-              _deleted: false,
-            }]
-          : [],
+        documents:
+          after < value.seq || forcedStale
+            ? [
+                {
+                  id: scope,
+                  payload: JSON.stringify(value.data),
+                  seq: value.seq,
+                  _deleted: false,
+                },
+              ]
+            : [],
         checkpoint: { seq: Math.max(after, value.seq) },
       },
     });
@@ -295,9 +300,11 @@ try {
     let after = entityMaxSeq;
     let maxSeq = entityMaxSeq;
     do {
-      const result = await (await fetch(
-        `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}&limit=100`,
-      )).json();
+      const result = await (
+        await fetch(
+          `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}&limit=100`,
+        )
+      ).json();
       for (const document of result.documents || [])
         entityDocuments.set(document.id, document);
       maxSeq = result.maxSeq || maxSeq;
@@ -305,11 +312,13 @@ try {
     } while (after < maxSeq);
     entityMaxSeq = maxSeq;
     for (const stream of entityStreams.splice(0))
-      await stream.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: `data: ${entityMaxSeq}\n\n`,
-      }).catch(() => {});
+      await stream
+        .fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          body: `data: ${entityMaxSeq}\n\n`,
+        })
+        .catch(() => {});
   };
   const selected = () => page.locator("#conversation-title").innerText();
   const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);

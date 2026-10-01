@@ -162,7 +162,8 @@ test("a slow existing backend attaches without spawning a process", async () => 
 test("supervisor mode refuses a backend without supervisor ownership", async () => {
   const canonicalState = realpathSync(tmpdir());
   await serve(
-    (_req, res) => res.end(JSON.stringify({ ...record, stateDir: canonicalState })),
+    (_req, res) =>
+      res.end(JSON.stringify({ ...record, stateDir: canonicalState })),
     async (origin) => {
       await assert.rejects(
         ensureBackend({
@@ -226,22 +227,32 @@ test("the backend build matches the Python source identity", () => {
     mkdirSync(path.join(packageRoot, "venv"));
     writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
     writeFileSync(path.join(packageRoot, "rollout_parser.py"), "VALUE = 1\n");
-    for (const directory of ["tests", "benchmarks", "__pycache__", "vendor", "venv"])
-      writeFileSync(path.join(packageRoot, directory, "ignored.py"), "VALUE = 1\n");
+    for (const directory of [
+      "tests",
+      "benchmarks",
+      "__pycache__",
+      "vendor",
+      "venv",
+    ])
+      writeFileSync(
+        path.join(packageRoot, directory, "ignored.py"),
+        "VALUE = 1\n",
+      );
     const scripts = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../scripts",
     );
-    const pythonBuild = () => execFileSync(
-      process.env.CODEX_AGENTS_PYTHON || "python3",
-      [
-        "-c",
-        "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; print(backend_build(sys.argv[2]))",
-        scripts,
-        path.join(root, "scripts"),
-      ],
-      { encoding: "utf8" },
-    ).trim();
+    const pythonBuild = () =>
+      execFileSync(
+        process.env.CODEX_AGENTS_PYTHON || "python3",
+        [
+          "-c",
+          "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; print(backend_build(sys.argv[2]))",
+          scripts,
+          path.join(root, "scripts"),
+        ],
+        { encoding: "utf8" },
+      ).trim();
     const initial = backendBuild(root);
     assert.equal(initial, pythonBuild());
     writeFileSync(path.join(root, "scripts/ignored.pyc"), "cache");
@@ -260,7 +271,10 @@ test("backend source identity rejects package symlinks in both implementations",
     mkdirSync(packageRoot);
     writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
     writeFileSync(path.join(packageRoot, "source.py"), "VALUE = 1\n");
-    symlinkSync(path.join(packageRoot, "source.py"), path.join(packageRoot, "linked.py"));
+    symlinkSync(
+      path.join(packageRoot, "source.py"),
+      path.join(packageRoot, "linked.py"),
+    );
     assert.throws(() => backendBuild(root), /symlink/i);
     const scripts = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),

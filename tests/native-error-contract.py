@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
@@ -525,6 +526,14 @@ class NativeErrorContract(unittest.TestCase):
         self.assertEqual(len(self.runtime.snapshot()['nativeNotices']), 1)
         self.runtime.connection_ids['default'] = 'replacement'
         self.assertEqual(self.runtime.snapshot()['nativeNotices'], [])
+
+    def test_provider_version_advisory_uses_existing_account_warning_channel(self):
+        warning = {'id': 'provider-version:default', 'accountKey': 'default',
+                   'provider': 'codex', 'version': '0.153.3', 'baseline': '0.153.4',
+                   'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.'}
+        with patch('codex_provider_versions.status', return_value={'warnings': [warning]}):
+            notices = self.runtime.snapshot()['nativeNotices']
+        self.assertEqual([item for item in notices if item['id'] == warning['id']], [warning])
 
     def test_steer_rejection_does_not_poison_active_turn(self):
         self.send('error', error={'message': 'Cannot steer compact', 'codexErrorInfo': {'activeTurnNotSteerable': {'turnKind': 'compact'}}}, willRetry=False)

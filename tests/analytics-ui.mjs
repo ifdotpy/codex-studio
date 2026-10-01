@@ -340,7 +340,10 @@ try {
     }
     out.detailPagination = {
       turns: { total: report.turns.length, hasMore: report.turns.length > 100 },
-      rateLimits: { total: report.rateLimits.length, hasMore: report.rateLimits.length > 100 },
+      rateLimits: {
+        total: report.rateLimits.length,
+        hasMore: report.rateLimits.length > 100,
+      },
     };
     out.pagination = {
       limit: 30,
@@ -501,12 +504,17 @@ try {
   );
   await dialog.getByRole("button", { name: "Load 100 older turns" }).click();
   await poll(
-    () => observed.at(-1)?.view === "detail" && observed.at(-1)?.detail === "turns",
+    () =>
+      observed.at(-1)?.view === "detail" && observed.at(-1)?.detail === "turns",
     "Older turns page request",
   );
   assert.equal(observed.at(-1).offset, "100");
-  await dialog.getByText("Showing 101 of 101 turns", { exact: false }).waitFor();
-  await dialog.getByRole("button", { name: "Load 100 older turns" }).waitFor({ state: "detached" });
+  await dialog
+    .getByText("Showing 101 of 101 turns", { exact: false })
+    .waitFor();
+  await dialog
+    .getByRole("button", { name: "Load 100 older turns" })
+    .waitFor({ state: "detached" });
   const background = dialog.locator(".analytics-section").filter({
     has: page.getByRole("heading", {
       name: "Background activity",
@@ -529,11 +537,15 @@ try {
     .getByRole("button", { name: "Load 100 older snapshots" })
     .click();
   await poll(
-    () => observed.at(-1)?.view === "detail" && observed.at(-1)?.detail === "rateLimits",
+    () =>
+      observed.at(-1)?.view === "detail" &&
+      observed.at(-1)?.detail === "rateLimits",
     "Older rate-limit page request",
   );
   assert.equal(observed.at(-1).offset, "100");
-  await dialog.getByRole("button", { name: "Load 100 older snapshots" }).waitFor({ state: "detached" });
+  await dialog
+    .getByRole("button", { name: "Load 100 older snapshots" })
+    .waitFor({ state: "detached" });
   await page.screenshot({ path: join(root, "activity-390.png") });
   mode = "error";
   await dialog.getByRole("button", { name: "Refresh analytics" }).click();

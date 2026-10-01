@@ -52,6 +52,17 @@ path is owned by [the importer](../codex_analytics_history.py), which calls
 with the imported measurements, so an interrupted scan can continue. The Mermaid
 block above is the editable diagram source.
 
+For coalesced live assistant-delta callbacks, the collector aggregates fragment
+notification counts and UTF-8 byte totals by hour, and applies turn first-output
+and open-item stream metrics once per callback. The original per-fragment
+measurements are preserved, including empty fragments. `firstOutputAt` follows
+the first nonempty fragment in arrival order, even when its observed timestamp is
+later than a following fragment. A failed aggregate is rolled back to a savepoint
+before the existing per-fragment capture runs; each resulting error remains
+isolated. Native item completion still supplies the authoritative final text.
+This optimization stays inside one runtime notification transaction, so it does
+not delay durable visibility or couple separate callbacks.
+
 For example, a journal record may say “command finished, exit code 0, duration
 1.5 seconds.” The parser translates field names and units into the collector's
 format. The collector records the measurement; it does not run the command again.
@@ -70,6 +81,8 @@ From the repository root, using only Python's standard library:
 python3 -B -m unittest discover -s scripts/analytics/tests -v
 python3 -B tests/analytics-history-contract.py
 python3 -B tests/budget-contract.py
+python3 -B tests/analytics-delta-batch-contract.py
+python3 -B scripts/analytics/benchmarks/bench_delta_batch.py
 python3 -B scripts/analytics/benchmarks/bench_rollout.py --check
 ```
 

@@ -47,7 +47,7 @@ const server = await createServer({
       load(id) {
         if (id !== entry) return;
         return `
-import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
+import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/agents/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
 function Fixture(){const[agent,setAgent]=useState('first');window.switchAgent=id=>flushSync(()=>setAgent(id));return <MantineProvider><div id='host' style={{width:'100%',maxWidth:520}}><AgentPanel agentId={agent} stateDir='/workspace'/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
       },
     },
@@ -241,11 +241,15 @@ try {
   await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
   assert.deepEqual(
     await page.evaluate(() => {
-      const { client, sequence, ...layout } = reports.at(-1).body;
+      const {
+        client: _client,
+        sequence: _sequence,
+        ...layout
+      } = reports.at(-1).body;
       return layout;
     }),
     (() => {
-      const { client, sequence, ...layout } = hiddenReport;
+      const { client: _client, sequence: _sequence, ...layout } = hiddenReport;
       return layout;
     })(),
   );
@@ -678,7 +682,7 @@ try {
   assert.equal(await page.evaluate(() => maxActiveReports), 1);
   const payloads = await page.evaluate(() => reports.map((item) => item.body));
   execFileSync(
-    "/opt/homebrew/bin/python3",
+    process.env.PYTHON || "python3",
     [
       "-B",
       "-c",

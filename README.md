@@ -1,5 +1,14 @@
 # Codex Studio
 
+## Change Contract
+
+The repository pre-commit hook checks staged JavaScript, TypeScript, CSS, HTML,
+Markdown, YAML, and JSON. It reads the Git index, leaves staged and unstaged
+files untouched, and requires locally installed tools. Oxlint and Oxfmt
+configuration belongs to [`.oxlintrc.json`](.oxlintrc.json) and
+[`.oxfmtrc.json`](.oxfmtrc.json); `npm run test:pre-commit` exercises the hook
+against staged-content fixtures.
+
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable
 orchestration, agent messages, command monitors, and user replies.
@@ -51,6 +60,8 @@ The desktop package currently targets macOS on Apple silicon.
 From this repository:
 
 ```sh
+npm ci
+git config --local core.hooksPath .githooks
 python3 scripts/install-cli.py
 npm --prefix web ci
 npm --prefix web run build
@@ -58,6 +69,12 @@ npm --prefix desktop ci
 (cd scripts/claude_bridge && npm --prefix . ci --ignore-scripts --omit=optional)
 npm --prefix desktop start
 ```
+
+The root `npm ci` installs Oxlint and Oxfmt. Set `core.hooksPath` once per clone
+to activate the mandatory staged-content checks. The hook does not download
+dependencies; install them before committing.
+For full-repository audits, run `npm run lint:all` and
+`npm run format:check:all`. Append paths after `--` to check selected files.
 
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
@@ -120,6 +137,13 @@ Studio replaces an account app-server only after local and native checks confirm
 that no turns, commands, queues, approvals, or unresolved requests remain.
 Active work continues on its existing process. Accounts shows versions, pending
 updates, and rejection reasons. Studio does not download or install Codex packages.
+
+Studio also compares Codex and Claude CLI versions with its
+[tested reference versions](scripts/codex_provider_versions.py). Older versions
+produce an advisory in Accounts and the chat's **Warnings** dialog: features may
+work poorly or fail, but you can continue at your own risk. These references are
+not a latest-release check. Version age alone does not block use; native protocol
+and safety checks still apply.
 
 Studio reads Codex model metadata through a short-lived process of the same
 approved executable. The reader uses the selected account's native credentials
@@ -280,13 +304,13 @@ start voice again after their current work finishes.
 
 ## Source and contracts
 
-| Path | Contents |
-|---|---|
-| `web/` | React, TypeScript, Mantine, Vite |
-| `desktop/` | Electron host, native bridge, package tools |
+| Path                            | Contents                                                 |
+| ------------------------------- | -------------------------------------------------------- |
+| `web/`                          | React, TypeScript, Mantine, Vite                         |
+| `desktop/`                      | Electron host, native bridge, package tools              |
 | [`scripts/`](scripts/README.md) | Python server, command tools, and component-local checks |
-| `prompts/` | Runtime worker instructions |
-| `tests/` | Backend, protocol, browser, and process contracts |
+| `prompts/`                      | Runtime worker instructions                              |
+| `tests/`                        | Backend, protocol, browser, and process contracts        |
 
 - [Orchestration](ORCHESTRATION.md): managed agents, messages, monitors, and state.
 - [Command guide](CLI.md): waves, steering, and CLI usage.
@@ -354,8 +378,21 @@ Workers ask their lead to contact the user. Workers cannot send spoken responses
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
 
-**Chat settings** contains the account, project, model, permissions, and appearance.
-Appearance supports **System**, **Light**, and **Dark**.
+**Studio settings** is available without opening a chat. Its Accounts tab opens
+the same account manager as the chat menu: add accounts, view saved accounts,
+remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
+text size, transcript width, message author icons, and sidebar shortcut preferences.
+Author icons are hidden by default. Chat settings continues to select the account
+for the current conversation and manage its project, model, and permissions.
+
+Prompt history is in the chat header; open **Conversation tools** when space is
+limited. Context usage, session cost, and account limits sit below the composer.
+Agent progress stays visible above it. An orange **Warnings** icon appears in the
+header when the current account or chat has notices. It opens their full details
+in a dialog; errors that block work remain visible in the conversation.
+On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
+mode switch is inside Chat settings on mobile. Mobile input text stays at least
+16px; larger selected text sizes apply normally.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
 **Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.

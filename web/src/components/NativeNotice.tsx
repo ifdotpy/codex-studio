@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { displayError, errorDetails } from "../errorPresentation";
-import ErrorDescription from "./ErrorDescription";
 import { currentCapacityRetry } from "../capacityRetry";
 import { limitRecovery } from "../limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -40,6 +39,16 @@ function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
   );
 }
 
+export function isNonBlockingWarning(item: Message): boolean {
+  return (
+    item.nativeNotice === "warning" &&
+    !item.nativeError &&
+    !item.nativeReview &&
+    !item.nativeHook &&
+    !item.nativeHookQuiet
+  );
+}
+
 export function NativeError({
   agent,
   planType,
@@ -65,7 +74,8 @@ export function NativeError({
   }, [limits]);
   const recovered = useRecoveredLimit(agent, limits ?? null, now);
   const recovery = recovered ? null : limitRecovery(agent, limits ?? null, now);
-  const authResume = agent.usageResume?.cause === "auth" &&
+  const authResume =
+    agent.usageResume?.cause === "auth" &&
     (agent.usageResume.status === "scheduled" ||
       agent.usageResume.reason === "Automatic resume is off for this chat.");
   const retry = currentCapacityRetry(agent);
@@ -225,29 +235,5 @@ export function NativeNotice({
       </details>
       {error && <Guidance error={error} />}
     </div>
-  );
-}
-
-export function NativeAccountNotices({
-  notices,
-  accountKey,
-}: {
-  notices?: Json[];
-  accountKey: string;
-}) {
-  const current = notices?.filter((n) => n.accountKey === accountKey) || [];
-  if (!current.length) return null;
-  return (
-    <details className="native-account-notices native-notice">
-      <summary>Account notices ({current.length})</summary>
-      {current.map((n) => (
-        <div key={n.id}>
-          <p>
-            <ErrorDescription value={n.message} role="status" />
-          </p>
-          {n.details && <pre>{errorDetails(n.details)}</pre>}
-        </div>
-      ))}
-    </details>
   );
 }

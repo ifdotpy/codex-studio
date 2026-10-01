@@ -14,13 +14,13 @@ matching `runtime_tool_requests.record`. This is the full saved response before
 the model-facing projection. All available rows were included; mean, p95 and
 maximum use the saved rows present at measurement time.
 
-| Tool | Rows | Mean B | p95 B | Max B |
-|---|---:|---:|---:|---:|
-| `orchestration_task` | 13,356 | 10,571 | 12,384 | 1,257,983 |
-| `orchestration_peers` | 1,980 | 26,366 | 87,739 | 465,453 |
-| `orchestration_status` | 2,601 | 40,856 | 152,416 | 546,275 |
-| `orchestration_context` | 237 | 4,198 | 17,477 | 19,772 |
-| `orchestration_chat_read` | 2,752 | 52,315 | 119,647 | 169,060 |
+| Tool                      |   Rows | Mean B |   p95 B |     Max B |
+| ------------------------- | -----: | -----: | ------: | --------: |
+| `orchestration_task`      | 13,356 | 10,571 |  12,384 | 1,257,983 |
+| `orchestration_peers`     |  1,980 | 26,366 |  87,739 |   465,453 |
+| `orchestration_status`    |  2,601 | 40,856 | 152,416 |   546,275 |
+| `orchestration_context`   |    237 |  4,198 |  17,477 |    19,772 |
+| `orchestration_chat_read` |  2,752 | 52,315 | 119,647 |   169,060 |
 
 These values include JSON wrappers and time metadata. They describe durable
 results, not the exact bytes sent to a model after projection. The existing
@@ -33,24 +33,24 @@ excerpt up to 4,000 bytes. The full saved result remains available by
 UTF-8 bytes of `runtime_events.text`, measured per event kind from the live
 database. Counts, means and maxima are provided for every kind present.
 
-| Event kind | Rows | Mean B | Max B |
-|---|---:|---:|---:|
-| `agent_message` | 23,624 | 957 | 11,963 |
-| `browser_recovery` | 2 | 659 | 659 |
-| `chat_review` | 44 | 7,407 | 18,673 |
-| `child_result` | 7,919 | 614 | 11,719 |
-| `complaint` | 25 | 1,191 | 1,989 |
-| `complaint_response` | 114 | 682 | 2,800 |
-| `followup` | 6,450 | 680 | 5,519 |
-| `harness_notice` | 2 | 703 | 703 |
-| `monitor_exit` | 12,776 | 3,490 | 45,418 |
-| `rule` | 274 | 658 | 12,234 |
-| `user` | 2,547 | 498 | 8,851 |
-| `user_task_completed` | 8 | 510 | 684 |
-| `work_decision` | 2,004 | 795 | 9,736 |
-| `work_ready` | 19 | 117 | 136 |
-| `work_released` | 10 | 253 | 375 |
-| `work_review` | 2,741 | 2,567 | 127,947 |
+| Event kind            |   Rows | Mean B |   Max B |
+| --------------------- | -----: | -----: | ------: |
+| `agent_message`       | 23,624 |    957 |  11,963 |
+| `browser_recovery`    |      2 |    659 |     659 |
+| `chat_review`         |     44 |  7,407 |  18,673 |
+| `child_result`        |  7,919 |    614 |  11,719 |
+| `complaint`           |     25 |  1,191 |   1,989 |
+| `complaint_response`  |    114 |    682 |   2,800 |
+| `followup`            |  6,450 |    680 |   5,519 |
+| `harness_notice`      |      2 |    703 |     703 |
+| `monitor_exit`        | 12,776 |  3,490 |  45,418 |
+| `rule`                |    274 |    658 |  12,234 |
+| `user`                |  2,547 |    498 |   8,851 |
+| `user_task_completed` |      8 |    510 |     684 |
+| `work_decision`       |  2,004 |    795 |   9,736 |
+| `work_ready`          |     19 |    117 |     136 |
+| `work_released`       |     10 |    253 |     375 |
+| `work_review`         |  2,741 |  2,567 | 127,947 |
 
 The event projection keeps its 3,000-byte per-event and 24,000-byte per-batch
 limits. `user`, `followup`, and `work_decision` are never truncated because they
@@ -65,13 +65,13 @@ The size-budget contract used Python 3.14.7 and measured serialized UTF-8 bytes
 on the returned model payloads. Synthetic load: 40,000-byte tool detail; 32
 large work-review events; 60 tasks; and 30 workers.
 
-| Default model output | Measured B | Budget |
-|---|---:|---:|
-| Large tool result preview | 4,338 | 16,000 |
-| 32-event batch | 23,134 | 24,000 |
-| 60-task first page | 2,578 | 13,000 |
-| Peer directory page with 30 workers | 4,059 | 13,000 |
-| Status output after generic tool projection | 6,568 | 16,000 |
+| Default model output                        | Measured B | Budget |
+| ------------------------------------------- | ---------: | -----: |
+| Large tool result preview                   |      4,338 | 16,000 |
+| 32-event batch                              |     23,134 | 24,000 |
+| 60-task first page                          |      2,578 | 13,000 |
+| Peer directory page with 30 workers         |      4,059 | 13,000 |
+| Status output after generic tool projection |      6,568 | 16,000 |
 
 On those fixtures, the 40,112-byte tool content item became 4,338 bytes, saving
 **35,774 bytes for that call**. The 32-event batch was 1,442,572 bytes with

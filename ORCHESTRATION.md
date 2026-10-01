@@ -270,20 +270,20 @@ The tested protocol version is Codex CLI 0.153.4.
 
 The lead receives these additional tools:
 
-| Tool | Behavior |
-|---|---|
-| `orchestration_complaint` | Submit a complaint, read the team book, or record the responsible lead's response. |
-| `orchestration_peers` | Discover the caller's team agents and readable team chat rooms. |
-| `orchestration_message` | Send to a team agent id, `parent`, `lead`, or `broadcast` (team). |
-| `orchestration_chat_read` | Read a participant chat within the same team, with a cursor for older messages. |
-| `orchestration_title` | Set the conversation title from the task. Only a lead can call this tool. |
-| `orchestration_interrupt` | Stop a descendant and its descendants. A follow-up can resume them. |
-| `orchestration_spawn` | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
-| `orchestration_send` | Send a follow-up to a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery. |
-| `orchestration_status` | Read team status and command watches for a decision. |
-| `orchestration_monitor` | Start a command watch. Deliver one result when the command exits. |
-| `orchestration_cancel_monitor` | Cancel a command watch. |
-| `orchestration_request` | List, recover, or cancel your own durable tool requests. |
+| Tool                           | Behavior                                                                                                                     |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `orchestration_complaint`      | Submit a complaint, read the team book, or record the responsible lead's response.                                           |
+| `orchestration_peers`          | Discover the caller's team agents and readable team chat rooms.                                                              |
+| `orchestration_message`        | Send to a team agent id, `parent`, `lead`, or `broadcast` (team).                                                            |
+| `orchestration_chat_read`      | Read a participant chat within the same team, with a cursor for older messages.                                              |
+| `orchestration_title`          | Set the conversation title from the task. Only a lead can call this tool.                                                    |
+| `orchestration_interrupt`      | Stop a descendant and its descendants. A follow-up can resume them.                                                          |
+| `orchestration_spawn`          | Create up to 64 workers in one request. Each worker has a task, role, and optional model, effort, and `fast_mode` overrides. |
+| `orchestration_send`           | Send a follow-up to a descendant. An explicit follow-up can resume a stopped descendant. Other targets use chat delivery.    |
+| `orchestration_status`         | Read team status and command watches for a decision.                                                                         |
+| `orchestration_monitor`        | Start a command watch. Deliver one result when the command exits.                                                            |
+| `orchestration_cancel_monitor` | Cancel a command watch.                                                                                                      |
+| `orchestration_request`        | List, recover, or cancel your own durable tool requests.                                                                     |
 
 After delegation, the lead can finish its turn. The runtime sends each child
 result into an active lead turn or starts a turn when idle, including after a final answer.
@@ -313,12 +313,12 @@ Use `orchestration_request` with `action=get` and `request_id` after a lost repl
 It accepts the stable spawn ID, native call ID, or returned request ID. `list`
 returns at most 50 recent request summaries. Outcomes have these meanings:
 
-| Outcome | Evidence |
-|---|---|
-| `pending` | The request is queued or executing. |
-| `applied` | The operation has a successful receipt. This does not prove worker completion. |
-| `not_applied` | Queued cancellation or atomic spawn failure proves no mutation. |
-| `unknown` | Evidence cannot yet determine whether the operation applied. |
+| Outcome       | Evidence                                                                       |
+| ------------- | ------------------------------------------------------------------------------ |
+| `pending`     | The request is queued or executing.                                            |
+| `applied`     | The operation has a successful receipt. This does not prove worker completion. |
+| `not_applied` | Queued cancellation or atomic spawn failure proves no mutation.                |
+| `unknown`     | Evidence cannot yet determine whether the operation applied.                   |
 
 `action=cancel` prevents queued requests from executing. For running requests it
 records cancellation intent and returns promptly. It does not kill an operation

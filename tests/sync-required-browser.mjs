@@ -76,7 +76,9 @@ try {
   assert.ok(probes > 0);
   assert.equal(
     await page.evaluate(
-      () => JSON.parse(localStorage.getItem("codex-drafts:unassigned"))?.lead,
+      () =>
+        JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead"))
+          ?.text,
     ),
     "Saved local draft",
   );

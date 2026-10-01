@@ -1,5 +1,6 @@
+import { chatWaitState } from "./chatStatusModel";
 import { serviceTimeText } from "../local-time";
-import AgentAvatar from "./AgentAvatar";
+import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
@@ -7,22 +8,19 @@ import { displayError } from "../errorPresentation";
 import {
   NativeError,
   NativeNotice,
-  NativeAccountNotices,
+  isNonBlockingWarning,
 } from "./NativeNotice";
 import { ActionIcon, Button, Loader, Modal, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
+import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
-  Copy,
-  GitBranch,
-  Quote,
-  Pencil,
+  MoreHorizontal,
   Trash2,
   Square,
   Terminal,
   ListEnd,
-  RotateCcw,
 } from "lucide-react";
 import {
   useCallback,
@@ -33,8 +31,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { api, errorText, save, saved } from "../api";
-import SafetyBuffering from "./SafetyBuffering";
+import { api, errorText } from "../api";
+import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
@@ -65,6 +63,7 @@ import {
   type Snapshot,
 } from "../types";
 import Usage from "./Usage";
+import ConversationWarnings from "./ConversationWarnings";
 import type { UsageAccount } from "./Usage";
 import PromptNavigator from "./PromptNavigator";
 import { usePromptRecall } from "./usePromptRecall";
@@ -74,20 +73,22 @@ import PromptComposer, {
 } from "./prompt-composer/PromptComposer";
 import PromptInput from "./prompt-composer/PromptInput";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
-import Requests from "./Requests";
-import MessageDate from "./MessageDate";
-import TurnHistory from "./TurnHistory";
+import Requests from "./questions/Requests";
+import MessageDate from "./conversation/transcript/MessageDate";
+import TurnHistory from "./conversation/transcript/TurnHistory";
 import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
 import OutboxControls from "./OutboxControls";
-import StreamingText from "./StreamingText";
-import SelectionQuote, { selectedExcerpt } from "./SelectionQuote";
-import AgentPhase from "./AgentPhase";
-import { chatWaitState } from "./chatStatusModel";
-import AgentPanel from "./AgentPanel";
-import { ExecutionSettings } from "./ExecutionSettings";
-import { useWorkerModels } from "./WorkerModelPicker";
+import StreamingText from "./conversation/transcript/StreamingText";
+import SelectionQuote, {
+  selectedExcerpt,
+} from "./conversation/transcript/SelectionQuote";
+import MessageActions from "./conversation/transcript/MessageActions";
+import AgentPhase from "./agents/AgentPhase";
+import AgentPanel from "./agents/AgentPanel";
+import { ExecutionSettings } from "./agents/ExecutionSettings";
+import { useWorkerModels } from "./agents/WorkerModelPicker";
 import ComposerAttachments, {
   MessageAttachments,
   type Attachment,
@@ -134,6 +135,56 @@ function FollowLatest(p: {
   );
 }
 
+const compactToolsBreakpoint = "(max-width: 760px)";
+const compactToolsWorkspaceWidthPx = 900;
+const compactToolsFontThresholdPx = 20;
+const compactToolsMenuMaxWidthPx = 360;
+const compactToolsMenuViewportGutterPx = 8;
+const compactToolsMenuGapPx = 4;
+
+function useCompactHeaderTools() {
+  const isCompact = () => {
+    const fontSize = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--studio-main-font-size",
+      ),
+    );
+    const workspaceWidth =
+      document.querySelector<HTMLElement>(".workspace")?.clientWidth ??
+      window.innerWidth;
+    return (
+      window.matchMedia(compactToolsBreakpoint).matches ||
+      fontSize >= compactToolsFontThresholdPx ||
+      workspaceWidth < compactToolsWorkspaceWidthPx
+    );
+  };
+  const [compact, setCompact] = useState(() =>
+    typeof window === "undefined" ? false : isCompact(),
+  );
+  useEffect(() => {
+    const viewport = window.matchMedia(compactToolsBreakpoint);
+    const workspace = document.querySelector<HTMLElement>(".workspace");
+    const update = () => setCompact(isCompact());
+    const preferences = new MutationObserver(update);
+    const workspaceObserver = workspace
+      ? new ResizeObserver(update)
+      : undefined;
+    if (workspace) workspaceObserver?.observe(workspace);
+    viewport.addEventListener("change", update);
+    preferences.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    update();
+    return () => {
+      viewport.removeEventListener("change", update);
+      workspaceObserver?.disconnect();
+      preferences.disconnect();
+    };
+  }, []);
+  return compact;
+}
+
 export default function Conversation(p: {
   id: string | null;
   syncWorkspaceId?: string;
@@ -178,6 +229,79 @@ export default function Conversation(p: {
     "(max-width: 760px) and (max-height: 750px)",
   );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
+  const compactHeaderTools = useCompactHeaderTools();
+  const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [toolsMenuPosition, setToolsMenuPosition] = useState<{
+    left: number;
+    top: number;
+    width: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    setHeaderTools(document.getElementById("conversation-header-tools"));
+  }, []);
+  useEffect(() => {
+    if (!compactHeaderTools) setToolsExpanded(false);
+  }, [compactHeaderTools]);
+  useEffect(() => {
+    if (!compactHeaderTools || !toolsExpanded || !headerTools) return;
+    const menu = headerTools.querySelector(".conversation-header-tools-menu");
+    if (!menu) return;
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (menu.contains(target) || target.closest(".mantine-Popover-dropdown"))
+        return;
+      setToolsExpanded(false);
+    };
+    const dismissEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setToolsExpanded(false);
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("keydown", dismissEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("keydown", dismissEscape, true);
+    };
+  }, [compactHeaderTools, headerTools, toolsExpanded]);
+  useLayoutEffect(() => {
+    if (!compactHeaderTools || !toolsExpanded || !headerTools) {
+      setToolsMenuPosition(null);
+      return;
+    }
+    const summary = headerTools.querySelector(
+      ".conversation-header-tools-summary",
+    );
+    if (!summary) return;
+    const updatePosition = () => {
+      const anchor = summary.getBoundingClientRect();
+      const viewportWidth =
+        document.documentElement.clientWidth || window.innerWidth;
+      const menuWidth = Math.min(
+        compactToolsMenuMaxWidthPx,
+        Math.max(1, viewportWidth - compactToolsMenuViewportGutterPx * 2),
+      );
+      const minLeft = compactToolsMenuViewportGutterPx;
+      const maxLeft = Math.max(minLeft, viewportWidth - menuWidth - minLeft);
+      setToolsMenuPosition({
+        left: Math.max(minLeft, Math.min(anchor.left, maxLeft)),
+        top: anchor.bottom + compactToolsMenuGapPx,
+        width: menuWidth,
+      });
+    };
+    updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    observer.observe(summary);
+    const workspace = headerTools.closest<HTMLElement>(".workspace");
+    if (workspace) observer.observe(workspace);
+    window.addEventListener("resize", updatePosition);
+    window.visualViewport?.addEventListener("resize", updatePosition);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updatePosition);
+      window.visualViewport?.removeEventListener("resize", updatePosition);
+    };
+  }, [compactHeaderTools, headerTools, toolsExpanded]);
   const {
     items: history,
     historyVersion,
@@ -273,6 +397,7 @@ export default function Conversation(p: {
     const chat = p.id;
     const attempt = ++navigationAttempt.current;
     setFollow(false);
+    setPageAnchor(getAnchorId());
     const available = await ensureMessage(id);
     if (activeId.current !== chat || navigationAttempt.current !== attempt)
       return;
@@ -911,7 +1036,10 @@ export default function Conversation(p: {
       {/* The main chat has two speakers; only team rooms name each sender. */}
       {p.room && (
         <span className="chat-message-author">
-          <AgentAvatar id={m.sender || p.agent?.id || p.id || "agent"} size={24} />
+          <AgentAvatar
+            id={m.sender || p.agent?.id || p.id || "agent"}
+            size={24}
+          />
         </span>
       )}
       {deliveryLabel(m) &&
@@ -992,87 +1120,60 @@ export default function Conversation(p: {
       {(p.room || m.role === "user") && (
         <MessageDate at={m.at ?? m.created ?? m.timestamp} />
       )}
-      <div className="message-bottom" hidden={!!m.streaming}>
-        <ActionIcon
-          size="sm"
-          className="copy-message"
-          aria-label="Copy message"
-          onClick={() => void copy(m.text)}
-        >
-          <Copy size={14} />
-        </ActionIcon>
-        {!p.room && !m.pending && (
-          <>
-            <ActionIcon
-              size="sm"
-              aria-label="Quote message"
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => {
+      <MessageActions
+        hidden={!!m.streaming}
+        onCopy={() => void copy(m.text)}
+        onQuote={
+          !p.room && !m.pending
+            ? () => {
                 const excerpt = selectedExcerpt(scroll.current);
                 quote(excerpt?.messageId === m.id ? excerpt.text : m.text);
                 window.getSelection()?.removeAllRanges();
-              }}
-            >
-              <Quote size={14} />
-            </ActionIcon>
-            {managed &&
-              m.role === "user" &&
-              m.turnId &&
-              (!m.deliveryStatus || m.deliveryStatus === "accepted") && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Edit in a new chat"
-                  title="Edit in a new chat"
-                  disabled={
-                    branching || !!editLoading || m.turnId === agent?.turnId
-                  }
-                  onClick={() => void editMessage(m)}
-                >
-                  {editLoading === m.id ? (
-                    <Loader size={14} />
-                  ) : (
-                    <Pencil size={14} />
-                  )}
-                </ActionIcon>
-              )}
-            {managed &&
-              m.role === "assistant" &&
-              m.turnId &&
-              m.turnId !== agent?.turnId &&
-              lastAssistantByTurn.get(m.turnId) === m.id && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Branch after this turn"
-                  disabled={m.turnId === agent?.turnId && !!agent?.inFlight}
-                  onClick={() => void branch(m)}
-                >
-                  <GitBranch size={14} />
-                </ActionIcon>
-              )}
-            {managed &&
-              m.role === "assistant" &&
-              m.turnId &&
-              m.turnId !== agent?.turnId &&
-              lastAssistantByTurn.get(m.turnId) === m.id && (
-                <ActionIcon
-                  size="sm"
-                  aria-label="Another answer in a new chat"
-                  title="Another answer in a new chat"
-                  disabled={branching}
-                  onClick={() =>
-                    setBranchDraft({
-                      message: m,
-                      before: false,
-                      text: "Give another answer to my previous request. Use the existing results. Do not run tools or commands unless I explicitly ask.",
-                    })
-                  }
-                >
-                  <RotateCcw size={14} />
-                </ActionIcon>
-              )}
-          </>
-        )}
-      </div>
+              }
+            : undefined
+        }
+        onEdit={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "user" &&
+          m.turnId &&
+          (!m.deliveryStatus || m.deliveryStatus === "accepted")
+            ? () => void editMessage(m)
+            : undefined
+        }
+        editLoading={editLoading === m.id}
+        editDisabled={branching || !!editLoading || m.turnId === agent?.turnId}
+        onBranch={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "assistant" &&
+          m.turnId &&
+          m.turnId !== agent?.turnId &&
+          lastAssistantByTurn.get(m.turnId) === m.id
+            ? () => void branch(m)
+            : undefined
+        }
+        branchDisabled={m.turnId === agent?.turnId && !!agent?.inFlight}
+        onAnotherAnswer={
+          !p.room &&
+          !m.pending &&
+          managed &&
+          m.role === "assistant" &&
+          m.turnId &&
+          m.turnId !== agent?.turnId &&
+          lastAssistantByTurn.get(m.turnId) === m.id
+            ? () =>
+                setBranchDraft({
+                  message: m,
+                  before: false,
+                  text: "Give another answer to my previous request. Use the existing results. Do not run tools or commands unless I explicitly ask.",
+                })
+            : undefined
+        }
+        anotherAnswerDisabled={branching}
+      />
     </article>
   );
   const transcript = useMemo(
@@ -1086,11 +1187,13 @@ export default function Conversation(p: {
         storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
         renderMessage={(item) =>
           item.nativeNotice ? (
-            <NativeNotice
-              key={item.id}
-              item={item}
-              planType={p.limits?.data?.rateLimits?.planType}
-            />
+            isNonBlockingWarning(item) ? null : (
+              <NativeNotice
+                key={item.id}
+                item={item}
+                planType={p.limits?.data?.rateLimits?.planType}
+              />
+            )
           ) : (
             renderMessage(item)
           )
@@ -1198,35 +1301,81 @@ export default function Conversation(p: {
           chooseChat={p.onChooseChat}
         />
       )}
-      {agent && (
-        <NativeAccountNotices
-          notices={p.data.runtime.nativeNotices}
-          accountKey={agent.accountKey || "default"}
-        />
-      )}
-      <div className="conversation-navigation">
-        {!p.room && p.id && (
-          <PromptNavigator
-            compact
-            key={p.id}
+      {headerTools &&
+        agent &&
+        !p.room &&
+        createPortal(
+          <ConversationWarnings
+            key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
+            scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
+            notices={p.data.runtime.nativeNotices}
+            accountKey={agent.accountKey || "default"}
             messages={items}
-            loadOlder={
-              before
-                ? () => {
-                    setFollow(false);
-                    setPageAnchor(getAnchorId());
-                    void older().catch((e) => p.notify(errorText(e)));
-                  }
-                : undefined
-            }
-            loadingOlder={pageLoading}
-            agentId={managed ? p.id || undefined : undefined}
-            container={scroll}
-            storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
-            jump={jumpToPrompt}
-          />
+          />,
+          headerTools,
         )}
-      </div>
+      {headerTools &&
+        !p.room &&
+        (p.id || managed) &&
+        createPortal(
+          <details
+            className="conversation-header-tools-menu"
+            data-compact={compactHeaderTools ? "yes" : "no"}
+            open={!compactHeaderTools || toolsExpanded}
+            onToggle={(event) => {
+              if (compactHeaderTools)
+                setToolsExpanded(event.currentTarget.open);
+            }}
+          >
+            <summary
+              className="conversation-header-tools-summary"
+              aria-label="Conversation tools"
+              title="Conversation tools"
+            >
+              <MoreHorizontal size={18} />
+              <span className="sr-only">Conversation tools</span>
+            </summary>
+            <div
+              className="conversation-header-tools-content"
+              style={
+                compactHeaderTools && toolsExpanded && toolsMenuPosition
+                  ? {
+                      left: toolsMenuPosition.left,
+                      top: toolsMenuPosition.top,
+                      width: toolsMenuPosition.width,
+                    }
+                  : compactHeaderTools
+                    ? { visibility: "hidden" }
+                    : undefined
+              }
+            >
+              {!p.room && p.id && (
+                <div className="conversation-prompt-navigation-slot">
+                  <PromptNavigator
+                    compact
+                    key={p.id}
+                    messages={items}
+                    loadOlder={
+                      before
+                        ? () => {
+                            setFollow(false);
+                            setPageAnchor(getAnchorId());
+                            void older().catch((e) => p.notify(errorText(e)));
+                          }
+                        : undefined
+                    }
+                    loadingOlder={pageLoading}
+                    agentId={managed ? p.id || undefined : undefined}
+                    container={scroll}
+                    storageKey={`studio-prompt-bookmarks:${p.data.stateDir}:${p.id}`}
+                    jump={jumpToPrompt}
+                  />
+                </div>
+              )}
+            </div>
+          </details>,
+          headerTools,
+        )}
       <div
         id="messages"
         ref={scroll}
@@ -1256,6 +1405,7 @@ export default function Conversation(p: {
               loading={pageLoading}
               onClick={() => {
                 setFollow(false);
+                setPageAnchor(getAnchorId());
                 void older().catch((e) => p.notify(errorText(e)));
               }}
             >

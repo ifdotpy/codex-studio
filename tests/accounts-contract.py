@@ -99,6 +99,23 @@ class AccountsContract(unittest.TestCase):
         self.assertEqual(self.store.home("default"), before)
         self.assertEqual(self.store.get("default")["email"], "updated@example.invalid")
 
+    def test_login_duplicate_reconciliation_restores_deleted_identity(self):
+        other = self.home / "Projects" / "deleted"
+        auth(other, "account-two")
+        existing = self.store.register(str(other))
+        self.store.delete(existing, str(uuid.uuid4()))
+        request_id = str(uuid.uuid4())
+        login_key = self.store._login_profile(request_id)
+        auth(Path(self.store.data["accounts"][login_key]["home"]), "account-two")
+        self.store.data["logins"][request_id] = {
+            "requestId": request_id, "accountKey": login_key,
+            "status": "pending", "createdAt": 0,
+        }
+        receipts = self.store.login_receipts()
+        self.assertFalse(self.store.get(existing).get("deleted", False))
+        self.assertIn(existing, [account["id"] for account in self.store.list()])
+        self.assertEqual(receipts[0]["resolvedAccountKey"], existing)
+
     def test_api_key_change_is_blocked_without_exporting_fingerprint(self):
         home = self.home / "api-profile"
         home.mkdir()
@@ -225,6 +242,10 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(
                 request("/api/accounts/default", {"account_key": "default"})[0], 403
             )
+            unauthorized_delete = request("/api/accounts/delete", {
+                "account_key": "default", "request_id": str(uuid.uuid4())
+            })
+            self.assertEqual(unauthorized_delete[0], 403)
             headers.update(
                 {"Origin": base, "X-Canvas-Token": request("/api/state")[1]["token"]}
             )
@@ -256,10 +277,63 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(request("/api/limits?account_key=missing")[0], 400)
             self.assertNotIn("SECRET", json.dumps(request("/api/accounts")[1]))
             self.assertTrue(all("projectRules" not in account for account in result["accounts"]))
-            self.assertEqual(
-                request("/api/agents/account", {"id": lead["id"], "account_key": key})[0],
-                200,
-            )
+            self.assertEqual(request("/api/agents/account", {
+                "id": lead["id"], "account_key": key
+            })[0], 200)
+            delete_request = str(uuid.uuid4())
+            status, deleted = request("/api/accounts/delete", {
+                "account_key": key, "request_id": delete_request
+            })
+            self.assertEqual(status, 200)
+            self.assertNotIn(key, [account["id"] for account in deleted["accounts"]])
+            self.assertIn(key, [account["id"] for account in deleted["archivedAccounts"]])
+            self.assertEqual(deleted["defaultAccountKey"], "default")
+            status, _ = request("/api/leads", {
+                "id": str(uuid.uuid4()), "account_key": key
+            })
+            self.assertEqual(status, 400, "deleted accounts cannot start new chats")
+            status, continued = request("/api/messages", {
+                "room": lead["id"],
+                "text": "Continue on retained account",
+                "id": str(uuid.uuid4()),
+                "delivery": "queue",
+            })
+            self.assertEqual(status, 200, "existing chats continue after deletion")
+            self.assertIn(continued["status"], {"pending", "queued"})
+            # Existing chat resolution still sees the retained tombstone row.
+            self.assertEqual(runtime.accounts.get(key)["accountId"], "account-two")
+            # Drop the successful response, restart on the same state, and replay exactly.
+            server.shutdown()
+            server.server_close()
+            thread.join()
+            runtime.close()
+            canvas = Canvas(root)
+            runtime = fixture.ControlledRuntime(root, fixture.AccountServer)
+            canvas.runtime = runtime
+            server = make_server(canvas)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            headers["Origin"] = base
+            headers["X-Canvas-Token"] = request("/api/state")[1]["token"]
+            status, replayed_delete = request("/api/accounts/delete", {
+                "account_key": key, "request_id": delete_request
+            })
+            self.assertEqual(status, 200)
+            self.assertNotIn(key, [account["id"] for account in replayed_delete["accounts"]])
+            # Explicit add restores it. An exact retry of the old delete stays inert.
+            status, restored = request("/api/accounts/register", {"home": str(other)})
+            self.assertEqual(status, 200)
+            self.assertIn(key, [account["id"] for account in restored["accounts"]])
+            status, replayed = request("/api/accounts/delete", {
+                "account_key": key, "request_id": delete_request
+            })
+            self.assertEqual(status, 200)
+            self.assertIn(key, [account["id"] for account in replayed["accounts"]])
+            status, changed_payload = request("/api/accounts/delete", {
+                "account_key": "default", "request_id": delete_request
+            })
+            self.assertEqual(status, 400, changed_payload)
         finally:
             server.shutdown()
             server.server_close()

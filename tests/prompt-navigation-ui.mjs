@@ -15,7 +15,9 @@ const root = await mkdtemp(join(tmpdir(), "codex-prompt-navigation-"));
 const proc = spawn(
   "python3",
   ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-  { stdio: ["pipe", "pipe", "pipe"] },
+  {
+    stdio: ["pipe", "pipe", "pipe"],
+  },
 );
 let browser,
   log = "";
@@ -142,6 +144,24 @@ try {
     r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
   );
   await page.goto(url);
+  const openCompactHeaderTools = async () => {
+    const menu = page.locator(
+      '.conversation-header-tools-menu[data-compact="yes"]',
+    );
+    if (!(await menu.count())) return;
+    if ((await menu.getAttribute("open")) === null) {
+      await page
+        .locator(
+          '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+        )
+        .click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector('.conversation-header-tools-menu[data-compact="yes"]')
+          ?.hasAttribute("open"),
+      );
+    }
+  };
   const openLead = async () => {
     await page
       .locator("[data-chat]")
@@ -318,6 +338,13 @@ try {
   await history.waitFor({ state: "hidden" });
   await page.screenshot({ path: join(root, "prompt-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(
+        '.conversation-header-tools-menu[data-compact="yes"]',
+      ) !== null,
+  );
+  await openCompactHeaderTools();
   await page
     .getByRole("button", { name: "Browse prompts", exact: true })
     .click();

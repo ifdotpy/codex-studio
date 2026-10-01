@@ -13,7 +13,7 @@ import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {MantineProvider} from '@mantine/core';
 import '@mantine/core/styles.css';
-import UserMessages from '/src/components/UserMessages.tsx';
+import UserMessages from '/src/components/shell/messages/UserMessages.tsx';
 const root=createRoot(document.getElementById('root'));
 let records=[],target='user';
 const render=()=>root.render(React.createElement(MantineProvider,null,

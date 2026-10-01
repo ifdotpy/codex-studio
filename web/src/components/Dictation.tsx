@@ -23,7 +23,7 @@ import { BrowserDictation } from "./BrowserDictation";
 // Older recordings store plain text. New structured diagnostics retain JSON
 // in that same string field; decode only objects and arrays for presentation.
 function recordingDiagnostic(value: unknown): unknown {
-  if (typeof value !== "string" || !/^[\s]*[\[{]/.test(value)) return value;
+  if (typeof value !== "string" || !/^[\s]*[[{]/.test(value)) return value;
   try {
     const parsed: unknown = JSON.parse(value);
     return parsed !== null && typeof parsed === "object" ? parsed : value;

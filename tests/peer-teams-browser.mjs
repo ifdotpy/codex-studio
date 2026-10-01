@@ -32,7 +32,7 @@ const server = await createServer({
         if (id !== entry) return;
         return `
  import React,{useState} from 'react'; import {createRoot} from 'react-dom/client'; import {MantineProvider} from '@mantine/core'; import '@mantine/core/styles.css';
- import Sidebar from '/src/components/Sidebar.tsx';import TeamChats from '/src/components/TeamChats.tsx';import '/src/style.css';import '/src/workspace-layout.css';import '/src/appearance.css';import {theme} from '/src/theme.ts';
+import Sidebar from '/src/components/Sidebar.tsx';import TeamChats from '/src/components/shell/messages/TeamChats.tsx';import '/src/style.css';import '/src/workspace-layout.css';import '/src/appearance.css';import {theme} from '/src/theme.ts';
  const a=(id,name,cwd='/p',extra={})=>({id,name,cwd,source:'managed',isLead:true,created:1,updated:1,...extra});
  const initial={stateDir:'fixture',threads:[a('a','Alpha'),a('b','Beta','/p',{projectFolder:'f'}),a('c','Gamma'),a('x','Other project','/other'),a('w','Worker','/p',{isLead:false,rootId:'a'}),a('i','Imported','/p',{source:'imported'}),a('d','Deleted','/p',{deletedAt:1})],runtime:{peerTeamsVersion:1,peerTeams:[],projects:[{id:'p',path:'/p',name:'Project',peerTeamsRevision:0,folders:[{id:'f',name:'Folder',parentId:null}]}],rooms:[],requests:[],complaints:[],agents:[]}};
  function Fixture(){const[data,setData]=useState(initial);const[opened,open]=useState('a');window.setFixture=setData;window.fixture=data;window.failRefresh=false;

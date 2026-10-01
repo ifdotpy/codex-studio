@@ -34,9 +34,21 @@ import { listSkills } from "./skills.mjs";
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id) {
-  if (/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(id)) return id;
-  const namespace = Buffer.from(STUDIO_INPUT_NAMESPACE.replaceAll("-", ""), "hex");
-  const bytes = createHash("sha1").update(namespace).update(String(id)).digest().subarray(0, 16);
+  if (
+    /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
+      id,
+    )
+  )
+    return id;
+  const namespace = Buffer.from(
+    STUDIO_INPUT_NAMESPACE.replaceAll("-", ""),
+    "hex",
+  );
+  const bytes = createHash("sha1")
+    .update(namespace)
+    .update(String(id))
+    .digest()
+    .subarray(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
@@ -45,11 +57,18 @@ function nativeUserMessageId(id) {
 function assistantBlockState(active, messageId, kind) {
   const key = messageId + ":" + kind;
   if (!active.assistantBlocks.has(key))
-    active.assistantBlocks.set(key, { blocks: [], streams: new Map(), frames: new Set() });
+    active.assistantBlocks.set(key, {
+      blocks: [],
+      streams: new Map(),
+      frames: new Set(),
+    });
   return active.assistantBlocks.get(key);
 }
 function assistantText(state) {
-  return state.blocks.map((block) => block.text).filter(Boolean).join("\n");
+  return state.blocks
+    .map((block) => block.text)
+    .filter(Boolean)
+    .join("\n");
 }
 let lastLimits;
 const root = process.argv[2];
@@ -62,23 +81,34 @@ const sessionStore = createSessionStore(root, {
 });
 const sessions = sessionStore.sessions;
 const configuredIdle = Number(process.env.STUDIO_CLAUDE_IDLE_SECONDS);
-const idleSeconds = Number.isFinite(configuredIdle) && configuredIdle > 0
-  ? Math.max(1, configuredIdle)
-  : 15 * 60;
-const querySweep = setInterval(() => {
-  const now = Date.now();
-  for (const [id, active] of queries) {
-    if (active.turn || active.tasks.size || active.pendingSteers.size ||
-        active.reservingInput || active.idleSince == null || operations.get(id) ||
-        now - active.idleSince < idleSeconds * 1000) continue;
-    active.input.close();
-    active.q?.close();
-    if (queries.get(id) === active) {
-      queries.delete(id);
-      void sessionStore.evict(id);
+const idleSeconds =
+  Number.isFinite(configuredIdle) && configuredIdle > 0
+    ? Math.max(1, configuredIdle)
+    : 15 * 60;
+const querySweep = setInterval(
+  () => {
+    const now = Date.now();
+    for (const [id, active] of queries) {
+      if (
+        active.turn ||
+        active.tasks.size ||
+        active.pendingSteers.size ||
+        active.reservingInput ||
+        active.idleSince == null ||
+        operations.get(id) ||
+        now - active.idleSince < idleSeconds * 1000
+      )
+        continue;
+      active.input.close();
+      active.q?.close();
+      if (queries.get(id) === active) {
+        queries.delete(id);
+        void sessionStore.evict(id);
+      }
     }
-  }
-}, Math.min(30000, idleSeconds * 500));
+  },
+  Math.min(30000, idleSeconds * 500),
+);
 querySweep.unref();
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
@@ -106,7 +136,9 @@ const request = (method, params, signal) =>
     send({ id, method, params });
   });
 const persist = sessionStore.persist;
-async function session(id) { return sessionStore.get(id); }
+async function session(id) {
+  return sessionStore.get(id);
+}
 const settings = (s) => ({
   cwd: s.cwd,
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
@@ -131,6 +163,8 @@ function checkAccount(account) {
 async function probe(cwd, read) {
   let release;
   const hold = new Promise((r) => (release = r));
+  // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield
   async function* prompt() {
     await hold;
   }
@@ -187,7 +221,9 @@ function wireThread(s, metadata, includeTurns = true) {
     updatedAt: metadata.updatedAt,
     preview: metadata.preview,
     name: metadata.name,
-    historyVersion: createHash("sha256").update(metadata.revision).digest("hex"),
+    historyVersion: createHash("sha256")
+      .update(metadata.revision)
+      .digest("hex"),
     ...(includeTurns ? { turns: s.turns } : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
@@ -350,7 +386,12 @@ async function flags(s, p = {}, live = false) {
   return {
     fastMode: p.serviceTier === "priority",
     ...(p.effort !== undefined ? { effortLevel: p.effort } : {}),
-    ...thinkingFlag(p.model || s.model, native.models, s.claude?.thinking, live),
+    ...thinkingFlag(
+      p.model || s.model,
+      native.models,
+      s.claude?.thinking,
+      live,
+    ),
     ...(s.claude?.autoCompactWindow || providerOptions.autoCompactWindow
       ? {
           autoCompactWindow:
@@ -377,7 +418,7 @@ async function finishTurn(s, active, result, error) {
       ...(turn.apiErrorInfo && !turn.limitError
         ? { codexErrorInfo: turn.apiErrorInfo }
         : {}),
-      ...(turn.limitError || {}),
+      ...turn.limitError,
     };
   const answer = turn.items
     .filter(
@@ -434,6 +475,8 @@ async function startSession(s, active, p) {
   let admit;
   const admitted = new Promise((r) => (admit = r));
   let allowed = false;
+  // Keep an idle async iterable open until the account probe completes.
+  // oxlint-disable-next-line require-yield
   async function* prompt() {
     await admitted;
     if (!allowed) return;
@@ -547,7 +590,8 @@ async function startSession(s, active, p) {
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
         active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
-        if (!active.turn) active.idleSince = active.tasks.size ? null : Date.now();
+        if (!active.turn)
+          active.idleSince = active.tasks.size ? null : Date.now();
         continue;
       }
       if (m.type === "user" && m.isReplay) {
@@ -555,7 +599,8 @@ async function startSession(s, active, p) {
           (i) =>
             i.type === "userMessage" &&
             (i.nativeId === m.uuid ||
-              (i.nativeId == null && (i.id === m.uuid || active.turn.id === m.uuid))),
+              (i.nativeId == null &&
+                (i.id === m.uuid || active.turn.id === m.uuid))),
         );
         if (item) {
           item.nativeId = m.uuid;
@@ -600,7 +645,9 @@ async function startSession(s, active, p) {
         ) {
           turn.limitError = {
             codexErrorInfo: "rateLimitExceeded",
-            ...(Number.isFinite(info.resetsAt) ? { resetsAt: info.resetsAt } : {}),
+            ...(Number.isFinite(info.resetsAt)
+              ? { resetsAt: info.resetsAt }
+              : {}),
           };
           notice(
             s,
@@ -657,7 +704,8 @@ async function startSession(s, active, p) {
           )
             active.tasks.delete(id);
           else active.tasks.set(id, task);
-          if (!active.turn) active.idleSince = active.tasks.size ? null : Date.now();
+          if (!active.turn)
+            active.idleSince = active.tasks.size ? null : Date.now();
           const taskTurn = turn || s.turns.at(-1);
           if (taskTurn)
             finishItem(s, taskTurn, {
@@ -747,7 +795,11 @@ async function startSession(s, active, p) {
           const thinking = e.delta.type === "thinking_delta";
           const id = active.messageId + (thinking ? ":thinking" : "");
           const delta = e.delta.text || e.delta.thinking || "";
-          const state = assistantBlockState(active, active.messageId, thinking ? "thinking" : "text");
+          const state = assistantBlockState(
+            active,
+            active.messageId,
+            thinking ? "thinking" : "text",
+          );
           const index = Number.isInteger(e.index) ? e.index : 0;
           let block = state.streams.get(index);
           if (!block) {
@@ -755,7 +807,8 @@ async function startSession(s, active, p) {
             state.streams.set(index, block);
             state.blocks.push(block);
           }
-          const separator = block.text === "" && state.blocks.indexOf(block) > 0 ? "\n" : "";
+          const separator =
+            block.text === "" && state.blocks.indexOf(block) > 0 ? "\n" : "";
           if (!block.complete) block.text += delta;
           let item = turn.items.find((i) => i.id === id);
           if (!item) {
@@ -771,7 +824,10 @@ async function startSession(s, active, p) {
           if (!block.complete) {
             item.text = assistantText(state);
             emit("item/agentMessage/delta", {
-              threadId: s.id, turnId: turn.id, itemId: id, delta: separator + delta,
+              threadId: s.id,
+              turnId: turn.id,
+              itemId: id,
+              delta: separator + delta,
             });
           }
         }
@@ -793,7 +849,9 @@ async function startSession(s, active, p) {
             const frame = (m.uuid || JSON.stringify(m.message)) + ":" + index;
             if (state.frames.has(frame)) continue;
             state.frames.add(frame);
-            const pending = state.blocks.find((old) => !old.complete && old.text === block[field]);
+            const pending = state.blocks.find(
+              (old) => !old.complete && old.text === block[field],
+            );
             if (pending) pending.complete = true;
             else state.blocks.push({ text: block[field], complete: true });
           }
@@ -1045,7 +1103,8 @@ async function handle(method, p) {
       liveQueries: values.length,
       activeTurns: values.filter((active) => active.turn).length,
       backgroundQueries: values.filter((active) => active.tasks.size).length,
-      idleQueries: values.filter((active) => !active.turn && !active.tasks.size).length,
+      idleQueries: values.filter((active) => !active.turn && !active.tasks.size)
+        .length,
       idleLimitSeconds: idleSeconds,
       sessionCache: sessionStore.stats(),
     };
@@ -1083,7 +1142,12 @@ async function handle(method, p) {
     };
     sessions.set(s.id, s);
     await persist(s);
-    return { ...p, thread: wireThread(s, await sessionStore.metadata(s.id)), model: s.model, sandbox: null };
+    return {
+      ...p,
+      thread: wireThread(s, await sessionStore.metadata(s.id)),
+      model: s.model,
+      sandbox: null,
+    };
   }
   if (method === "thread/turns/list" || method === "thread/turns/items/list") {
     const s = await session(p.threadId);
@@ -1116,7 +1180,9 @@ async function handle(method, p) {
         updatedAt: metadata.updatedAt,
         preview: metadata.preview,
         name: metadata.name,
-        historyVersion: createHash("sha256").update(metadata.revision).digest("hex"),
+        historyVersion: createHash("sha256")
+          .update(metadata.revision)
+          .digest("hex"),
         turns: [],
         status: { type: queries.get(metadata.id)?.turn ? "active" : "idle" },
         modelProvider: "claude",
@@ -1148,9 +1214,10 @@ async function handle(method, p) {
       Object.assign(s, p);
       await persist(s);
     }
-    const includeTurns = method === "thread/read"
-      ? p.includeTurns === true
-      : p.excludeTurns !== true;
+    const includeTurns =
+      method === "thread/read"
+        ? p.includeTurns === true
+        : p.excludeTurns !== true;
     return {
       thread: wireThread(s, await sessionStore.metadata(s.id), includeTurns),
       model: s.model,
@@ -1180,7 +1247,11 @@ async function handle(method, p) {
     });
     sessions.set(s.id, s);
     return {
-      thread: wireThread(s, await sessionStore.metadata(s.id), p.excludeTurns !== true),
+      thread: wireThread(
+        s,
+        await sessionStore.metadata(s.id),
+        p.excludeTurns !== true,
+      ),
       model: s.model,
       sandbox: null,
       approvalPolicy: s.approvalPolicy ?? null,
@@ -1216,7 +1287,10 @@ async function handle(method, p) {
         clientUserMessageId: p.clientUserMessageId,
         input: p.input,
       });
-      return { turn: { id: running.id, status: running.status }, steered: true };
+      return {
+        turn: { id: running.id, status: running.status },
+        steered: true,
+      };
     }
     let nativeCommand;
     if (p.claudeCommand) {
@@ -1323,7 +1397,9 @@ async function handle(method, p) {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },
     });
-    active.input.push(userMessage(s, turn, blocks, p.clientUserMessageId || turn.id));
+    active.input.push(
+      userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
+    );
     return { turn: { id: turn.id, status: turn.status } };
   }
   if (method === "turn/steer") {
@@ -1443,9 +1519,8 @@ lines.on("line", (line) => {
     const waiting = pending.get(message.id);
     if (waiting) {
       pending.delete(message.id);
-      message.error
-        ? waiting.reject(new Error(message.error.message))
-        : waiting.resolve(message.result);
+      if (message.error) waiting.reject(new Error(message.error.message));
+      else waiting.resolve(message.result);
     }
     return;
   }

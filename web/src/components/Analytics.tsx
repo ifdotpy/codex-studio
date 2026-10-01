@@ -189,7 +189,7 @@ function ContextChart({
         {[...groups].map(([id, group], i) => (
           <span key={id}>
             <i style={{ background: colors[i % colors.length] }} />
-          {aggregate ? id : group[0].agentName || id}
+            {aggregate ? id : group[0].agentName || id}
           </span>
         ))}
       </div>
@@ -392,7 +392,9 @@ export default function Analytics({
   const [tab, setTab] = useState<string | null>("overview");
   const [knownTools, setKnownTools] = useState<string[]>([]);
   const [olderDetails, setOlderDetails] = useState<Record<string, Json[]>>({});
-  const [loadingDetails, setLoadingDetails] = useState<Record<string, boolean>>({});
+  const [loadingDetails, setLoadingDetails] = useState<Record<string, boolean>>(
+    {},
+  );
   const snapshotAt = useMemo(
     () => Math.floor(Date.now() / 1000),
     [agent.id, scope, period, refresh],
@@ -425,7 +427,9 @@ export default function Analytics({
       q.set("limit", "100");
       q.set(
         "offset",
-        String((data[detail]?.length || 0) + (olderDetails[detail]?.length || 0)),
+        String(
+          (data[detail]?.length || 0) + (olderDetails[detail]?.length || 0),
+        ),
       );
       const page = await api<Json>(`/api/analytics?${q}`);
       setOlderDetails((previous) => ({
@@ -698,7 +702,8 @@ export default function Analytics({
                     aggregate={scope !== "agent"}
                   />
                   <p className="analytics-note">
-                    Each point is the highest context report in its time bucket. Dotted lines mark compactions.
+                    Each point is the highest context report in its time bucket.
+                    Dotted lines mark compactions.
                   </p>
                 </section>
                 <section className="analytics-section">
@@ -924,7 +929,13 @@ export default function Analytics({
                   <header>
                     <h3>Turns</h3>
                     <span>
-                      Showing {count((data.turns || []).length + (olderDetails.turns || []).length)} of {count(data.detailPagination?.turns?.total || 0)} turns; elapsed time includes tools and waits
+                      Showing{" "}
+                      {count(
+                        (data.turns || []).length +
+                          (olderDetails.turns || []).length,
+                      )}{" "}
+                      of {count(data.detailPagination?.turns?.total || 0)}{" "}
+                      turns; elapsed time includes tools and waits
                     </span>
                   </header>
                   <div className="analytics-observations">
@@ -955,7 +966,9 @@ export default function Analytics({
                       No turn measurements recorded.
                     </p>
                   )}
-                  {(data.turns || []).length + (olderDetails.turns || []).length < (data.detailPagination?.turns?.total || 0) && (
+                  {(data.turns || []).length +
+                    (olderDetails.turns || []).length <
+                    (data.detailPagination?.turns?.total || 0) && (
                     <Button
                       size="compact-xs"
                       variant="subtle"
@@ -1056,11 +1069,20 @@ export default function Analytics({
                   <header>
                     <h3>Account limit history</h3>
                     <span>
-                      Showing {count((data.rateLimits || []).length + (olderDetails.rateLimits || []).length)} of {count(data.detailPagination?.rateLimits?.total || 0)} allowance snapshots
+                      Showing{" "}
+                      {count(
+                        (data.rateLimits || []).length +
+                          (olderDetails.rateLimits || []).length,
+                      )}{" "}
+                      of {count(data.detailPagination?.rateLimits?.total || 0)}{" "}
+                      allowance snapshots
                     </span>
                   </header>
                   <div className="analytics-observations">
-                    {[...(data.rateLimits || []), ...(olderDetails.rateLimits || [])]
+                    {[
+                      ...(data.rateLimits || []),
+                      ...(olderDetails.rateLimits || []),
+                    ]
                       .sort((a, b) => (b.at || 0) - (a.at || 0))
                       .map((r: Json, i: number) => (
                         <details key={`${r.accountKey}:${r.at}:${i}`}>
@@ -1077,7 +1099,9 @@ export default function Analytics({
                       No allowance snapshots recorded.
                     </p>
                   )}
-                  {(data.rateLimits || []).length + (olderDetails.rateLimits || []).length < (data.detailPagination?.rateLimits?.total || 0) && (
+                  {(data.rateLimits || []).length +
+                    (olderDetails.rateLimits || []).length <
+                    (data.detailPagination?.rateLimits?.total || 0) && (
                     <Button
                       size="compact-xs"
                       variant="subtle"

@@ -38,8 +38,12 @@ import {
   type ProjectFolder,
 } from "./ProjectOrganization";
 import { type Agent, type Snapshot } from "../types";
-import { PeerTeamForm, PeerTeamGroup, usePeerTeamMove } from "./PeerTeams";
-import ChatStatus from "./ChatStatus";
+import {
+  PeerTeamForm,
+  PeerTeamGroup,
+  usePeerTeamMove,
+} from "./shell/messages/PeerTeams";
+import ChatStatus from "./agents/ChatStatus";
 import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 type Props = {

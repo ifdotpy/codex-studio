@@ -17,6 +17,16 @@ import {
   type PendingDraft,
 } from "./draftJournal";
 import { onResume } from "./resume";
+import { draftVersionId } from "./draftIdentity";
+import { activeDraftVersions } from "./draftVersions";
+import {
+  copyLocalDraftScope,
+  readLocalDraftRecord,
+  readDraftsWithLegacyFallback,
+  migrateLegacyDrafts,
+  legacyBaselineHash,
+  writeLocalDraftRecord,
+} from "./draftStorage";
 
 type Drafts = Record<string, string>;
 export type DraftVersion = {
@@ -37,6 +47,21 @@ export function useSyncedDrafts() {
   const storageKey = useRef(
     `codex-drafts:${saved("codex-sync-workspace", "unassigned")}`,
   );
+  const localRecovery = useState(() => {
+    let error = "";
+    let imported: Record<string, string | null> = {};
+    try {
+      imported = migrateLegacyDrafts(storageKey.current, () => {
+        error = "Some saved drafts could not be read. Keep this chat open.";
+      });
+    } catch {
+      error = "Saved drafts could not be migrated. Keep this chat open.";
+    }
+    const drafts = readDraftsWithLegacyFallback(storageKey.current, () => {
+      error = "Some saved drafts could not be read. Keep this chat open.";
+    });
+    return { drafts, error, imported };
+  })[0];
   const [writer] = useState(() => crypto.randomUUID());
   const [recovery] = useState(() => {
     try {
@@ -52,9 +77,18 @@ export function useSyncedDrafts() {
     new Map(recovery.entries.map((entry) => [entry.key, entry])),
   );
   const [drafts, update] = useState<Drafts>(() => {
-    const next: Drafts = saved(storageKey.current, {});
-    for (const entry of recovery.entries)
+    const next: Drafts = { ...localRecovery.drafts };
+    for (const entry of recovery.entries) {
+      if (entry.version.id === `${device}:${entry.version.session}`) {
+        try {
+          if (readLocalDraftRecord(storageKey.current, entry.version.session))
+            continue;
+        } catch {
+          // The pending journal remains a recovery source if this record is corrupt.
+        }
+      }
       next[entry.version.session] = entry.version.text;
+    }
     return next;
   });
   const importUnassigned = useRef(storageKey.current.endsWith(":unassigned"));
@@ -84,9 +118,10 @@ export function useSyncedDrafts() {
   };
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
   const conflictValues = useRef<DraftVersion[]>([]);
-  const [localError, setLocalError] = useState(recovery.error);
+  const initialLocalError = recovery.error || localRecovery.error;
+  const [localError, setLocalError] = useState(initialLocalError);
   const [syncFailed, setSyncFailed] = useState(false);
-  const localErrorValue = useRef(recovery.error);
+  const localErrorValue = useRef(initialLocalError);
   const syncFailureValue = useRef(false);
   const reportLocalError = useCallback((message: string) => {
     if (localErrorValue.current === message) return;
@@ -131,74 +166,87 @@ export function useSyncedDrafts() {
   );
   const versionKey = (version: DraftVersion) =>
     JSON.stringify([version.id, version.text]);
-  const reconcile = useCallback((records: DraftVersion[]) => {
-    versions.current = records;
-    let next = current.current;
-    const alternatives: DraftVersion[] = [];
-    const sessions = new Map<string, DraftVersion[]>();
-    for (const version of records) {
-      const branches = sessions.get(version.session);
-      if (branches) branches.push(version);
-      else sessions.set(version.session, [version]);
-    }
-    const dismissedKeys = new Set(dismissed.current);
-    for (const [session, branches] of sessions) {
-      const active = branches
-        .filter(
+  const reconcile = useCallback(
+    (records: DraftVersion[]) => {
+      versions.current = records;
+      let next = current.current;
+      const alternatives: DraftVersion[] = [];
+      const sessions = new Map<string, DraftVersion[]>();
+      for (const version of records) {
+        const branches = sessions.get(version.session);
+        if (branches) branches.push(version);
+        else sessions.set(version.session, [version]);
+      }
+      const dismissedKeys = new Set(dismissed.current);
+      for (const [session, branches] of sessions) {
+        const active = activeDraftVersions(branches);
+        const chosen = active.find(
           (version) =>
-            !branches.some(
-              (other) =>
-                other.id !== version.id &&
-                (other.seen?.[version.id] ?? -1) >= version.updated,
-            ),
-        )
-        .sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
-      const chosen = active.find(
-        (version) =>
-          !dismissedKeys.size || !dismissedKeys.has(versionKey(version)),
-      );
+            !dismissedKeys.size || !dismissedKeys.has(versionKey(version)),
+        );
+        if (
+          chosen &&
+          !pendingEdits.current.has(session) &&
+          next[session] !== chosen.text
+        ) {
+          if (next === current.current) next = { ...next };
+          next[session] = chosen.text;
+        }
+        if (pendingEdits.current.has(session)) continue;
+        for (const branch of active) {
+          if (branch.text && branch.text !== next[session])
+            alternatives.push(branch);
+          for (const text of branch.alternatives || [])
+            if (text && text !== next[session])
+              alternatives.push({
+                ...branch,
+                id: `${branch.id}:conflict`,
+                text,
+              });
+        }
+      }
+      if (next !== current.current) {
+        const previous = current.current;
+        current.current = next;
+        update(next);
+        publishDraftChanges(previous, next);
+        for (const [session, text] of Object.entries(next)) {
+          if (previous[session] === text) continue;
+          try {
+            writeLocalDraftRecord(
+              storageKey.current,
+              session,
+              text === "" ? null : text,
+              "remote",
+              { updated: Date.now() },
+            );
+          } catch {
+            reportLocalError(
+              "Draft changes could not be saved on this device. Keep this chat open.",
+            );
+          }
+        }
+      }
+      const unique = new Set<string>();
+      const nextConflicts = alternatives.filter((version) => {
+        const key = versionKey(version);
+        if (dismissedKeys.has(key) || unique.has(key)) return false;
+        unique.add(key);
+        return true;
+      });
+      const previousConflicts = conflictValues.current;
       if (
-        chosen &&
-        !pendingEdits.current.has(session) &&
-        next[session] !== chosen.text
+        previousConflicts.length !== nextConflicts.length ||
+        previousConflicts.some(
+          (version, index) => version !== nextConflicts[index],
+        )
       ) {
-        if (next === current.current) next = { ...next };
-        next[session] = chosen.text;
+        conflictValues.current = nextConflicts;
+        setConflicts(nextConflicts);
       }
-      if (pendingEdits.current.has(session)) continue;
-      for (const branch of active) {
-        if (branch.text && branch.text !== next[session])
-          alternatives.push(branch);
-        for (const text of branch.alternatives || [])
-          if (text && text !== next[session])
-            alternatives.push({ ...branch, id: `${branch.id}:conflict`, text });
-      }
-    }
-    if (next !== current.current) {
-      const previous = current.current;
-      current.current = next;
-      update(next);
-      publishDraftChanges(previous, next);
-      save(storageKey.current, next);
-    }
-    const unique = new Set<string>();
-    const nextConflicts = alternatives.filter((version) => {
-      const key = versionKey(version);
-      if (dismissedKeys.has(key) || unique.has(key)) return false;
-      unique.add(key);
-      return true;
-    });
-    const previousConflicts = conflictValues.current;
-    if (
-      previousConflicts.length !== nextConflicts.length ||
-      previousConflicts.some(
-        (version, index) => version !== nextConflicts[index],
-      )
-    ) {
-      conflictValues.current = nextConflicts;
-      setConflicts(nextConflicts);
-    }
-  }, []);
+    },
+    [reportLocalError],
+  );
   const dismissDraft = useCallback(
     (version: DraftVersion) => {
       dismissed.current = [
@@ -231,39 +279,185 @@ export function useSyncedDrafts() {
       entries().map(({ version }) => [version.session, version.updated]),
     );
   };
-  const adoptScope = useCallback((workspaceId: string) => {
-    const targetKey = `codex-drafts:${workspaceId}`;
-    if (storageKey.current === targetKey) return;
-    const previousKey = storageKey.current;
-    const unassigned = previousKey.endsWith(":unassigned");
-    const next: Drafts = unassigned
-      ? { ...current.current }
-      : saved(targetKey, {});
-    if (unassigned) {
-      for (const entry of entries()) {
-        const moved = {
-          ...entry,
-          key: targetKey + entry.key.slice(previousKey.length),
-        };
-        writeDraftJournal(moved);
-        forgetDraftJournal(entry);
-        journal.current.delete(entry.key);
-        journal.current.set(moved.key, moved);
+  const queueLegacyUpdates = useCallback(
+    (imported: Record<string, string | null>, scope = storageKey.current) => {
+      for (const [session, text] of Object.entries(imported)) {
+        try {
+          const id = `${device}:${session}`;
+          const key = `${journalPrefix(scope)}legacy:${encodeURIComponent(session)}`;
+          const existing = readLocalDraftRecord(scope, session);
+          if (!existing) {
+            reportLocalError(
+              "A saved draft could not be imported from another tab. Keep this chat open.",
+            );
+            continue;
+          }
+          const prior = journal.current.get(key)?.version;
+          const value = text ?? "";
+          const localVersions = [
+            ...versions.current,
+            ...entries().map((entry) => entry.version),
+          ].filter((item) => item.session === session && item.id !== id);
+          const lastLegacy = Math.max(
+            existing.legacyUpdated || 0,
+            prior?.updated || 0,
+          );
+          const baselineHash =
+            existing.legacyBaselineHash ??
+            (existing.legacyBaseline !== undefined
+              ? legacyBaselineHash(session, existing.legacyBaseline)
+              : undefined);
+          const localIsNewer =
+            localVersions.some((item) => item.updated > lastLegacy) ||
+            (existing.source !== "legacy" &&
+              baselineHash !== undefined &&
+              (existing.deleted
+                ? baselineHash !== legacyBaselineHash(session, null)
+                : legacyBaselineHash(session, existing.text) !== baselineHash));
+          const localUpdated = Math.max(
+            existing.source === "local" ? existing.updated || 0 : 0,
+            ...localVersions.map((item) => item.updated),
+          );
+          let version: DraftVersion;
+          if (prior?.text === value) {
+            version = prior;
+          } else {
+            let updated = Math.max(Date.now(), lastLegacy + 1);
+            if (localIsNewer && localUpdated > lastLegacy + 1)
+              updated = Math.min(updated, localUpdated - 1);
+            if (updated <= lastLegacy) updated = lastLegacy + 1;
+            version = {
+              id,
+              session,
+              device,
+              text: value,
+              updated,
+              ...(prior?.text && prior.text !== value
+                ? {
+                    alternatives: [
+                      ...new Set([...(prior.alternatives || []), prior.text]),
+                    ],
+                  }
+                : {}),
+            };
+          }
+          const entry = { key, version };
+          if (!localIsNewer) {
+            const previous = current.current;
+            const next = { ...previous };
+            if (text === null) delete next[session];
+            else next[session] = text;
+            current.current = next;
+            update(next);
+            publishDraftChanges(previous, next);
+          }
+          // The journal is the retry boundary: persist it before advancing the
+          // legacy checkpoint, so failed storage writes remain discoverable.
+          writeDraftJournal(entry);
+          journal.current.set(key, entry);
+          pendingEdits.current.set(session, version.updated);
+          if (!localIsNewer) {
+            writeLocalDraftRecord(scope, session, text, "local", {
+              legacyBaselineHash: legacyBaselineHash(session, text),
+              legacyPending: false,
+              legacyUpdated: version.updated,
+              updated: version.updated,
+            });
+          } else {
+            writeLocalDraftRecord(
+              scope,
+              session,
+              existing.deleted ? null : existing.text,
+              existing.source,
+              {
+                legacyBaselineHash: legacyBaselineHash(session, text),
+                legacyPending: false,
+                legacyUpdated: version.updated,
+                updated: existing.updated,
+              },
+            );
+          }
+        } catch {
+          reportLocalError(
+            "A saved draft could not be imported from another tab. Keep this chat open.",
+          );
+        }
       }
-    }
-    const previous = current.current;
-    storageKey.current = targetKey;
-    for (const entry of readDraftJournal(targetKey))
-      journal.current.set(entry.key, entry);
-    markPending();
-    for (const entry of entries())
-      next[entry.version.session] = entry.version.text;
-    dismissed.current = saved(`${targetKey}:dismissed`, []);
-    current.current = next;
-    update(next);
-    publishDraftChanges(previous, next);
-    save(targetKey, next);
-  }, []);
+    },
+    [reportLocalError],
+  );
+  const adoptScope = useCallback(
+    (workspaceId: string) => {
+      const targetKey = `codex-drafts:${workspaceId}`;
+      if (storageKey.current === targetKey) return;
+      const previousKey = storageKey.current;
+      const unassigned = previousKey.endsWith(":unassigned");
+      if (unassigned) {
+        try {
+          copyLocalDraftScope(previousKey, targetKey, () =>
+            reportLocalError(
+              "Some saved drafts could not be moved to this workspace. Keep this chat open.",
+            ),
+          );
+        } catch (error) {
+          reportLocalError(
+            "Draft changes could not be moved to this workspace. Keep this chat open.",
+          );
+          throw error;
+        }
+      }
+      try {
+        queueLegacyUpdates(
+          migrateLegacyDrafts(targetKey, () =>
+            reportLocalError(
+              "Some saved drafts could not be read. Keep this chat open.",
+            ),
+          ),
+          targetKey,
+        );
+      } catch {
+        reportLocalError(
+          "Saved drafts could not be migrated. Keep this chat open.",
+        );
+      }
+      let next: Drafts = readDraftsWithLegacyFallback(targetKey, () =>
+        reportLocalError(
+          "Some saved drafts could not be read. Keep this chat open.",
+        ),
+      );
+      if (unassigned) next = { ...current.current, ...next };
+      if (unassigned) {
+        for (const entry of entries()) {
+          const moved = {
+            ...entry,
+            key: targetKey + entry.key.slice(previousKey.length),
+          };
+          writeDraftJournal(moved);
+          forgetDraftJournal(entry);
+          journal.current.delete(entry.key);
+          journal.current.set(moved.key, moved);
+        }
+      }
+      const previous = current.current;
+      storageKey.current = targetKey;
+      for (const entry of readDraftJournal(targetKey))
+        journal.current.set(entry.key, entry);
+      markPending();
+      for (const entry of entries()) {
+        if (
+          entry.version.id === `${device}:${entry.version.session}` &&
+          readLocalDraftRecord(targetKey, entry.version.session)
+        )
+          continue;
+        next[entry.version.session] = entry.version.text;
+      }
+      dismissed.current = saved(`${targetKey}:dismissed`, []);
+      current.current = next;
+      update(next);
+      publishDraftChanges(previous, next);
+    },
+    [reportLocalError, queueLegacyUpdates],
+  );
   const flushDrafts = useCallback(() => {
     if (flushing.current) return flushing.current;
     flushing.current = (async () => {
@@ -321,7 +515,7 @@ export function useSyncedDrafts() {
         }
         reportLocalError("");
         reconcile(decodeDrafts(await db.drafts.find().exec()));
-      } catch (error) {
+      } catch {
         if (connecting) reportSyncFailure(true);
         else
           reportLocalError(
@@ -357,8 +551,9 @@ export function useSyncedDrafts() {
         ...Object.keys(next),
       ])) {
         if (previous[session] === next[session]) continue;
+        const id = draftVersionId(device, writer, session);
         const version: DraftVersion = {
-          id: `${device}:${session}`,
+          id,
           session,
           device,
           text: next[session] || "",
@@ -376,10 +571,7 @@ export function useSyncedDrafts() {
                 .map(
                   (entry) => [entry.version.id, entry.version.updated] as const,
                 ),
-              [
-                `${device}:${session}`,
-                localHeads.current.get(session) || 0,
-              ] as const,
+              [id, localHeads.current.get(session) || 0] as const,
             ].sort((a, b) => a[1] - b[1]),
           ),
         };
@@ -398,7 +590,25 @@ export function useSyncedDrafts() {
           );
         }
       }
-      save(storageKey.current, next);
+      for (const session of new Set([
+        ...Object.keys(previous),
+        ...Object.keys(next),
+      ])) {
+        if (previous[session] === next[session]) continue;
+        try {
+          writeLocalDraftRecord(
+            storageKey.current,
+            session,
+            next[session] === undefined ? null : next[session],
+            "local",
+            { updated },
+          );
+        } catch {
+          reportLocalError(
+            "Draft changes are not saved yet. Keep this chat open.",
+          );
+        }
+      }
       void flushDrafts();
     },
     [flushDrafts, writer, reportLocalError],
@@ -452,7 +662,7 @@ export function useSyncedDrafts() {
           started = true;
           importUnassigned.current = false;
         })
-        .catch((e) => {
+        .catch(() => {
           if (!stopped) {
             reportSyncFailure(true);
             unsubscribe();
@@ -464,21 +674,59 @@ export function useSyncedDrafts() {
           starting = false;
         });
     };
+    queueLegacyUpdates(localRecovery.imported);
     start();
+    const scanLegacyStorage = () => {
+      try {
+        const imported = migrateLegacyDrafts(
+          storageKey.current,
+          () =>
+            reportLocalError(
+              "Some saved drafts could not be read. Keep this chat open.",
+            ),
+          { includeNewLegacyChats: true },
+        );
+        queueLegacyUpdates(imported);
+        void flushDrafts();
+      } catch {
+        reportLocalError(
+          "A saved draft could not be imported from another tab. Keep this chat open.",
+        );
+      }
+    };
     const stopResume = onResume(() => {
       start();
+      scanLegacyStorage();
       void flushDrafts();
     });
-    const writeTimer = setInterval(() => void flushDrafts(), 3000);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== storageKey.current) return;
+      scanLegacyStorage();
+    };
+    window.addEventListener("storage", onStorage);
+    const writeTimer = setInterval(() => {
+      scanLegacyStorage();
+      void flushDrafts();
+    }, 3000);
     return () => {
       stopped = true;
       clearTimeout(retry);
       clearInterval(writeTimer);
       stopResume();
+      window.removeEventListener("storage", onStorage);
       unsubscribe();
       cancel();
     };
-  }, [reconcile, adoptScope, flushDrafts, decodeDrafts, reportSyncFailure]);
+  }, [
+    reconcile,
+    adoptScope,
+    flushDrafts,
+    decodeDrafts,
+    reportSyncFailure,
+    reportLocalError,
+    setDrafts,
+    queueLegacyUpdates,
+  ]);
   return {
     get drafts() {
       return current.current;

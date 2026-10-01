@@ -5,7 +5,7 @@ export interface LocalFileLink {
 
 // Keep URL schemes explicit. Local paths still go through the server's workspace checks.
 export const markdownUriPattern =
-  /^(?:(?:https?|mailto|tel|sms|cid|xmpp|file|sandbox):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+  /^(?:(?:https?|mailto|tel|sms|cid|xmpp|file|sandbox):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 
 // Generated Markdown can carry zero-width padding around a path. Preserve
 // interior characters, which can be part of an actual filename.
@@ -42,6 +42,7 @@ export function localFileLink(href: string): LocalFileLink | null {
   const line = Number(
     anchor.match(/^L?(\d+)(?:C\d+|-L?\d+)?$/i)?.[1] || location?.[1],
   );
+  // oxlint-disable-next-line no-control-regex -- Reject control characters in paths.
   if (!path || /[\u0000-\u001f]/.test(path))
     throw new Error("This file link is invalid.");
   return { path, ...(Number.isSafeInteger(line) && line > 0 ? { line } : {}) };
