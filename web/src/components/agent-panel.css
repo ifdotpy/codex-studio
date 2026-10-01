@@ -122,9 +122,60 @@
 .agent-panel-expand {
   min-width: 52px;
 }
+.agent-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.agent-panel[data-hidden="yes"] .agent-panel-heading {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.agent-panel-content[hidden] {
+  display: none;
+}
+.agent-panel-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  min-height: 32px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+.agent-panel-compact > button,
+.agent-panel-compact-saved,
+.agent-panel-changed {
+  flex: 0 0 auto;
+}
+.agent-panel-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-panel-changed {
+  color: var(--mantine-color-anchor, #ac9fff);
+}
+.agent-panel-compact-error {
+  font-weight: bold !important;
+}
 @media (max-width: 760px) {
-  .agent-panel-heading button {
+  .agent-panel-heading button,
+  .agent-panel-compact button,
+  .agent-panel-notice button {
     min-height: 44px;
     min-width: 44px;
+  }
+  .agent-panel-compact {
+    min-height: 44px;
   }
 }

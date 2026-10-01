@@ -187,6 +187,7 @@ export default function AgentPanel({
       current={current}
       agentId={agentId}
       scope={scope}
+      stateDir={stateDir}
       retry={() => refresh.current?.()}
     />
   );
@@ -196,11 +197,13 @@ function ProgressDisplay({
   current,
   agentId,
   scope,
+  stateDir,
   retry,
 }: {
   current: ProgressState;
   agentId: string;
   scope: string;
+  stateDir: string;
   retry: () => void;
 }) {
   const parsed = useMemo(
@@ -217,6 +220,42 @@ function ProgressDisplay({
     layout: ProgressLayout;
   } | null>(null);
   const [expanded, setExpanded] = useState(false);
+  // This device's workspace choice applies across chats to preserve chat space.
+  const preferenceKey = `codex-progress-hidden:${stateDir}`;
+  const [hiddenChoice, setHiddenChoice] = useState<boolean | null>(() => {
+    try {
+      const stored = localStorage.getItem(preferenceKey);
+      return stored === "true" ? true : stored === "false" ? false : null;
+    } catch {
+      return null;
+    }
+  });
+  const [narrow, setNarrow] = useState(
+    () => window.matchMedia("(max-width: 760px)").matches,
+  );
+  const hidden = hiddenChoice ?? narrow;
+  const [seenRevision, setSeenRevision] = useState(current.revision);
+  const changed =
+    hidden && seenRevision !== null && current.revision !== seenRevision;
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const resize = () => setNarrow(media.matches);
+    media.addEventListener("change", resize);
+    return () => media.removeEventListener("change", resize);
+  }, []);
+  useEffect(() => {
+    if (!hidden || seenRevision === null) setSeenRevision(current.revision);
+  }, [hidden, current.revision, seenRevision]);
+  const showOrHide = (value: boolean) => {
+    setSeenRevision(current.revision);
+    setHiddenChoice(value);
+    setExpanded(false);
+    try {
+      localStorage.setItem(preferenceKey, String(value));
+    } catch {
+      /* The control remains usable when browser storage is unavailable. */
+    }
+  };
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [dialogError, setDialogError] = useState<unknown>(null);
   const valid =
@@ -336,7 +375,8 @@ function ProgressDisplay({
       );
     };
     const observer = new ResizeObserver(measure);
-    // Measure the collapsed preview even while the visible copy is expanded.
+    // Report Preview geometry in all three states. Hiding is a user choice,
+    // not a content defect that should cause the agent to rewrite the file.
     observer.observe(content.parentElement!);
     observer.observe(title);
     observer.observe(content);
@@ -373,7 +413,7 @@ function ProgressDisplay({
           ? 0
           : -1;
     }
-  }, [layout, expanded, clipped, current.markdown]);
+  }, [layout, expanded, clipped, hidden, current.markdown]);
 
   const openOriginal = () => setPreview({ agent: agentId, path: current.path });
   return (
@@ -388,8 +428,67 @@ function ProgressDisplay({
         data-fit={layout?.fits ? "yes" : "no"}
         data-clipped={clipped ? "yes" : "no"}
         data-expanded={expanded && clipped ? "yes" : "no"}
+        data-hidden={hidden ? "yes" : "no"}
       >
-        <div ref={heading} className="agent-panel-heading">
+        {hidden && (
+          <div className="agent-panel-compact">
+            <button
+              type="button"
+              onClick={openOriginal}
+              disabled={!current.path}
+              aria-label="Open PROGRESS.md"
+            >
+              <code>PROGRESS.md</code>
+            </button>
+            <span className="agent-panel-summary">
+              {parsed.firstLine ||
+                (current.error
+                  ? "Cannot read PROGRESS.md."
+                  : "Progress format is unsupported.")}
+            </span>
+            {changed && (
+              <span
+                className="agent-panel-changed"
+                role="status"
+                aria-label="Progress changed"
+                title="Progress changed"
+              >
+                •
+              </span>
+            )}
+            {current.cached && (
+              <span className="agent-panel-compact-saved">Saved copy</span>
+            )}
+            {Boolean(current.error || reportError) && (
+              <button
+                type="button"
+                className="agent-panel-compact-error"
+                aria-label={
+                  current.error
+                    ? "Cannot read PROGRESS.md. Error details"
+                    : "Cannot report panel size"
+                }
+                onClick={() => setDialogError(current.error || reportError)}
+              >
+                !
+              </button>
+            )}
+            <button
+              type="button"
+              aria-expanded={false}
+              aria-controls={contentId}
+              onClick={() => showOrHide(false)}
+            >
+              Show
+            </button>
+          </div>
+        )}
+        <div
+          ref={heading}
+          className="agent-panel-heading"
+          aria-hidden={hidden || undefined}
+          inert={hidden}
+        >
           <button
             type="button"
             onClick={openOriginal}
@@ -398,19 +497,6 @@ function ProgressDisplay({
           >
             <code>PROGRESS.md</code>
           </button>
-          {parsed.supported && (
-            <button
-              type="button"
-              className="agent-panel-expand"
-              style={{ visibility: clipped ? "visible" : "hidden" }}
-              disabled={!clipped}
-              aria-expanded={expanded && clipped}
-              aria-controls={contentId}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded && clipped ? "Collapse" : "Expand"}
-            </button>
-          )}
           {current.cached && <span>Saved copy</span>}
           {Boolean(current.error) && current.markdown.trim() && (
             <>
@@ -431,6 +517,31 @@ function ProgressDisplay({
               Cannot report panel size
             </button>
           )}
+          <div className="agent-panel-controls">
+            <button
+              type="button"
+              aria-expanded={!hidden}
+              aria-controls={contentId}
+              onClick={() => showOrHide(true)}
+            >
+              Hide
+            </button>
+            {parsed.supported && (
+              <button
+                type="button"
+                className="agent-panel-expand"
+                style={{
+                  visibility: !hidden && clipped ? "visible" : "hidden",
+                }}
+                disabled={!clipped}
+                aria-expanded={expanded && clipped}
+                aria-controls={contentId}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                {expanded && clipped ? "Collapse" : "Expand"}
+              </button>
+            )}
+          </div>
         </div>
         <div className="agent-panel-measure" aria-hidden="true" inert>
           <div ref={candidate} className="progress-markdown">
@@ -441,6 +552,7 @@ function ProgressDisplay({
           ref={visibleContent}
           id={contentId}
           className="agent-panel-content"
+          hidden={hidden}
           tabIndex={expanded && clipped ? 0 : undefined}
         >
           {Boolean(current.error) && !current.markdown.trim() ? (
