@@ -25,6 +25,16 @@ interface RuntimeStatus {
     error?: string;
   }[];
   accounts: Record<string, RuntimeAccount>;
+  providerVersionWarnings?: ProviderVersionWarning[];
+}
+
+interface ProviderVersionWarning {
+  id: string;
+  accountKey: string;
+  provider: string;
+  version: string;
+  baseline: string;
+  message: string;
 }
 
 const accountStatus = {
@@ -52,13 +62,20 @@ export default function NativeRuntimeStatus({
     const controller = new AbortController();
     const refresh = async () => {
       try {
-        const result = await api<{ nativeRuntime?: RuntimeStatus }>(
-          "/api/desktop",
-          undefined,
-          { signal: controller.signal },
-        );
+        const result = await api<{
+          nativeRuntime?: RuntimeStatus;
+          providerVersions?: { warnings?: ProviderVersionWarning[] };
+        }>("/api/desktop", undefined, { signal: controller.signal });
         if (live) {
-          setData(result.nativeRuntime ?? null);
+          setData(
+            result.nativeRuntime
+              ? {
+                  ...result.nativeRuntime,
+                  providerVersionWarnings:
+                    result.providerVersions?.warnings || [],
+                }
+              : null,
+          );
           setError("");
         }
       } catch (failure) {
@@ -84,6 +101,7 @@ export default function NativeRuntimeStatus({
   const rejected = data.candidates.filter(
     (candidate) => candidate.status === "rejected",
   );
+  const providerWarnings = data.providerVersionWarnings || [];
   return (
     <section className="native-runtime-status" aria-label="Codex runtime">
       <div className="native-runtime-heading">
@@ -106,6 +124,11 @@ export default function NativeRuntimeStatus({
       )}
       {data.error && <p className="native-runtime-error">{data.error}</p>}
       {error && <p className="native-runtime-error">{error}</p>}
+      {providerWarnings.map((warning) => (
+        <p className="native-runtime-warning" role="status" key={warning.id}>
+          {warning.message}
+        </p>
+      ))}
       {entries.length > 0 && (
         <ul className="native-runtime-accounts">
           {entries.map(([key, runtime]) => {

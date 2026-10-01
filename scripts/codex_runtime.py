@@ -2404,6 +2404,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def dispatch(self):
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
+        from codex_provider_versions import tick as provider_version_tick
+        provider_version_tick(self)
         self.analytics_history_ensure_running()
         self.retry_monitor_results()
         from codex_session_names import session_names
@@ -4731,6 +4733,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def snapshot(self, *, include_work=True):
         from codex_peer_teams import snapshot as peer_snapshot
+        from codex_provider_versions import status as provider_version_status
         with self.lock, self.db() as db:
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             team_names = {a["id"]: a["name"] for a in agents}
@@ -4797,7 +4800,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if r["agent"] in {a["id"] for a in agents}
                 ],
                 "rateLimits": self.rate_limits.copy(),
-                "nativeNotices": account_notices(self, db),
+                "nativeNotices": account_notices(self, db) +
+                provider_version_status(self).get("warnings", []),
                 "rateLimitsByAccount": {k: self.rate_limits_for(k).copy() for k in self.rate_limits_by_account},
                 "events": events,
                 "connected": bool(set(self.servers) - self.offline_accounts) and not self.closed,

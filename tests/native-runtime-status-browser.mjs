@@ -82,7 +82,19 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let reads = 0;
-  let body = { nativeRuntime: initial };
+  const providerWarning = {
+    id: "provider-version:default",
+    accountKey: "default",
+    provider: "codex",
+    version: "0.153.3",
+    baseline: "0.153.4",
+    message:
+      "Codex CLI 0.153.3 is older than this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
+  };
+  let body = {
+    nativeRuntime: initial,
+    providerVersions: { warnings: [providerWarning] },
+  };
   await page.route("**/api/**", (route) => {
     assert.equal(route.request().method(), "GET", "Status must stay read-only");
     if (new URL(route.request().url()).pathname === "/api/desktop") {
@@ -100,6 +112,8 @@ try {
   const panel = page.getByRole("region", { name: "Codex runtime" });
   await panel.waitFor();
   assert.match(await panel.innerText(), /0\.116\.0/);
+  assert.match(await panel.innerText(), /lowest recorded tested version/);
+  assert.match(await panel.innerText(), /continue at your own risk/);
   assert.match(await panel.innerText(), /1 account pending/);
   assert.match(await panel.innerText(), /Personal/);
   assert.match(await panel.innerText(), /Waiting for active turns to finish/);
