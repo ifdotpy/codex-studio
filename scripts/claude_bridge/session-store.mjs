@@ -96,6 +96,7 @@ export function createSessionStore(root, options = {}) {
   const writes = new Map();
   const loads = new Map();
   const evicted = new Map();
+  const metadataCache = new Map();
   const finalizer = new FinalizationRegistry(({ id, ref }) => {
     if (evicted.get(id) === ref) evicted.delete(id);
   });
@@ -107,6 +108,27 @@ export function createSessionStore(root, options = {}) {
     return path.join(directory, id + ".json");
   };
   const logFor = (id) => fileFor(id).replace(/\.json$/, ".jsonl");
+  const metadataFileFor = (id) => fileFor(id).replace(/\.json$/, ".meta.json");
+  const metadataFor = (session, revision) => ({
+    id: session.id,
+    cwd: session.cwd,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt || session.createdAt,
+    preview: session.preview || "",
+    name: session.name ?? null,
+    model: session.model,
+    approvalPolicy: session.approvalPolicy ?? null,
+    activePermissionProfile: session.activePermissionProfile ?? null,
+    revision,
+  });
+  const writeMetadata = async (session, revision = randomUUID()) => {
+    const metadata = metadataFor(session, revision);
+    const file = metadataFileFor(session.id), tmp = file + "." + randomUUID() + ".tmp";
+    await fs.writeFile(tmp, JSON.stringify(metadata), { mode: 0o600 });
+    await fs.rename(tmp, file);
+    metadataCache.set(session.id, metadata);
+    return metadata;
+  };
   const readBase = async (id) => {
     await ready;
     const raw = await fs.readFile(fileFor(id), "utf8");
@@ -232,6 +254,7 @@ export function createSessionStore(root, options = {}) {
         const initial = copy(session);
         await atomicSnapshot(id, initial, 0);
         await fs.writeFile(logFor(id), "", { mode: 0o600 });
+        await writeMetadata(session);
         remember(session, 0, 0, 0, initial, true);
         return;
       }
@@ -277,6 +300,7 @@ export function createSessionStore(root, options = {}) {
     entry.bytes = Math.max(0, entry.sessionBytes + entry.shadowBytes);
     retainedBytes += entry.bytes;
     enforceLimit();
+    await writeMetadata(session);
     if (entry.records >= compactRecords || entry.journalBytes >= compactBytes) {
       await atomicSnapshot(id, entry.shadow, entry.sequence);
       await fs.writeFile(logFor(id), "", { mode: 0o600 });
@@ -322,6 +346,42 @@ export function createSessionStore(root, options = {}) {
     }
     return loads.get(id);
   }
+  async function metadata(id) {
+    const cached = metadataCache.get(id);
+    if (cached) return cached;
+    await ready;
+    try {
+      const saved = JSON.parse(await fs.readFile(metadataFileFor(id), "utf8"));
+      if (saved?.id !== id || typeof saved.revision !== "string")
+        throw new Error("Claude session metadata is invalid");
+      metadataCache.set(id, saved);
+      return saved;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    // Legacy sessions have no header. Load only the requested record, then
+    // write a sidecar so later list and read requests avoid the transcript.
+    const wasCached = sessions.has(id);
+    const session = await get(id);
+    const metadata = await writeMetadata(session);
+    if (!wasCached) await evict(id);
+    return metadata;
+  }
+  async function listMetadata(cursor = null, limit = 50) {
+    await ready;
+    const ids = (await fs.readdir(directory))
+      .filter((file) => /^[a-f0-9-]{36}\.json$/.test(file))
+      .map((file) => file.slice(0, -5))
+      .sort();
+    const offset = cursor == null || cursor === "" ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid Claude thread cursor");
+    const size = Math.max(1, Math.min(100, Number.isSafeInteger(Number(limit)) ? Number(limit) : 50));
+    const page = ids.slice(offset, offset + size);
+    const data = [];
+    for (const id of page) data.push(await metadata(id));
+    return { data, nextCursor: offset + size < ids.length ? String(offset + size) : null };
+  }
   function persist(session) {
     const id = session.id;
     const previous = writes.get(id) || Promise.resolve();
@@ -360,5 +420,5 @@ export function createSessionStore(root, options = {}) {
       journalBytes: [...entries.values()].reduce((sum, entry) => sum + entry.journalBytes, 0),
     };
   }
-  return { sessions, get, persist, evict, drain, stats, readAll };
+  return { sessions, get, metadata, listMetadata, persist, evict, drain, stats, readAll };
 }

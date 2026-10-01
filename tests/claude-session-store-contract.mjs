@@ -28,6 +28,27 @@ await temporary(async (root) => {
   const restored = await store.get(id);
   assert.deepEqual(restored, original, "session history and request identity reload exactly");
   assert.equal(store.stats().pendingWrites, 0, "settled write promise is removed");
+  const firstMetadata = await store.metadata(id);
+  assert.equal(firstMetadata.id, id);
+  assert.equal(typeof firstMetadata.revision, "string");
+  assert.equal("turns" in firstMetadata, false, "sidecar metadata excludes transcript bodies");
+  assert.deepEqual(await store.listMetadata(null, 1), {
+    data: [firstMetadata], nextCursor: null,
+  });
+});
+
+await temporary(async (root) => {
+  const store = createSessionStore(root);
+  const original = makeSession();
+  store.sessions.set(id, original);
+  await store.persist(original);
+  const before = await store.metadata(id);
+  original.turns[0].items.push({ id: "changed", text: "history changed" });
+  await store.persist(original);
+  const after = await store.metadata(id);
+  assert.notEqual(after.revision, before.revision, "persist updates the stored history revision");
+  assert.equal((await store.metadata(id)).revision, after.revision,
+    "metadata reads reuse the stored revision without serializing turns");
 });
 
 await temporary(async (root) => {

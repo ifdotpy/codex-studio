@@ -347,6 +347,81 @@ class Bridge(unittest.TestCase):
         self.assertNotEqual(before['historyVersion'], after['historyVersion'])
         self.assertEqual(after['historyVersion'], self.call('thread/read', {'threadId':self.thread})['thread']['historyVersion'])
 
+    def test_metadata_responses_page_and_exclude_large_transcripts(self):
+        session_path = self.root / 'state' / 'sessions' / (self.thread + '.json')
+        saved = json.loads(session_path.read_text())
+        large_id = str(uuid.uuid4())
+        large_turns = [{'id': 'large-turn', 'status': 'completed', 'items': [
+            {'id': 'large-item', 'type': 'agentMessage', 'text': 'x' * (22 * 1024 * 1024)}]}]
+        large_saved = json.loads(json.dumps(saved))
+        large_saved['session'].update(id=large_id, turns=large_turns)
+        large_path = session_path.parent / (large_id + '.json')
+        large_path.write_text(json.dumps(large_saved, separators=(',', ':')))
+        large_metadata = json.loads((session_path.parent / (self.thread + '.meta.json')).read_text())
+        large_metadata['id'] = large_id
+        (session_path.parent / (large_id + '.meta.json')).write_text(json.dumps(large_metadata, separators=(',', ':')))
+        for index in range(21):
+            thread_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'claude-page-' + str(index)))
+            clone = json.loads(json.dumps(saved))
+            clone['session'].update(id=thread_id, turns=[])
+            (session_path.parent / (thread_id + '.json')).write_text(json.dumps(clone, separators=(',', ':')))
+            sidecar = json.loads((session_path.parent / (self.thread + '.meta.json')).read_text())
+            sidecar['id'] = thread_id
+            (session_path.parent / (thread_id + '.meta.json')).write_text(json.dumps(sidecar, separators=(',', ':')))
+
+        cached_before_list = self.call('claude/diagnostics', {})['sessionCache']['cachedSessions']
+        all_page = self.call('thread/list', {'limit': 50})
+        cached_after_list = self.call('claude/diagnostics', {})['sessionCache']['cachedSessions']
+        first = self.call('thread/list', {'limit': 5})
+        second = self.call('thread/list', {'limit': 5, 'cursor': first['nextCursor']})
+        self.assertEqual(len(all_page['data']), 23)
+        self.assertEqual(cached_after_list, cached_before_list, 'metadata list does not load session bodies')
+        self.assertEqual(len(first['data']), 5)
+        self.assertEqual(len(second['data']), 5)
+        self.assertEqual(first['nextCursor'], '5')
+        self.assertEqual(second['nextCursor'], '10')
+        self.assertTrue(all(row['turns'] == [] for row in all_page['data']))
+
+        cached_before_read = self.call('claude/diagnostics', {})['sessionCache']['cachedSessions']
+        read = self.call('thread/read', {'threadId': large_id, 'includeTurns': False})
+        cached_after_read = self.call('claude/diagnostics', {})['sessionCache']['cachedSessions']
+        self.assertEqual(cached_after_read, cached_before_read, 'metadata read does not load session bodies')
+        self.assertNotIn('turns', read)
+        self.assertEqual(read['thread']['turns'], [])
+        full = self.call('thread/read', {'threadId': large_id, 'includeTurns': True})
+        self.assertEqual(len(full['thread']['turns'][0]['items'][0]['text']), 22 * 1024 * 1024)
+        resumed = self.call('thread/resume', {'threadId': large_id, 'excludeTurns': True})
+        self.assertNotIn('turns', resumed)
+        self.assertEqual(resumed['thread']['turns'], [])
+        included = self.call('thread/resume', {'threadId': large_id, 'excludeTurns': False})
+        self.assertEqual(len(included['thread']['turns'][0]['items'][0]['text']), 22 * 1024 * 1024)
+        forked = self.call('thread/fork', {'threadId': self.thread, 'excludeTurns': True})
+        self.assertNotIn('turns', forked)
+        self.assertEqual(forked['thread']['turns'], [])
+
+        list_bytes = len(json.dumps(all_page, separators=(',', ':')).encode())
+        read_bytes = len(json.dumps(read, separators=(',', ':')).encode())
+        resume_bytes = len(json.dumps(resumed, separators=(',', ':')).encode())
+        old_wire = {'historyVersion': '0' * 64, 'id': large_id, 'cwd': large_saved['session'].get('cwd'),
+                    'createdAt': large_saved['session'].get('createdAt'),
+                    'updatedAt': large_saved['session'].get('updatedAt') or large_saved['session'].get('createdAt'),
+                    'preview': large_saved['session'].get('preview') or '', 'name': large_saved['session'].get('name'),
+                    'turns': large_turns, 'status': {'type': 'idle'}, 'modelProvider': 'claude'}
+        legacy_list_bytes = len(json.dumps({'data': [old_wire] * 1 + all_page['data'][:-1], 'nextCursor': None}, separators=(',', ':')).encode())
+        legacy_read = {**large_saved['session'], 'sandbox': None,
+                       'thread': {**old_wire, 'turns': []}}
+        legacy_resume = {**large_saved['session'], 'sandbox': None, 'thread': old_wire}
+        legacy_read_bytes = len(json.dumps(legacy_read, separators=(',', ':')).encode())
+        legacy_resume_bytes = len(json.dumps(legacy_resume, separators=(',', ':')).encode())
+        self.assertLess(list_bytes, 100_000)
+        self.assertLess(read_bytes, 10_000)
+        self.assertLess(resume_bytes, 10_000)
+        print(json.dumps({'syntheticSessionBytes': 22 * 1024 * 1024,
+                          'sessions': 23, 'legacyListLowerBoundBytes': legacy_list_bytes,
+                          'listBytes': list_bytes, 'legacyReadBytes': legacy_read_bytes,
+                          'readMetadataBytes': read_bytes, 'legacyResumeBytes': legacy_resume_bytes,
+                          'resumeExcludeTurnsBytes': resume_bytes}))
+
     def test_account_change_blocks_prompt_before_model_call(self):
         (self.root / '.wrong-account').touch()
         self.turn('hello','wrong-account')
