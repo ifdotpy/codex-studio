@@ -1373,7 +1373,6 @@ export default function App() {
             </h1>
             <div className="conversation-meta">
               <span id="conversation-status">
-                {mobileClient && agent?.cwd ? `${projectName} · ` : ""}
                 {agent
                   ? indicators.get(agent.id)?.kind === "answer" ||
                     (indicators.get(agent.id)?.kind === "working" &&
@@ -1390,8 +1389,9 @@ export default function App() {
                       : room
                         ? "Broadcast"
                         : ""}
+                {mobileClient && agent?.cwd ? ` · ${projectName}` : ""}
               </span>
-              {lead?.source === "managed" && (
+              {!mobileClient && lead?.source === "managed" && (
                 <AgentModeSwitch
                   lead={lead}
                   stateDir={data.stateDir}
@@ -1818,6 +1818,14 @@ export default function App() {
             aria-label="Conversation settings"
           >
             <h2>Conversation</h2>
+            {mobileClient && lead?.source === "managed" && (
+              <AgentModeSwitch
+                lead={lead}
+                stateDir={data.stateDir}
+                workspaceId={workspaceId}
+                refresh={refresh}
+              />
+            )}
             <BrowserAccessNotice
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}
