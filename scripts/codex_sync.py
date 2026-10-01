@@ -237,7 +237,7 @@ class SyncStore:
                                                  sync_event_window, sync_monitor_window)
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
-                    seed(db, self.chat_snapshot() if self.chat_snapshot else self.snapshot())
+                    seed(db, self.chat_snapshot or self.snapshot)
                     # Retire old task DTOs gradually so an existing client checkpoint
                     # can consume the resulting tombstones through ordinary deltas.
                     sync_task_window(db)

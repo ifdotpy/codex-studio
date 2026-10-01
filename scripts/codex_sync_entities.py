@@ -211,6 +211,9 @@ def seed(db, snapshot):
     upgrade_agent_organization(db)
     if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone():
         return
+    # Callers pass a builder: the full snapshot is costly and seeding runs once.
+    if callable(snapshot):
+        snapshot = snapshot()
     runtime = snapshot.get("runtime") or {}
     threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
     for agent in runtime.get("agents", []):

@@ -208,8 +208,16 @@ with tempfile.TemporaryDirectory() as directory:
     snapshot = {"stateDir": directory, "threads": [], "chats": [], "nodes": [], "edges": [],
                 "runtime": {"agents": [{"id": "a", "name": "A", "status": "running", "source": "managed"}],
                             "rooms": [], "tasks": [], "monitors": [], "complaints": [], "requests": []}}
-    store = SyncStore(connect, lambda: snapshot, lambda _key: {})
+    snapshot_builds = []
+    def build_snapshot():
+        snapshot_builds.append(1)
+        return snapshot
+    store = SyncStore(connect, build_snapshot, lambda _key: {})
     seeded = store.pull("state:entities:v1", after=0, limit=100)
+    # The full snapshot seeds once; later pulls must not rebuild it under the write lock.
+    store.pull("state:entities:v1", after=0, limit=100)
+    store.pull("state:entities:v1", after=seeded["checkpoint"]["seq"])
+    assert len(snapshot_builds) == 1, snapshot_builds
     assert seeded["workspaceId"] == "a" * 32
     assert all(item["id"].startswith("entity:") for item in seeded["documents"])
     assert seeded["maxSeq"] >= seeded["checkpoint"]["seq"]
