@@ -3,8 +3,9 @@
 ## Change Contract
 
 This component turns native hook and notice events into Studio transcript items
-or account notices. It may update the SQLite rows supplied by the runtime, but
-it does not open databases, connect to Codex, submit requests, or decide whether
+or account notices. Dispatch enters `runtime.db()` to receive a SQLite
+connection and transaction, which it uses to update runtime rows. It does not
+configure database storage, connect to Codex, submit requests, or decide whether
 a tool is allowed. The runtime owns storage and account connections. Focused
 dispatch checks live in `tests/`; cross-component runtime contracts remain in
 the repository `tests/` directory.

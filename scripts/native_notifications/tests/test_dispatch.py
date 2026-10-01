@@ -53,10 +53,11 @@ class FakeRuntime:
                    (record["id"], json.dumps(record)))
 
     def item(self, db, agent_id, item_id, role, text, author, **metadata):
-        record = {"id": item_id, "role": role, "text": text, "author": author, **metadata}
+        scoped_item_id = agent_id + ":" + item_id
+        record = {"id": scoped_item_id, "role": role, "text": text, "author": author, **metadata}
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) "
                    "ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-                   (item_id, agent_id, json.dumps(record), 1))
+                   (scoped_item_id, agent_id, json.dumps(record), 1))
 
     def touch_ui(self, _agent_id):
         pass
@@ -163,6 +164,14 @@ class NativeNotificationDispatchTests(unittest.TestCase):
         item = next(row for row in runtime.items("chat") if row.get("nativeHook"))
         self.assertTrue(item["nativeHookQuiet"])
         self.assertEqual(item["text"], "")
+        consume_native_notification(runtime, {"method": "hook/started", "params": {
+            "threadId": "thread-a", "turnId": "turn-a", "run": hook()}},
+            "default", CURRENT_CONNECTION)
+        hooks = [row for row in runtime.items("chat") if row.get("nativeHook")]
+        self.assertEqual(len(hooks), 1)
+        self.assertEqual(hooks[0]["nativeHook"]["status"], "completed")
+        self.assertTrue(hooks[0]["nativeHookQuiet"])
+        self.assertEqual(hooks[0]["text"], "")
 
     def test_threadless_account_notice_does_not_attach_to_agent(self):
         runtime = FakeRuntime([agent("chat")])
