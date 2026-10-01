@@ -3,8 +3,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFileSync, readdirSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { availableParallelism, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -35,6 +36,10 @@ const evidenceRoot = join(
 await mkdir(evidenceRoot, { recursive: true });
 const roundsAt = args.indexOf("--rounds");
 const rounds = roundsAt >= 0 ? Number(args[roundsAt + 1]) : 1;
+const rateAt = args.indexOf("--offered-rate");
+const offeredRate = rateAt >= 0 ? Number(args[rateAt + 1]) : 160;
+const transportsAt = args.indexOf("--transports");
+const transportCount = transportsAt >= 0 ? Number(args[transportsAt + 1]) : 2;
 const outputAt = args.indexOf("--output");
 const outputPath =
   outputAt >= 0
@@ -45,17 +50,77 @@ const outputPath =
       );
 const sourceAt = args.indexOf("--source-root");
 const sourceRoot = sourceAt >= 0 ? resolve(args[sourceAt + 1]) : repo;
-const productionSourceDirty = Boolean(
-  execFileSync(
-    "git",
-    ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"],
-    { encoding: "utf8" },
-  ).trim(),
+const frontendAt = args.indexOf("--frontend-dist");
+const frontendDist =
+  frontendAt >= 0
+    ? resolve(args[frontendAt + 1])
+    : join(sourceRoot, "web", "dist");
+const frontendRevisionAt = args.indexOf("--frontend-source-revision");
+const frontendSourceRevision =
+  frontendRevisionAt >= 0
+    ? args[frontendRevisionAt + 1]
+    : execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+      }).trim();
+const hashTree = async (root) => {
+  const hash = createHash("sha256");
+  const visit = async (directory, prefix = "") => {
+    for (const entry of (
+      await readdir(directory, { withFileTypes: true })
+    ).sort((a, b) => a.name.localeCompare(b.name))) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory())
+        await visit(join(directory, entry.name), relative);
+      else {
+        hash.update(relative);
+        hash.update(await readFile(join(directory, entry.name)));
+      }
+    }
+  };
+  await visit(root);
+  return hash.digest("hex");
+};
+const frontendArtifactSha256 = await hashTree(frontendDist);
+const sourceChanges = execFileSync(
+  "git",
+  ["-C", sourceRoot, "status", "--porcelain", "--untracked-files=no"],
+  { encoding: "utf8" },
+)
+  .trim()
+  .split("\n")
+  .filter(Boolean);
+const productionSourceDirty = sourceChanges.some(
+  (line) =>
+    /^scripts\/codex_[^/]+\.py$/.test(line.slice(3)) ||
+    /^web\/(src|public)\//.test(line.slice(3)),
 );
+const backendSourceSha256 = await (async () => {
+  const scripts = join(sourceRoot, "scripts");
+  const files = (await readdir(scripts, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".py"))
+    .map((entry) => entry.name)
+    .sort();
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(file);
+    hash.update(await readFile(join(scripts, file)));
+  }
+  return hash.digest("hex");
+})();
 const deadlineMs = check ? 90_000 : 180_000;
 assert(
   Number.isInteger(rounds) && rounds >= 1 && rounds <= 8,
   "--rounds must be 1..8",
+);
+assert(
+  Number.isInteger(offeredRate) && offeredRate >= 1 && offeredRate <= 2000,
+  "--offered-rate must be 1..2000 worker turns per second",
+);
+assert(
+  Number.isInteger(transportCount) &&
+    transportCount >= 1 &&
+    transportCount <= 8,
+  "--transports must be 1..8",
 );
 if (outputPath && outputPath.startsWith(repo + "/"))
   throw new Error("--output must be outside the checkout");
@@ -64,12 +129,14 @@ const { chromium } = packageRequire("playwright-core");
 const state = await mkdtemp(join(evidenceRoot, ".runtime-load-case-"));
 const fixture = spawn(
   "python3",
-  ["-B", join(harness, "server.py"), state, sourceRoot],
+  ["-B", join(harness, "server.py"), state, sourceRoot, frontendDist],
   {
     cwd: sourceRoot,
     env: {
       ...process.env,
       ...(check ? { BENCH_QUICK_CHECK: "1" } : {}),
+      BENCH_OFFERED_TURNS_PER_SECOND: String(offeredRate),
+      BENCH_ACCOUNT_COUNT: String(transportCount),
       BENCH_SOURCE_REVISION: execFileSync(
         "git",
         ["-C", sourceRoot, "rev-parse", "HEAD"],
@@ -81,6 +148,9 @@ const fixture = spawn(
 );
 let childOut = "",
   childErr = "",
+  browserLog = "",
+  browserExit = null,
+  previousTmpdir,
   browser,
   browserServer,
   browserResourceTimer,
@@ -89,6 +159,9 @@ let childOut = "",
   pages = [];
 let phase = "fixture-startup";
 let pageErrors = [];
+let requestFailures = [];
+let consoleErrors = [];
+let expectedApiUnavailable = [];
 let ready;
 fixture.stderr.on("data", (chunk) => {
   childErr += chunk;
@@ -107,7 +180,7 @@ const waitLine = async (predicate, label, timeout = 20_000) => {
   const until = Date.now() + timeout;
   while (Date.now() < until) {
     const index = childOut.indexOf("\n");
-    const line = index >= 0 ? childOut.slice(0, index) : childOut;
+    const line = index >= 0 ? childOut.slice(0, index) : "";
     if (index >= 0) childOut = childOut.slice(index + 1);
     if (line) {
       let value;
@@ -147,6 +220,17 @@ try {
     expectedLeads,
     "fixture must expose the requested lead teams",
   );
+  assert(
+    ready.witnesses.every((witness) =>
+      stateData.threads.some((agent) => agent.id === witness.agentId),
+    ),
+    `each browser witness must be an App identity: ${JSON.stringify(
+      ready.witnesses.map((w) => ({
+        id: w.agentId,
+        found: stateData.threads.some((agent) => agent.id === w.agentId),
+      })),
+    )}`,
+  );
 
   const browserOptions = {
     headless: true,
@@ -156,17 +240,31 @@ try {
     args: [
       "--no-sandbox",
       "--disable-dev-shm-usage",
-      "--renderer-process-limit=1",
-      "--process-per-site",
-      "--disable-site-isolation-trials",
       "--disable-extensions",
       "--disable-background-networking",
       "--no-proxy-server",
+      "--enable-logging=stderr",
     ],
   };
   phase = "browser-startup";
-  browserServer = await chromium.launchServer(browserOptions);
+  const browserTemp = join(state, "browser-tmp");
+  await mkdir(browserTemp, { recursive: true });
+  // Playwright's user-data directory follows os.tmpdir(). Keep the isolated
+  // browser profile inside this unique state, not under shared /tmp quota.
+  previousTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = browserTemp;
+  browserServer = await chromium.launchServer({
+    ...browserOptions,
+    env: { ...process.env, TMPDIR: browserTemp },
+  });
   browser = await chromium.connect(browserServer.wsEndpoint());
+  const browserProcess = browserServer.process();
+  browserProcess?.on("exit", (code, signal) => {
+    browserExit = { code, signal };
+  });
+  browserProcess?.stderr?.on("data", (chunk) => {
+    browserLog += chunk.toString();
+  });
   const browserPid = browserServer.process().pid;
   const sampleBrowserResources = () => {
     if (!browserPid) return;
@@ -224,6 +322,18 @@ try {
         longTasks: [],
         apiFailures: [],
         staleIntervals: [],
+        witnessFirstSeen: {},
+      };
+      const scanWitnesses = () => {
+        const text = document.querySelector("#messages")?.innerText || "";
+        for (const marker of text.match(/witness-[\w-]+/g) || []) {
+          if (!window.__bench.witnessFirstSeen[marker]) {
+            window.__bench.witnessFirstSeen[marker] = {
+              epochMs: Date.now(),
+              highResolutionMs: performance.now(),
+            };
+          }
+        }
       };
       try {
         localStorage.setItem(`codex-desktop-opened:${stateDir}`, "");
@@ -249,6 +359,7 @@ try {
       }).observe({ type: "resource", buffered: true });
       new MutationObserver((entries) => {
         window.__bench.mutations += entries.length;
+        scanWitnesses();
       }).observe(document, {
         subtree: true,
         childList: true,
@@ -271,19 +382,47 @@ try {
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("crash", () => pageErrors.push(`renderer ${index + 1} crashed`));
     page.on("console", (message) => {
-      if (message.type() === "error") pageErrors.push(message.text());
+      if (message.type() === "error") consoleErrors.push(message.text());
     });
-    page.on("requestfailed", (request) =>
-      pageErrors.push(
-        `request failed ${request.url()}: ${request.failure()?.errorText}`,
-      ),
-    );
+    page.on("requestfailed", (request) => {
+      const failure = request.failure()?.errorText || "unknown";
+      const record = {
+        url: request.url(),
+        method: request.method(),
+        failure,
+        atEpochMs: Date.now(),
+      };
+      requestFailures.push(record);
+      if (!failure.includes("ERR_ABORTED"))
+        pageErrors.push(`request failed ${record.url}: ${failure}`);
+    });
+    page.on("response", async (response) => {
+      if (response.status() >= 400) {
+        const detail = await response.text().catch(() => "<body unavailable>");
+        const parsedUrl = new URL(response.url());
+        const path = parsedUrl.pathname;
+        const syntheticAccount = parsedUrl.searchParams
+          .get("account_key")
+          ?.startsWith("bench-");
+        const expectedUnavailable =
+          path === "/api/models" ||
+          path === "/api/costs" ||
+          (path === "/api/limits" && syntheticAccount);
+        const entry = `HTTP ${response.status()} ${response.url()}: ${detail.slice(0, 1000)}`;
+        if (expectedUnavailable) expectedApiUnavailable.push(entry);
+        else pageErrors.push(entry);
+      }
+    });
     pages.push(page);
-    const lead = leads[index];
+    const witness = ready.witnesses[index];
+    assert(witness, `missing representative worker for tab ${index + 1}`);
     await page.addInitScript(
       ({ stateDir, id }) =>
-        localStorage.setItem(`codex-desktop-opened:${stateDir}`, id),
-      { stateDir: stateData.stateDir, id: lead.id },
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(id),
+        ),
+      { stateDir: stateData.stateDir, id: witness.agentId },
     );
     await page.goto(ready.origin, {
       waitUntil: "domcontentloaded",
@@ -320,6 +459,7 @@ try {
         title:
           document.querySelector("#messages")?.getAttribute("aria-label") ||
           document.title,
+        visibilityState: document.visibilityState,
         mutations: window.__bench.mutations,
       })),
     ),
@@ -340,10 +480,68 @@ try {
     deadlineMs,
   );
   result = envelope.report;
-  await Promise.all(pages.map((page) => page.waitForTimeout(1200)));
+  const witnessLatency = await Promise.all(
+    pages.map(async (page, index) => {
+      const witness = ready.witnesses[index];
+      const marker = result.witnessMarkerByAgent[witness.agentId];
+      const offeredAt = result.witnessOfferedAtEpochMs[marker];
+      assert(
+        marker && offeredAt != null,
+        `missing offered witness for tab ${index + 1}`,
+      );
+      await page
+        .waitForFunction(
+          (expected) =>
+            document.querySelector("#messages")?.innerText.includes(expected),
+          marker,
+          { timeout: check ? 3000 : 20_000 },
+        )
+        .catch(async (error) => {
+          const details = await page
+            .evaluate(
+              ({ stateDir }) => ({
+                selected: localStorage.getItem(
+                  `codex-desktop-opened:${stateDir}`,
+                ),
+                messages: document
+                  .querySelector("#messages")
+                  ?.innerText?.slice(-2000),
+              }),
+              { stateDir: stateData.stateDir },
+            )
+            .catch(() => ({}));
+          const transcript = await fetch(
+            `${ready.origin}/api/transcript?id=${encodeURIComponent(witness.agentId)}`,
+          )
+            .then((response) => response.json())
+            .catch((cause) => ({ error: String(cause) }));
+          throw new Error(
+            `tab ${index + 1} did not render ${marker}; selected=${JSON.stringify(details)}; transcript=${JSON.stringify(transcript.items?.slice(-5) || transcript)}; DOM=${(
+              await page
+                .locator("body")
+                .innerText()
+                .catch(() => "<unavailable>")
+            ).slice(-2000)}; ${error.message}`,
+          );
+        });
+      return page.evaluate(
+        ({ marker: expected, offeredAt: offered }) => ({
+          marker: expected,
+          firstSeen: window.__bench.witnessFirstSeen[expected] || null,
+          renderedAtEpochMs:
+            window.__bench.witnessFirstSeen[expected]?.epochMs || null,
+          offerToRenderedMs:
+            window.__bench.witnessFirstSeen[expected] && offered != null
+              ? window.__bench.witnessFirstSeen[expected].epochMs - offered
+              : null,
+        }),
+        { marker, offeredAt },
+      );
+    }),
+  );
   const ui = await Promise.all(
     pages.map(async (page) =>
-      page.evaluate(() => {
+      page.evaluate((expectedMarker) => {
         const text = document.body.innerText;
         const api = window.__bench.resources;
         const byPath = {};
@@ -366,6 +564,7 @@ try {
           syncConnections: performance
             .getEntriesByType("resource")
             .filter((e) => e.name.includes("/api/sync/")).length,
+          visibilityState: document.visibilityState,
           apiLatencyMs: Object.fromEntries(
             Object.entries(byPath).map(([path, values]) => [
               path,
@@ -394,8 +593,9 @@ try {
           visibleTeams: (text.match(/Load \d\d\/\d\d/g) || []).length,
           displayedAssistantItems: (text.match(/synthetic answer/g) || [])
             .length,
+          renderedWitnessMarker: text.includes(expectedMarker),
         };
-      }),
+      }, result.witnessMarkerByAgent[ready.witnesses[pages.indexOf(page)].agentId]),
     ),
   );
   const feedReads = await Promise.all(
@@ -462,14 +662,34 @@ try {
     "each synthetic completed turn must queue one production child result",
   );
   assert.equal(
+    result.exactlyOnce.consumedRuntimeEvents,
+    result.exactlyOnce.queuedRuntimeEventsAdded,
+    "every original chat and child-result runtime-event ID must receive a production callback receipt",
+  );
+  assert.equal(
+    result.exactlyOnce.pendingRuntimeEvents,
+    0,
+    "no synthetic Runtime inbox event may remain pending after the acknowledgement drain",
+  );
+  assert.equal(
+    result.callbackEventSampleCount,
+    result.exactlyOnce.offeredEvents,
+    "AppServer callback samples must account for every offered event, including coalesced delta fragments",
+  );
+  assert.equal(
+    result.offered.assistantDelta,
+    expectedWorkers * 4 * (check ? 1 : rounds) * 8,
+    "each worker turn must offer eight assistant fragments",
+  );
+  assert.equal(
+    result.offered.hookLifecycle,
+    expectedWorkers * 4 * (check ? 1 : rounds) * 2,
+    "each worker turn must offer hook start and completion lifecycle callbacks",
+  );
+  assert.equal(
     result.transcriptItemsByRole.assistant,
     expectedWorkers * 4 * (check ? 1 : rounds),
     "all four phase finals must persist for each worker/round",
-  );
-  assert.equal(
-    pageErrors.length,
-    0,
-    `browser page errors: ${pageErrors.join(" | ")}`,
   );
   const browserReport = {
     tabs: pages.length,
@@ -481,6 +701,9 @@ try {
     },
     elapsedMs: Date.now() - browserStarted,
     pageErrors,
+    requestFailures,
+    consoleErrors,
+    expectedApiUnavailable,
     syncAndPullLatencyByTab: ui.map((tab) => tab.apiLatencyMs),
     longTasksMs: ui.flatMap((tab) => tab.longTasks),
     tabStalenessMs: ui.map((tab) => ({
@@ -494,37 +717,84 @@ try {
         : null,
     })),
     mutationRecords: ui.reduce((sum, tab) => sum + tab.mutationRecords, 0),
+    tabVisibilityState: ui.map((tab) => tab.visibilityState),
     visibleTeamRows: ui.map((tab) => tab.visibleTeams),
     pulledMessagesByTeam: feedReads,
     renderedByCategory: {
       assistantFinalTextMatches: ui.map((tab) => tab.displayedAssistantItems),
+      expectedAssistantMarkers: witnessLatency,
+      markerRenderedOnEveryTab: ui.map((tab) => tab.renderedWitnessMarker),
       visibleWorkerRows: ui.map((tab) => tab.visibleTeams),
       toolAndLifecycleViaUi:
-        "not directly rendered by selected lead conversation",
+        "tool and hook details are measured through Runtime transcript and analytics; assistant marker is rendered in each representative worker transcript",
     },
   };
+  assert(
+    ui.every((tab) => tab.renderedWitnessMarker),
+    "each team tab must render its unique assistant marker",
+  );
+  assert(
+    witnessLatency.every(
+      (item) => item.firstSeen && item.offerToRenderedMs >= 0,
+    ),
+    "each phase-specific marker must first appear in the DOM after it was offered",
+  );
+  assert(
+    result.exactlyOnce.consumedRuntimeEvents >=
+      expectedWorkers * 8 * (check ? 1 : rounds),
+    "worker-to-peer and worker-to-lead runtime event IDs must be acknowledged",
+  );
+  // Let open UI requests finish or abort their own way before stopping HTTP.
+  // In particular, App session refreshes can remain active after the last pull.
+  await Promise.all(pages.map((page) => page.close()));
+  await Promise.all(contexts.map((browserContext) => browserContext.close()));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    pageErrors.length,
+    0,
+    `browser page errors: ${pageErrors.join(" | ")}`,
+  );
+  fixture.stdin.write(JSON.stringify({ action: "shutdown" }) + "\n");
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("fixture shutdown timed out")),
+      10000,
+    );
+    fixture.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
   const report = {
     schemaVersion: 1,
     benchmark: "runtime_load",
     sourceRevision: ready.sourceRevision,
     productionSourceDirty,
+    backendSourceSha256,
     harnessSourceSha256,
     sourceRoot,
+    frontend: {
+      dist: frontendDist,
+      sourceRevision: frontendSourceRevision,
+      artifactSha256: frontendArtifactSha256,
+    },
     evidenceTier: "local-verified",
     syntheticTurnsOnly: true,
     omitted: [
-      "native AppServer callbacks/callback queue (native factories forbidden)",
       "real provider/model execution",
       "native tool execution; tool lifecycle/output are protocol-shaped synthetic Runtime notifications",
+      "application hook execution (lifecycle notifications and analytics are synthetic protocol events)",
     ],
     runtime: result,
     browser: browserReport,
     resourceLimits: {
       deadlineMs,
-      queueCapacity: result.queue.capacity,
+      queueCapacityPerAppServerTransport: result.queue.capacityPerTransport,
       hardTimeoutMs: deadlineMs,
       stateProfile: "unique temporary directories",
       nativeSessions: 0,
+      browserLimits: processLimits(),
+      hostMemoryAtReport: memoryInfo(),
     },
     elapsedMs: Date.now() - start,
   };
@@ -549,19 +819,45 @@ try {
           phase,
           sourceRevision: ready?.sourceRevision || null,
           productionSourceDirty,
+          backendSourceSha256,
           harnessSourceSha256,
           sourceRoot,
+          frontend: {
+            dist: frontendDist,
+            sourceRevision: frontendSourceRevision,
+            artifactSha256: frontendArtifactSha256,
+          },
           error: String(error?.message || error),
           pageErrors,
+          requestFailures,
+          consoleErrors,
+          expectedApiUnavailable,
+          runtimeSummary: result
+            ? {
+                teams: result.teams,
+                offered: result.offered,
+                dispatched: result.dispatched,
+                transcriptItemsByRole: result.transcriptItemsByRole,
+                notificationCoverage: result.notificationCoverage,
+                workerStates: result.workerStates,
+                notificationSamples: result.notificationSamples,
+                httpServerErrors: result.httpServerErrors,
+                exactlyOnce: result.exactlyOnce,
+                latencyMs: result.latencyMs,
+              }
+            : null,
           browserProcessResources: browserResourcePeak,
+          browserLogTail: browserLog.slice(-30000),
+          browserExit,
+          browserDiagnostics: processLimits(),
+          hostMemory: memoryInfo(),
           elapsedMs: Date.now() - start,
           runtimePlatform: {
             node: process.version,
             os: process.platform,
             arch: process.arch,
           },
-          cleanup:
-            "browser pages closed; isolated fixture stopped; temporary state removed",
+          cleanup: "pending",
         },
         null,
         2,
@@ -596,4 +892,69 @@ try {
   // The temporary Runtime/SQLite/profile is removed only after all child and browser work ends.
   const { rm } = await import("node:fs/promises");
   await rm(state, { recursive: true, force: true });
+  if (previousTmpdir === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = previousTmpdir;
+  if (process.exitCode) {
+    try {
+      const failed = JSON.parse(await readFile(outputPath, "utf8"));
+      failed.cleanup = {
+        fixtureExited: fixture.exitCode !== null || fixture.signalCode !== null,
+        fixtureExitCode: fixture.exitCode,
+        fixtureSignalCode: fixture.signalCode,
+        browserClosed: !browser || browser._isClosed?.() !== false,
+        uniqueTemporaryStateRemoved: true,
+      };
+      failed.browserLogPath = outputPath + ".browser.log";
+      await writeFile(outputPath + ".browser.log", browserLog);
+      await writeFile(outputPath, JSON.stringify(failed, null, 2) + "\n");
+    } catch {}
+  }
+}
+
+function processLimits() {
+  const read = (path) => {
+    try {
+      return readFileSync(path, "utf8").trim();
+    } catch {
+      return null;
+    }
+  };
+  const countEntries = (path) => {
+    try {
+      return readdirSync(path).length;
+    } catch {
+      return null;
+    }
+  };
+  const cgroupPath = (read("/proc/self/cgroup") || "")
+    .split("\n")
+    .find((line) => line.startsWith("0::"))
+    ?.slice(3);
+  const cgroupRoot = cgroupPath ? `/sys/fs/cgroup${cgroupPath}` : null;
+  const cgroupRead = (name) =>
+    cgroupRoot ? read(`${cgroupRoot}/${name}`) : null;
+  return {
+    nodeFileDescriptors: countEntries("/proc/self/fd"),
+    processLimits: read("/proc/self/limits"),
+    systemFileTable: read("/proc/sys/fs/file-nr"),
+    cgroupPidsCurrent: cgroupRead("pids.current"),
+    cgroupPidsMax: cgroupRead("pids.max"),
+    cgroupMemoryCurrent: cgroupRead("memory.current"),
+    cgroupMemoryMax: cgroupRead("memory.max"),
+    availableParallelism: availableParallelism(),
+    memoryUsage: process.memoryUsage(),
+  };
+}
+
+function memoryInfo() {
+  const values = {};
+  try {
+    for (const line of readFileSync("/proc/meminfo", "utf8").split("\n")) {
+      const match = /^(MemAvailable|MemFree|SwapFree):\s+(\d+)\s+kB$/.exec(
+        line,
+      );
+      if (match) values[match[1]] = Number(match[2]);
+    }
+  } catch {}
+  return values;
 }

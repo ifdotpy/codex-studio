@@ -2,48 +2,57 @@
 
 ## Change Contract
 
-This harness measures Studio's real Runtime, SQLite, HTTP, sync, RxDB, and browser application under a bounded synthetic load. Its Python fixture owns the synthetic active-turn identities, event offer queue, and report; production modules continue to own storage, notifications, sync, HTTP routes, and the app UI. It never opens a native provider session or reads a user's state. Do not change the production scheduler's worker cap to represent this workload. Run the quick check before a full load, keep JSON evidence outside the checkout, and inspect all event counts and cleanup results.
+The harness owns synthetic active-turn identities, event timing, and benchmark evidence. Production code owns Runtime storage and APIs, AppServer queue and dispatch, browser sync, UI behavior, and the scheduler's worker limit. The harness must not launch provider sessions, change production concurrency limits, or use a user's state. Exact offered event identities and original Runtime inbox IDs must be accounted for; overload or incomplete drain must fail visibly. Workload options are owned by [`run.mjs`](run.mjs). The targeted check is the real App/RxDB path in `--check`, followed by the full multi-tab run.
 
-## What it runs
+## What it measures
 
-The default case creates eight synthetic leads and 32 synthetic worker identities per lead: 264 active-turn equivalents. A synthetic active turn has a persisted `running` state and a unique turn identifier. No Codex or Claude process is started, no paid model call is made, and no provider session is opened.
+The default case creates eight synthetic lead teams with 32 workers each: 256 worker identities and 264 active-turn equivalents total. These records represent already-active native turns. The benchmark does not launch agent workers, change the production scheduler limit in [`codex_runtime.py`](../../codex_runtime.py), open a provider session, or make a paid model call.
 
-Each worker gets a temporary state and profile. The harness offers four bounded phases (ramp, steady, burst, and drain). Each phase sends turn lifecycle events, assistant deltas and final messages, tool start/output events, plus durable worker-to-worker and worker-to-lead messages through production `Runtime.chat_message`. Production `Runtime.notification` stores transcript and analytics events. The actual `make_server` HTTP implementation serves eight headless Chromium pages running the built Studio App and RxDB sync client.
+The isolated fixture uses the production Runtime, SQLite, analytics, transcript, chat-message, HTTP, sync, and `AppServer` implementations. A benchmark-only in-memory JSON-lines peer replaces `subprocess.Popen` using the same seam as `tests/protocol-reader-contract.py`. The real `AppServer` reader, bounded FIFO callback queue, ordered dispatcher, and callbacks remain active. Synthetic account keys route records through separate fake transport queues, which share one Runtime lock; they do not represent saved accounts or open provider sessions. The UI's provider-dependent model, cost, and limit requests for these synthetic keys are reported as expected unavailable API responses. Worker-to-peer and worker-to-lead chat rows use `Runtime.chat_message`. Their exact runtime-event IDs are consumed by synthetic `userMessage` receipts through `Runtime.notification` and the AppServer queue. Event IDs and delivery counts are reported separately.
 
-The eight App pages are the only browser tabs counted. They use the real local server origin, state API, sync stream, pull API, transcript store, and browser rendering. Feed reads after the workload go through the production `/api/agent-chat` endpoint. The JSON report includes browser API latency samples, page errors, long tasks, mutation counts, visible worker rows, and per-team message coverage, as well as Runtime event totals, transcript roles, queue depth and drain, dispatch delay, CPU, and peak RSS.
+Four phases offer work to every worker: warmup, steady, burst, and drain. Each worker/round offers a turn start and finish, tool start and completed output, assistant delta and final, and two durable chat messages with receipts. Assistant text carries one unique witness marker per team. Tool output is synthetic protocol data, not execution. The report separates API-server request lifetime, AppServer receive-to-callback delay, callback duration, browser route timings, and the unique final-marker offer-to-render delay.
 
-The one ordered queue in `server.py` belongs to this benchmark. It measures accepted-to-dispatched wait and Runtime dispatch time. It is not the native `AppServer.callbacks` queue. That production queue cannot be started under the no-native-factory rule because constructing `AppServer` launches a native CLI process. Consequently native callback queue depth and native-model/tool response time are omitted and must not be inferred from these results. Tool events are protocol-shaped synthetic notifications, not real tool execution.
+Eight headless Chromium tabs run the built production App and RxDB client without activating a desktop window or sending OS input. Each represents one team and opens a representative worker transcript; the same team’s lead feed is read through `/api/agent-chat`. The report records each page's visibility state because headless background behavior can differ from a desktop session. It checks RxDB sync initialization, marker rendering, pull coverage, queue drain, unique callback IDs, pending/consumed Runtime event counts, long tasks, UI interval staleness, API responses, browser process use, and errors.
 
-## Run
+Hook start and completion lifecycle notifications use the production callback and analytics path, but do not run hook commands. Provider/model execution and native tool execution are omitted. Tool output is synthetic protocol data. These results describe local application and transport behavior, not model throughput.
 
-From the repository root, first build the production browser application:
+## Build and run
+
+Build the application for the source checkout you want to measure:
 
 ```sh
 npm --prefix web ci
 npm --prefix web run build
-```
-
-The quick check uses one team, two synthetic workers, and one browser page to confirm the end-to-end wiring. Run it before the full eight-tab, 256-worker case:
-
-```sh
 node scripts/benchmarks/runtime_load/run.mjs --check
 node scripts/benchmarks/runtime_load/run.mjs --rounds 1
 ```
 
-Chromium is headless. Playwright uses its installed Chromium by default; set `CHROME_BIN` to another executable when needed. The Node runner stores reports under `$XDG_STATE_HOME/evidence/latency-components` (or `~/.local/state/evidence/latency-components` when `XDG_STATE_HOME` is unset), has a hard case deadline, terminates a stuck fixture, closes every browser page, and removes its unique temporary state only after child processes stop. A failure exits nonzero and prints the fixture diagnostic.
-
-To run the harness against another checkout's production app/server and dependencies, pass that root explicitly:
+The quick check uses a reduced fixture and one browser tab. It must pass before the full run. The runner owns option bounds and defaults. `--rounds` increases the sample count, `--offered-rate` sets steady-phase offered worker turns per second, and `--transports` selects the number of fake AppServer queues. Phase rates and queue counts are defined in [`server.py`](server.py) and [`run.mjs`](run.mjs). For example:
 
 ```sh
-node scripts/benchmarks/runtime_load/run.mjs --check --source-root /path/to/checkout --output /outside/checkout/runtime-load.json
+node scripts/benchmarks/runtime_load/run.mjs --rounds 2 --offered-rate 80 --transports 2
 ```
 
-The report records the source revision and source root. Build that checkout first. The harness scripts themselves come from the current checkout.
+To compare source checkouts with a pinned frontend artifact, select the backend checkout, built dist directory, and frontend source revision independently:
 
-## Read the result
+```sh
+node scripts/benchmarks/runtime_load/run.mjs \
+  --source-root /path/to/backend-checkout \
+  --frontend-dist /path/to/web/dist \
+  --frontend-source-revision <revision> \
+  --output /outside/checkout/report.json
+```
 
-`offered` and `dispatched` count each event class. A passing run requires every queued item to finish once, no backlog at drain, the expected active identities, saved assistant transcript items, readable lead feeds, and zero browser page errors. Compare reports only when source revision, host, browser, workload, and rounds match.
+The report records the backend source revision and digest, frontend source revision and artifact SHA-256. The harness uses a unique state, profile, and Chromium temporary profile under the evidence directory. This avoids occupied application state and shared `/tmp` quotas. It has a hard deadline; failures retain JSON evidence and a browser log outside the checkout. It closes only its own pages, fake transports, server, and temporary state.
 
-`latencyMs.harnessQueueWait` measures the synthetic offer queue; `latencyMs.runtimeDispatch` measures calls into production Runtime methods. Browser resource entries report latency by HTTP route. The browser timing starts and ends at the client and is not server-only time. Queue depth is the maximum harness queue depth, not native AppServer depth. Process CPU and peak RSS belong to the Python fixture process and exclude Chromium and the OS. The browser report separately provides page long tasks and worker-list rendering evidence.
+Reports default to `$XDG_STATE_HOME/evidence/latency-components` or `~/.local/state/evidence/latency-components`. Never point the fixture at an existing state directory.
 
-The report is a local benchmark, not a performance target or proof of production provider capacity. It identifies the amount and type of synthetic work the measured code handled and exposes missing event delivery or browser errors.
+## Reading results
+
+`offered` and `dispatched` describe callback identities admitted and consumed by production `AppServer.callbacks`. Eight assistant fragments may merge into a single callback; their identities are preserved in the production fragment sample list and counted individually. A passing run has equal unique identities, a drained callback queue, every chat and child-result event acknowledged by its original ID, no pending synthetic Runtime events, and one rendered witness per team tab.
+
+`latencyMs.receiveToCallback` starts when the production pipe reader receives a notification and ends when its ordered dispatcher begins the callback. `latencyMs.callbackDuration` measures time inside the Runtime callback. `latencyMs.runtimeLock` separates wait-to-acquire from time holding the shared Runtime lock, grouped by calling thread. This is harness-only instrumentation around the production lock. `httpServerLatencyMs` is server-side request duration by route; streaming requests measure connection lifetime. Browser route timings include browser-to-server work. `renderedByCategory.expectedAssistantMarkers` measures from the final notification offer to the marker becoming visible in the selected worker transcript.
+
+Queue capacity and peak depth are reported per real `AppServer.callbacks` queue. Queue depths are sampled when the fixture offers an event, so the peak is a sampled lower bound. The Python CPU and peak RSS belong to the fixture process. Browser process CPU/RSS are sampled independently. The report includes host process, descriptor, memory, and cgroup limits to make resource failures traceable.
+
+This is a synthetic local benchmark, not a production capacity guarantee. Compare runs only when host, workload, backend revision, frontend artifact, and browser match. A failed check or incomplete drain is evidence of a broken or overloaded run; do not interpret it as a successful lower-rate run.
