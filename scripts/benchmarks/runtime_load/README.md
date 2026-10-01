@@ -10,7 +10,7 @@ The default case creates eight synthetic lead teams with 32 workers each: 256 wo
 
 The isolated fixture uses the production Runtime, SQLite, analytics, transcript, chat-message, HTTP, sync, and `AppServer` implementations. A benchmark-only in-memory JSON-lines peer replaces `subprocess.Popen` using the same seam as `tests/protocol-reader-contract.py`. The real `AppServer` reader, bounded FIFO callback queue, ordered dispatcher, and callbacks remain active. Synthetic account keys route records through separate fake transport queues, which share one Runtime lock; they do not represent saved accounts or open provider sessions. The UI's provider-dependent model, cost, and limit requests for these synthetic keys are reported as expected unavailable API responses. Worker-to-peer and worker-to-lead chat rows use `Runtime.chat_message`. Their exact runtime-event IDs are consumed by synthetic `userMessage` receipts through `Runtime.notification` and the AppServer queue. Event IDs and delivery counts are reported separately.
 
-Four phases offer work to every worker: warmup, steady, burst, and drain. Each worker/round offers a turn start and finish, tool start and completed output, assistant delta and final, and two durable chat messages with receipts. Assistant text carries one unique witness marker per team. Tool output is synthetic protocol data, not execution. The report separates API-server request lifetime, AppServer receive-to-callback delay, callback duration, browser route timings, and the unique final-marker offer-to-render delay.
+Four phases offer work to every worker: warmup, steady, burst, and drain. Each worker turn offers a turn start and finish, tool start and completed output, assistant delta and final, and two durable chat messages with receipts. The default sustained phase lasts 30 seconds at 160 offered worker turns per second. Each representative transcript receives one unique final-only witness marker per steady turn. Tool output is synthetic protocol data, not execution. The report separates API-server request lifetime, AppServer receive-to-callback delay, callback duration, browser route timings, and final-offer-to-render delay.
 
 Eight headless Chromium tabs run the built production App and RxDB client without activating a desktop window or sending OS input. Each represents one team and opens a representative worker transcript; the same team’s lead feed is read through `/api/agent-chat`. The report records each page's visibility state because headless background behavior can differ from a desktop session. It checks RxDB sync initialization, marker rendering, pull coverage, queue drain, unique callback IDs, pending/consumed Runtime event counts, long tasks, UI interval staleness, API responses, browser process use, and errors.
 
@@ -27,11 +27,13 @@ node scripts/benchmarks/runtime_load/run.mjs --check
 node scripts/benchmarks/runtime_load/run.mjs --rounds 1
 ```
 
-The quick check uses a reduced fixture and one browser tab. It must pass before the full run. The runner owns option bounds and defaults. `--rounds` increases the sample count, `--offered-rate` sets steady-phase offered worker turns per second, and `--transports` selects the number of fake AppServer queues. Phase rates and queue counts are defined in [`server.py`](server.py) and [`run.mjs`](run.mjs). For example:
+The quick check uses a reduced fixture and one browser tab, and disables the sustained delay. It must pass before the full run. The runner owns option bounds and defaults. `--rounds` raises the minimum number of turns each worker receives in each phase, `--offered-rate` sets steady-phase offered worker turns per second, `--steady-seconds` selects a bounded sustained duration from 0 to 60 seconds, `--teams` selects the number of lead teams and real app tabs (default 8), and `--transports` selects the number of fake AppServer queues. The steady phase offers at least one turn per worker even when the configured rate and duration would produce fewer. For example, run a 5-team/160-worker comparison at 80 turns/s for 30 seconds with:
 
 ```sh
-node scripts/benchmarks/runtime_load/run.mjs --rounds 2 --offered-rate 80 --transports 2
+node scripts/benchmarks/runtime_load/run.mjs --teams 5 --offered-rate 80 --steady-seconds 30 --transports 2
 ```
+
+For the full 256-worker run, use the defaults or specify `--offered-rate 160 --steady-seconds 30`. Optional bounded rate variants are `--offered-rate 80 --steady-seconds 30` and `--offered-rate 320 --steady-seconds 15`. All retain 256 identities when `--teams` stays at its default. The runner enforces per-tab initialization within 15 seconds, at least 90% of configured steady offer rate, steady final-marker p95/p99 at or below 3/5 seconds, no HTTP handler/deadline errors, exact callback and Runtime event identities, and no more than 30 seconds of post-burst callback drain. A failed target remains a failed run in the JSON evidence.
 
 To compare source checkouts with a pinned frontend artifact, select the backend checkout, built dist directory, and frontend source revision independently:
 
@@ -47,7 +49,7 @@ The report records the backend source revision and digest, frontend source revis
 
 Reports default to `$XDG_STATE_HOME/evidence/latency-components` or `~/.local/state/evidence/latency-components`. Never point the fixture at an existing state directory.
 
-Each representative tab tracks a phase-specific witness that appears only in the completed assistant item, not its streaming deltas. `finalOfferToFirstDOMAppearanceMs` measures elapsed time from offering that final item until the browser first observes the marker under `#messages`.
+Each representative tab tracks unique steady-phase witnesses that appear only in completed assistant items, not their streaming deltas. `finalOfferToFirstDOMAppearanceMs` measures elapsed time from offering each final item until the browser first observes its marker under `#messages`. The reported steady-phase p95 and p99 use every marker offered to the representative worker for each team.
 
 If a tab stalls before the workload starts, run `--diagnose-origin-pool` with the same source and frontend options. This diagnostic opens the real app in six tabs, captures Chromium Network-domain requests and active server routes, closes only its first benchmark-owned page, and records whether the pending sixth navigation then completes. It exits before offering synthetic turns and writes diagnostic-only evidence, not a load result.
 

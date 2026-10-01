@@ -29,6 +29,16 @@ const harnessSourceSha256 = createHash("sha256")
 const args = process.argv.slice(2);
 const check = args.includes("--check");
 const diagnoseOriginPool = args.includes("--diagnose-origin-pool");
+const teamsAt = args.indexOf("--teams");
+const teams = teamsAt >= 0 ? Number(args[teamsAt + 1]) : 8;
+const workersAt = args.indexOf("--workers-per-team");
+const workersPerTeam = workersAt >= 0 ? Number(args[workersAt + 1]) : 32;
+const steadySecondsAt = args.indexOf("--steady-seconds");
+const steadySeconds = check
+  ? 0
+  : steadySecondsAt >= 0
+    ? Number(args[steadySecondsAt + 1])
+    : 30;
 const evidenceRoot = join(
   process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
   "evidence",
@@ -108,7 +118,7 @@ const backendSourceSha256 = await (async () => {
   }
   return hash.digest("hex");
 })();
-const deadlineMs = check ? 90_000 : 180_000;
+const deadlineMs = check ? 90_000 : 240_000;
 assert(
   Number.isInteger(rounds) && rounds >= 1 && rounds <= 8,
   "--rounds must be 1..8",
@@ -122,6 +132,20 @@ assert(
     transportCount >= 1 &&
     transportCount <= 8,
   "--transports must be 1..8",
+);
+assert(
+  Number.isInteger(teams) && teams >= 1 && teams <= 8,
+  "--teams must be 1..8",
+);
+assert(
+  Number.isInteger(workersPerTeam) &&
+    workersPerTeam >= 2 &&
+    workersPerTeam <= 64,
+  "--workers-per-team must be 2..64",
+);
+assert(
+  Number.isFinite(steadySeconds) && steadySeconds >= 0 && steadySeconds <= 60,
+  "--steady-seconds must be 0..60",
 );
 if (outputPath && outputPath.startsWith(repo + "/"))
   throw new Error("--output must be outside the checkout");
@@ -138,6 +162,9 @@ const fixture = spawn(
       ...(check ? { BENCH_QUICK_CHECK: "1" } : {}),
       BENCH_OFFERED_TURNS_PER_SECOND: String(offeredRate),
       BENCH_ACCOUNT_COUNT: String(transportCount),
+      BENCH_TEAMS: String(teams),
+      BENCH_WORKERS_PER_TEAM: String(workersPerTeam),
+      BENCH_STEADY_SECONDS: String(steadySeconds),
       BENCH_SOURCE_REVISION: execFileSync(
         "git",
         ["-C", sourceRoot, "rev-parse", "HEAD"],
@@ -166,6 +193,10 @@ let pageErrors = [];
 let requestFailures = [];
 let consoleErrors = [];
 let expectedApiUnavailable = [];
+let tabInitializationMs = [];
+const tabInitializationDeadlineMs = 15_000;
+let steadyWitnessLatencyByTab = [];
+let steadyFinalOfferToDOM = null;
 let ready;
 fixture.stderr.on("data", (chunk) => {
   childErr += chunk;
@@ -201,6 +232,19 @@ const waitLine = async (predicate, label, timeout = 20_000) => {
   }
   throw new Error(`${label} timed out: ${childErr}`);
 };
+const summarize = (values) => {
+  if (!values.length)
+    return { samples: 0, p50: null, p95: null, p99: null, max: null };
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = (p) => sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)];
+  return {
+    samples: values.length,
+    p50: at(0.5),
+    p95: at(0.95),
+    p99: at(0.99),
+    max: sorted.at(-1),
+  };
+};
 let result;
 try {
   ready = await waitLine(
@@ -211,8 +255,8 @@ try {
   const identityResponse = await fetch(`${ready.origin}/api/state?view=chat`);
   assert.equal(identityResponse.status, 200);
   const stateData = await identityResponse.json();
-  const expectedLeads = check ? 1 : 8;
-  const expectedWorkers = check ? 2 : 256;
+  const expectedLeads = check ? 1 : teams;
+  const expectedWorkers = check ? 2 : teams * workersPerTeam;
   assert.equal(
     stateData.threads.length,
     expectedLeads + expectedWorkers,
@@ -379,7 +423,7 @@ try {
     { stateDir: stateData.stateDir },
   );
 
-  const tabCount = check ? 1 : 8;
+  const tabCount = check ? 1 : teams;
   for (let index = 0; index < tabCount; index++) {
     const page = await context.newPage();
     page.setDefaultTimeout(25_000);
@@ -475,6 +519,21 @@ try {
     }
     const witness = ready.witnesses[index];
     assert(witness, `missing representative worker for tab ${index + 1}`);
+    const tabStartedAt = Date.now();
+    const remainingStartupMs = () =>
+      Math.max(1, tabInitializationDeadlineMs - (Date.now() - tabStartedAt));
+    const syncPullResult = page
+      .waitForResponse(
+        (response) => {
+          const url = new URL(response.url());
+          return url.pathname === "/api/sync/pull" && response.status() === 200;
+        },
+        { timeout: tabInitializationDeadlineMs },
+      )
+      .then(
+        (response) => ({ response }),
+        (error) => ({ error }),
+      );
     await page.addInitScript(
       ({ stateDir, id }) =>
         localStorage.setItem(
@@ -539,19 +598,28 @@ try {
       diagnostic.benchmarkDiagnostic = evidence;
       throw diagnostic;
     }
-    await page.goto(ready.origin, {
-      waitUntil: "domcontentloaded",
-      timeout: check ? 25_000 : 60_000,
-    });
     try {
-      await page.waitForFunction(
-        () =>
-          document.querySelector("#messages") ||
-          document.querySelector(".startup"),
-        null,
-        { timeout: 25_000 },
-      );
+      await page.goto(ready.origin, {
+        waitUntil: "domcontentloaded",
+        timeout: remainingStartupMs(),
+      });
+      await page.waitForSelector("#messages", {
+        timeout: remainingStartupMs(),
+      });
+      const syncPull = await syncPullResult;
+      if (!syncPull.response) throw syncPull.error;
+      tabInitializationMs.push({
+        tab: index + 1,
+        elapsedMs: Date.now() - tabStartedAt,
+        syncPullStatus: syncPull.response.status(),
+      });
     } catch (error) {
+      if (!tabInitializationMs.some((sample) => sample.tab === index + 1))
+        tabInitializationMs.push({
+          tab: index + 1,
+          elapsedMs: Date.now() - tabStartedAt,
+          error: error.message,
+        });
       console.error(
         `tab ${index + 1} DOM: ${await page
           .locator("body")
@@ -563,8 +631,14 @@ try {
       );
       throw error;
     }
-    await page.waitForSelector("#messages", { timeout: 25_000 });
   }
+  assert(
+    tabInitializationMs.length === tabCount &&
+      tabInitializationMs.every(
+        (sample) => sample.elapsedMs <= tabInitializationDeadlineMs,
+      ),
+    "each real App tab must initialize and complete an RxDB sync pull within15s",
+  );
   const preflight = await Promise.all(
     pages.map((page) =>
       page.evaluate(() => ({
@@ -595,21 +669,48 @@ try {
     deadlineMs,
   );
   result = envelope.report;
-  const witnessLatency = await Promise.all(
+  const baseTurnCount = expectedWorkers * (check ? 1 : rounds);
+  const expectedPhaseTurnCounts = {
+    warmup: baseTurnCount,
+    steady: Math.max(
+      baseTurnCount,
+      Math.ceil(offeredRate * (check ? 0 : steadySeconds)),
+    ),
+    burst: baseTurnCount,
+    drain: baseTurnCount,
+  };
+  assert.deepEqual(
+    result.phaseTurnCounts,
+    expectedPhaseTurnCounts,
+    "fixture must offer the configured sustained steady workload",
+  );
+  const expectedTotalTurns = Object.values(expectedPhaseTurnCounts).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
+  await Promise.all(
+    pages.map((page) =>
+      page.evaluate((offeredAt) => {
+        window.__bench.finalWitnessOfferedAtEpochMs = offeredAt;
+      }, result.finalWitnessOfferedAtEpochMs),
+    ),
+  );
+  steadyWitnessLatencyByTab = await Promise.all(
     pages.map(async (page, index) => {
       const witness = ready.witnesses[index];
-      const marker = result.witnessMarkerByAgent[witness.agentId];
-      const offeredAt = result.finalWitnessOfferedAtEpochMs[marker];
+      const markers = result.steadyWitnessMarkersByAgent[witness.agentId] || [];
       assert(
-        marker && offeredAt != null,
-        `missing offered witness for tab ${index + 1}`,
+        markers.length > 0,
+        `missing steady final witnesses for tab ${index + 1}`,
       );
       await page
         .waitForFunction(
-          (expected) =>
-            document.querySelector("#messages")?.innerText.includes(expected),
-          marker,
-          { timeout: check ? 3000 : 20_000 },
+          (expected) => {
+            const text = document.querySelector("#messages")?.innerText || "";
+            return expected.every((marker) => text.includes(marker));
+          },
+          markers,
+          { timeout: check ? 5000 : 15_000 },
         )
         .catch(async (error) => {
           const details = await page
@@ -631,7 +732,7 @@ try {
             .then((response) => response.json())
             .catch((cause) => ({ error: String(cause) }));
           throw new Error(
-            `tab ${index + 1} did not render ${marker}; selected=${JSON.stringify(details)}; transcript=${JSON.stringify(transcript.items?.slice(-5) || transcript)}; DOM=${(
+            `tab ${index + 1} did not render all ${markers.length} steady final markers; selected=${JSON.stringify(details)}; transcript=${JSON.stringify(transcript.items?.slice(-5) || transcript)}; DOM=${(
               await page
                 .locator("body")
                 .innerText()
@@ -639,24 +740,38 @@ try {
             ).slice(-2000)}; ${error.message}`,
           );
         });
-      return page.evaluate(
-        ({ marker: expected, offeredAt: offered }) => ({
-          marker: expected,
-          firstSeen: window.__bench.witnessFirstSeen[expected] || null,
-          renderedAtEpochMs:
-            window.__bench.witnessFirstSeen[expected]?.epochMs || null,
-          finalOfferToFirstDOMAppearanceMs:
-            window.__bench.witnessFirstSeen[expected] && offered != null
-              ? window.__bench.witnessFirstSeen[expected].epochMs - offered
-              : null,
-        }),
-        { marker, offeredAt },
+      const samples = await page.evaluate(
+        (expectedMarkers) =>
+          expectedMarkers.map((marker) => {
+            const firstSeen = window.__bench.witnessFirstSeen[marker] || null;
+            const offeredAt =
+              window.__bench.finalWitnessOfferedAtEpochMs?.[marker];
+            return {
+              marker,
+              firstSeen,
+              renderedAtEpochMs: firstSeen?.epochMs || null,
+              finalOfferToFirstDOMAppearanceMs:
+                firstSeen && offeredAt != null
+                  ? firstSeen.epochMs - offeredAt
+                  : null,
+            };
+          }),
+        markers,
       );
+      return { tab: index + 1, agentId: witness.agentId, samples };
     }),
   );
+  const steadyFinalRenderSamples = steadyWitnessLatencyByTab.flatMap(
+    (tab) => tab.samples,
+  );
+  steadyFinalOfferToDOM = summarize(
+    steadyFinalRenderSamples.map(
+      (sample) => sample.finalOfferToFirstDOMAppearanceMs,
+    ),
+  );
   const ui = await Promise.all(
-    pages.map(async (page) =>
-      page.evaluate((expectedMarker) => {
+    pages.map(async (page, index) =>
+      page.evaluate((expectedMarkers) => {
         const text = document.body.innerText;
         const api = window.__bench.resources;
         const byPath = {};
@@ -708,9 +823,14 @@ try {
           visibleTeams: (text.match(/Load \d\d\/\d\d/g) || []).length,
           displayedAssistantItems: (text.match(/synthetic answer/g) || [])
             .length,
-          renderedWitnessMarker: text.includes(expectedMarker),
+          renderedWitnessMarkers: expectedMarkers.filter((marker) =>
+            text.includes(marker),
+          ),
+          renderedAllSteadyWitnessMarkers: expectedMarkers.every((marker) =>
+            text.includes(marker),
+          ),
         };
-      }, result.witnessMarkerByAgent[ready.witnesses[pages.indexOf(page)].agentId]),
+      }, result.steadyWitnessMarkersByAgent[ready.witnesses[index].agentId]),
     ),
   );
   const feedReads = await Promise.all(
@@ -757,23 +877,33 @@ try {
     "every accepted event/message identity must be unique",
   );
   assert.equal(
+    result.exactlyOnce.offeredCallbackIdentitiesSha256,
+    result.exactlyOnce.dispatchedCallbackIdentitiesSha256,
+    "the offered and dispatched callback identity sets must match exactly",
+  );
+  assert.equal(
+    result.exactlyOnce.originalRuntimeEventIdsExpected,
+    result.exactlyOnce.originalRuntimeEventIdsAcknowledged,
+    "every original Runtime event ID must be acknowledged exactly once",
+  );
+  assert.equal(
     result.exactlyOnce.durableChatMessages,
-    expectedWorkers * 8 * (check ? 1 : rounds),
+    expectedTotalTurns * 2,
     "every worker must persist peer and lead messages in every phase",
   );
   assert.equal(
     result.exactlyOnce.queuedRuntimeEventsAdded,
-    expectedWorkers * 12 * (check ? 1 : rounds),
+    expectedTotalTurns * 3,
     "durable chat messages and completed workers must queue production runtime events",
   );
   assert.equal(
     result.exactlyOnce.queuedRuntimeEventsByKind.agent_message,
-    expectedWorkers * 8 * (check ? 1 : rounds),
+    expectedTotalTurns * 2,
     "each worker-to-worker and worker-to-lead chat must queue one production agent message",
   );
   assert.equal(
     result.exactlyOnce.queuedRuntimeEventsByKind.child_result,
-    expectedWorkers * 4 * (check ? 1 : rounds),
+    expectedTotalTurns,
     "each synthetic completed turn must queue one production child result",
   );
   assert.equal(
@@ -793,21 +923,44 @@ try {
   );
   assert.equal(
     result.offered.assistantDelta,
-    expectedWorkers * 4 * (check ? 1 : rounds) * 8,
+    expectedTotalTurns * 8,
     "each worker turn must offer eight assistant fragments",
   );
   assert.equal(
     result.offered.hookLifecycle,
-    expectedWorkers * 4 * (check ? 1 : rounds) * 2,
+    expectedTotalTurns * 2,
     "each worker turn must offer hook start and completion lifecycle callbacks",
   );
   assert.equal(
     result.transcriptItemsByRole.assistant,
-    expectedWorkers * 4 * (check ? 1 : rounds),
+    expectedTotalTurns,
     "all four phase finals must persist for each worker/round",
   );
+  assert.equal(result.httpServerErrors.length, 0, "no HTTP handler may fail");
+  const deadlineRequestFailures = requestFailures.filter((sample) =>
+    /ERR_(TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET|ADDRESS_UNREACHABLE)/i.test(
+      sample.failure,
+    ),
+  );
+  assert.deepEqual(
+    deadlineRequestFailures,
+    [],
+    "no local API request may time out or lose its server connection",
+  );
+  if (!check) {
+    assert(
+      result.phaseAchievedOfferedTurnsPerSecond.steady >= offeredRate * 0.9,
+      `steady actual offered rate must be at least90% of configured ${offeredRate}/s`,
+    );
+    assert(
+      result.burstDrainMs != null && result.burstDrainMs <= 30_000,
+      "all production callbacks offered through burst must drain within30s",
+    );
+  }
   const browserReport = {
     tabs: pages.length,
+    tabInitializationDeadlineMs,
+    tabInitializationMs,
     mode: "Chromium headless; real production App/RxDB and HTTP API",
     processResources: {
       pid: browserServer.process().pid,
@@ -837,27 +990,29 @@ try {
     pulledMessagesByTeam: feedReads,
     renderedByCategory: {
       assistantFinalTextMatches: ui.map((tab) => tab.displayedAssistantItems),
-      expectedAssistantMarkers: witnessLatency,
-      markerRenderedOnEveryTab: ui.map((tab) => tab.renderedWitnessMarker),
+      steadyFinalOfferToDOM,
+      steadyWitnessLatencyByTab,
+      markerRenderedOnEveryTab: ui.map(
+        (tab) => tab.renderedAllSteadyWitnessMarkers,
+      ),
       visibleWorkerRows: ui.map((tab) => tab.visibleTeams),
       toolAndLifecycleViaUi:
         "tool and hook details are measured through Runtime transcript and analytics; assistant marker is rendered in each representative worker transcript",
     },
   };
   assert(
-    ui.every((tab) => tab.renderedWitnessMarker),
-    "each team tab must render its unique assistant marker",
+    ui.every((tab) => tab.renderedAllSteadyWitnessMarkers),
+    "each team tab must render all steady final markers for its representative worker",
   );
   assert(
-    witnessLatency.every(
+    steadyFinalRenderSamples.every(
       (item) => item.firstSeen && item.finalOfferToFirstDOMAppearanceMs >= 0,
     ),
-    "each final-only phase marker must first appear in the DOM after final offer",
+    "every steady final marker must first appear in the DOM after final offer",
   );
   assert(
-    result.exactlyOnce.consumedRuntimeEvents >=
-      expectedWorkers * 8 * (check ? 1 : rounds),
-    "worker-to-peer and worker-to-lead runtime event IDs must be acknowledged",
+    steadyFinalOfferToDOM.p95 <= 3000 && steadyFinalOfferToDOM.p99 <= 5000,
+    "steady final offer-to-DOM p95/p99 must meet 3s/5s targets",
   );
   // Let open UI requests finish or abort their own way before stopping HTTP.
   // In particular, App session refreshes can remain active after the last pull.
@@ -902,6 +1057,21 @@ try {
     ],
     runtime: result,
     browser: browserReport,
+    acceptance: {
+      tabInitializationDeadlineMs,
+      tabInitializationMs,
+      steadyConfiguredTurnsPerSecond: offeredRate,
+      steadyActualTurnsPerSecond:
+        result.phaseAchievedOfferedTurnsPerSecond.steady,
+      steadyMinimumActualTurnsPerSecond: check ? null : offeredRate * 0.9,
+      steadyFinalOfferToDOM,
+      burstDrainMs: result.burstDrainMs,
+      burstDrainDeadlineMs: check ? null : 30_000,
+      callbackIdentitySetsEqual: true,
+      originalRuntimeEventIdsExactlyOnce: true,
+      httpServerErrors: result.httpServerErrors.length,
+      deadlineRequestErrors: deadlineRequestFailures.length,
+    },
     resourceLimits: {
       deadlineMs,
       queueCapacityPerAppServerTransport: result.queue.capacityPerTransport,
@@ -976,6 +1146,10 @@ try {
               artifactSha256: frontendArtifactSha256,
             },
             error: String(error?.message || error),
+            tabInitializationDeadlineMs,
+            tabInitializationMs,
+            steadyWitnessLatencyByTab,
+            steadyFinalOfferToDOM,
             pageErrors,
             requestFailures,
             consoleErrors,
@@ -992,6 +1166,13 @@ try {
                   httpServerErrors: result.httpServerErrors,
                   exactlyOnce: result.exactlyOnce,
                   latencyMs: result.latencyMs,
+                  phaseTurnCounts: result.phaseTurnCounts,
+                  phaseElapsedSeconds: result.phaseElapsedSeconds,
+                  phaseAchievedOfferedTurnsPerSecond:
+                    result.phaseAchievedOfferedTurnsPerSecond,
+                  phaseOfferedTurnLatenessMs: result.phaseOfferedTurnLatenessMs,
+                  burstDrainMs: result.burstDrainMs,
+                  queue: result.queue,
                 }
               : null,
             browserProcessResources: browserResourcePeak,

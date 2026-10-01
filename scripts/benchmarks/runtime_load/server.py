@@ -10,6 +10,7 @@ import resource
 import copy
 import atexit
 import hashlib
+import math
 import subprocess
 import sys
 import threading
@@ -102,6 +103,16 @@ def delta_identity(params):
 def phase_due_ns(start_ns, index, turns_per_second):
     """Schedule one offered turn relative to its phase's own start time."""
     return start_ns + int(index * 1_000_000_000 / turns_per_second)
+
+
+def phase_turn_counts(worker_count, rounds, offered_rate, steady_seconds):
+    base_count = worker_count * rounds
+    return {
+        "warmup": base_count,
+        "steady": max(base_count, math.ceil(offered_rate * steady_seconds)),
+        "burst": base_count,
+        "drain": base_count,
+    }
 
 
 def delivery_receipt(event_id, thread_id, turn_id):
@@ -318,8 +329,9 @@ def main():
     queue_limit = AppServer.CALLBACK_QUEUE_LIMIT
     offered_rate = int(os.environ.get("BENCH_OFFERED_TURNS_PER_SECOND", "160"))
     quick_check = os.environ.get("BENCH_QUICK_CHECK") == "1"
-    workers_per_team = 2 if quick_check else 32
-    team_count = 1 if quick_check else 8
+    workers_per_team = 2 if quick_check else int(os.environ.get("BENCH_WORKERS_PER_TEAM", "32"))
+    team_count = 1 if quick_check else int(os.environ.get("BENCH_TEAMS", "8"))
+    steady_seconds = 0 if quick_check else float(os.environ.get("BENCH_STEADY_SECONDS", "30"))
     lock = threading.Lock()
     dispatched = {}
     receive_to_callback_ms = []
@@ -541,7 +553,12 @@ def main():
             expected_runtime_event_ids = []
             turn_lateness_ms = {name: [] for name in ("warmup", "steady", "burst", "drain")}
             turn_offered_ns = {name: [] for name in ("warmup", "steady", "burst", "drain")}
-            witness_markers = {}
+            turn_counts = phase_turn_counts(len(workers), rounds, offered_rate, steady_seconds)
+            witness_markers = defaultdict(list)
+            steady_witness_markers = defaultdict(list)
+            burst_drain_ms = None
+            current_phase = [None]
+            burst_last_offer_ns = [None]
 
             def offer(kind, key, process, payload):
                 if key in emitted_keys:
@@ -558,13 +575,16 @@ def main():
                     payload["params"]["_benchEventId"] = key
                     payload["params"]["_benchCategory"] = kind
                 process.emit(payload)
+                if current_phase[0] == "burst":
+                    burst_last_offer_ns[0] = time.monotonic_ns()
                 for appserver in appservers:
                     callback_queue_peak[0] = max(callback_queue_peak[0], appserver.callbacks.qsize())
 
             phase_elapsed = {}
             phase_effective_rate = {}
             for phase, scale in (("warmup", 2), ("steady", 1), ("burst", 4), ("drain", 1)):
-                phase_count = len(workers) * rounds
+                current_phase[0] = phase
+                phase_count = turn_counts[phase]
                 phase_started = time.monotonic_ns() + 100_000_000
                 for i in range(phase_count):
                     agent, lead = identities[i % len(identities)]
@@ -582,7 +602,9 @@ def main():
                     stream_text, final_text = assistant_witness_text(
                         phase, marker, agent["name"], local_round
                     )
-                    witness_markers[agent["id"]] = marker
+                    witness_markers[agent["id"]].append(marker)
+                    if phase == "steady":
+                        steady_witness_markers[agent["id"]].append(marker)
                     team_number = i % len(workers) // workers_per_team
                     process = fake_processes[team_number % len(fake_processes)]
                     sequence = [
@@ -619,9 +641,16 @@ def main():
                 phase_elapsed[phase] = (time.monotonic_ns() - phase_started) / 1e9
                 offered_times = turn_offered_ns[phase]
                 phase_effective_rate[phase] = (
-                    len(offered_times) / ((offered_times[-1] - offered_times[0]) / 1e9)
-                    if len(offered_times) > 1 and offered_times[-1] > offered_times[0]
+                    len(offered_times) / (phase_elapsed[phase])
+                    if offered_times and phase_elapsed[phase] > 0
                     else None)
+                if phase == "burst":
+                    wait_callbacks(sum(category_offered.values()), 30)
+                    for appserver in appservers:
+                        appserver.callbacks.join()
+                    burst_drain_ms = (
+                        time.monotonic_ns() - burst_last_offer_ns[0]
+                    ) / 1_000_000
 
             # Wait until all turn-complete callbacks have persisted child_result
             # events; only then enumerate their exact original IDs for receipts.
@@ -678,6 +707,9 @@ def main():
             usage = resource.getrusage(resource.RUSAGE_SELF)
             report = {"teams": team_count, "workersPerTeam": workers_per_team,
                       "syntheticActiveTurns": len(workers) + len(leads), "rounds": rounds,
+                      "steadySeconds": steady_seconds,
+                      "phaseTurnCounts": turn_counts,
+                      "burstDrainMs": burst_drain_ms,
                       "syntheticAccounts": {"keys": account_keys,
                                             "teamAccountKeys": [account_keys[index % len(account_keys)] for index in range(team_count)]},
                       "phases": ["warmup", "steady", "burst", "drain"],
@@ -711,7 +743,8 @@ def main():
                       "phaseElapsedSeconds": phase_elapsed,
                       "phaseOfferedTurnLatenessMs": {phase: stats(values) for phase, values in turn_lateness_ms.items()},
                       "phaseAchievedOfferedTurnsPerSecond": phase_effective_rate,
-                      "witnessMarkerByAgent": witness_markers,
+                      "witnessMarkersByAgent": dict(witness_markers),
+                      "steadyWitnessMarkersByAgent": dict(steady_witness_markers),
                       "finalWitnessOfferedAtEpochMs": final_witness_offered_at,
                       "httpServerLatencyMs": {route: stats(values) for route, values in http_latencies.items()},
                       "httpServerErrors": http_errors,

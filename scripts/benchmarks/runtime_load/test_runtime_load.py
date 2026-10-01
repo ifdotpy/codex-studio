@@ -28,6 +28,19 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         self.assertEqual(module.phase_due_ns(next_phase, 1, 8) - next_phase,
                          125_000_000)
 
+    def test_sustained_phase_offers_configured_duration_without_skipping_workers(self):
+        counts = module.phase_turn_counts(256, 1, 160, 30)
+        self.assertEqual(counts, {
+            "warmup": 256,
+            "steady": 4800,
+            "burst": 256,
+            "drain": 256,
+        })
+
+    def test_steady_minimum_covers_every_worker_when_duration_is_short(self):
+        counts = module.phase_turn_counts(256, 1, 1, 1)
+        self.assertEqual(counts["steady"], 256)
+
     def test_stream_identity_uses_only_real_protocol_fields(self):
         base = {"threadId": "t", "turnId": "turn", "itemId": "item",
                 "delta": "chunk", "_benchEventId": "ignored"}
