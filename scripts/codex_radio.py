@@ -400,13 +400,9 @@ def _reconcile(runtime, db, room, a, turn):
                           "AND json_extract(record,'$.turnId')=? AND json_extract(record,'$.role')='assistant' ORDER BY created,id",
                           (a['id'], turn)).fetchall():
         item = json.loads(row['record'])
-        full = db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                          'FROM runtime_search_rows WHERE id=?)', (row['id'],)).fetchone()
-        if full is not None:
-            text = full[0]
-        elif not item.get('truncated'):
-            text = item.get('text', '')
-        else:
+        from codex_search_text import search_text
+        text = search_text(db, row['id'])
+        if item.get('truncated') and not text:
             raise ValueError('The full shared reply is unavailable. No truncated reply was forwarded.')
         _message(db, room, room['id'] + ':' + room['radio']['active']['eventId'] + ':' + row['id'], a['id'], text, created=row['created'])
 

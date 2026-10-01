@@ -1099,6 +1099,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for warning in self.monitor_recovery_warnings:
             print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
         os.chmod(self.db_path, 0o600)
+        if server_factory is AppServer:
+            self.search_migration_start()
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
         startup_memory_mark("runtime-init-complete")
@@ -1634,6 +1636,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
+        if len(text) > 20000:
+            db.execute("INSERT INTO runtime_item_fulltext VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body",
+                       (key, text))
+        else:
+            db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (key,))
         # Store the batch location beside each receipt. Transcript reads can
         # resolve it by primary key without scanning historical JSON payloads.
         receipt_ids = [r.get("id") for r in inputs] if inputs is not None else (
@@ -1650,11 +1657,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         else:
             # A short unfinished item is complete in runtime_items. Remove
             # its initial empty FTS entry and rebuild it on completion.
-            address = db.execute('SELECT search_rowid FROM runtime_search_rows WHERE id=?', (key,)).fetchone()
-            if address:
-                db.execute('DELETE FROM runtime_search WHERE rowid=?', (address[0],))
-                db.execute('DELETE FROM runtime_search_rows WHERE id=?', (key,))
-                db.execute('DELETE FROM runtime_search_indexed WHERE id=?', (key,))
+            self.delete_search_item(db, key)
         if role == "assistant":
             from codex_radio import observe_item
             observe_item(self, db, agent, key, role, text, metadata)
@@ -2493,8 +2496,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "Legacy native steer outcome is unknown" if submitted else None,
                         event_id, a["id"]))
         if not submitted and attempt.get("events"):
-            db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
-                       (a["id"] + ":" + attempt["events"][0], a["id"]))
+            item_id = a["id"] + ":" + attempt["events"][0]
+            self.delete_search_item(db, item_id)
+            db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (item_id,))
+            db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?", (item_id, a["id"]))
         self.put(db, "agents", a)
 
     @staticmethod
@@ -3680,8 +3685,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                "AND status IN ('reserved','dispatching','uncertain')",
                                (event_id, agent_id, attempt["epoch"]))
                 if attempt["events"]:
-                    db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?",
-                               (agent_id + ":" + attempt["events"][0], agent_id))
+                    item_id = agent_id + ":" + attempt["events"][0]
+                    self.delete_search_item(db, item_id)
+                    db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (item_id,))
+                    db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?", (item_id, agent_id))
                 self.put(db, "agents", a)
                 self.changed.set()
                 return
@@ -4029,10 +4036,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 key = a["id"] + ":" + p.get("itemId", "message")
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
                 previous = json.loads(row[0]) if row else {}
-                full = (db.execute("SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid "
-                                   "FROM runtime_search_rows WHERE id=?)", (key,)).fetchone()
-                        if previous.get("truncated") else None)
-                text = (full[0] if full is not None else previous.get("text", "")) + p.get("delta", "")
+                if previous.get("truncated"):
+                    from codex_search_text import search_text
+                    base = search_text(db, key)
+                else:
+                    base = previous.get("text", "")
+                text = base + p.get("delta", "")
                 self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
                           streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=previous.get("phase"))
                 a["activity"] = {"phase": "writing", "at": time.time()}
@@ -4077,11 +4086,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                               (a['id'] + ':' + item['id'],)).fetchone()
                         if buffered:
                             saved = json.loads(buffered[0])
-                            full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                                               'FROM runtime_search_rows WHERE id=?)',
-                                               (a['id'] + ':' + item['id'],)).fetchone()
-                                    if saved.get('truncated') else None)
-                            text = full[0] if full else saved.get('text', '')
+                            if saved.get('truncated'):
+                                from codex_search_text import search_text
+                                text = search_text(db, a['id'] + ':' + item['id'])
+                            else:
+                                text = saved.get('text', '')
                     self.item(db, a["id"], item["id"], "assistant", text, streaming=False,
                               turnId=p.get("turnId") or a.get("turnId"), phase=item.get("phase"))
                     if item.get("questions"):

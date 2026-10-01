@@ -3,10 +3,13 @@
 import hashlib
 import json
 import re
+import sqlite3
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
+import shutil
 from pathlib import Path
 
 from codex_agent_management import management_tools, manage_agent, _worktree_check
@@ -192,33 +195,35 @@ class WorkMixin:
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-            CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search USING fts5(id UNINDEXED, agent UNINDEXED, kind UNINDEXED, body, tokenize='unicode61');
-            CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_search_next_meta (
+                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
+                search_rowid INTEGER NOT NULL UNIQUE);
+            CREATE TABLE IF NOT EXISTS runtime_search_rollout (
+                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
+                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
         """)
-        self.setup_search_rows(db)
-        # Backfill once. Later writes update the index in the same transaction.
-        for row in db.execute(
-            "SELECT i.id,i.agent,i.record FROM runtime_items i LEFT JOIN runtime_search_indexed s ON i.id=s.id WHERE s.id IS NULL"
-        ).fetchall():
-            item = json.loads(row["record"])
-            self.index_item(
-                db, row["id"], row["agent"], item.get("title", ""), item.get("text", "")
-            )
+        state = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
+        if not state:
+            db.execute("INSERT INTO runtime_search_rollout VALUES (1,'building',0,?)", (time.time(),))
+            state = ("building",)
+        phase = state[0]
+        old_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone()
+        if phase not in {"dropping", "complete"} and not old_exists:
+            db.execute("CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')")
+        if phase not in {"dropping", "complete"}:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY)")
+        if phase not in {"dropping", "complete"} and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone():
+            self.setup_search_rows(db)
 
     def setup_search_rows(self, db):
         # FTS UNINDEXED columns cannot support an equality lookup. Keep the
         # document address in an ordinary indexed table, including legacy rows.
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
             return
-        db.execute("SAVEPOINT search_rows_migration")
-        try:
-            db.execute("CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)")
-            db.execute("INSERT INTO runtime_search_rows SELECT id,rowid FROM runtime_search")
-            db.execute("RELEASE search_rows_migration")
-        except BaseException:
-            db.execute("ROLLBACK TO search_rows_migration")
-            db.execute("RELEASE search_rows_migration")
-            raise
+        db.execute("CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)")
+        db.execute("CREATE TABLE IF NOT EXISTS runtime_search_rows_rollout (id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL DEFAULT 0)")
+        db.execute("INSERT OR IGNORE INTO runtime_search_rows_rollout(id,cursor) VALUES(1,0)")
 
     @staticmethod
     def work_records(db, root_id):
@@ -249,18 +254,224 @@ class WorkMixin:
             "(SELECT 1 FROM json_each(runtime_work.record,'$.dependencies') WHERE value=?)",
             (root_id, dependency_id))]
 
-    def index_item(self, db, key, agent, kind, body):
-        row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
-        if row:
-            db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
-        cursor = db.execute(
-            "INSERT INTO runtime_search(id,agent,kind,body) VALUES (?,?,?,?)",
-            (key, agent, kind, body),
-        )
-        db.execute("INSERT INTO runtime_search_rows VALUES (?,?) ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
-                   (key, cursor.lastrowid))
-        db.execute("INSERT OR IGNORE INTO runtime_search_indexed VALUES (?)", (key,))
+    def _search_phase(self, db):
+        row = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
+        return row[0] if row else "legacy"
 
+    def search_is_indexed(self, db, key):
+        if self._search_phase(db) in {"active", "dropping", "complete"}:
+            return db.execute("SELECT 1 FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone() is not None
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
+            return db.execute("SELECT 1 FROM runtime_search_rows WHERE id=?", (key,)).fetchone() is not None
+        return False
+
+    def _index_search_next(self, db, key, agent, kind, body):
+        previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
+        if previous:
+            db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
+            rowid = previous[0]
+            db.execute("UPDATE runtime_search_next_meta SET agent=?,kind=? WHERE id=?", (agent, kind, key))
+        else:
+            rowid = db.execute("SELECT coalesce(max(search_rowid),0)+1 FROM runtime_search_next_meta").fetchone()[0]
+            db.execute("INSERT INTO runtime_search_next_meta VALUES (?,?,?,?)", (key, agent, kind, rowid))
+        db.execute("INSERT INTO runtime_search_next(rowid,body) VALUES (?,?)", (rowid, body))
+
+    def _delete_search_next(self, db, key):
+        previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
+        if previous:
+            db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
+            db.execute("DELETE FROM runtime_search_next_meta WHERE id=?", (key,))
+
+    def index_item(self, db, key, agent, kind, body=None):
+        from codex_search_text import search_text
+        body = search_text(db, key)
+        phase = self._search_phase(db)
+        if phase not in {"active", "dropping", "complete"}:
+            row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
+            if row:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
+            cursor = db.execute(
+                "INSERT INTO runtime_search(id,agent,kind,body) VALUES (?,?,?,?)",
+                (key, agent, kind, body),
+            )
+            db.execute("INSERT INTO runtime_search_rows VALUES (?,?) ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
+                       (key, cursor.lastrowid))
+            db.execute("INSERT OR IGNORE INTO runtime_search_indexed VALUES (?)", (key,))
+        if phase in {"building", "active", "dropping", "complete"} and db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_next'"
+        ).fetchone():
+            self._index_search_next(db, key, agent, kind, body)
+
+    def delete_search_item(self, db, key):
+        phase = self._search_phase(db)
+        if phase not in {"active", "dropping", "complete"}:
+            row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
+            if row:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row[0],))
+                db.execute("DELETE FROM runtime_search_rows WHERE id=?", (key,))
+                db.execute("DELETE FROM runtime_search_indexed WHERE id=?", (key,))
+        if phase in {"building", "active", "dropping", "complete"}:
+            self._delete_search_next(db, key)
+
+    def search_migration_start(self):
+        if getattr(self, "search_migration_thread", None) and self.search_migration_thread.is_alive():
+            return False
+        phase = None
+        with self.db() as db:
+            phase = self._search_phase(db)
+        if phase == "complete":
+            return False
+        worker = threading.Thread(target=self._search_migration_run, daemon=True,
+                                  name="runtime-search-migration")
+        self.search_migration_thread = worker
+        worker.start()
+        return True
+
+    def _search_migration_run(self):
+        while not self.closed:
+            delay = 0.001
+            try:
+                blocked_for_space = False
+                with self.lock, self.db() as db:
+                    phase = self._search_phase(db)
+                    if phase == "active":
+                        db.execute("UPDATE runtime_search_rollout SET phase='dropping',updated=? WHERE id=1", (time.time(),))
+                        phase = "dropping"
+                    elif phase in {"building", "waiting_for_space"}:
+                        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_next'").fetchone():
+                            free = shutil.disk_usage(self.db_path.parent).free
+                            db_bytes = self.db_path.stat().st_size
+                            reserve = max(16 * 1024**3, db_bytes // 2)
+                            if free < reserve:
+                                db.execute("UPDATE runtime_search_rollout SET phase='waiting_for_space',updated=? WHERE id=1", (time.time(),))
+                                blocked_for_space = True
+                            else:
+                                self._check_search_rows_batch(db)
+                                if sqlite3.sqlite_version_info < (3, 43, 0):
+                                    raise RuntimeError("SQLite 3.43 or later is required for contentless FTS deletes")
+                                db.execute("CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
+                                db.execute("UPDATE runtime_search_rollout SET phase='building',updated=? WHERE id=1", (time.time(),))
+                        if not blocked_for_space:
+                            if shutil.disk_usage(self.db_path.parent).free < 8 * 1024**3:
+                                db.execute("UPDATE runtime_search_rollout SET phase='waiting_for_space',updated=? WHERE id=1", (time.time(),))
+                                blocked_for_space = True
+                            else:
+                                if phase == "waiting_for_space":
+                                    db.execute("UPDATE runtime_search_rollout SET phase='building',updated=? WHERE id=1", (time.time(),))
+                                if self._check_search_rows_batch(db):
+                                    pass
+                                elif not self._search_migration_batch(db):
+                                    self._search_migration_verify_and_switch(db)
+                    elif phase == "dropping":
+                        self._search_cleanup_batch(db)
+                    else:
+                        return
+                if blocked_for_space:
+                    delay = 30
+                time.sleep(delay)
+            except Exception as error:
+                self.search_migration_error = str(error)[:500]
+                time.sleep(5)
+
+    def _search_migration_batch(self, db, batch_size=5, max_bytes=64 * 1024):
+        state = db.execute("SELECT cursor FROM runtime_search_rollout WHERE id=1").fetchone()
+        cursor = int(state[0])
+        rows = db.execute(
+            "SELECT search_rowid,id FROM runtime_search_rows WHERE search_rowid>? ORDER BY search_rowid LIMIT ?",
+            (cursor, batch_size),
+        ).fetchall()
+        if not rows:
+            return False
+        from codex_search_text import search_texts
+        refs = [row["id"] for row in rows]
+        bodies = search_texts(db, refs)
+        total_bytes = 0
+        processed = 0
+        for row in rows:
+            ref = row["id"]
+            body = bodies.get(ref, "")
+            body_bytes = len(body.encode("utf-8"))
+            if processed and total_bytes + body_bytes > max_bytes:
+                break
+            total_bytes += body_bytes
+            item = db.execute("SELECT agent,record FROM runtime_items WHERE id=?", (ref,)).fetchone()
+            if item:
+                record = json.loads(item["record"])
+                if record.get("truncated"):
+                    # Transfer the legacy full body before the old FTS row can be removed.
+                    db.execute("INSERT INTO runtime_item_fulltext VALUES (?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", (ref, body))
+                    from codex_search_text import search_text
+                    if search_text(db, ref) != body:
+                        raise RuntimeError("Full-text transfer verification failed for " + ref)
+            legacy = db.execute("SELECT agent,kind FROM runtime_search WHERE rowid=?", (row["search_rowid"],)).fetchone()
+            kind, agent = legacy["kind"], legacy["agent"]
+            self._index_search_next(db, ref, agent, kind, body)
+            processed += 1
+        if not processed:
+            return False
+        db.execute("UPDATE runtime_search_rollout SET cursor=?,updated=? WHERE id=1",
+                   (rows[processed - 1]["search_rowid"], time.time()))
+        self.search_migration_last_batch_bytes = total_bytes
+        return True
+
+    def _check_search_rows_batch(self, db, batch_size=500):
+        state = db.execute("SELECT cursor FROM runtime_search_rows_rollout WHERE id=1").fetchone()
+        if not state:
+            return False
+        cursor = int(state[0])
+        rows = db.execute("SELECT rowid,id FROM runtime_search WHERE rowid>? ORDER BY rowid LIMIT ?",
+                          (cursor, batch_size)).fetchall()
+        if not rows:
+            db.execute("DROP TABLE runtime_search_rows_rollout")
+            return False
+        db.executemany("INSERT OR IGNORE INTO runtime_search_rows VALUES (?,?)",
+                       ((row["id"], row["rowid"]) for row in rows))
+        db.execute("UPDATE runtime_search_rows_rollout SET cursor=? WHERE id=1", (rows[-1]["rowid"],))
+        return True
+
+    def _search_migration_verify_and_switch(self, db):
+        missing = db.execute("SELECT r.id FROM runtime_search_rows r LEFT JOIN runtime_search_next_meta n ON n.id=r.id WHERE n.id IS NULL LIMIT 1").fetchone()
+        mismatch = db.execute("SELECT n.id FROM runtime_search_next_meta n LEFT JOIN runtime_search_rows r ON r.id=n.id WHERE r.id IS NULL LIMIT 1").fetchone()
+        if missing or mismatch:
+            db.execute("UPDATE runtime_search_rollout SET phase='building',cursor=0,updated=? WHERE id=1", (time.time(),))
+            return
+        truncated_count = db.execute(
+            "SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.truncated')=1"
+        ).fetchone()[0]
+        copied_count = db.execute("""SELECT count(*) FROM runtime_item_fulltext f
+            JOIN runtime_items i ON i.id=f.id
+            WHERE json_extract(i.record,'$.truncated')=1""").fetchone()[0]
+        if truncated_count != copied_count:
+            db.execute("UPDATE runtime_search_rollout SET phase='building',cursor=0,updated=? WHERE id=1", (time.time(),))
+            return
+        sample = db.execute("""SELECT i.id,r.search_rowid FROM runtime_items i
+            JOIN runtime_search_rows r ON r.id=i.id
+            WHERE json_extract(i.record,'$.truncated')=1 ORDER BY i.id LIMIT 20""").fetchall()
+        for item in sample:
+            old_body = db.execute(
+                "SELECT body FROM runtime_search WHERE rowid=?", (item["search_rowid"],)
+            ).fetchone()
+            new_body = db.execute(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?", (item["id"],)
+            ).fetchone()
+            if (old_body is None or new_body is None or
+                    hashlib.sha256((old_body[0] or "").encode("utf-8")).digest() !=
+                    hashlib.sha256((new_body[0] or "").encode("utf-8")).digest()):
+                raise RuntimeError("Full-text transfer hash verification failed for " + item["id"])
+        db.execute("UPDATE runtime_search_rollout SET phase='dropping',updated=? WHERE id=1", (time.time(),))
+
+    def _search_cleanup_batch(self, db, batch_size=5):
+        rows = db.execute("SELECT search_rowid,id FROM runtime_search_rows ORDER BY search_rowid LIMIT ?", (batch_size,)).fetchall()
+        if rows:
+            for row in rows:
+                db.execute("DELETE FROM runtime_search WHERE rowid=?", (row["search_rowid"],))
+                db.execute("DELETE FROM runtime_search_rows WHERE id=?", (row["id"],))
+                db.execute("DELETE FROM runtime_search_indexed WHERE id=?", (row["id"],))
+            return
+        db.execute("DROP TABLE IF EXISTS runtime_search")
+        db.execute("DROP TABLE IF EXISTS runtime_search_rows")
+        db.execute("DROP TABLE IF EXISTS runtime_search_indexed")
+        db.execute("UPDATE runtime_search_rollout SET phase='complete',updated=? WHERE id=1", (time.time(),))
     def checked_actor(self, db, agent_id, actor=None):
         a = self.agent(agent_id, db)
         if a.get("deletedAt"):
@@ -609,10 +820,23 @@ class WorkMixin:
                 and (not caller or a["rootId"] == caller["rootId"])
             }
             found = []
-            for row in db.execute(
-                "SELECT runtime_search.id,runtime_search.agent,runtime_search.kind,snippet(runtime_search,3,'','',' … ',30) AS excerpt FROM runtime_search JOIN runtime_items i ON i.id=runtime_search.id WHERE runtime_search MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY rank LIMIT 1000",
-                (match,),
-            ):
+            next_index = self._search_phase(db) in {"active", "dropping", "complete"}
+            if next_index:
+                query_rows = db.execute(
+                    "SELECT m.id,m.agent,m.kind FROM runtime_search_next "
+                    "JOIN runtime_search_next_meta m ON m.search_rowid=runtime_search_next.rowid "
+                    "JOIN runtime_items i ON i.id=m.id "
+                    "WHERE runtime_search_next MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL "
+                    "ORDER BY rank LIMIT 1000", (match,)
+                )
+            else:
+                query_rows = db.execute(
+                    "SELECT runtime_search.id,runtime_search.agent,runtime_search.kind "
+                    "FROM runtime_search JOIN runtime_items i ON i.id=runtime_search.id "
+                    "WHERE runtime_search MATCH ? AND json_extract(i.record,'$.afterRestore') IS NULL "
+                    "ORDER BY rank LIMIT 1000", (match,)
+                )
+            for row in query_rows:
                 if row["agent"] in allowed and (
                     not caller or row["agent"] == caller["id"]
                 ):
@@ -621,6 +845,11 @@ class WorkMixin:
                     )
                 if len(found) >= limit:
                     break
+            if found:
+                from codex_search_text import search_texts
+                bodies = search_texts(db, (row["id"] for row in found))
+                for row in found:
+                    row["excerpt"] = self._search_excerpt(bodies.get(row["id"], ""), query)
             needle = query.casefold()
             for table, kind, field in [
                 ("work", "work", "title"),
@@ -670,6 +899,28 @@ class WorkMixin:
                 "query": query,
                 "limit": limit,
             }
+
+    @staticmethod
+    def _search_excerpt(body, query, token_limit=30):
+        """Make a plain-text result window for the contentless index."""
+        tokens = list(re.finditer(r"[^\W_]+", body, flags=re.UNICODE))
+        if len(tokens) <= token_limit:
+            return body
+        normalize = lambda value: "".join(
+            char for char in unicodedata.normalize("NFD", value.casefold())
+            if unicodedata.category(char) != "Mn"
+        )
+        terms = {normalize(word) for word in re.findall(r"[^\W_]+", query, flags=re.UNICODE)}
+        hits = [index for index, token in enumerate(tokens) if normalize(token.group()) in terms]
+        center = hits[0] if hits else 0
+        start = max(0, min(center - (token_limit // 2 - 1), len(tokens) - token_limit))
+        end = min(len(tokens), start + token_limit)
+        excerpt = body[tokens[start].start():tokens[end - 1].end()]
+        if start:
+            excerpt = " … " + excerpt
+        if end < len(tokens):
+            excerpt += " … "
+        return excerpt
 
     def chat_organization(self, key, data):
         from codex_workspace import active_monitors
@@ -932,12 +1183,11 @@ class WorkMixin:
                 item = json.loads(row["record"])
                 if item.get("afterRestore"):
                     raise ValueError("This item belongs to history before restore")
-                full = db.execute(
-                    "SELECT body FROM runtime_search WHERE id=?", (key,)
-                ).fetchone()
+                from codex_search_text import search_text
+                full = search_text(db, key)
                 return {
                     **item,
-                    "text": full[0] if full else item["text"],
+                    "text": full or item["text"],
                     "agent": a["id"],
                     "kind": "message",
                 }

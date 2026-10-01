@@ -377,13 +377,11 @@ class EfficiencyMixin:
                     native = None
             if native:
                 full = None
-                if native.get('truncated') and db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search'").fetchone():
-                    # Runtime.item indexes the original text in the same transaction
-                    # before it clips the transcript view. Reuse that durable body.
-                    full = db.execute('SELECT s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid '
-                                      'WHERE r.id=? AND s.id=? AND s.agent=?', (key, key, actor['id'])).fetchone()
+                if native.get('truncated'):
+                    from codex_search_text import search_text
+                    full = search_text(db, key)
                 try:
-                    payload = json.loads(full[0] if full else native['text'])
+                    payload = json.loads(full if full else native['text'])
                 except (ValueError, TypeError, KeyError):
                     raise ValueError('Saved command output is truncated or unreadable. Do not repeat the command.') from None
                 text = payload.get('aggregatedOutput') if isinstance(payload, dict) else None

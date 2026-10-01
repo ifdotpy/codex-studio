@@ -563,6 +563,7 @@ class WorkspaceContract(unittest.TestCase):
         self.assertTrue(reported["truncated"])
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("DELETE FROM runtime_search WHERE id=?", (lead["id"] + ":turn/diff/updated",))
+            db.execute("DELETE FROM runtime_item_fulltext WHERE id=?", (lead["id"] + ":turn/diff/updated",))
         with self.assertRaisesRegex(ValueError, "complete reported changes are unavailable"):
             self.runtime.changes(lead["id"], scope="chat")
 

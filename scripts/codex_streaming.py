@@ -118,10 +118,11 @@ class StreamBuffer:
             base = entry['base']
             if base is None:
                 if method == 'item/agentMessage/delta':
-                    full = (db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                                       'FROM runtime_search_rows WHERE id=?)', (key_id,)).fetchone()
-                            if previous.get('truncated') else None)
-                    base = full[0] if full is not None else previous.get('text', '')
+                    if previous.get('truncated'):
+                        from codex_search_text import search_text
+                        base = search_text(db, key_id)
+                    else:
+                        base = previous.get('text', '')
                 else:
                     if not saved:
                         applied.append((key, entry, len(batches), None))

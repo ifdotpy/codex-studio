@@ -149,10 +149,10 @@ def _studio_records(rt, agent_id):
             if not isinstance(item, dict) or item.get('id') != row['id']:
                 raise ValueError('Studio history has an invalid item identity')
             record = {'kind': 'studio_item', 'id': row['id'], 'created': row['created'], 'item': item}
-            if {'runtime_search_rows', 'runtime_search'} <= tables:
-                body = db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid FROM runtime_search_rows WHERE id=?)', (row['id'],)).fetchone()
-                if body:
-                    record['fullText'] = body[0]
+            from codex_search_text import search_text
+            body = search_text(db, row['id'])
+            if body:
+                record['fullText'] = body
             inputs = item.get('inputs', [])
             if not isinstance(inputs, list) or any(not isinstance(i, dict) for i in inputs):
                 raise ValueError('Studio history has invalid input metadata')

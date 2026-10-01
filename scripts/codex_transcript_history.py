@@ -45,7 +45,10 @@ def search_history(runtime, agent, query, limit=100):
     results = []
     with runtime.lock, runtime.db() as db:
         runtime.checked_actor(db, agent)
-        for row in db.execute("SELECT i.record,s.body FROM runtime_items i LEFT JOIN runtime_search_rows address ON address.id=i.id LEFT JOIN runtime_search s ON s.rowid=address.search_rowid WHERE i.agent=? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY i.created DESC,i.id DESC", (agent,)):
+        rows = db.execute("SELECT i.id,i.record FROM runtime_items i WHERE i.agent=? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY i.created DESC,i.id DESC", (agent,)).fetchall()
+        from codex_search_text import search_texts
+        bodies = search_texts(db, (row['id'] for row in rows))
+        for row in rows:
             item = json.loads(row['record'])
             entries = item.get('inputs')
             candidates = []
@@ -54,7 +57,7 @@ def search_history(runtime, agent, query, limit=100):
                     event = db.execute('SELECT text FROM runtime_events WHERE id=? AND agent=?', (entry.get('id'), agent)).fetchone()
                     candidates.append({**item, **entry, 'id': agent + ':' + entry['id'] if entry.get('id') else item['id'] + ':' + str(index), 'sourceId': item['id'], 'clientMessageId': entry.get('id'), 'role': 'user' if entry.get('kind') == 'user' else item['role'], 'text': event[0] if event else entry.get('text', '')})
             else:
-                candidates.append({**item, 'sourceId': item['id'], 'text': row['body'] or item.get('text', '')})
+                candidates.append({**item, 'sourceId': item['id'], 'text': bodies.get(row['id']) or item.get('text', '')})
             for candidate in candidates:
                 text = candidate['text']
                 position = text.casefold().find(query.casefold())
@@ -81,7 +84,8 @@ def history_item(runtime, agent, identity):
                     'role': 'user' if entry.get('kind') == 'user' else item['role'],
                     'text': event[0] if event else entry.get('text', ''),
                     'truncated': False if event else entry.get('truncated', False)}
-        full = db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid FROM runtime_search_rows WHERE id=?)', (item['id'],)).fetchone()
+        from codex_search_text import search_text
+        full = search_text(db, item['id'])
         return {**item, 'agent': agent, 'sourceId': item['id'],
-            'text': full[0] if full else item.get('text', ''),
+            'text': full if full else item.get('text', ''),
             'truncated': False if full else item.get('truncated', False)}
