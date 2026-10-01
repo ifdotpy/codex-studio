@@ -74,6 +74,52 @@ def nullable_sum(values):
     return sum(known) if known else None
 
 
+class _ItemTotals:
+    def __init__(self, *, duration_samples=False, duration_total=False):
+        self.count = 0
+        self.failed = 0
+        self.values = {}
+        self.input_measurements = 0
+        self.output_measurements = 0
+        self.durations = [] if duration_samples else None
+        self.duration_values = [] if duration_total else None
+
+    def add(self, row):
+        self.count += 1
+        self.failed += row.get('status') == 'failed'
+        for direction in ('input', 'output'):
+            payload = row.get(direction)
+            if payload is not None:
+                if direction == 'input':
+                    self.input_measurements += 1
+                else:
+                    self.output_measurements += 1
+            for key in ('bytes', 'chars', 'imageCount'):
+                value = (payload or {}).get(key)
+                if value is not None:
+                    slot = (direction, key)
+                    self.values[slot] = self.values.get(slot, 0) + value
+        duration = row.get('durationMs')
+        if self.duration_values is not None and duration is not None:
+            self.duration_values.append(duration)
+        if self.durations is not None and number(duration) is not None:
+            self.durations.append(duration)
+
+    def size(self, direction, key):
+        return self.values.get((direction, key))
+
+    def duration_total(self):
+        return sum(self.duration_values) if self.duration_values else None
+
+    def duration(self):
+        values = sorted(self.durations)
+        return {'count': len(values), 'min': min(values) if values else None,
+                'max': max(values) if values else None,
+                'mean': statistics.mean(values) if values else None,
+                'p50': statistics.median(values) if values else None,
+                'p95': values[max(0, math.ceil(len(values) * .95) - 1)] if values else None}
+
+
 class AnalyticsMixin:
     def analytics_init(self, db):
         db.executescript('''
@@ -575,7 +621,44 @@ class AnalyticsMixin:
                 'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC'
                 + (' LIMIT ? OFFSET ?' if not export else ''),
                 args + ([] if export else [100, 0]))]
-            records = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_items' + clause + ' ORDER BY at DESC,id', args)]
+            item_groups = {}
+            detailed_item_groups = {}
+            by_tool = {}
+            tool_boundaries = {}
+            model_items = _ItemTotals(duration_total=True)
+            protocol_items = _ItemTotals(duration_total=True)
+            call_items = _ItemTotals()
+            agent_call_items = {}
+            item_agent_ids, item_turns = set(), set()
+            non_tool_items, non_tool_total = [], 0
+            compactions, snapshots = [], []
+            for raw, in db.execute('SELECT record FROM analytics_items' + clause + ' ORDER BY at DESC,id', args):
+                row = json.loads(raw)
+                item_agent_ids.add(row['agentId'])
+                if row.get('turnId'):
+                    item_turns.add((row['agentId'], row['turnId']))
+                kind = row['type']
+                item_groups.setdefault(kind, _ItemTotals()).add(row)
+                detail_key = (kind, row.get('payloadBoundary'), row.get('category'), row.get('role'))
+                detailed_item_groups.setdefault(detail_key, _ItemTotals()).add(row)
+                if kind == 'contextCompaction' and row.get('finishedAt') is not None:
+                    compactions.append(row)
+                elif kind == 'compactionSnapshot':
+                    snapshots.append(row)
+                if not row['isTool']:
+                    non_tool_total += 1
+                    if export or len(non_tool_items) < 100:
+                        non_tool_items.append(row)
+                    continue
+                key = (row['name'], kind)
+                by_tool.setdefault(key, _ItemTotals(duration_samples=True, duration_total=True)).add(row)
+                tool_boundaries.setdefault(key, row.get('payloadBoundary', 'protocol'))
+                if tool is not None and row['name'] != tool:
+                    continue
+                call_items.add(row)
+                boundary = 'model' if row.get('payloadBoundary') == 'model' else 'protocol'
+                (model_items if boundary == 'model' else protocol_items).add(row)
+                agent_call_items.setdefault((row['agentId'], boundary), _ItemTotals(duration_samples=True)).add(row)
             relevant_agents = [a for a in agents if scope == 'all' or a['id'] == agent and scope == 'agent' or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
             relevant_ids = {a['id'] for a in relevant_agents}
             agent_ids = sorted(relevant_ids)
@@ -633,54 +716,35 @@ class AnalyticsMixin:
             tracking = float(db.execute("SELECT value FROM analytics_meta WHERE key='trackingSince'").fetchone()[0])
         read_ms = (time.perf_counter() - read_started) * 1000 if timing else None
         build_started = time.perf_counter() if timing else None
-        all_calls = [r for r in records if r['isTool']]
-        model_calls = [r for r in all_calls if r.get('payloadBoundary') == 'model' and (tool is None or r['name'] == tool)]
-        protocol_calls = [r for r in all_calls if r.get('payloadBoundary') != 'model' and (tool is None or r['name'] == tool)]
-        calls = [r for r in all_calls if tool is None or r['name'] == tool]
-        by_tool = defaultdict(list)
-        for call in all_calls:
-            by_tool[(call['name'], call['type'])].append(call)
         def size(rows, direction, key):
-            return nullable_sum((r.get(direction) or {}).get(key) for r in rows)
+            return rows.size(direction, key)
         def durations(rows):
-            values = sorted(r['durationMs'] for r in rows if number(r.get('durationMs')) is not None)
-            return {'count': len(values), 'min': min(values) if values else None, 'max': max(values) if values else None,
-                    'mean': statistics.mean(values) if values else None,
-                    'p50': statistics.median(values) if values else None,
-                    'p95': values[max(0, math.ceil(len(values) * .95) - 1)] if values else None}
-        tools = [{'name': name, 'type': kind, 'payloadBoundary': rows[0].get('payloadBoundary', 'protocol'), 'calls': len(rows), 'failed': sum(r['status'] == 'failed' for r in rows),
+            return rows.duration()
+        tools = [{'name': name, 'type': kind, 'payloadBoundary': tool_boundaries[(name, kind)], 'calls': rows.count, 'failed': rows.failed,
                   'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'),
                   'modelInputBytes': size(rows, 'input', 'bytes') if kind == 'modelToolCall' else None,
                   'modelOutputBytes': size(rows, 'output', 'bytes') if kind == 'modelToolCall' else None,
-                  'durationMs': nullable_sum(r.get('durationMs') for r in rows),
+                  'durationMs': rows.duration_total(),
                   'imageCount': nullable_sum([size(rows, 'input', 'imageCount'), size(rows, 'output', 'imageCount')]),
-                  'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows), 'duration': durations(rows)}
+                  'inputMeasurements': rows.input_measurements, 'outputMeasurements': rows.output_measurements, 'duration': durations(rows)}
                  for (name, kind), rows in by_tool.items()]
         tools.sort(key=lambda row: row['outputBytes'] or 0, reverse=True)
         tokens = {field: nullable_sum(r['delta'].get(field) for r in usage) for field in TOKEN_FIELDS}
         cache_pairs = [r for r in usage if number(r['delta'].get('inputTokens')) is not None and number(r['delta'].get('cachedInputTokens')) is not None and r['delta']['cachedInputTokens'] <= r['delta']['inputTokens']]
         contexts = [number(r['last'].get('totalTokens')) for r in usage]
         percents = [r['last']['totalTokens'] / r['modelContextWindow'] * 100 for r in usage if number(r['last'].get('totalTokens')) is not None and r.get('modelContextWindow')]
-        compactions = [r for r in records if r['type'] == 'contextCompaction' and r.get('finishedAt') is not None]
-        snapshots = [r for r in records if r['type'] == 'compactionSnapshot']
         native_compaction_turns = {(r['agentId'], r.get('turnId')) for r in compactions}
         compactions += [r for r in snapshots if (r['agentId'], r.get('turnId')) not in native_compaction_turns]
-        item_groups = defaultdict(list)
-        for r in records:
-            item_groups[r['type']].append(r)
-        detailed_item_groups = defaultdict(list)
-        for r in records:
-            detailed_item_groups[(r['type'], r.get('payloadBoundary'), r.get('category'), r.get('role'))].append(r)
-        non_tool_items = [r for r in records if not r['isTool']]
-        selected_ids = {r['agentId'] for r in records + usage}
-        summary = {'agents': len(selected_ids), 'turns': len({(r['agentId'], r.get('turnId')) for r in records + usage if r.get('turnId')}),
-                   'usageSamples': len(usage), 'provisionalUsageSamples': len(provisional), 'exactResponseSamples': sum(bool(r.get('responseId')) for r in usage), 'legacyUsageSamples': sum(not r.get('responseId') for r in usage), 'modelToolCalls': len(model_calls), 'protocolToolCalls': len(protocol_calls), 'observedToolRows': len(calls), 'toolCalls': len(model_calls), 'failedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'modelFailedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'protocolFailedToolCalls': sum(r['status'] == 'failed' for r in protocol_calls),
-                   'compactions': len(compactions), 'inputBytes': size(model_calls, 'input', 'bytes'), 'outputBytes': size(model_calls, 'output', 'bytes'),
-                   'modelInputBytes': size(model_calls, 'input', 'bytes'), 'modelOutputBytes': size(model_calls, 'output', 'bytes'),
-                   'protocolInputBytes': size(protocol_calls, 'input', 'bytes'), 'protocolOutputBytes': size(protocol_calls, 'output', 'bytes'),
-                   'durationMs': nullable_sum(r.get('durationMs') for r in model_calls),
-                   'modelDurationMs': nullable_sum(r.get('durationMs') for r in model_calls),
-                   'protocolDurationMs': nullable_sum(r.get('durationMs') for r in protocol_calls), 'tokens': tokens,
+        selected_ids = item_agent_ids | {r['agentId'] for r in usage}
+        item_turns.update((r['agentId'], r.get('turnId')) for r in usage if r.get('turnId'))
+        summary = {'agents': len(selected_ids), 'turns': len(item_turns),
+                   'usageSamples': len(usage), 'provisionalUsageSamples': len(provisional), 'exactResponseSamples': sum(bool(r.get('responseId')) for r in usage), 'legacyUsageSamples': sum(not r.get('responseId') for r in usage), 'modelToolCalls': model_items.count, 'protocolToolCalls': protocol_items.count, 'observedToolRows': call_items.count, 'toolCalls': model_items.count, 'failedToolCalls': model_items.failed, 'modelFailedToolCalls': model_items.failed, 'protocolFailedToolCalls': protocol_items.failed,
+                   'compactions': len(compactions), 'inputBytes': size(model_items, 'input', 'bytes'), 'outputBytes': size(model_items, 'output', 'bytes'),
+                   'modelInputBytes': size(model_items, 'input', 'bytes'), 'modelOutputBytes': size(model_items, 'output', 'bytes'),
+                   'protocolInputBytes': size(protocol_items, 'input', 'bytes'), 'protocolOutputBytes': size(protocol_items, 'output', 'bytes'),
+                   'durationMs': model_items.duration_total(),
+                   'modelDurationMs': model_items.duration_total(),
+                   'protocolDurationMs': protocol_items.duration_total(), 'tokens': tokens,
                    'tokenObservations': {field: sum(r['delta'].get(field) is not None for r in usage) for field in TOKEN_FIELDS},
                    'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if len(cache_pairs) == len(usage) and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
                    'cacheHitRateSamples': len(cache_pairs), 'cacheHitRateTotalSamples': len(usage),
@@ -696,12 +760,11 @@ class AnalyticsMixin:
         agent_totals = []
         for entry in relevant_agents:
             samples = [r for r in usage if r['agentId'] == entry['id']]
-            own_calls = [r for r in calls if r['agentId'] == entry['id']]
-            own_model = [r for r in own_calls if r.get('payloadBoundary') == 'model']
-            own_protocol = [r for r in own_calls if r.get('payloadBoundary') != 'model']
+            own_model = agent_call_items.get((entry['id'], 'model'), _ItemTotals(duration_samples=True))
+            own_protocol = agent_call_items.get((entry['id'], 'protocol'), _ItemTotals(duration_samples=True))
             agent_totals.append({**entry, 'tokens': {field: nullable_sum(r['delta'].get(field) for r in samples) for field in TOKEN_FIELDS},
-                                'usageSamples': len(samples), 'toolCalls': len(own_model), 'modelToolCalls': len(own_model), 'protocolToolCalls': len(own_protocol),
-                                'failedToolCalls': sum(r['status'] == 'failed' for r in own_model), 'protocolFailedToolCalls': sum(r['status'] == 'failed' for r in own_protocol),
+                                'usageSamples': len(samples), 'toolCalls': own_model.count, 'modelToolCalls': own_model.count, 'protocolToolCalls': own_protocol.count,
+                                'failedToolCalls': own_model.failed, 'protocolFailedToolCalls': own_protocol.failed,
                                 'compactions': sum(r['agentId'] == entry['id'] for r in compactions), 'duration': durations(own_model), 'protocolDuration': durations(own_protocol)})
         monitors = [{k: m.get(k) for k in ('id', 'agent', 'status', 'created', 'finished', 'bytes', 'exitCode', 'error', 'timeout_ms')}
                     for m in operational['monitors'] if m.get('agent') in relevant_ids and within(m.get('created'))]
@@ -734,10 +797,10 @@ class AnalyticsMixin:
                 'rateLimits': [{'accountKey': r['account'], 'at': r['at'], 'data': json.loads(r['record'])} for r in limit_rows if r['account'] in account_keys and within(r['at'])],
                 'turns': turns, 'timeline': usage if export else usage[-500:], 'timelineTotal': len(usage), 'provisionalUsage': provisional if export else provisional[-100:],
                 'calls': calls_page,
-                'items': [{'type': kind, 'count': len(rows), 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
+                'items': [{'type': kind, 'count': rows.count, 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],
-                'itemRecords': non_tool_items if export else non_tool_items[:100], 'itemRecordsTotal': len(non_tool_items),
-                'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': len(rows), 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows)} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
+                'itemRecords': non_tool_items, 'itemRecordsTotal': non_tool_total,
+                'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': rows.count, 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': rows.input_measurements, 'outputMeasurements': rows.output_measurements} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
                 'compactions': compactions, 'compactionSnapshots': snapshots,
                 'pagination': {'limit': limit, 'offset': offset, 'total': calls_total, 'hasMore': not export and offset + limit < calls_total},
                 'detailPagination': {'rateLimits': {'limit': rate_limit_total if export else 100, 'offset': 0, 'total': rate_limit_total, 'hasMore': not export and 100 < rate_limit_total},
