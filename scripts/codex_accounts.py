@@ -352,7 +352,13 @@ class AccountStore:
                     or local.get("accountId") == metadata.get("accountId")
                 )
                 if same_paths and same_login:
-                    local["claudeOptions"] = options
+                    default_options = profile_options({})
+                    if options != default_options:
+                        if local_options != default_options and local_options != options:
+                            raise ValueError(
+                                "This Claude configuration already exists. Update its settings"
+                            )
+                        local["claudeOptions"] = options
                     local.update(metadata)
                     if label is not None:
                         local["label"] = label.strip()

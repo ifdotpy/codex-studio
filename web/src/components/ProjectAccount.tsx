@@ -22,7 +22,6 @@ export default function ProjectAccount({
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
   const activeAccounts = accounts.accounts;
-  const activeKeys = new Set(activeAccounts.map((account) => account.id));
   const archivedMemberships = (accounts.archivedAccounts || []).filter(
     (account) => keys.includes(account.id),
   );
@@ -30,9 +29,7 @@ export default function ProjectAccount({
     const account = activeAccounts.find((item) => item.id === accountKey);
     return account?.status === "ready" && !account.disconnected;
   });
-  const displayedKey = selectableKeys.includes(key)
-    ? key
-    : selectableKeys[0] || "";
+  const displayedKey = selectableKeys.includes(key) ? key : "";
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const lock = useRef(false);
@@ -68,18 +65,7 @@ export default function ProjectAccount({
         value={keys}
         onChange={(next) => {
           setKeys(next);
-          if (!next.includes(key) || !activeKeys.has(key)) {
-            setKey(
-              next.find((accountKey) => {
-                const account = activeAccounts.find(
-                  (item) => item.id === accountKey,
-                );
-                return account?.status === "ready" && !account.disconnected;
-              }) ||
-                next[0] ||
-                "",
-            );
-          }
+          if (!next.includes(key)) setKey("");
         }}
       >
         <div style={{ display: "grid", gap: 12, margin: "12px 0 20px" }}>
@@ -114,15 +100,26 @@ export default function ProjectAccount({
         value={displayedKey}
         disabled={pending}
         onChange={(event) => setKey(event.currentTarget.value)}
-        data={activeAccounts
-          .filter((account) => keys.includes(account.id))
-          .map((account) => ({
-            value: account.id,
-            label: account.email || account.label || account.id,
-            disabled: account.status !== "ready" || account.disconnected,
-          }))}
+        data={[
+          {
+            value: "",
+            label: "Select a connected project account",
+            disabled: true,
+          },
+          ...activeAccounts
+            .filter((account) => keys.includes(account.id))
+            .map((account) => ({
+              value: account.id,
+              label: account.email || account.label || account.id,
+              disabled: account.status !== "ready" || account.disconnected,
+            })),
+        ]}
       />
-      <p className="notice">New chats in this project use this account.</p>
+      <p className="notice">
+        {displayedKey
+          ? "New chats in this project use this account."
+          : "Choose a connected account to replace the unavailable saved default."}
+      </p>
       {error && (
         <p role="alert" className="account-action-error">
           {error}
@@ -131,13 +128,7 @@ export default function ProjectAccount({
       <Button
         type="submit"
         loading={pending}
-        disabled={
-          !keys.length ||
-          !key ||
-          (activeKeys.has(key) &&
-            !!activeAccounts.find((account) => account.id === key)
-              ?.disconnected)
-        }
+        disabled={!keys.length || !displayedKey}
       >
         Save accounts
       </Button>

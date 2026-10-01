@@ -99,6 +99,38 @@ class Profiles(unittest.TestCase):
         self.assertFalse(any(key.startswith('claude-profile-') for key in visible))
         self.assertEqual(store.get(key)['label'], 'Personal Claude')
 
+    def test_default_add_preserves_existing_claude_options_on_active_and_deleted_local(self):
+        store = AccountStore(self.root / 'state')
+        home = self.root / 'home'
+        saved_options = c.profile_options({
+            'customModels': ['sonnet[1m]'],
+            'autoCompactWindow': 300000,
+            'launchArgs': '--no-chrome',
+        })
+        with patch.object(Path, 'home', return_value=home), \
+             patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            store.discover()
+            local = store.data['accounts']['claude-local']
+            local['claudeOptions'] = saved_options
+            store._save()
+
+            self.assertEqual(store.register_claude({}, 'Personal Claude'), 'claude-local')
+            self.assertEqual(store.get('claude-local')['claudeOptions'], saved_options)
+
+            conflicting = {
+                'customModels': ['opus'],
+                'autoCompactWindow': 400000,
+                'launchArgs': '--no-chrome',
+            }
+            with self.assertRaisesRegex(ValueError, 'already exists'):
+                store.register_claude(conflicting, 'Personal Claude')
+
+            store.delete('claude-local', str(uuid.uuid4()))
+            self.assertNotIn('claude-local', [a['id'] for a in store.list()])
+            self.assertEqual(store.register_claude({}, 'Personal Claude'), 'claude-local')
+            self.assertEqual(store.get('claude-local')['claudeOptions'], saved_options)
+
     def test_existing_default_profile_accepts_full_row(self):
         self.assertEqual(c.profile_options({'provider': 'claude', 'id': 'claude-local', **AUTH}),
                          {'customModels': [], 'launchArgs': ''})

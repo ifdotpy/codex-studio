@@ -621,13 +621,21 @@ try {
   assert.equal(await deletedMembership.isChecked(), true);
   assert.equal(
     await selection.inputValue(),
-    "work",
-    "the deleted default is not presented as a selectable account",
+    "",
+    "the deleted default requires an explicit replacement despite another linked account",
   );
+  const saveAccounts = dialog.getByRole("button", {
+    name: "Save accounts",
+    exact: true,
+  });
+  assert.equal(await saveAccounts.isDisabled(), true);
   await deletedMembership.click();
   await deletedMembership.waitFor({ state: "detached" });
+  assert.equal(await selection.inputValue(), "");
+  assert.equal(await saveAccounts.isDisabled(), true);
   await selection.selectOption("work");
-  await dialog.getByRole("button", { name: "Save accounts" }).click();
+  assert.equal(await saveAccounts.isDisabled(), false);
+  await saveAccounts.click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(projects[0].accountKey, "work");
   assert.deepEqual(projects[0].accountKeys, ["work"]);
