@@ -86,6 +86,8 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
   });
   const bindings = (group: string, id: string, ids: string[]) => ({
     draggable: true,
+    "data-sidebar-group": group,
+    "data-sidebar-id": id,
     "data-drop-edge":
       target?.group === group && target.id === id
         ? target.after
@@ -142,7 +144,19 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
         return;
       event.preventDefault();
       const after = event.key === "ArrowDown";
-      const to = ids[ids.indexOf(id) + (after ? 1 : -1)];
+      const visible = Array.from(
+        event.currentTarget
+          .closest("#chat-list")
+          ?.querySelectorAll<HTMLElement>("[data-sidebar-group]") || [],
+      )
+        .filter(
+          (element) =>
+            element.dataset.sidebarGroup === group &&
+            element.getClientRects().length,
+        )
+        .map((element) => element.dataset.sidebarId!);
+      const neighbors = visible.length ? visible : ids;
+      const to = neighbors[neighbors.indexOf(id) + (after ? 1 : -1)];
       if (to) move(group, ids, id, to, after);
     },
   });

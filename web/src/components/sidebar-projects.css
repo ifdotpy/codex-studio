@@ -296,10 +296,6 @@
   }
 }
 
-#sidebar [data-sidebar-item] > .project-folder,
-#sidebar [data-sidebar-item] > .peer-team {
-  margin: 4px 0;
-}
 #sidebar .chat-row[data-folder-drop="true"] {
   background: var(--mantine-primary-color-light);
   box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);

@@ -192,6 +192,15 @@ try {
     "Running",
   ])
     assert.equal(await row(name).isVisible(), true, name);
+  const compactOrder = await topItems();
+  await team.press("Alt+ArrowDown");
+  assert.equal(
+    (await topItems()).indexOf("Team A"),
+    compactOrder.indexOf("Team A") + 1,
+    "Compact keyboard order skips hidden folders and chats",
+  );
+  await team.press("Alt+ArrowUp");
+  assert.deepEqual(await topItems(), compactOrder);
   const showAll = page.getByRole("button", { name: "Show all 9", exact: true });
   assert.ok((await showAll.getAttribute("title")).includes("24 hours"));
   await page.reload();
