@@ -176,6 +176,10 @@ const server = createServer(async (req, res) => {
     const a = agents.find(a => a.id === (body.id || "started"));
     if (body.action === "cancel") a.accountTransfer.status = "cancelled";
     else if (body.action === "retry") a.accountTransfer.needsAttention = false;
+    else if (body.action === "finish_history") a.accountTransfer = {
+      ...a.accountTransfer, status: "completed", completed: 1,
+      nativeHistoryPending: 0, canFinishHistory: false,
+    };
     else if (a.accountTransfer?.status === "pending" && a.accountTransfer.targetAccountKey === body.account_key)
       a.accountTransfer.requestIds.push(body.request_id);
     else a.accountTransfer = {id: body.request_id, status: "pending", targetAccountKey: body.account_key,
@@ -262,8 +266,7 @@ const server = createServer(async (req, res) => {
     return json({ items: [], sessions: [] });
   try {
     const path = join(
-      root,
-      "web/dist",
+      process.env.STUDIO_WEB_DIST || join(root, "web/dist"),
       url.pathname === "/" ? "index.html" : url.pathname,
     );
     const file = await readFile(path);
@@ -331,11 +334,27 @@ try {
   await picker.click();
   await page.getByRole("menu").getByRole("button",{name:"Retry",exact:true}).click();
   assert.ok(bodies.some(b=>b.body.action==="retry" && b.body.request_id==="saved-request"));
+  agents[0].accountKey="work";
+  agents[0].accountTransfer={id:"lazy-history-request",status:"pending",targetAccountKey:"work",
+    completed:0,moved:1,total:1,nativeHistoryPending:1,canFinishHistory:true};
+  await page.reload();
+  await page.locator('[data-chat="started"]').click();
+  await page.getByRole("button", {name:"Chat settings",exact:true}).click();
+  await picker.click();
+  await page.getByText("1 histories will transfer before the next reply.",{exact:true}).waitFor();
+  await page.getByRole("menu").getByRole("button",{name:"Move history now",exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector(".account-picker")?.textContent.includes("0/1"));
+  assert.ok(bodies.some(b=>b.body.action==="finish_history" && b.body.request_id==="lazy-history-request"));
+  assert.equal(agents[0].accountTransfer.status,"completed");
   agents[0].accountKey="work";agents[0].accountTransfer={...agents[0].accountTransfer,status:"completed",completed:8,moved:7,waitingCount:0,
     leftOnSource:[{id:"worker-claude",name:"Claude worker",provider:"claude",reason:"Uses claude; the destination account uses codex"}]};
+  await page.reload();
+  await page.locator('[data-chat="started"]').click();
+  await page.getByRole("button", {name:"Chat settings",exact:true}).click();
   await page.waitForFunction(()=>document.querySelector(".account-picker")?.textContent.includes("work@example.com"));
   await picker.click();
   await page.getByText(/Claude worker left on source \(claude\)/).waitFor();
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.locator('[data-chat="empty"]').click();
   await page.getByRole("button", {name:"Chat settings", exact:true}).click();
@@ -347,7 +366,7 @@ try {
   await page.setViewportSize({width:390,height:844});
   await page.reload();
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({ok:true,evidence,cases:["same chat", "team progress", "cancel remaining", "receipt after reload", "retry", "destination account"]}));
+  console.log(JSON.stringify({ok:true,evidence,cases:["same chat", "team progress", "cancel remaining", "receipt after reload", "retry", "finish history now", "destination account"]}));
 } finally {
   await browser?.close();server.closeAllConnections();server.close();
 }

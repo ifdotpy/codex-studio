@@ -26,6 +26,95 @@ class LazyTransferContract(unittest.TestCase):
     def tearDown(self):
         self.t.tearDown()
 
+    def test_finish_history_now_completes_without_input_and_duplicate_calls(self):
+        op = self.t.start_transfer()
+        self.assertTrue(self.rt.agent(self.aid)['accountTransfer']['canFinishHistory'])
+        self.store.action(op['id'], 'finish_history')
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.tick()
+        self.assertEqual(len(self.t.pending), 1)
+        self.assertEqual(self.rt.agent(self.aid)['accountTransfer']['movingNow'], 1)
+        from codex_runtime import PreparationPending
+        with self.assertRaises(PreparationPending) as wait:
+            self.store.before_start(self.rt.agent(self.aid))
+        self.t.set_agent(self.aid, status='starting', inFlight=True,
+                         startAttempt={'submitted': False, 'events': []})
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertTrue(wait.exception.future.done())
+        self.assertEqual(self.store.before_start(self.rt.agent(self.aid))['threadId'], 'target-thread-0')
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.assertEqual(len(self.t.pending), 1)
+        with self.rt.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE agent=?', (self.aid,)).fetchone()[0], 0)
+
+    def test_finish_history_intent_survives_restart_before_submission(self):
+        op = self.t.start_transfer()
+        self.store.action(op['id'], 'finish_history')
+        self.store = AccountTransfers(self.rt)
+        self.store.copy_history = lambda *args: Path('/fixture/import.jsonl')
+        with self.rt.lock, self.rt.db() as db:
+            self.store.tick(self.rt.records(db, 'agents'))
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+
+    def test_finish_history_preserves_queued_input(self):
+        self.t.set_agent(self.aid, status='failed', autoWake=True)
+        op = self.t.start_transfer()
+        self.rt.send(self.aid, 'Keep this queued', 'finish-input', delivery='after_tool')
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        with self.rt.db() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT id,status FROM runtime_events WHERE agent=?', (self.aid,))],
+                             [('finish-input', 'pending')])
+
+    def test_finish_history_does_not_resume_failed_agent(self):
+        self.t.set_agent(self.aid, status='failed', autoWake=True)
+        op = self.t.start_transfer()
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        with self.rt.db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE agent=?', (self.aid,)).fetchone()[0], 0)
+
+    def test_finish_history_waits_for_active_work_without_interrupting(self):
+        op = self.t.start_transfer()
+        self.t.set_agent(self.aid, status='running', inFlight=True, turnId='active-turn')
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.assertEqual(self.t.pending, [])
+        self.assertEqual(self.t.native_calls, [])
+        self.assertEqual(self.rt.agent(self.aid)['accountTransfer']['waiting'], 'Waiting for the current turn')
+        self.t.set_agent(self.aid, status='complete', inFlight=False, turnId=None)
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+
+    def test_finish_history_does_not_repeat_an_unknown_submission(self):
+        op = self.t.start_transfer()
+        with self.rt.lock, self.rt.db() as db:
+            record = self.store.get(db, op['id'])
+            record['members'][self.aid].update(phase='unknown', error='Native receipt unknown',
+                                              nativeMethod='thread/fork', submittedAt=time.time())
+            self.store.save(db, record)
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.assertEqual(self.t.pending, [])
+        self.assertEqual(self.t.native_calls, [])
+        self.assertEqual(self.t.receipt(op['id'])['members'][self.aid]['phase'], 'unknown')
+
     def test_300_idle_members_rebind_within_one_second_and_without_native_calls(self):
         with self.rt.lock, self.rt.db() as db:
             lead = self.rt.agent(self.aid, db)

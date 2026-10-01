@@ -196,14 +196,24 @@ export function AccountTransferStatus({
   targetLabel?: string;
   pending?: boolean;
   showCompleted?: boolean;
-  onAction: (action: "retry" | "cancel") => void;
+  onAction: (action: "retry" | "cancel" | "finish_history") => void;
 }) {
   if (!transfer) return null;
   const waiting = Number(transfer.waitingCount || 0);
-  const left = Array.isArray(transfer.leftOnSource) ? transfer.leftOnSource : [];
+  const left = Array.isArray(transfer.leftOnSource)
+    ? transfer.leftOnSource
+    : [];
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
-  const interrupted = Array.isArray(transfer.interrupted) ? transfer.interrupted : [];
-  if (transfer.status !== "pending" && !left.length && !blocked.length && !showCompleted) return null;
+  const interrupted = Array.isArray(transfer.interrupted)
+    ? transfer.interrupted
+    : [];
+  if (
+    transfer.status !== "pending" &&
+    !left.length &&
+    !blocked.length &&
+    !showCompleted
+  )
+    return null;
   return (
     <div className="account-menu-note" role="status">
       <ArrowRightLeft size={14} />
@@ -216,12 +226,12 @@ export function AccountTransferStatus({
         </div>
         {!!transfer.nativeHistoryPending && (
           <small>
-            {transfer.nativeHistoryPending} histories will transfer before the next reply.
+            {transfer.finishHistory
+              ? `${transfer.nativeHistoryPending} histories requested for transfer now.`
+              : `${transfer.nativeHistoryPending} histories will transfer before the next reply.`}
           </small>
         )}
-        {!!transfer.movingNow && (
-          <small>{transfer.movingNow} moving now</small>
-        )}
+        {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
         {transfer.waiting && <small>{transfer.waiting}</small>}
         {interrupted.map((member: Json) => (
           <small key={String(member.id)}>
@@ -235,10 +245,21 @@ export function AccountTransferStatus({
         ))}
         {left.map((member: Json) => (
           <small key={String(member.id)}>
-            {member.name || "Agent"} left on source ({member.provider}): {member.reason}
+            {member.name || "Agent"} left on source ({member.provider}):{" "}
+            {member.reason}
           </small>
         ))}
         <div className="account-transfer-actions">
+          {transfer.status === "pending" && transfer.canFinishHistory && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              disabled={pending}
+              onClick={() => onAction("finish_history")}
+            >
+              Move history now
+            </Button>
+          )}
           {transfer.canRetry && (
             <Button
               size="compact-xs"
@@ -249,14 +270,16 @@ export function AccountTransferStatus({
               Retry
             </Button>
           )}
-          {transfer.status === "pending" && <Button
-            size="compact-xs"
-            variant="subtle"
-            disabled={pending}
-            onClick={() => onAction("cancel")}
-          >
-            Cancel remaining
-          </Button>}
+          {transfer.status === "pending" && (
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              disabled={pending}
+              onClick={() => onAction("cancel")}
+            >
+              Cancel remaining
+            </Button>
+          )}
         </div>
       </div>
     </div>

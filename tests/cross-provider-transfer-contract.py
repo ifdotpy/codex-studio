@@ -107,6 +107,22 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(self.member(op)['sourcePendingSettings'], source['pendingSettings'])
         self.export.assert_called_once()
 
+    def test_finish_portable_history_now_uses_original_transfer_without_model_turn(self):
+        self.t.drive_lazy_for_tests = False
+        op = self.t.start_transfer()
+        self.store.action(op['id'], 'finish_history')
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.assertEqual(self.t.pending[0][0], 'thread/start')
+        self.assertNotIn('input', self.t.pending[0][1])
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.t.native_calls))
+        self.assertEqual(self.agent()['portableHistory'], self.descriptor)
+        self.export.assert_called_once()
+
     def test_claude_to_codex_needs_no_codex_rollout_path(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})
         self.t.set_agent(self.aid, provider='claude', model='sonnet', effort='high')

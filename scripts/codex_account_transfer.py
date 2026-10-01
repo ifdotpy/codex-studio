@@ -83,11 +83,13 @@ class AccountTransfers:
             if current.get('status') not in TERMINAL or not self.newer(db, op, current['id']):
                 return
         members = list(op['members'].values())
-        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope')}
+        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope', 'finishHistory')}
         lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
             moved=sum(m.get('lazy') or m['phase'] == 'completed' for m in members),
             nativeHistoryPending=sum(bool(m.get('lazy') and m['phase'] != 'completed') for m in members),
-            movingNow=sum(m['phase'] in {'reading', 'submitted', 'interrupting'} for m in members),
+            movingNow=sum(m['phase'] in {'reading', 'submitted', 'lazy_submitted', 'interrupting'} for m in members),
+            canFinishHistory=any(m.get('lazy') and m['phase'] == 'lazy' for m in members)
+                             and not op.get('finishHistory'),
             interrupted=[{'id': aid, 'name': m.get('name'), 'reason': m.get('interruptReason')}
                          for aid, m in op['members'].items() if m.get('interruptReason')],
             leftOnSource=[{'id': aid, 'name': m.get('name'), 'provider': m.get('provider'),
@@ -340,14 +342,18 @@ class AccountTransfers:
                 self.rt.put(db, 'agents', a)
 
     def action(self, key, action):
-        if action not in {'cancel', 'retry'}:
-            raise ValueError('Choose cancel or retry')
+        if action not in {'cancel', 'retry', 'finish_history'}:
+            raise ValueError('Choose cancel, retry, or finish_history')
         rt = self.rt
         with rt.lock, rt.db() as db:
             op = self.get(db, key)
             if op['status'] in TERMINAL:
                 return op
-            if action == 'cancel':
+            if action == 'finish_history':
+                # Persist only the intent. The scheduler uses the original
+                # member identities and receipt guards without a model turn.
+                op['finishHistory'] = True
+            elif action == 'cancel':
                 lazy_active = [m for m in op['members'].values() if m.get('lazy')
                                and m['phase'] not in MEMBER_TERMINAL and m['phase'] != 'lazy']
                 if lazy_active:
@@ -501,7 +507,8 @@ class AccountTransfers:
                 op = self.get(db, key)
                 before = len(op['members'])
                 self.adopt(db, op, agents)
-                dirty = before != len(op['members'])
+                dirty = (before != len(op['members']) or 'canFinishHistory' not in
+                         (rt.agent(op['leadId'], db).get('accountTransfer') or {}))
                 for aid, member in list(op['members'].items()):
                     a = rt.agent(aid, db)
                     if member['phase'] in MEMBER_TERMINAL:
@@ -526,7 +533,8 @@ class AccountTransfers:
                         else:
                             member['waiting'] = 'Waiting for the active turn to stop'
                             continue
-                    if member['phase'] not in {'waiting', 'ready'} or aid in self.running:
+                    finish_lazy = member['phase'] == 'lazy' and op.get('finishHistory')
+                    if (member['phase'] not in {'waiting', 'ready'} and not finish_lazy) or aid in self.running:
                         continue
                     if member['phase'] == 'waiting' and (a.get('inFlight') or a['status'] in ACTIVE):
                         if not a.get('turnId'):
@@ -566,12 +574,17 @@ class AccountTransfers:
                         continue
                     self.running.add(aid)
                     busy_targets.add(op['targetAccountKey'])
-                    member.update(nextCheck=time.time() + 10, waiting=None)
+                    member['waiting'] = None
+                    if not finish_lazy:
+                        member['nextCheck'] = time.time() + 10
                     dirty = True
                     # Commit the reservation before the worker reads its receipt.
                     self.save(db, op)
                     db.commit()
-                    worker = threading.Thread(target=self.run, args=(key, aid), daemon=True, name='studio-account-transfer')
+                    if finish_lazy:
+                        self.futures[(key, aid)] = concurrent.futures.Future()
+                    worker = threading.Thread(target=self.run_lazy if finish_lazy else self.run,
+                        args=(key, aid), daemon=True, name='studio-account-transfer')
                     self.workers.add(worker)
                     worker.start()
                 if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
@@ -629,7 +642,27 @@ class AccountTransfers:
                 return 'End voice to transfer this agent'
         return None
 
-    def move_lazy(self, key, aid):
+    def run_lazy(self, key, aid):
+        from codex_runtime import PreparationPending
+        try:
+            with self.rt.lock, self.rt.db() as db:
+                op = self.get(db, key)
+                if self.rt.closed or self.closing or op['status'] != 'pending':
+                    return
+            self.move_lazy(key, aid, background=True)
+        except (PreparationPending, RuntimeError):
+            # move_lazy saves failures and deferred checks before returning.
+            pass
+        finally:
+            with self.rt.lock:
+                self.running.discard(aid)
+                self.workers.discard(threading.current_thread())
+                future = self.futures.pop((key, aid), None)
+                if future and not future.done():
+                    future.set_result(None)
+            self.rt.changed.set()
+
+    def move_lazy(self, key, aid, *, background=False):
         """Move one rebound idle member's native history before its first start."""
         rt = self.rt
         saved_result = None
@@ -640,6 +673,10 @@ class AccountTransfers:
             lazy = a.get('lazyAccountTransfer') or {}
             if lazy.get('id') != key:
                 return a
+            background_receipt = self.futures.get((key, aid))
+            if not background and background_receipt and not background_receipt.done():
+                from codex_runtime import PreparationPending
+                raise PreparationPending(background_receipt)
             if member.get('result'):
                 saved_result = copy.deepcopy(member['result'])
             if saved_result is None and member['phase'] == 'unknown':
@@ -918,7 +955,8 @@ class AccountTransfers:
             a.pop('prepareAttempt', None)
             a['executionSettingsAccountKey'] = op['targetAccountKey']
             source_state = lazy.get('sourceState') or {}
-            resume_failed = bool(a.get('autoWake') and source_state.get('status') in {'failed', 'interrupted'})
+            resume_failed = bool(a.get('autoWake') and source_state.get('status') in {'failed', 'interrupted'}
+                                 and not op.get('finishHistory'))
             pending_input = db.execute(
                 "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
                 "AND status IN ('pending','reserved','dispatching','uncertain') LIMIT 1",
