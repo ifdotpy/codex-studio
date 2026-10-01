@@ -7,6 +7,8 @@ import sqlite3
 import threading
 import time
 
+from codex_sqlite import connect as sqlite_connect
+
 COPY_SPACE_BYTES = 16_500_000_000
 BATCH_ROWS = 128
 BATCH_BYTES = 1024 * 1024
@@ -25,7 +27,7 @@ TABLES = {
 
 def copy_step(analytics_path, canvas_path):
     """Copy or retire one bounded page. Returns (advanced, status, timing)."""
-    db = sqlite3.connect(analytics_path, timeout=15)
+    db = sqlite_connect(analytics_path, timeout=15, site="Analytics.migration")
     try:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")

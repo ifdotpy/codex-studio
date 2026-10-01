@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 
+from codex_sqlite import connect as sqlite_connect
 from codex_claude_costs import parse_claude_usage
 from codex_pricing import price_usage
 
@@ -48,7 +49,8 @@ class SessionCostReader:
 
     def _connect(self):
         path = self.analytics_path if self._separate_analytics else self.db_path
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+        db = sqlite_connect(f"file:{path}?mode=ro", uri=True, timeout=3,
+                            site="SessionCostReader.analytics")
         db.row_factory = sqlite3.Row
         if self._separate_analytics:
             db.execute("ATTACH DATABASE ? AS canvas", (self.db_path.absolute().as_uri() + "?mode=ro",))
@@ -250,6 +252,7 @@ class SessionCostReader:
             usage_state = self._usage_state(db, root)
             agents = self._root_agents(db, agent_id, root)
         finally:
+            db.rollback()  # End the explicit read snapshot before instrumented close.
             db.close()
         pricing_signature = self._catalog_signature(self.pricing.snapshot())
         claude_agents = self._claude_agents(agents)
@@ -614,4 +617,5 @@ class SessionCostReader:
             result["_cacheSource"] = cache_source
             return result
         finally:
+            db.rollback()
             db.close()
