@@ -116,6 +116,9 @@ def fail(runtime, db, actor, error):
     recovery.update(stage="failed", error=error, failedAt=time.time())
     actor.update(error=error, nativeFailureHold=True, status="failed")
     runtime.put(db, "agents", actor)
+    if not runtime.worker_continuation_pending(actor):
+        runtime.child_stopped_event(db, actor, "failed", error,
+                                    "browser-recovery:" + str(recovery["id"]))
 
 
 def recovery_current(runtime, actor, operation):

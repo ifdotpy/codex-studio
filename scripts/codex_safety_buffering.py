@@ -249,3 +249,6 @@ def fail(runtime, op, error, *, unknown):
                     and (a.get('startAttempt') or {}).get('id') == op['attemptId']):
                 a.update(inFlight=False, status='failed', nativeFailureHold=True, error=str(error))
             save(runtime, db, a, op)
+            if a.get('status') == 'failed' and not runtime.worker_continuation_pending(a):
+                runtime.child_stopped_event(db, a, 'failed', str(error),
+                                            'safety-retry:' + str(op['id']))

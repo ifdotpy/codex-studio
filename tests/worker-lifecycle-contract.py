@@ -82,6 +82,93 @@ class LifecycleContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(worker['id'])['status'], 'queued')
         self.assertEqual(len(self.events(worker, 'event_wake')), 1)
 
+    def test_user_stop_notifies_parent_with_assignment_and_lead_stop_marker(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        task = self.work(lead, 'Assigned task', owner=worker['id'])
+        self.runtime.stop(worker['id'], descendants=False)
+        rows = self.events(lead, 'child_result')
+        self.assertEqual(len(rows), 1)
+        payload = __import__('json').loads(rows[0]['text'])
+        self.assertEqual(payload['agent_id'], worker['id'])
+        self.assertEqual(payload['status'], 'paused')
+        self.assertEqual(payload['reason'], 'Stopped by user')
+        self.assertTrue(payload['last_activity'])
+        self.assertEqual(payload['task_id'], task['id'])
+        self.assertFalse(payload['result_submitted'])
+        self.assertEqual(payload['next_step'], 'send')
+        self.assertFalse(payload['requested_by_lead'])
+
+    def test_lead_interrupt_is_marked_and_native_failure_notifies_once(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        self.runtime.stop(worker['id'], descendants=False, sender=lead['id'], sender_epoch=lead['epoch'])
+        payload = __import__('json').loads(self.events(lead, 'child_result')[0]['text'])
+        self.assertTrue(payload['requested_by_lead'])
+        worker = self.worker(lead, 'Failed worker')
+        running = self.start(worker)
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {
+            'threadId': running['threadId'], 'turn': {'id': running['turnId'], 'status': 'failed',
+                'error': {'message': 'Native failure'}}}})
+        rows = self.events(lead, 'child_result')
+        self.assertEqual(len(rows), 2)
+        failed = __import__('json').loads(rows[-1]['text'])
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['reason']['message'], 'Native failure')
+        self.assertEqual(failed['next_step'], 'recover')
+
+    def test_stop_reports_submitted_assignment(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        task = self.work(lead, 'Submitted task', owner=worker['id'])
+        self.action(worker, task, 'submit', result='Done', checks='Checked', revision='abc123')
+        self.runtime.stop(worker['id'], descendants=False)
+        payload = __import__('json').loads(self.events(lead, 'child_result')[0]['text'])
+        self.assertEqual(payload['task_id'], task['id'])
+        self.assertTrue(payload['result_submitted'])
+
+    def test_usage_limit_hold_defers_until_no_resume_is_scheduled(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        self.agent_update(worker, usageResumeEnabled=False)
+        running = self.start(worker)
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {
+            'threadId': running['threadId'], 'turn': {'id': running['turnId'], 'status': 'failed',
+                'error': {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}}}})
+        rows = self.events(lead, 'child_result')
+        self.assertEqual(len(rows), 1)
+        payload = __import__('json').loads(rows[0]['text'])
+        self.assertEqual(payload['status'], 'failed')
+        self.assertEqual(payload['reason']['codexErrorInfo'], 'usageLimitExceeded')
+        self.assertTrue(self.runtime.agent(worker['id'])['nativeFailureHold'])
+
+    def test_scheduled_usage_resume_does_not_notify_before_continuation(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        running = self.start(worker)
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {
+            'threadId': running['threadId'], 'turn': {'id': running['turnId'], 'status': 'failed',
+                'error': {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}}}})
+        self.assertEqual(self.runtime.agent(worker['id'])['usageResume']['status'], 'scheduled')
+        self.assertEqual(self.events(lead, 'child_result'), [])
+
+    def test_stopped_event_is_not_recreated_after_runtime_restart(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.worker(lead)
+        self.runtime.stop(worker['id'], descendants=False)
+        self.assertEqual(len(self.events(lead, 'child_result')), 1)
+        state = self.state
+        runtime_type = type(self.runtime)
+        self.runtime.close()
+        self.runtime = runtime_type(state, fixture.WorkspaceServer)
+        self.assertEqual(len(self.events(lead, 'child_result')), 1)
+
     def test_reviewer_archives_only_after_result_delivery(self):
         lead = self.lead()
         reviewer = self.start(self.worker(lead), 'Review code')

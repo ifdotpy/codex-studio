@@ -158,6 +158,9 @@ def restore_queued_restart(runtime, expected, connection, server, turn):
         # tool receipts, monitors, native context checks, and action permissions.
         runtime.loaded.discard(agent['id'])
         runtime.put(db, 'agents', agent)
+        if outcome == 'failed':
+            runtime.child_stopped_event(db, agent, 'failed', agent['error'],
+                                        'turn:' + str(turn.get('id') or 'unknown'))
     runtime.changed.set()
     return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome, 'queuedInputPreserved': True}
 
@@ -286,6 +289,12 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
         runtime.put(db, 'agents', agent)
         if restart_continuation:
             continue_interrupted(runtime, db, agent, turn)
+        elif outcome in {'failed', 'interrupted'} and not runtime.worker_continuation_pending(agent):
+            marker = agent.get('restartRecovery') or {}
+            reason = marker.get('reason') or error or agent.get('error')
+            runtime.child_stopped_event(db, agent, outcome,
+                reason or 'The interrupted turn was reconciled without continuation.',
+                'turn:' + str(turn.get('id') or 'unknown'))
         return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome,
                 **({'continued': True} if restart_continuation else {})}
 
