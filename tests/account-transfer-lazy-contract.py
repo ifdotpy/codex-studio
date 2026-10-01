@@ -115,6 +115,32 @@ class LazyTransferContract(unittest.TestCase):
         self.assertEqual(self.t.native_calls, [])
         self.assertEqual(self.t.receipt(op['id'])['members'][self.aid]['phase'], 'unknown')
 
+    def test_finish_history_waits_for_pending_model_list_without_manual_retry(self):
+        from codex_catalog import CatalogPending
+        op = self.t.start_transfer()
+        original = self.rt.catalog
+        pending = True
+        def catalog(key='default'):
+            if pending:
+                raise CatalogPending('Existing metadata request is pending')
+            return original(key)
+        self.rt.catalog = catalog
+        self.store.action(op['id'], 'finish_history')
+        self.t.tick()
+        self.t.until(lambda: not self.store.running)
+        member = self.t.receipt(op['id'])['members'][self.aid]
+        self.assertEqual(member['phase'], 'lazy')
+        self.assertEqual(member['waiting'], 'Waiting for the destination model list')
+        self.assertIsNone(member['error'])
+        self.assertEqual(self.t.pending, [])
+        pending = False
+        time.sleep(1.05)
+        self.t.tick()
+        self.t.until(lambda: len(self.t.pending) == 1)
+        self.t.complete_fork()
+        self.t.until(lambda: not self.store.running)
+        self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
+
     def test_300_idle_members_rebind_within_one_second_and_without_native_calls(self):
         with self.rt.lock, self.rt.db() as db:
             lead = self.rt.agent(self.aid, db)

@@ -1513,6 +1513,8 @@ class AccountTransfers:
                 self.futures[(key, aid)] = submitted
             server.on_result(submitted, lambda future: self.received(key, aid, future))
         except Exception as error:
+            if self.retry_preparation(key, aid, error):
+                return
             with rt.lock, rt.db() as db:
                 op = self.get(db, key)
                 m = op['members'][aid]
@@ -1611,6 +1613,18 @@ class AccountTransfers:
             rt.changed.set()
 
     def retry_preparation(self, key, aid, error):
+        from codex_catalog import CatalogPending
+        if isinstance(error, CatalogPending):
+            with self.rt.lock, self.rt.db() as db:
+                op = self.get(db, key)
+                member = op['members'][aid]
+                if (op['status'] != 'pending' or member['phase'] != 'reading'
+                        or any(member.get(field) for field in ('submittedAt', 'nativeMethod', 'result'))):
+                    return False
+                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,
+                              waiting='Waiting for the destination model list', nextCheck=time.time() + 1)
+                self.save(db, op)
+            return True
         from codex_native_errors import NativeRpcError
         # Codex 0.153.4 returns this before fork_thread. Other internal errors
         # can follow creation and must retain their unknown outcome.
