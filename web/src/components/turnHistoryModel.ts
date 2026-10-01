@@ -85,3 +85,78 @@ export function historyGroups(
   }
   return groups;
 }
+
+/** Reuse complete groups before the first changed item and regroup only the
+ * changed suffix. Transcript pages are bounded, so a prepend stays bounded too. */
+export function incrementalHistoryGroups(
+  items: Message[],
+  currentTurn: string | undefined,
+  prior: {
+    items: Message[];
+    currentTurn?: string;
+    groups: HistoryGroup[];
+  } | null,
+): HistoryGroup[] {
+  if (!prior || prior.currentTurn !== currentTurn)
+    return historyGroups(items, currentTurn);
+  let shared = 0;
+  while (
+    shared < items.length &&
+    shared < prior.items.length &&
+    items[shared] === prior.items[shared]
+  )
+    shared++;
+  if (shared === items.length && shared === prior.items.length)
+    return prior.groups;
+  let sharedSuffix = 0;
+  while (
+    sharedSuffix < items.length - shared &&
+    sharedSuffix < prior.items.length - shared &&
+    items[items.length - 1 - sharedSuffix] ===
+      prior.items[prior.items.length - 1 - sharedSuffix]
+  )
+    sharedSuffix++;
+  let prefixGroups = 0;
+  let prefixItems = 0;
+  while (prefixGroups < prior.groups.length) {
+    const length = prior.groups[prefixGroups].items.length;
+    if (prefixItems + length > shared) break;
+    prefixItems += length;
+    prefixGroups++;
+  }
+  if (shared === prior.items.length && items.length > shared && prefixGroups)
+    prefixGroups--;
+  prefixItems = prior.groups
+    .slice(0, prefixGroups)
+    .reduce((count, group) => count + group.items.length, 0);
+  let suffixGroups = prior.groups.length;
+  let oldOffset = 0;
+  const suffixStart = prior.items.length - sharedSuffix;
+  for (let index = 0; index < prior.groups.length; index++) {
+    oldOffset += prior.groups[index].items.length;
+    if (oldOffset > suffixStart) {
+      const boundary = prior.groups[index];
+      const boundaryStart = oldOffset - boundary.items.length;
+      // User rows always start a group and cannot join an adjacent group.
+      suffixGroups =
+        boundaryStart === suffixStart && boundary.items[0].role === "user"
+          ? index
+          : index + 1;
+      break;
+    }
+  }
+  suffixGroups = Math.max(prefixGroups, suffixGroups);
+  const suffix = prior.groups.slice(suffixGroups);
+  const suffixItems = suffix.reduce(
+    (count, group) => count + group.items.length,
+    0,
+  );
+  return [
+    ...prior.groups.slice(0, prefixGroups),
+    ...historyGroups(
+      items.slice(prefixItems, items.length - suffixItems),
+      currentTurn,
+    ),
+    ...suffix,
+  ];
+}

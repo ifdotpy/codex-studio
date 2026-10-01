@@ -1,4 +1,8 @@
 import { retainTranscriptItems } from "./transcriptIdentity";
+import {
+  boundTranscriptItems,
+  trimTranscriptPageCache,
+} from "./transcriptPageBounds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { syncApi as api, errorText, setToken, saved, save } from "./api";
 import {
@@ -104,9 +108,11 @@ export function useSnapshot() {
       if (request !== generation.current) return;
       sessionToken.current = session.token;
       setToken(session.token);
-      setData((old) => old && old.token !== session.token
-        ? { ...old, token: session.token }
-        : old);
+      setData((old) =>
+        old && old.token !== session.token
+          ? { ...old, token: session.token }
+          : old,
+      );
       if (!credentialsOnly) {
         try {
           await refreshProjection("state");
@@ -176,12 +182,18 @@ export function useSnapshot() {
         },
         (error) => {
           setSyncError(error === null ? "" : errorText(error));
-          if (error !== null && !replicated.current && !legacyFallback.current) {
+          if (
+            error !== null &&
+            !replicated.current &&
+            !legacyFallback.current
+          ) {
             legacyFallback.current = true;
-            void api<Snapshot>("/api/state?view=chat").then((legacy) => {
-              sessionToken.current = legacy.token || sessionToken.current;
-              setData({ ...legacy, token: sessionToken.current });
-            }).catch((fallbackError) => setError(errorText(fallbackError)));
+            void api<Snapshot>("/api/state?view=chat")
+              .then((legacy) => {
+                sessionToken.current = legacy.token || sessionToken.current;
+                setData({ ...legacy, token: sessionToken.current });
+              })
+              .catch((fallbackError) => setError(errorText(fallbackError)));
           }
         },
       ),
@@ -261,6 +273,8 @@ export function transcriptMessages(
 
 type TranscriptPage = {
   items: Message[];
+  size: number;
+  anchorId?: string;
   before: string | null;
   after: string | null;
   focused: boolean;
@@ -343,6 +357,7 @@ export function useMessages(
   const latest = useRef<{ scope: string; data: Json } | null>(null);
   const pageAttempt = useRef(0);
   const pageBusy = useRef(false);
+  const pageAnchor = useRef<{ scope: string; id: string } | null>(null);
   const displayed = useRef<{ scope: string; items: Message[] }>({
     scope,
     items,
@@ -408,21 +423,54 @@ export function useMessages(
             liveItems,
           );
         }
+        const bounded = boundTranscriptItems(
+          page.items,
+          (item) => {
+            let size = messageSizes.current.get(item);
+            if (size === undefined) {
+              size = JSON.stringify(item).length * 2;
+              messageSizes.current.set(item, size);
+            }
+            return size;
+          },
+          page.focused ? "oldest" : "newest",
+          page.anchorId,
+        );
+        page.items = bounded.items;
+        page.size = bounded.bytes;
+        if (bounded.droppedOldest)
+          page.before = bounded.items[0]?.id || page.before;
+        if (bounded.droppedNewest)
+          page.after = page.items.at(-1)?.id || page.after;
       }
       if (!page && !d.unavailable && managed && kind === "agent") {
         // Retain the loaded range from the first snapshot. Otherwise each live
         // update evicts messages as tool activity moves the server's page.
+        const bounded = boundTranscriptItems(liveItems, (item) => {
+          let size = messageSizes.current.get(item);
+          if (size === undefined) {
+            size = JSON.stringify(item).length * 2;
+            messageSizes.current.set(item, size);
+          }
+          return size;
+        });
         page = {
-          items: liveItems,
-          before: d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
+          items: bounded.items,
+          size: bounded.bytes,
+          before: bounded.droppedOldest
+            ? bounded.items[0]?.id || null
+            : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
           after: null,
           focused: false,
           version: d.historyVersion,
           latest: d,
         };
         pages.current.set(scope, page);
-        while (pages.current.size > 12)
-          pages.current.delete(pages.current.keys().next().value!);
+      }
+      if (page) {
+        pages.current.delete(scope);
+        pages.current.set(scope, page);
+        trimTranscriptPageCache(pages.current, scope);
       }
       const nextItems = page?.items || liveItems;
       if (managed && kind === "agent") {
@@ -431,7 +479,7 @@ export function useMessages(
             ? page.before
             : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
         );
-        setAfter(page?.focused ? page.after : null);
+        setAfter(page?.after || null);
       }
       latest.current = { scope, data: d };
       const nextNotice =
@@ -558,7 +606,7 @@ export function useMessages(
     setLoadedId(retained || page ? scope : null);
     setItems(page?.items || retained?.items || []);
     setHistorical(!!page?.focused);
-    setAfter(page?.focused ? page.after : null);
+    setAfter(page?.after || null);
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
@@ -621,8 +669,10 @@ export function useMessages(
         try {
           const d = JSON.parse(event.data);
           if (d.version !== undefined) {
-            if (!Number.isSafeInteger(d.version) ||
-                (!d.replace && d.version !== streamVersion + 1)) {
+            if (
+              !Number.isSafeInteger(d.version) ||
+              (!d.replace && d.version !== streamVersion + 1)
+            ) {
               source.close();
               streamLive = false;
               setConnection("reconnecting");
@@ -637,8 +687,12 @@ export function useMessages(
               if (change.replace) records.set(change.id, change.replace);
               else if (typeof change.append === "string") {
                 const prior = records.get(change.id);
-                if (!prior || typeof prior.text !== "string") throw Error("Transcript delta has no base");
-                records.set(change.id, { ...prior, text: prior.text + change.append });
+                if (!prior || typeof prior.text !== "string")
+                  throw Error("Transcript delta has no base");
+                records.set(change.id, {
+                  ...prior,
+                  text: prior.text + change.append,
+                });
               }
             }
             if (d.order) recordOrder = d.order;
@@ -743,6 +797,7 @@ export function useMessages(
     before?: string;
     after?: string;
     around?: string;
+    anchor?: string;
   }) => {
     if (
       !id ||
@@ -755,7 +810,10 @@ export function useMessages(
     pageBusy.current = true;
     setPageLoading(true);
     try {
-      const params = new URLSearchParams({ id, ...query });
+      const params = new URLSearchParams({ id });
+      if (query.before) params.set("before", query.before);
+      if (query.after) params.set("after", query.after);
+      if (query.around) params.set("around", query.around);
       const result = await api(`/api/transcript/page?${params}`);
       if (active.current !== scope || attempt !== pageAttempt.current)
         return false;
@@ -780,20 +838,38 @@ export function useMessages(
           : query.after
             ? mergeTranscript(existing, source)
             : mergeTranscript(source, existing),
+        size: 0,
         before: query.after ? prior?.before || null : result.nextCursor || null,
-        after: focused
-          ? query.before
-            ? prior?.after || null
-            : result.nextAfterCursor || null
-          : null,
+        after: query.before
+          ? result.nextAfterCursor || prior?.after || null
+          : result.nextAfterCursor || null,
         focused,
+        anchorId: query.anchor || prior?.anchorId || query.around,
         version: result.historyVersion,
         latest: live,
       };
+      const bounded = boundTranscriptItems(
+        next.items,
+        (item) => {
+          let size = messageSizes.current.get(item);
+          if (size === undefined) {
+            size = JSON.stringify(item).length * 2;
+            messageSizes.current.set(item, size);
+          }
+          return size;
+        },
+        query.before ? "oldest" : "newest",
+        next.anchorId,
+      );
+      next.items = bounded.items;
+      next.size = bounded.bytes;
+      if (bounded.droppedOldest)
+        next.before = bounded.items[0]?.id || next.before;
+      if (bounded.droppedNewest && result.nextAfterCursor)
+        next.after = result.nextAfterCursor;
       pages.current.delete(scope);
       pages.current.set(scope, next);
-      while (pages.current.size > 12)
-        pages.current.delete(pages.current.keys().next().value!);
+      trimTranscriptPageCache(pages.current, scope);
       setItems(next.items);
       setBefore(next.before);
       setAfter(next.after);
@@ -828,15 +904,33 @@ export function useMessages(
       );
     if (present) return true;
     if (!managed || kind !== "agent") return false;
-    return fetchPage({ around: messageId });
+    return fetchPage({ around: messageId, anchor: messageId });
+  };
+  const setPageAnchor = (anchorId: string | null) => {
+    pageAnchor.current = anchorId ? { scope, id: anchorId } : null;
+    const page = pages.current.get(scope);
+    if (page) page.anchorId = anchorId || undefined;
   };
   const newer = async () => {
-    if (after) await fetchPage({ after });
+    if (after)
+      await fetchPage({
+        after,
+        anchor:
+          pageAnchor.current?.scope === scope
+            ? pageAnchor.current.id
+            : undefined,
+      });
   };
   const older = async () => {
     if (!id || !before) return;
     if (managed && kind === "agent") {
-      await fetchPage({ before: String(before) });
+      await fetchPage({
+        before: String(before),
+        anchor:
+          pageAnchor.current?.scope === scope
+            ? pageAnchor.current.id
+            : undefined,
+      });
       return;
     }
     const d = await api(
@@ -872,12 +966,8 @@ export function useMessages(
       "",
     older,
     newer,
-    after:
-      loadedId === scope
-        ? after
-        : keepPage && retainedPage!.focused
-          ? retainedPage!.after
-          : null,
+    setPageAnchor,
+    after: loadedId === scope ? after : keepPage ? retainedPage!.after : null,
     historical:
       loadedId === scope ? historical : !!(keepPage && retainedPage!.focused),
     pageLoading,

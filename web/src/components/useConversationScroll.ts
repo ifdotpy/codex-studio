@@ -203,6 +203,24 @@ export function useConversationScroll(id: string, ready: boolean) {
     remember();
     persist();
   };
+  const getAnchorId = () => {
+    const root = scroll.current;
+    if (!root) return null;
+    const bounds = root.getBoundingClientRect();
+    const visible = (node: HTMLElement) => {
+      const box = node.getBoundingClientRect();
+      return box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom;
+    };
+    const retained = anchor.current?.element;
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>("[data-message]"));
+    const row = retained?.isConnected
+      ? retained.closest<HTMLElement>("[data-message]")
+      : null;
+    const element = row && visible(row)
+      ? row
+      : (following.current ? [...nodes].reverse() : nodes).find(visible);
+    return element?.dataset.message || element?.dataset.sourceMessage || null;
+  };
   return {
     scroll,
     content,
@@ -211,5 +229,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     setFollow,
     onScroll,
     remember,
+    getAnchorId,
   };
 }
