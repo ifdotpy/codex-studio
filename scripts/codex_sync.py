@@ -223,8 +223,9 @@ class SyncStore:
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
                    (next_sequence(db), scope, key, encoded, int(deleted)))
 
-    def pull(self, scope, after=0, limit=100):
-        after, limit = max(0, int(after)), min(100, max(1, int(limit)))
+    def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0):
+        after = max(0, int(after))
+        limit = min(500 if scope == 'state:entities:v1' else 100, max(1, int(limit)))
         with self.scope_lock(scope):
             self._ensure_versions()
             if scope == 'state:entities:v1':
@@ -235,15 +236,21 @@ class SyncStore:
                     # Retire old task DTOs gradually so an existing client checkpoint
                     # can consume the resulting tombstones through ordinary deltas.
                     sync_task_window(db)
+                    high = max_seq(db)
+                    initial_high = min(high, max(0, int(initial_high))) if fresh and after else high
+                    # A new browser has no rows to remove. Existing checkpoints
+                    # still receive tombstones through the ordinary delta path.
                     rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
                                          WHERE collection NOT LIKE 'transcript:%' AND seq>?
-                                         ORDER BY seq LIMIT ?''', (after, limit)).fetchall()
+                                           AND (?=0 OR deleted=0 OR seq>?)
+                                         ORDER BY seq LIMIT ?''',
+                                      (after, int(bool(fresh)), initial_high, limit)).fetchall()
                     documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
                                   'seq': row[2], '_deleted': bool(row[4])} for row in rows]
-                    checkpoint = documents[-1]['seq'] if documents else after
+                    checkpoint = (documents[-1]['seq'] if len(documents) == limit else high)
                     return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                             'documents': documents, 'checkpoint': {'seq': checkpoint},
-                            'maxSeq': max_seq(db)}
+                            'maxSeq': high, 'initialHigh': initial_high if fresh else 0}
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
                 payload = self.shared_snapshot(scope)
                 deleted = False

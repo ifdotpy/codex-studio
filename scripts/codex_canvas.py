@@ -814,7 +814,9 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(sync().identity())
                 if path.path == "/api/sync/pull":
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
-                    return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0), q.get("limit", 100)))
+                    return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0),
+                                                 q.get("limit", 100), q.get("fresh") == "1",
+                                                 q.get("initialHigh", 0)))
                 if path.path == "/api/sync/stream":
                     return self.stream_sync()
                 if path.path == "/api/state":

@@ -221,11 +221,22 @@ with tempfile.TemporaryDirectory() as directory:
     assert json.loads(first_change["documents"][0]["payload"])["value"]["name"] == "Updated"
     with connect() as db:
         assert put(db, "agent", "a", {}, deleted=True)
+        assert put(db, "agent", "old", {}, deleted=True)
     for client in (store, second_window):
         tombstone = client.pull("state:entities:v1", after=changed_seq)
         assert tombstone["documents"][0]["_deleted"]
+    fresh = store.pull("state:entities:v1", fresh=True, limit=500)
+    assert all(not row["_deleted"] for row in fresh["documents"])
+    assert fresh["checkpoint"]["seq"] == fresh["maxSeq"]
+    with connect() as db:
+        assert put(db, "agent", "later", {"id": "later", "name": "Later"})
+        assert put(db, "agent", "later", {}, deleted=True)
+    delta = store.pull("state:entities:v1", after=fresh["checkpoint"]["seq"],
+                       fresh=True, initial_high=fresh["initialHigh"])
+    assert [row["id"] for row in delta["documents"]] == ["entity:agent:later"]
+    assert delta["documents"][0]["_deleted"]
     restarted = SyncStore(connect, lambda: snapshot, lambda _key: {})
-    assert not restarted.pull("state:entities:v1", after=tombstone["checkpoint"]["seq"])["documents"]
+    assert not restarted.pull("state:entities:v1", after=delta["checkpoint"]["seq"])["documents"]
     # The full state scope remains available to clients not yet reloaded.
     legacy = store.pull("state")
     assert "runtime" in json.loads(legacy["documents"][0]["payload"])

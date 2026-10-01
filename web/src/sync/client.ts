@@ -161,10 +161,14 @@ async function pull(
   limit: number,
   workspaceId: string,
   verifyWorkspace: () => Promise<void>,
+  initialHigh?: number,
 ) {
   await verifyWorkspace();
+  const fresh = initialHigh !== undefined
+    ? `&fresh=1&initialHigh=${initialHigh}`
+    : "";
   const result = await api(
-    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}`,
+    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}`,
   );
   if (result.workspaceId !== workspaceId)
     throw new Error("The server workspace changed. Reload to synchronize.");
@@ -326,6 +330,7 @@ type ProjectionState = {
 };
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
+const ENTITY_BATCH_SIZE = 500;
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,
@@ -358,6 +363,11 @@ async function acquireProjection(
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
+          const [ready] = remoteScope === "state:entities:v1"
+            ? await db.projections.storageInstance.findDocumentsById(
+                ["state:entities:ready"], true)
+            : [undefined];
+          let initialHigh: number | undefined = ready ? undefined : 0;
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -365,12 +375,20 @@ async function acquireProjection(
                 true,
               );
             const after = previous?.seq ?? 0;
+            if (initialHigh !== undefined && previous?.payload) {
+              try {
+                initialHigh = JSON.parse(previous.payload).initialHigh || 0;
+              } catch { /* An old checkpoint continues with delta semantics. */
+                initialHigh = undefined;
+              }
+            }
             const result = await pull(
               remoteScope,
               after,
-              100,
+              remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
               workspaceId,
               verifyWorkspace,
+              initialHigh,
             );
             if (stopped) return;
             for (const document of result.documents as SyncDocument[]) {
@@ -432,10 +450,11 @@ async function acquireProjection(
             if (remoteScope === "state:entities:v1") {
               await persistProjection(db.projections, {
                 id: checkpointId,
-                payload: "{}",
+                payload: JSON.stringify({ initialHigh: result.initialHigh }),
                 seq: result.checkpoint.seq,
               });
-              more = result.documents.length === 100 &&
+              initialHigh = result.initialHigh;
+              more = result.documents.length === ENTITY_BATCH_SIZE &&
                 result.checkpoint.seq < result.maxSeq;
             } else {
               more = false;
