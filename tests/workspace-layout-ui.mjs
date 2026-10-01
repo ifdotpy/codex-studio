@@ -191,6 +191,7 @@ try {
           computedHeight: style.height,
           paddingLeft: Number.parseFloat(style.paddingLeft) || 0,
           paddingRight: Number.parseFloat(style.paddingRight) || 0,
+          marginTop: style.marginTop,
           text: element.textContent?.trim() || "",
         };
       };
@@ -234,7 +235,7 @@ try {
         panel: box(".agent-panel"),
         composer: box("#composer"),
         message: box("#message"),
-        usage: box("#conversation-header-tools .usage-footer"),
+        usage: box("#usage-footer"),
         shortcuts: box(".workspace-shortcuts"),
       };
     });
@@ -307,6 +308,11 @@ try {
     const headerTools = page.locator(
       "#conversation-header-tools .conversation-header-tools-menu",
     );
+    assert.equal(
+      await page.locator("#conversation-header-tools .usage-footer").count(),
+      0,
+      `${prefix}: usage does not occupy the header tools`,
+    );
     const promptNavigation = headerTools.locator(
       ".conversation-prompt-navigation-slot .prompt-navigation-compact",
     );
@@ -328,19 +334,36 @@ try {
           contentBox.x + contentBox.width <= viewport.width + 1,
         `${prefix}: compact prompt and usage controls fit the viewport`,
       );
-      if (await toolsContent.locator(".usage-footer").count())
-        await toolsContent.locator(".usage-footer").waitFor({
-          state: "visible",
-        });
       await headerTools.locator(".conversation-header-tools-summary").click();
     } else {
       await promptNavigation.waitFor({ state: "visible" });
-      if (await headerTools.locator(".usage-footer").count())
-        await headerTools.locator(".usage-footer").waitFor({
-          state: "visible",
-        });
+    }
+    if (current.usage) {
+      const usage = page.locator("#usage-footer");
+      await usage.waitFor({ state: "visible" });
+      await usage.locator(".session-cost-summary").waitFor({
+        state: "visible",
+      });
+      await usage.getByRole("button", { name: "Chat context" }).waitFor({
+        state: "visible",
+      });
+      await usage
+        .getByRole("button", { name: "Account limits", exact: true })
+        .waitFor({ state: "visible" });
+      const composerBounds = await page.locator("#composer").boundingBox();
+      const usageBounds = await usage.boundingBox();
+      assert.ok(composerBounds && usageBounds);
+      assert.ok(
+        usageBounds.y >= composerBounds.y + composerBounds.height - 1,
+        `${prefix}: context, cost, and limits appear beneath the composer`,
+      );
     }
     assert.ok(current.panel, `${prefix}: active panel is present`);
+    assert.equal(
+      current.panel.marginTop,
+      "8px",
+      `${prefix}: progress panel starts 8px below its preceding content`,
+    );
     assert.ok(
       current.panel.height > 0 && current.panel.height <= panelHeight + 1,
       `${prefix}: panel height ${current.panel.height}`,

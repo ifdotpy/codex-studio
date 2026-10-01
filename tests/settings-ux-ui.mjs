@@ -242,12 +242,28 @@ try {
     name: "Studio settings",
     exact: true,
   });
+  assert.deepEqual(
+    (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
+      label.trim(),
+    ),
+    ["Accounts", "Appearance", "Hotkeys"],
+    "Global Studio settings has separate Accounts, Appearance, and Hotkeys tabs",
+  );
+  await studioSettings
+    .getByRole("tab", { name: "Accounts", exact: true })
+    .click();
+  await studioSettings
+    .getByRole("tab", { name: "Appearance", exact: true })
+    .click();
   await studioSettings
     .getByLabel("Studio theme", { exact: true })
     .selectOption("dark");
   await page.waitForFunction(
     () => document.documentElement.dataset.mantineColorScheme === "dark",
   );
+  await studioSettings
+    .getByRole("tab", { name: "Accounts", exact: true })
+    .click();
   const transfersBeforeDefaultChange = transferCalls;
   const studioAccount = studioSettings.getByTestId("account-picker");
   await studioAccount.click();

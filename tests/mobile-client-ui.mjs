@@ -45,6 +45,8 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
   await page.locator("#message").waitFor();
+  await page.getByLabel("Toggle conversations").click();
+  await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
   const openChatActions = async () => {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
@@ -67,13 +69,38 @@ try {
     await menu.waitFor();
     const wasOpen = (await menu.getAttribute("open")) !== null;
     if (!wasOpen) await summary.click();
-    const usage = page.locator("#conversation-header-tools #usage-footer");
+    const header = page.locator("#conversation-header-tools");
+    const promptNavigation = header.locator(
+      ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+    );
+    await promptNavigation.waitFor({ state: "visible" });
+    assert.equal(
+      await header.locator(".usage-footer").count(),
+      0,
+      "Usage controls stay out of the header tools",
+    );
+    const usage = page.locator("#usage-footer");
     assert.equal(await usage.count(), hasUsage ? 1 : 0);
     if (hasUsage) {
       await usage.waitFor({ state: "visible" });
+      await usage.locator(".session-cost-summary").waitFor({
+        state: "visible",
+      });
+      await usage.getByRole("button", { name: "Chat context" }).waitFor({
+        state: "visible",
+      });
       await usage
         .getByRole("button", { name: "Account limits", exact: true })
         .waitFor({ state: "visible" });
+      const [usageBounds, composerBounds] = await Promise.all([
+        usage.boundingBox(),
+        page.locator("#composer").boundingBox(),
+      ]);
+      assert.ok(usageBounds && composerBounds);
+      assert.ok(
+        usageBounds.y >= composerBounds.y + composerBounds.height - 1,
+        "Context, cost, and limits appear beneath the composer",
+      );
     }
     if (!wasOpen) await summary.click();
   };

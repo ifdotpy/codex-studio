@@ -76,6 +76,24 @@ try {
       '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
     )
     .waitFor();
+  assert.equal(
+    await page
+      .locator("main.workspace")
+      .getAttribute("data-show-message-avatars"),
+    "false",
+  );
+  assert.ok(
+    (await page
+      .locator("#conversation #messages .message .chat-message-author")
+      .count()) > 0,
+  );
+  assert.equal(
+    await page
+      .locator("#conversation #messages .chat-message-author:visible")
+      .count(),
+    0,
+    "Avatar-only conversation author wrappers collapse when avatars are off",
+  );
   const settleLayout = async () =>
     page.evaluate(
       () =>
@@ -133,6 +151,27 @@ try {
     });
   };
   const settings = await openStudioSettings();
+  const settingsTabs = settings.getByRole("tab");
+  assert.deepEqual(
+    (await settingsTabs.allTextContents()).map((label) => label.trim()),
+    ["Accounts", "Appearance", "Hotkeys"],
+    "Studio settings exposes the three global settings tabs",
+  );
+  await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
+  await settings.getByRole("tab", { name: "Appearance", exact: true }).click();
+  const avatarToggle = settings.getByLabel("Show message avatars", {
+    exact: true,
+  });
+  assert.equal(
+    await avatarToggle.count(),
+    1,
+    "Appearance exposes one avatar toggle",
+  );
+  assert.equal(
+    await avatarToggle.isChecked(),
+    false,
+    "Avatar display defaults off",
+  );
   await settings
     .getByRole("alert")
     .getByText(
@@ -142,6 +181,20 @@ try {
       },
     )
     .waitFor();
+  await avatarToggle.check();
+  assert.equal(await avatarToggle.isChecked(), true);
+  assert.equal(
+    await page
+      .locator("main.workspace")
+      .getAttribute("data-show-message-avatars"),
+    "true",
+  );
+  assert.ok(
+    (await page
+      .locator("#conversation #messages .chat-message-author:visible")
+      .count()) > 0,
+    "Conversation author avatars appear when enabled",
+  );
   const sidebarSize = settings.getByRole("slider", {
     name: "Sidebar font size",
   });
@@ -249,6 +302,7 @@ try {
     path: join(evidence, "settings-max-font-1440x960.png"),
   });
 
+  await settings.getByRole("tab", { name: "Hotkeys", exact: true }).click();
   const shortcut = settings.getByLabel("Toggle sidebar shortcut", {
     exact: true,
   });
@@ -275,6 +329,9 @@ try {
   await page.keyboard.press("Escape");
   await settings.waitFor({ state: "hidden" });
   const shortcutSettings = await openStudioSettings();
+  await shortcutSettings
+    .getByRole("tab", { name: "Hotkeys", exact: true })
+    .click();
   const configurableShortcut = shortcutSettings.getByLabel(
     "Toggle sidebar shortcut",
     { exact: true },
@@ -325,6 +382,7 @@ try {
 
   const setWidthAndCheckAlignment = async (edge) => {
     const dialog = await openStudioSettings();
+    await dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
     const slider = dialog.getByRole("slider", { name: "Transcript width" });
     await slider.press(edge);
     const expected = edge === "Home" ? "60" : "100";
@@ -421,10 +479,26 @@ try {
     )
     .waitFor();
   const reloadedSettings = await openStudioSettings();
+  assert.deepEqual(
+    (await reloadedSettings.getByRole("tab").allTextContents()).map((label) =>
+      label.trim(),
+    ),
+    ["Accounts", "Appearance", "Hotkeys"],
+  );
   assert.equal(
     await reloadedSettings.getByRole("alert").count(),
     0,
     "Valid persisted Studio preferences do not show an invalid-storage alert",
+  );
+  await reloadedSettings
+    .getByRole("tab", { name: "Appearance", exact: true })
+    .click();
+  assert.equal(
+    await reloadedSettings
+      .getByLabel("Show message avatars", { exact: true })
+      .isChecked(),
+    true,
+    "Avatar display persists after reload in this browser",
   );
   assert.equal(
     await reloadedSettings
@@ -444,6 +518,9 @@ try {
       .inputValue(),
     "georgia",
   );
+  await reloadedSettings
+    .getByRole("tab", { name: "Hotkeys", exact: true })
+    .click();
   assert.equal(
     await reloadedSettings
       .getByLabel("Toggle sidebar shortcut", { exact: true })
@@ -516,6 +593,23 @@ try {
   await emptyPage.route(/\/api\/state(?:\?.*)?$/, (route) =>
     route.fulfill({ json: emptyState }),
   );
+  await emptyPage.addInitScript((key) => {
+    // A valid saved preference object from before the avatar option existed.
+    const seedKey = `${key}:legacy-seed-applied`;
+    if (sessionStorage.getItem(seedKey)) return;
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        theme: "light",
+        sidebarFontSize: 16,
+        mainFontSize: 15,
+        fontFamily: "georgia",
+        contentWidth: 75,
+        sidebarShortcut: "Control+b",
+      }),
+    );
+    sessionStorage.setItem(seedKey, "1");
+  }, storageKey);
   await emptyPage.goto(origin);
   await emptyPage
     .getByRole("button", { name: "Studio settings", exact: true })
@@ -530,10 +624,76 @@ try {
         exact: true,
       }),
     );
+  await noChatSettings
+    .getByRole("tab", { name: "Appearance", exact: true })
+    .click();
   await noChatSettings.getByLabel("Studio theme", { exact: true }).waitFor();
+  const legacyAvatarToggle = noChatSettings.getByLabel("Show message avatars", {
+    exact: true,
+  });
+  assert.equal(
+    await legacyAvatarToggle.isChecked(),
+    false,
+    "Legacy preferences migrate with avatar display off in an independent browser",
+  );
+  assert.equal(
+    await emptyPage
+      .locator("main.workspace")
+      .getAttribute("data-show-message-avatars"),
+    "false",
+  );
+  assert.equal(
+    await noChatSettings
+      .getByLabel("Studio theme", { exact: true })
+      .inputValue(),
+    "light",
+    "Legacy browser preferences keep their saved theme during migration",
+  );
+  assert.equal(
+    await noChatSettings
+      .getByRole("slider", { name: "Sidebar font size" })
+      .getAttribute("aria-valuenow"),
+    "16",
+    "Legacy browser preferences keep their saved appearance settings",
+  );
+  await legacyAvatarToggle.check();
+  await emptyPage.keyboard.press("Escape");
+  await noChatSettings.waitFor({ state: "hidden" });
+  await emptyPage.reload();
+  await emptyPage
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
+  const persistedLegacySettings = emptyPage.getByRole("dialog", {
+    name: "Studio settings",
+    exact: true,
+  });
+  await persistedLegacySettings
+    .getByRole("tab", { name: "Appearance", exact: true })
+    .click();
+  assert.equal(
+    await persistedLegacySettings
+      .getByLabel("Show message avatars", { exact: true })
+      .isChecked(),
+    true,
+    "A preference change in the independent browser persists after reload",
+  );
+  assert.equal(
+    await emptyPage
+      .locator("main.workspace")
+      .getAttribute("data-show-message-avatars"),
+    "true",
+  );
+  assert.equal(
+    await page
+      .locator("main.workspace")
+      .getAttribute("data-show-message-avatars"),
+    "true",
+    "Avatar preferences remain independent across browsers",
+  );
+  await emptyPage.keyboard.press("Escape");
   assert.deepEqual(errors, []);
   console.log(
-    `PASS browser-local settings, invalid storage recovery, font and width bounds, shared layout, shortcut conflicts and typing scope, reload, chat scope, and no-chat settings. ${evidence}`,
+    `PASS browser-local settings tabs, legacy preference migration, avatar defaults and persistence, invalid storage recovery, font and width bounds, shared layout, shortcut conflicts and typing scope, reload, chat scope, and no-chat settings. ${evidence}`,
   );
 } finally {
   await browser?.close();
