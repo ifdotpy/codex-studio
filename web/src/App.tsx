@@ -3,6 +3,7 @@ import { menuActions, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
+import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { accountLimits } from "./accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -99,6 +100,7 @@ import WorkerCard, {
   workerState,
   TEAM_STATES,
 } from "./components/WorkerOverview";
+import { TeamDiskTotal } from "./components/WorktreeDisk";
 import Workspace from "./components/Workspace";
 import BackgroundTasks, {
   activeTask,
@@ -221,6 +223,7 @@ export default function App() {
       null,
     ),
     [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
+  const worktreeDisk = useWorktreeDisk(Boolean(data?.stateDir));
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
@@ -1095,6 +1098,7 @@ export default function App() {
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
       <WorkerCard
         agent={a}
+        disk={worktreeDisk?.workers[a.id]}
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
         deferred={deferredIds.has(a.id)}
@@ -1164,8 +1168,10 @@ export default function App() {
           workers={workers}
           answers={answerIds}
           deferred={deferredIds}
+          disk={worktreeDisk}
         />
       )}
+      {smallTeam && <TeamDiskTotal workers={workers} disk={worktreeDisk} />}
       <Button
         id="lead-row"
         aria-current={opened === lead?.id ? "page" : undefined}

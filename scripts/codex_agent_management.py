@@ -14,11 +14,12 @@ def management_tools(tool, text):
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore recreates a removed worktree and returns an archived worker paused; use orchestration_send to resume. '
-        'list_archived is paged. maintenance_report lists old archived or deleted worktrees without removal. '
+        'list and list_archived are paged and include cached worktree disk use. inspect includes a worker size and team total. '
+        'maintenance_report lists old archived or deleted worktrees without removal. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
         'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
         'Only the lead may archive, restore, recover, reset tools, or emit an event.',
-        {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report', 'park', 'list_parked', 'cancel_park', 'emit_event']},
+        {'action': {'type': 'string', 'enum': ['inspect', 'list', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report', 'park', 'list_parked', 'cancel_park', 'emit_event']},
          'agent_id': text, 'reason': {'type': 'string', 'maxLength': 1000},
          'event': {'type': 'string', 'minLength': 1, 'maxLength': 120},
          'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200},
@@ -581,7 +582,7 @@ def _restore_worktree(info):
 
 def manage_agent(rt, actor_id, args, epoch=None):
     action = args.get('action')
-    if action not in {'inspect','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report',
+    if action not in {'inspect','list','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report',
                       'park','list_parked','cancel_park','emit_event'}:
         raise ValueError('Unknown agent management action')
     if action in {'park', 'list_parked', 'cancel_park', 'emit_event'}:
@@ -638,10 +639,25 @@ def manage_agent(rt, actor_id, args, epoch=None):
                             'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
+        if action == 'list':
+            from codex_worktree_disk import management_view
+            agents = [a for a in rt.records(db, 'agents')
+                      if a['rootId'] == actor['rootId'] and a['id'] != actor_id
+                      and not a.get('deletedAt')]
+            sizes, disk = management_view(rt, agents)
+            rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
+            page = rt.model_page(rows, args, [actor['rootId'], 'workers'])
+            page['items'] = [{**row, 'worktreeDisk': sizes[row['id']]} for row in page['items']]
+            return {**page, 'disk': disk}
         if action == 'list_archived':
-            rows = [_brief(a) for a in rt.records(db, 'agents')
-                    if a['rootId'] == actor['rootId'] and a.get('agentArchive') and a.get('deletedAt')]
-            return rt.model_page(sorted(rows, key=lambda x: x['id']), args, [actor['rootId'], 'archived_workers'])
+            from codex_worktree_disk import management_view
+            agents = [a for a in rt.records(db, 'agents')
+                      if a['rootId'] == actor['rootId'] and a.get('agentArchive') and a.get('deletedAt')]
+            sizes, disk = management_view(rt, agents)
+            rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
+            page = rt.model_page(rows, args, [actor['rootId'], 'archived_workers'])
+            page['items'] = [{**row, 'worktreeDisk': sizes[row['id']]} for row in page['items']]
+            return {**page, 'disk': disk}
         target = rt.agent(args.get('agent_id'), db)
         _authorize(rt, db, actor_id, epoch, target)
         archived = target.get('agentArchive')
@@ -674,8 +690,14 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 return {'status': 'restored', 'agent': _brief(target), 'next': 'Use orchestration_send to resume with an instruction'}
             restore_identity = (target['epoch'], target['deletedAt'])
         if action == 'inspect':
+            from codex_worktree_disk import management_view
+            team = [a for a in rt.records(db, 'agents')
+                    if a['rootId'] == actor['rootId'] and a['id'] != actor_id
+                    and (not a.get('deletedAt') or a['id'] == target['id'])]
+            sizes, disk = management_view(rt, team)
             blockers = [] if archived else _blockers(rt, db, target)
-            return {'agent': _brief(target), 'canArchive': not archived and not blockers,
+            return {'agent': {**_brief(target), 'worktreeDisk': sizes[target['id']]},
+                    'disk': disk, 'canArchive': not archived and not blockers,
                     'blockers': blockers, 'schedulerAlive': rt.scheduler.is_alive()}
         if archived and action not in {'restore', 'archive'}: raise ValueError('Restore this worker before recovery')
         request_recovery = (rt.reconcile_tool_requests(db, target['id'])

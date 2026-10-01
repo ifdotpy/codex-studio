@@ -2671,10 +2671,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if (registered.get("branch") != "refs/heads/" + branch
                         or not Path(project_directory).is_dir()):
                     raise ValueError("Worker worktree identity differs from its reservation; inspect the existing directory")
+                from codex_worktree_creation import verify_registered_worktree
+                verify_registered_worktree(repo, directory, project_directory, branch,
+                                           registered.get("HEAD"))
             else:
-                subprocess.run(["git", "-C", repo, "-c", "checkout.workers=16",
-                                "worktree", "add", "-b", branch, directory, "HEAD"],
-                               check=True, capture_output=True, text=True, timeout=60)
+                from codex_worktree_creation import create_worker_worktree
+                if create_worker_worktree(repo, directory, project_directory, branch):
+                    registered = {"worktree": directory, "branch": "refs/heads/" + branch}
             if timing is not None:
                 timing["worktreeAddedAt"] = time.monotonic_ns()
             with self.lock, self.db() as db:

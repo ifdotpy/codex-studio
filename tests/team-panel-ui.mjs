@@ -31,6 +31,9 @@ try {
   });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await (await fetch(origin + "/api/state")).json();
+  const diskApi = await (await fetch(origin + "/api/worktree-disk")).json();
+  assert.equal(typeof diskApi.limitBytes, "number");
+  assert.equal(typeof diskApi.totalBytes, "number");
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -66,6 +69,7 @@ try {
   Object.assign(member, {
     name: "Подача уведомления",
     status: "failed",
+    worktree: true,
     inFlight: false,
     error: rawError,
     overview: {
@@ -76,6 +80,17 @@ try {
   snapshot.threads = [lead, member];
   snapshot.runtime.agents = [lead, member];
   snapshot.runtime.requests = [];
+  await page.route("**/api/worktree-disk", (route) =>
+    route.fulfill({
+      json: {
+        workers: { [member.id]: { state: "ready", bytes: 1024 ** 3 } },
+        totalBytes: 1024 ** 3,
+        limitBytes: 1024 ** 3,
+        warning: true,
+        scanning: false,
+      },
+    }),
+  );
   await page.route("**/api/sync/**", (route) =>
     route.fulfill({
       status: 503,
@@ -158,6 +173,8 @@ try {
       await panel.locator(".team-heading").innerText(),
       /1 subagent\b/,
     );
+    assert.match(await panel.locator(".worker-disk").innerText(), /Disk: 1.0 GiB/);
+    assert.match(await panel.locator(".team-disk-total").innerText(), /Disk limit reached/);
     assert.equal(
       await panel.locator(".worker-error").innerText(),
       "Could not prepare the project folder.",

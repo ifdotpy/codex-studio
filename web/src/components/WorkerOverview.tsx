@@ -5,8 +5,10 @@ import { save, saved } from "../api";
 import { nativeErrorView } from "../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
 import { agentErrorLabel, nativeReleaseLabel, statusLabel, type Agent, type Json } from "../types";
+import type { WorktreeDiskSnapshot } from "../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
 import type { ChatIndicator } from "./chatStatusModel";
+import { TeamDiskTotal, WorkerDiskLabel } from "./WorktreeDisk";
 
 export function awaitingAnswerIds(requests: Json[]) {
   return new Set(
@@ -50,10 +52,12 @@ export function TeamSummary({
   workers,
   answers,
   deferred,
+  disk,
 }: {
   workers: Agent[];
   answers: Set<string>;
   deferred: Set<string>;
+  disk?: WorktreeDiskSnapshot;
 }) {
   const count = (state: string) =>
     workers.filter((agent) => workerState(agent, answers, deferred) === state)
@@ -82,6 +86,7 @@ export function TeamSummary({
           ),
         )}
       </dl>
+      <TeamDiskTotal workers={workers} disk={disk} />
     </div>
   );
 }
@@ -145,6 +150,7 @@ function WorkerExcerpt({
 
 export default function WorkerCard({
   agent,
+  disk,
   selected,
   awaitingAnswer,
   deferred,
@@ -153,6 +159,7 @@ export default function WorkerCard({
   remove,
 }: {
   agent: Agent;
+  disk?: WorktreeDiskSnapshot["workers"][string];
   selected: boolean;
   awaitingAnswer: boolean;
   deferred: boolean;
@@ -215,6 +222,7 @@ export default function WorkerCard({
                 {agent.fastMode ? " · Fast" : ""}
               </span>
             </span>
+            <WorkerDiskLabel agent={agent} disk={disk} />
             {Boolean(agent.error) && (
               <span className="worker-error">{errorSummary}</span>
             )}
