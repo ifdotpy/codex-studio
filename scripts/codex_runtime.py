@@ -3071,6 +3071,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def record_task(self, db, a, method, p, stale):
         """Keep process lifetimes separate from model turns, including late exits."""
         item = p.get("item") or {}
+        if method in {"item/started", "item/completed"}:
+            if item.get("type") not in {"commandExecution", "dynamicToolCall", "mcpToolCall", "webSearch", "fileChange", "contextCompaction"}:
+                return
+        elif method != "item/commandExecution/outputDelta":
+            return
         item_id = item.get("id") or p.get("itemId")
         if not item_id:
             return
@@ -3082,8 +3087,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         if method in {"item/started", "item/completed"}:
             kind = item.get("type")
-            if kind not in {"commandExecution", "dynamicToolCall", "mcpToolCall", "webSearch", "fileChange", "contextCompaction"}:
-                return
             if task and task["status"] != "running":
                 return
             task = task or {"id": key, "agent": a["id"], "itemId": item_id,
