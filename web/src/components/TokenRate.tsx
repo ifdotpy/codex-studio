@@ -42,11 +42,13 @@ export default function TokenRate({
     return () => media.removeEventListener("change", update);
   }, []);
   const rate = sample?.id === scope ? sample.value : null;
-  const matchesTurn = !agent.turnId || rate?.turnId === agent.turnId;
+  // Card metadata can lag the transcript. The batch owns its current turn.
+  const matchesTurn =
+    variant === "worker" || !agent.turnId || rate?.turnId === agent.turnId;
   const active = Boolean(
     rate?.active &&
-      agent.inFlight &&
-      ["starting", "running"].includes(agent.status),
+      (variant === "worker" ||
+        (agent.inFlight && ["starting", "running"].includes(agent.status))),
   );
   const visible =
     matchesTurn &&
@@ -54,7 +56,7 @@ export default function TokenRate({
     rate.outputTokens > 0 &&
     (variant === "footer" || (active && rate.rate > 0));
   const target = visible ? rate.rate : 0;
-  const turn = `${agent.id}:${agent.turnId || rate?.turnId || ""}`;
+  const turn = `${agent.id}:${variant === "worker" ? rate?.turnId || "" : agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
     // The first sample of a new turn must not tween from the previous turn.
     if (previousTurn.current !== turn || motionReduced || !visible) {
