@@ -53,7 +53,10 @@ with tempfile.TemporaryDirectory() as directory:
             )
             return json.load(urllib.request.urlopen(request, timeout=10))
         assert push([row], identity['workspaceId']) == []
-        assert len(get('/api/sync/pull?scope=drafts')['documents']) == 1
+        drafts = get('/api/sync/pull?scope=drafts')
+        assert len(drafts['documents']) == 1
+        with urllib.request.urlopen(origin + '/api/sync/stream?scope=drafts', timeout=5) as stream:
+            assert int(json.loads(stream.readline().decode().strip()[6:])) == drafts['checkpoint']['seq']
         for rows, workspace, status in [([row], 'wrong', 409), ([{}], identity['workspaceId'], 400)]:
             try:
                 push(rows, workspace)

@@ -64,6 +64,10 @@ class SyncStore:
         with self.connect() as db:
             return max_seq(db)
 
+    def draft_sequence(self):
+        with self.connect() as db:
+            return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]
+
     def _ensure_versions(self):
         # Existing make_server closures retain their SyncStore across a live
         # patch, so all new state must be initialized on first use.

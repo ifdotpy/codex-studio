@@ -64,6 +64,7 @@ try {
  await desktop.route('**/api/sync/drafts', route => { if (failPush) { pushFailures++; return route.abort('failed'); } return route.continue(); });
  const status = desktop.locator('[data-draft-sync-status]');
  failPull = true;
+ await push({ id: 'idle-probe-a:unused', session: 'unused', device: 'idle-probe-a', text: 'probe', updated: Date.now() });
  const until = async (condition, label) => {
   for (let i = 0; i < 160; i++) { if (condition()) return; await desktop.waitForTimeout(100); }
   throw new Error(label);
@@ -76,6 +77,7 @@ try {
  await desktop.waitForTimeout(8500);
  assert.equal(await status.count(), 0, 'recovered pull leaves no delayed warning');
  failPull = true;
+ await push({ id: 'idle-probe-b:unused', session: 'unused', device: 'idle-probe-b', text: 'probe', updated: Date.now() });
  await status.waitFor({ timeout: 18000 });
  assert.equal(await status.innerText(), 'Draft sync paused. Retrying automatically.');
  assert.ok((await status.boundingBox()).height < 50, 'failure is a compact status');
@@ -124,7 +126,7 @@ try {
  await push({ ...JSON.parse(previous.payload), text: 'Changed alternative', updated: stamp + 100 }, previous);
  await phone.getByRole('button', { name: 'Other drafts (1)', exact: true }).waitFor({ timeout: 15000 });
  await phone.getByRole('button', { name: 'Other drafts (1)', exact: true }).click();
- await phone.getByRole('button', { name: 'Use this draft', exact: true }).click();
+ await phone.getByRole('button', { name: 'Replace text', exact: true }).click();
  await waitText(phone, 'Changed alternative');
  await waitText(desktop, 'Changed alternative');
  assert.equal(await phone.getByRole('button', { name: /^Other drafts/ }).count(), 0);

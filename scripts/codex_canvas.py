@@ -779,6 +779,7 @@ def make_server(canvas, port=0, public_origin=None):
             store = sync()
             query = parse_qs(urlparse(self.path).query)
             entity_stream = query.get("scope") == ["state:entities:v1"]
+            draft_stream = query.get("scope") == ["drafts"]
             self.connection.settimeout(20)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -790,9 +791,10 @@ def make_server(canvas, port=0, public_origin=None):
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
-                    current = store.entity_sequence() if entity_stream else store.generation()
+                    current = (store.entity_sequence() if entity_stream else
+                               store.draft_sequence() if draft_stream else store.generation())
                     if current != previous:
-                        data = json.dumps(current) if entity_stream else '"RESYNC"'
+                        data = json.dumps(current) if entity_stream or draft_stream else '"RESYNC"'
                         self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
                         self.wfile.write(b": heartbeat\n\n")

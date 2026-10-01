@@ -174,18 +174,65 @@ async function pull(
     throw new Error("The server workspace changed. Reload to synchronize.");
   return result;
 }
-// All projection scopes and drafts share one stream and one fallback clock.
-// A background PWA must not retain one HTTP connection per conversation.
+// Legacy projections share one stream and one fallback clock. Drafts use their
+// own sequence so unrelated runtime writes do not pull the same draft cursor.
 const invalidations = new Set<() => void>();
 let stopInvalidations: (() => void) | undefined;
 const entityInvalidations = new Set<() => void>();
 let stopEntityInvalidations: (() => void) | undefined;
+const draftInvalidations = new Set<() => void>();
+let stopDraftInvalidations: (() => void) | undefined;
 export function watchSyncInvalidations(
   resync: () => void,
-  scope: "legacy" | "entities" = "legacy",
+  scope: "legacy" | "entities" | "drafts" = "legacy",
 ) {
-  const subscribers = scope === "entities" ? entityInvalidations : invalidations;
+  const subscribers = scope === "entities"
+    ? entityInvalidations
+    : scope === "drafts"
+      ? draftInvalidations
+      : invalidations;
   subscribers.add(resync);
+  if (scope === "drafts" && !stopDraftInvalidations) {
+    let source: EventSource | undefined;
+    let previous: number | undefined;
+    const available = () => !document.hidden && navigator.onLine !== false;
+    const close = () => {
+      source?.close();
+      source = undefined;
+    };
+    const connect = () => {
+      if (!available() || source) return;
+      source = new EventSource("/api/sync/stream?scope=drafts");
+      source.onmessage = (event) => {
+        const current = Number(event.data);
+        if (!Number.isSafeInteger(current) || current < 0) return;
+        if (previous === undefined || current > previous) {
+          previous = current;
+          for (const callback of draftInvalidations) callback();
+        }
+      };
+    };
+    const suspend = () => {
+      if (!available()) close();
+    };
+    const resume = () => {
+      close();
+      previous = undefined;
+      connect();
+    };
+    window.addEventListener("offline", suspend);
+    window.addEventListener("online", resume);
+    document.addEventListener("visibilitychange", suspend);
+    const stopResume = onResume(resume);
+    connect();
+    stopDraftInvalidations = () => {
+      close();
+      stopResume();
+      window.removeEventListener("offline", suspend);
+      window.removeEventListener("online", resume);
+      document.removeEventListener("visibilitychange", suspend);
+    };
+  }
   if (scope === "entities" && !stopEntityInvalidations) {
     let source: EventSource | undefined;
     let previous: number | undefined;
@@ -282,6 +329,10 @@ export function watchSyncInvalidations(
     if (scope === "entities" && !entityInvalidations.size) {
       stopEntityInvalidations?.();
       stopEntityInvalidations = undefined;
+    }
+    if (scope === "drafts" && !draftInvalidations.size) {
+      stopDraftInvalidations?.();
+      stopDraftInvalidations = undefined;
     }
     if (scope === "legacy") {
     invalidations.delete(resync);
@@ -706,7 +757,9 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const stopInvalidation = watchSyncInvalidations(() => replication.reSync());
+  const stopInvalidation = watchSyncInvalidations(
+    () => replication.reSync(), "drafts",
+  );
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"
