@@ -166,6 +166,29 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(sum(m.get('params',{}).get('delta')=='retained-output' for m in self.delivered),1)
         with (self.root/'supervisor.sqlite3').open('rb') as f: self.assertTrue(f.read(16).startswith(b'SQLite format 3'))
 
+    def test_account_and_terminal_roots_share_the_state_supervisor(self):
+        roots = [self.root/'account-servers'/'claude-local',
+                 self.root/'account-servers'/('claude-profile-' + 'a'*64),
+                 self.root/'terminal-server']
+        for index, root in enumerate(roots):
+            with self.subTest(root=root):
+                root.mkdir(parents=True)
+                handle = 'account:nested-' + str(index) if index < 2 else 'terminals'
+                server = AppServer(root, lambda _: None, lambda _: None, lambda: None,
+                                   executable=str(self.binary), supervisor_handle=handle)
+                self.servers.append(server)
+                self.assertEqual(server.call('model/list', {})['data'][0]['model'], 'fake')
+                self.assertEqual(server.proc.root, self.root)
+                self.assertTrue((root/'app-server.log').exists())
+        handles = status(self.root)['handles']
+        self.assertEqual({row['id'] for row in handles},
+                         {'account:nested-0', 'account:nested-1', 'terminals'})
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 3)
+        self.assertEqual(operations.count('model/list'), 3)
+        self.assertNotIn('turn/start', operations)
+
     def test_sigkill_backend_mid_turn_terminal_and_monitor_output(self):
         cases=[('turn/start','item/agentMessage/delta','account:crash-turn'),
                ('process/spawn','process/outputDelta','terminals'),

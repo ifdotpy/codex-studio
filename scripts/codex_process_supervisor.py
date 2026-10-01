@@ -733,7 +733,10 @@ class _Stdout:
 def attach(root, handle, command, env, cwd=None):
     if os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") != "1":
         return None
-    return ProcessProxy(root, handle, command, env, cwd)
+    # Account and terminal roots own local logs and sessions. The backend's
+    # state directory owns the one supervisor socket and its durable journal.
+    state_root = os.environ.get("CODEX_AGENTS_STATE_DIR") or root
+    return ProcessProxy(state_root, handle, command, env, cwd)
 
 
 def status(root):
