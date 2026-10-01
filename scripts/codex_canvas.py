@@ -150,7 +150,7 @@ class Canvas:
             row["source"] = "app-server"
         if self.runtime:
             rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
-                                                else self.runtime.snapshot(include_work=False)["agents"]))
+                                                else self.runtime.snapshot_agents(include_work=False)))
         else:
             if db is not None:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():

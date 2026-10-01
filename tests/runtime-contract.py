@@ -923,7 +923,9 @@ class RuntimeContract(unittest.TestCase):
         c = Canvas(self.root); c.runtime = self.runtime
         lead = self.lead()
         room = str(uuid.uuid4())
-        c.create_chat('Team', [lead['id']], room)
+        # Membership validation must work while native startup owns its lock.
+        with self.runtime.start_lock:
+            c.create_chat('Team', [lead['id']], room)
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(c.post, room, f'Instruction {i}', str(uuid.uuid4())) for i in range(8)]
             results = [f.result(5) for f in futures]

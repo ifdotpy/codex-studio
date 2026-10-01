@@ -4753,6 +4753,44 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This conversation was deleted")
             return task
 
+    def snapshot_agents(self, *, include_work=True, _db=None):
+        # Roster and chat membership reads need no native connection permissions.
+        # Reuse the exact public agent projection without taking startup locks.
+        with (self.db() if _db is None else nullcontext(_db)) as db:
+            if _db is None:
+                db.execute("PRAGMA query_only=ON")
+                db.execute("BEGIN")
+            agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
+            team_names = {a["id"]: a["name"] for a in agents}
+            for a in agents:
+                a["nextTurnSettingsSupported"] = True
+                a["readStateSupported"] = True
+                a["empty"] = self.empty_lead(db, a)
+                if not a.get("isLead"):
+                    task = str(a.get("prompt") or "")
+                    # A completed message can be commentary. Publish the last report
+                    # only once the current turn has completed successfully.
+                    result = str(a.get("lastAnswer") or "") if (
+                        a.get("lastCompletedTurn") and not a.get("turnId")
+                        and not a.get("inFlight") and a.get("status") == "completed"
+                    ) else ""
+                    a["overview"] = {
+                        "task": task[:4000], "taskTruncated": len(task) > 4000,
+                        "result": result[:4000], "resultTruncated": len(result) > 4000,
+                        "resultTurnId": a.get("lastCompletedTurn") if result else None,
+                    }
+                for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
+                    ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
+                     "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
+                ):
+                    a.pop(private, None)
+                block = native_thread_block(a)
+                if block:
+                    a["nativeThreadBlock"] = block
+                a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
+                         wave="Team: " + team_names.get(a["rootId"], "Team"))
+            return agents
+
     def snapshot(self, *, include_work=True, _db=None):
         from codex_peer_teams import snapshot as peer_snapshot
         from codex_provider_versions import monitor as provider_version_monitor
@@ -4791,35 +4829,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # a newer native connection map than the anchored SQLite view.
             from types import SimpleNamespace
             notice_view = SimpleNamespace(connection_ids=connection_ids, records=self.records)
-            agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
-            team_names = {a["id"]: a["name"] for a in agents}
-            for a in agents:
-                a["nextTurnSettingsSupported"] = True
-                a["readStateSupported"] = True
-                a["empty"] = self.empty_lead(db, a)
-                if not a.get("isLead"):
-                    task = str(a.get("prompt") or "")
-                    # A completed message can be commentary. Publish the last report
-                    # only once the current turn has completed successfully.
-                    result = str(a.get("lastAnswer") or "") if (
-                        a.get("lastCompletedTurn") and not a.get("turnId")
-                        and not a.get("inFlight") and a.get("status") == "completed"
-                    ) else ""
-                    a["overview"] = {
-                        "task": task[:4000], "taskTruncated": len(task) > 4000,
-                        "result": result[:4000], "resultTruncated": len(result) > 4000,
-                        "resultTurnId": a.get("lastCompletedTurn") if result else None,
-                    }
-                for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
-                    ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
-                     "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
-                ):
-                    a.pop(private, None)
-                block = native_thread_block(a)
-                if block:
-                    a["nativeThreadBlock"] = block
-                a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                         wave="Team: " + team_names.get(a["rootId"], "Team"))
+            agents = self.snapshot_agents(include_work=include_work, _db=db)
             events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
             return {
                 "agents": agents,
