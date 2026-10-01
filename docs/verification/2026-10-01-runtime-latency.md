@@ -199,3 +199,48 @@ NORMAL-mode measurements were isolated diagnostics and are not acceptance.
 No live backend restart, user-database modification, or native model workload
 was performed. TanStack Query remains outside these changes. Further work is
 required to meet the full 256-worker/eight-tab acceptance target.
+
+## Subsequent work reduction and measurement limits
+
+Same-callback assistant-delta analytics aggregation was integrated as `eb3d9f0`.
+For eight fragments, the production-path SQL counter fell from 64 to 8 traced
+operations with identical analytics rows. Differential tests cover hourly UTF-8
+accounting, arrival-order first output, missing/open/finished items, final output,
+and rollback before per-sample fallback. This preserves the callback transaction;
+it is not cross-event group commit.
+
+Two fixed-count comparisons used baseline `7b686fc`, candidate `eb3d9f0`, and
+harness `66d6b35`, with the same FULL/ext4/256-worker configuration above.
+In baseline-first order, steady completions were 35.11/s and 18.10/s; in
+candidate-first order, they were 36.95/s and 23.53/s respectively. All four
+cases completed 1280 turns and drained all identities without errors. The
+second case was slower in both orders, with worse commit tails across unchanged
+callback types. These pairs establish neither a causal throughput benefit nor
+a regression from aggregation. The best observed rate remains below 144/s.
+Artifacts: `runtime-load-analytics-fixedcounts-eb3d9f0/comparison.json` and
+`runtime-load-analytics-reverse-eb3d9f0/comparison.json`.
+
+The task-notification prefilter in `5ef89b3` skips task lookups for irrelevant
+methods and item kinds. Collision and stale-command regressions passed along
+with the 53-test Runtime suite. The fixed workload has an estimated 6400 such
+redundant reads; this is a work-count reduction, not measured capacity gain.
+
+Harness integration `772e3b0` delegates every measured database scope to the
+original Runtime.db context. Earlier sampled scopes constructed replacement
+connections; their detailed DB timings describe those sampled connections,
+not an arbitrary future Runtime.db implementation. The corrected harness labels
+entry, body, and combined exit/close timing without claiming a separate commit
+or close measurement. All 28 focused harness tests passed. Browser acceptance
+still forces FULL and disables the diagnostic idle connection.
+
+Connection pooling is deferred. Current callers depend on per-scope state reset
+(including query_only), cursor invalidation, and transaction cleanup. No pool or
+durability change was implemented.
+
+A small CPU-profiling attempt at `772e3b0` eventually completed all 64 fixture
+turns, 1152 notification identities, and 192 runtime-event acknowledgements.
+Its saved profile contains negative timing entries and inconsistent totals, so
+no CPU ranking or performance conclusion is accepted from it. Earlier attempts
+failed in diagnostic setup. These artifacts remain under
+`runtime-load-cpu-profile-772e3b0-selected-dispatcher/` and the related failure
+directories. This fixture success is not 256-worker/eight-tab acceptance.
