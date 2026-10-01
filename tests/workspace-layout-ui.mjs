@@ -69,6 +69,19 @@ try {
     args: ["--disable-extensions", "--no-first-run"],
   });
   const page = await browser.newPage({ viewport: viewports[0] });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "codex-studio-preferences-v1",
+      JSON.stringify({
+        theme: "auto",
+        sidebarFontSize: 14,
+        mainFontSize: 14,
+        fontFamily: "system",
+        contentWidth: 60,
+        sidebarShortcut: "Control+b",
+      }),
+    );
+  });
   if (process.env.STUDIO_LAYOUT_ASSETS) {
     await page.route("**/*", async (route) => {
       const url = new URL(route.request().url());
@@ -182,11 +195,9 @@ try {
         };
       };
       const messages = box("#messages");
-      const transcript = messages
-        ? {
-            left: messages.x + messages.paddingLeft,
-            right: messages.right - messages.paddingRight,
-          }
+      const messageContent = box(".message-content");
+      const transcript = messageContent
+        ? { left: messageContent.x, right: messageContent.right }
         : null;
       const header = document.querySelector(".workspace-header");
       const headerRect = header?.getBoundingClientRect();
@@ -223,7 +234,7 @@ try {
         panel: box(".agent-panel"),
         composer: box("#composer"),
         message: box("#message"),
-        usage: box(".usage-footer"),
+        usage: box("#conversation-header-tools .usage-footer"),
         shortcuts: box(".workspace-shortcuts"),
       };
     });
@@ -253,7 +264,7 @@ try {
       `${prefix}: full title is available to assistive and hover users`,
     );
     assert.ok(
-      current.title?.width >= 180,
+      current.title?.width >= (viewport.width <= 760 ? 132 : 180),
       `${prefix}: title width ${current.title?.width}`,
     );
     assert.ok(
@@ -293,11 +304,42 @@ try {
       0,
       `${prefix}: tasks do not reserve transcript space`,
     );
-    assert.equal(
-      await page.locator(".conversation-navigation .prompt-navigation").count(),
-      1,
-      `${prefix}: prompt history uses the transcript navigation row`,
+    const headerTools = page.locator(
+      "#conversation-header-tools .conversation-header-tools-menu",
     );
+    const promptNavigation = headerTools.locator(
+      ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+    );
+    assert.equal(
+      await promptNavigation.count(),
+      1,
+      `${prefix}: prompt history uses the header tools portal`,
+    );
+    if ((await headerTools.getAttribute("data-compact")) === "yes") {
+      await headerTools.locator(".conversation-header-tools-summary").click();
+      await promptNavigation.waitFor({ state: "visible" });
+      const toolsContent = headerTools.locator(
+        ".conversation-header-tools-content",
+      );
+      const contentBox = await toolsContent.boundingBox();
+      assert.ok(
+        contentBox &&
+          contentBox.x >= 0 &&
+          contentBox.x + contentBox.width <= viewport.width + 1,
+        `${prefix}: compact prompt and usage controls fit the viewport`,
+      );
+      if (await toolsContent.locator(".usage-footer").count())
+        await toolsContent.locator(".usage-footer").waitFor({
+          state: "visible",
+        });
+      await headerTools.locator(".conversation-header-tools-summary").click();
+    } else {
+      await promptNavigation.waitFor({ state: "visible" });
+      if (await headerTools.locator(".usage-footer").count())
+        await headerTools.locator(".usage-footer").waitFor({
+          state: "visible",
+        });
+    }
     assert.ok(current.panel, `${prefix}: active panel is present`);
     assert.ok(
       current.panel.height > 0 && current.panel.height <= panelHeight + 1,
@@ -309,7 +351,14 @@ try {
       `${prefix}: Markdown progress does not use a retired panel frame`,
     );
     const transcriptWidth = current.transcript.right - current.transcript.left;
-    assert.ok(transcriptWidth <= 681, `${prefix}: readable text width`);
+    const expectedTranscriptWidth =
+      viewport.width <= 760
+        ? current.messages.width - 28
+        : (current.messages.width - 48) * 0.6;
+    assert.ok(
+      transcriptWidth <= expectedTranscriptWidth + 1,
+      `${prefix}: readable text width ${transcriptWidth}`,
+    );
     assert.ok(
       Math.abs(
         current.transcript.left +
@@ -324,9 +373,19 @@ try {
         Math.abs(current.panel.right - current.composer.right) <= 1,
       `${prefix}: panel and composer share their edges`,
     );
-    await page
-      .getByRole("button", { name: "Chat settings", exact: true })
-      .click();
+    const directSettings = page.getByRole("button", {
+      name: "Chat settings",
+      exact: true,
+    });
+    if (await directSettings.isVisible()) await directSettings.click();
+    else {
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Chat settings", exact: true })
+        .click();
+    }
     const settingsModal = page.getByRole("dialog", {
       name: "Chat settings",
       exact: true,
@@ -380,7 +439,10 @@ try {
       .click();
     await settingsModal.waitFor({ state: "hidden" });
     if (viewport.width === 1024) {
-      await page.getByRole("button", { name: /^Team/ }).click();
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: /^Team/ }).click();
       const drawer = page.locator(".mantine-Drawer-content:visible");
       await drawer.waitFor();
       await page.waitForTimeout(300);

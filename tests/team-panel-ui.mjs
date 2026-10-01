@@ -98,7 +98,12 @@ try {
           ?.getAttribute("aria-expanded") === "false",
       width,
     );
-    await page.locator("#team-toggle").click();
+    if (width === 320) {
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    } else await page.locator("#team-toggle").click();
     await page.locator("#team").waitFor({ state: "visible" });
     const panel = page.locator("#team");
     await page.waitForFunction(() => {
