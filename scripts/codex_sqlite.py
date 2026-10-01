@@ -9,6 +9,10 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 
+# Bind the clock at import: tests patch time.monotonic for other modules, and
+# instrumentation must not consume their scripted values.
+_clock = time.monotonic
+
 _LOCK = threading.Lock()
 _COUNTERS = defaultdict(lambda: {"transactions": 0, "longTransactions": 0,
                                  "writeWaits": 0, "writeWaitMs": 0.0,
@@ -74,7 +78,7 @@ class InstrumentedConnection(sqlite3.Connection):
                 self._finish_transaction()
 
     def execute(self, sql, parameters=(), /):
-        started = time.monotonic()
+        started = _clock()
         was_in_transaction = self.in_transaction
         statement = str(sql)
         words = statement.lstrip().split(None, 1)
@@ -87,18 +91,18 @@ class InstrumentedConnection(sqlite3.Connection):
                 _record("lockError", _current_site(self))
             raise
         finally:
-            elapsed_ms = (time.monotonic() - started) * 1000
+            elapsed_ms = (_clock() - started) * 1000
             site = _current_site(self)
             if is_write and elapsed_ms >= _WRITE_WAIT_MS:
                 _record("writeWait", site, elapsed_ms)
             if not was_in_transaction and self.in_transaction:
-                self._codex_transaction_started = time.monotonic()
+                self._codex_transaction_started = _clock()
                 self._codex_transaction_site = site
             if was_in_transaction and not self.in_transaction:
                 self._finish_transaction()
 
     def executemany(self, sql, seq_of_parameters, /):
-        started = time.monotonic()
+        started = _clock()
         was_in_transaction = self.in_transaction
         statement = str(sql)
         words = statement.lstrip().split(None, 1)
@@ -111,12 +115,12 @@ class InstrumentedConnection(sqlite3.Connection):
                 _record("lockError", _current_site(self))
             raise
         finally:
-            elapsed_ms = (time.monotonic() - started) * 1000
+            elapsed_ms = (_clock() - started) * 1000
             site = _current_site(self)
             if is_write and elapsed_ms >= _WRITE_WAIT_MS:
                 _record("writeWait", site, elapsed_ms)
             if not was_in_transaction and self.in_transaction:
-                self._codex_transaction_started = time.monotonic()
+                self._codex_transaction_started = _clock()
                 self._codex_transaction_site = site
             if was_in_transaction and not self.in_transaction:
                 self._finish_transaction()
@@ -125,7 +129,7 @@ class InstrumentedConnection(sqlite3.Connection):
         started = getattr(self, "_codex_transaction_started", None)
         if started is not None:
             _record("transaction", getattr(self, "_codex_transaction_site", _current_site(self)),
-                    (time.monotonic() - started) * 1000)
+                    (_clock() - started) * 1000)
             self._codex_transaction_started = None
             self._codex_transaction_site = None
 
