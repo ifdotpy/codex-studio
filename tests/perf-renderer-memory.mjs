@@ -66,7 +66,8 @@ try {
     executablePath: process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
   const measurements = { fixture: { eventRows: events.length, monitorRows: monitors.length,
     agentRows: agents.length, coreRows: core.length }, cases: {} };
-  for (const testCase of cases) {
+  const selected = process.env.PERF_CASES?.split(",");
+  for (const testCase of cases.filter((row) => !selected || selected.includes(row.name))) {
     const docs = testCase.docs.map((doc, index) => ({ ...doc, seq: index + 1 }));
     const wire = JSON.stringify(docs);
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });

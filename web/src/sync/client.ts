@@ -372,6 +372,41 @@ export async function persistProjection(
     if (failure.status !== 409) throw failure;
   }
 }
+async function persistProjectionBatch(
+  collection: RxCollection<SyncDocument>,
+  documents: SyncDocument[],
+) {
+  const pending = new Map(documents.map((row) => [row.id, row]));
+  while (pending.size) {
+    const existing = await collection.storageInstance.findDocumentsById(
+      [...pending.keys()], true,
+    );
+    const byId = new Map(existing.map((row) => [row.id, row]));
+    const writes = [];
+    for (const [id, incoming] of pending) {
+      const previous = byId.get(id);
+      if (previous && previous.seq >= incoming.seq) {
+        pending.delete(id);
+        continue;
+      }
+      const document: RxDocumentData<SyncDocument> = {
+        ...incoming,
+        _deleted: incoming._deleted === true,
+        _attachments: {},
+        _meta: { lwt: 1 },
+        _rev: "",
+      };
+      writes.push({ previous, document });
+    }
+    if (!writes.length) return;
+    const result = await collection.storageInstance.bulkWrite(
+      writes, "studio-projection-pull",
+    );
+    const failure = result.error.find((row) => row.status !== 409);
+    if (failure) throw failure;
+    if (!result.error.length) return;
+  }
+}
 type ProjectionState = {
   users: number;
   foreground: number;
@@ -420,7 +455,9 @@ async function acquireProjection(
             : [];
           const ready = markers.find((row) => row.id === "state:entities:ready" && !row._deleted);
           const initialMarker = markers.find((row) => row.id === "state:entities:initial" && !row._deleted);
-          let initialHigh: number | undefined = ready ? undefined : initialMarker?.seq ?? 0;
+          let initialHigh: number | undefined = remoteScope === "state:entities:v1" && !ready
+            ? initialMarker?.seq ?? 0
+            : undefined;
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -450,6 +487,7 @@ async function acquireProjection(
                 payload: "{}",
                 seq: result.initialHigh,
               });
+            const entityBatch: SyncDocument[] = [];
             for (const document of result.documents as SyncDocument[]) {
               if (
                 remoteScope === "state:entities:v1"
@@ -499,14 +537,17 @@ async function acquireProjection(
                   continue;
                 }
               }
+              if (remoteScope === "state:entities:v1") {
+                entityBatch.push(document);
+                continue;
+              }
               await persistProjection(
                 db.projections,
-                remoteScope === "state:entities:v1"
-                  ? document
-                  : { ...document, id: scope },
+                { ...document, id: scope },
               );
             }
             if (remoteScope === "state:entities:v1") {
+              await persistProjectionBatch(db.projections, entityBatch);
               await persistProjection(db.projections, {
                 id: checkpointId,
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),

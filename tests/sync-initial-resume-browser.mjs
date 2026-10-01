@@ -20,6 +20,11 @@ try {
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const workspaceId = "a".repeat(32);
   const pulls = [];
+  const live = Array.from({ length: 499 }, (_, index) => ({
+    id: `entity:agent:worker-${index}`, seq: index + 2, _deleted: false,
+    payload: JSON.stringify({ collection: "agent", id: `worker-${index}`,
+      value: { id: `worker-${index}`, name: `Worker ${index}` } }),
+  }));
   await page.route("**/check", (route) => route.fulfill({
     contentType: "text/html", body: "<!doctype html><title>Sync resume</title>" }));
   await page.route("**/api/sync/identity", (route) =>
@@ -30,7 +35,7 @@ try {
     const query = new URL(route.request().url()).searchParams;
     pulls.push(Object.fromEntries(query));
     return route.fulfill({ json: { workspaceId,
-      documents: [{ id: "entity:agent:stale", seq: 601, _deleted: true,
+      documents: [...live, { id: "entity:agent:stale", seq: 601, _deleted: true,
         payload: JSON.stringify({ collection: "agent", id: "stale", value: {} }) }],
       checkpoint: { seq: 601 }, maxSeq: 601, initialHigh: 600 } });
   });
@@ -44,6 +49,13 @@ try {
       id: "entity:agent:stale", seq: 1,
       payload: JSON.stringify({ collection: "agent", id: "stale",
         value: { id: "stale", name: "Old" } }) });
+    window.writeCalls = 0;
+    const storage = db.projections.storageInstance;
+    const write = storage.bulkWrite.bind(storage);
+    storage.bulkWrite = (...args) => {
+      window.writeCalls++;
+      return write(...args);
+    };
     window.snapshots = [];
     window.stop = await client.watchProjection("state",
       (value) => window.snapshots.push(value),
@@ -53,7 +65,9 @@ try {
   assert.equal(await page.evaluate(() => window.syncError), undefined);
   assert.deepEqual(pulls[0], { scope: "state:entities:v1", after: "0",
     limit: "500", fresh: "1", initialHigh: "600" });
-  assert.equal(await page.evaluate(() => window.snapshots.at(-1).threads.length), 0);
+  assert.equal(await page.evaluate(() => window.snapshots.at(-1).threads.length), 499);
+  assert.ok(await page.evaluate(() => window.writeCalls <= 5),
+    "A 500-row page uses one storage batch plus checkpoint writes");
   assert.equal(await page.evaluate(async () => {
     const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
     const [row] = await db.projections.storageInstance.findDocumentsById(
