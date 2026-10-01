@@ -2,9 +2,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from transcript_storage.storage import backfill_addresses, backfill_items, backfill_partials, body, drain, ensure_indexed, has_partial, has_pending, index_item, initialize, persist, remove
+from transcript_storage.storage import backfill_addresses, backfill_items, body, drain, ensure_indexed, has_partial, has_pending, index_item, initialize, persist, remove
 
 
 class TranscriptStorageTests(unittest.TestCase):
@@ -105,7 +106,6 @@ class TranscriptStorageTests(unittest.TestCase):
         self.assertEqual(legacy.execute("SELECT count(*) FROM runtime_item_bodies").fetchone()[0], 0)
         self.assertEqual(legacy.execute("SELECT count(*) FROM runtime_search_pending").fetchone()[0], 0)
         self.assertEqual(legacy.execute("SELECT done FROM runtime_search_address_cursor").fetchone()[0], 0)
-        self.assertEqual(tuple(legacy.execute("SELECT rowid,done FROM runtime_search_partial_cursor").fetchone()), (0, 0))
         self.assertEqual(backfill_addresses(legacy, limit=32), 1)
         self.assertEqual(body(legacy, "old:1", agent="old"), "legacy full body")
         legacy.close()
@@ -144,7 +144,6 @@ class TranscriptStorageTests(unittest.TestCase):
         self.assertTrue(has_pending(self.db, ["agent"]))
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_indexed").fetchone()[0], 2)
         self.assertEqual(backfill_items(self.db, limit=2), 1)
-        self.assertEqual(backfill_partials(self.db), 3)
         self.assertFalse(has_pending(self.db, ["agent"]))
         self.assertEqual(self.db.execute("SELECT body FROM runtime_search WHERE runtime_search MATCH 'legacy2'").fetchone()[0], "legacy2")
 
@@ -173,6 +172,8 @@ class TranscriptStorageTests(unittest.TestCase):
     def test_missing_truncated_legacy_body_is_marked_partial_not_promoted(self):
         record = {"title": "assistant", "text": "excerpt", "truncated": True}
         self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)", ("old:partial", "agent", json.dumps(record), 1))
+        index_item(self.db, "old:partial", "agent", "assistant", "excerpt")
+        self.assertIsNone(body(self.db, "old:partial", agent="agent"))
         backfill_addresses(self.db)
         backfill_items(self.db)
         self.assertIsNone(body(self.db, "old:partial", agent="agent"))
@@ -193,30 +194,24 @@ class TranscriptStorageTests(unittest.TestCase):
         self.db.execute("DELETE FROM runtime_items WHERE id='old:partial'")
         self.assertFalse(has_partial(self.db, ["agent"]))
 
-    def test_partial_migration_classifies_rows_after_completed_item_cursor(self):
+    def test_item_migration_classifies_existing_excerpt_index(self):
         self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
                         ("old:partial", "agent", json.dumps({"text": "excerpt", "truncated": True}), 1))
         index_item(self.db, "old:partial", "agent", "assistant", "excerpt")
-        self.db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
-        self.db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
-        self.assertEqual(backfill_items(self.db), 0)
-        self.assertEqual(backfill_partials(self.db, limit=1), 1)
-        self.assertTrue(has_pending(self.db, ["agent"]))
-        self.assertEqual(backfill_partials(self.db, limit=1), 0)
-        self.assertFalse(has_pending(self.db, ["agent"]))
+        self.assertEqual(backfill_addresses(self.db), 1)
+        self.assertEqual(backfill_items(self.db), 1)
         self.assertTrue(has_partial(self.db, ["agent"]))
 
-    def test_partial_migration_preserves_recoverable_legacy_full_text(self):
+    def test_item_migration_preserves_recoverable_legacy_full_text(self):
         self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
                         ("old:complete", "agent", json.dumps({"text": "excerpt", "truncated": True}), 1))
         index_item(self.db, "old:complete", "agent", "assistant", "recoverable full legacy body")
-        self.db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
-        self.db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
-        backfill_partials(self.db)
+        self.assertEqual(backfill_addresses(self.db), 1)
+        self.assertEqual(backfill_items(self.db), 1)
         self.assertFalse(has_partial(self.db, ["agent"]))
         self.assertEqual(body(self.db, "old:complete", agent="agent"), "recoverable full legacy body")
 
-    def test_partial_migration_resumes_after_restart(self):
+    def test_item_migration_resumes_after_restart_and_marks_partials(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "partials.sqlite3"
             db = sqlite3.connect(path)
@@ -224,20 +219,32 @@ class TranscriptStorageTests(unittest.TestCase):
             db.execute("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT,created REAL)")
             initialize(db)
             db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
-            db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
             for index in range(3):
                 db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
                            (f"old:{index}", "agent", json.dumps({"text": "excerpt", "truncated": True}), index))
-            self.assertEqual(backfill_partials(db, limit=2), 2)
+            self.assertEqual(backfill_items(db, limit=2), 2)
             db.commit()
             db.close()
             reopened = sqlite3.connect(path)
             reopened.row_factory = sqlite3.Row
             initialize(reopened)
-            self.assertEqual(backfill_partials(reopened, limit=2), 1)
-            self.assertEqual(reopened.execute("SELECT done FROM runtime_search_partial_cursor").fetchone()[0], 1)
+            self.assertEqual(backfill_items(reopened, limit=2), 1)
+            self.assertEqual(reopened.execute("SELECT done FROM runtime_search_item_cursor").fetchone()[0], 1)
             self.assertEqual(reopened.execute("SELECT count(*) FROM runtime_search_partial").fetchone()[0], 3)
             reopened.close()
+
+    def test_item_migration_bounds_text_work_per_batch(self):
+        for index in range(3):
+            self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                            (f"old:{index}", "agent", json.dumps({"text": "four words", "truncated": True}), index))
+        self.db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
+        with patch("transcript_storage.storage.ITEM_BACKFILL_TEXT_BUDGET_BYTES", 16):
+            self.assertEqual(backfill_items(self.db, limit=3), 1)
+            self.assertEqual(self.db.execute("SELECT rowid FROM runtime_search_item_cursor").fetchone()[0], 1)
+            self.assertEqual(backfill_items(self.db, limit=3), 1)
+            self.assertEqual(backfill_items(self.db, limit=3), 1)
+        self.assertFalse(has_pending(self.db, ["agent"]))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_partial").fetchone()[0], 3)
 
     def test_failed_index_does_not_erase_committed_body_or_pending_row(self):
         self.item("a:3", "durable body", streaming=True, now=30)
@@ -283,7 +290,6 @@ class TranscriptStorageTests(unittest.TestCase):
         self.item("a:5", "recently streamed", streaming=True, now=50)
         backfill_addresses(self.db)
         backfill_items(self.db)
-        backfill_partials(self.db)
         self.assertTrue(has_pending(self.db, ["agent"]))
         self.assertFalse(has_pending(self.db, ["other-agent"]))
         self.assertEqual(drain(self.db, now=50, force=True), 1)

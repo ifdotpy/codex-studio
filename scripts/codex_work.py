@@ -400,10 +400,9 @@ class WorkMixin:
                 if not a.get("deletedAt")
                 and (not caller or a["rootId"] == caller["rootId"])
             }
-            from transcript_storage.storage import backfill_addresses, backfill_items, backfill_partials, drain, has_partial, has_pending
+            from transcript_storage.storage import backfill_addresses, backfill_items, drain, has_partial, has_pending
             backfill_addresses(db)
             backfill_items(db)
-            backfill_partials(db)
             drain(db, force=True)
             db.commit()
             if has_pending(db, allowed):

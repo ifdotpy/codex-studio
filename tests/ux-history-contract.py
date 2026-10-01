@@ -28,6 +28,15 @@ class HistoryContract(unittest.TestCase):
                 db.execute('UPDATE runtime_items SET created=1 WHERE id=?', (lead['id']+f':item-{i:04}',))
         return lead
 
+    def search_after_migration(self, agent, query):
+        for _ in range(20):
+            try:
+                return search_history(self.runtime, agent, query)
+            except ValueError as error:
+                if 'Transcript search is indexing' not in str(error):
+                    raise
+        self.fail('bounded transcript migration did not finish in 20 search attempts')
+
     def test_all_pages_stable_scope_and_around_forward(self):
         lead = self.seed()
         other = self.seed(2)
@@ -56,6 +65,7 @@ class HistoryContract(unittest.TestCase):
         steps = [0]
         @contextmanager
         def bounded_database():
+            steps[0] = 0
             with original() as db:
                 def progress():
                     steps[0] += 100
@@ -66,7 +76,7 @@ class HistoryContract(unittest.TestCase):
                 finally:
                     db.set_progress_handler(None,0)
         with patch.object(self.runtime,'db',bounded_database):
-            self.assertEqual(search_history(self.runtime,lead['id'],'no match')['results'],[])
+            self.assertEqual(self.search_after_migration(lead['id'],'no match')['results'],[])
         self.assertLess(steps[0],100000)
 
     def test_missing_truncated_body_fails_visibly_for_search_and_history_item(self):
@@ -82,6 +92,19 @@ class HistoryContract(unittest.TestCase):
             search_history(self.runtime,lead['id'],'not present')
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
             history_item(self.runtime,lead['id'],identity)
+
+    def test_unmigrated_legacy_excerpt_is_not_returned_as_full_history(self):
+        lead = self.lead()
+        identity = lead['id'] + ':legacy-excerpt'
+        with self.runtime.lock,self.runtime.db() as db:
+            self.runtime.item(db,lead['id'],'legacy-excerpt','assistant','short excerpt')
+            db.execute("UPDATE runtime_items SET record=json_set(record,'$.truncated',1) WHERE id=?",(identity,))
+            db.execute('DELETE FROM runtime_item_bodies WHERE id=?',(identity,))
+            db.execute('DELETE FROM runtime_search_partial WHERE id=?',(identity,))
+        with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
+            history_item(self.runtime,lead['id'],identity)
+        with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
+            search_history(self.runtime,lead['id'],'short excerpt')
 
     def test_missing_truncated_input_event_fails_visibly_for_search_and_item(self):
         lead = self.lead()
@@ -99,15 +122,15 @@ class HistoryContract(unittest.TestCase):
         lead = self.seed()
         with self.runtime.lock,self.runtime.db() as db:
             self.runtime.item(db,lead['id'],'batch','user','combined',inputs=[{'id':'request','kind':'user','text':'exact needle'}],turnId='batch-turn')
-        found = search_history(self.runtime,lead['id'],'sentence 0')['results']
+        found = self.search_after_migration(lead['id'],'sentence 0')['results']
         self.assertEqual(found[0]['id'],lead['id']+':item-0000')
-        result = search_history(self.runtime,lead['id'],'exact needle')['results'][0]
+        result = self.search_after_migration(lead['id'],'exact needle')['results'][0]
         self.assertEqual(result['id'],lead['id']+':request')
         page = self.runtime.transcript(lead['id'],around=result['id'])
         self.assertIn(result['sourceId'],[item['id'] for item in page['items']])
         with self.runtime.lock,self.runtime.db() as db:
             db.execute("UPDATE runtime_items SET record=json_set(record,'$.afterRestore',1) WHERE id=?",(result['sourceId'],))
-        self.assertEqual(search_history(self.runtime,lead['id'],'exact needle')['results'],[])
+        self.assertEqual(self.search_after_migration(lead['id'],'exact needle')['results'],[])
 
     def test_exact_input_read_preserves_long_original_prompt(self):
         lead = self.lead()

@@ -6,7 +6,16 @@ import sqlite3
 import statistics
 import time
 
-from transcript_storage.storage import STREAM_INDEX_DELAY_SECONDS, drain, index_item, initialize, persist
+from transcript_storage.storage import (
+    ITEM_BACKFILL_BATCH_SIZE,
+    ITEM_BACKFILL_TEXT_BUDGET_BYTES,
+    STREAM_INDEX_DELAY_SECONDS,
+    backfill_items,
+    drain,
+    index_item,
+    initialize,
+    persist,
+)
 
 FRAGMENT_INTERVAL_SECONDS = 0.1
 # Keep in sync with Runtime.schedule's changed.wait(1) interval.
@@ -100,6 +109,27 @@ def run_checkpoint_trial(fragments, fragment_chars):
     return elapsed, index_writes, checkpoints, max_dirty_age
 
 
+def run_migration_trial():
+    """Measure one production migration page with 20 KB legacy excerpts."""
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT,created REAL)")
+    initialize(db)
+    db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
+    excerpt = ("representative long transcript excerpt word " * 500)[:20000]
+    record = json.dumps({"title": "assistant", "text": excerpt, "truncated": True})
+    db.executemany("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                   ((f"legacy:{row}", "synthetic", record, row) for row in range(ITEM_BACKFILL_BATCH_SIZE)))
+    started = time.perf_counter()
+    processed = backfill_items(db)
+    elapsed = time.perf_counter() - started
+    assert processed > 0
+    assert db.execute("SELECT rowid FROM runtime_search_item_cursor").fetchone()[0] == processed
+    assert db.execute("SELECT count(*) FROM runtime_search_partial").fetchone()[0] == processed
+    db.close()
+    return elapsed, processed, len(excerpt.encode("utf-8"))
+
+
 def percentile(values, p):
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, math.ceil(len(ordered) * p) - 1)]
@@ -117,9 +147,11 @@ def main():
     baseline = [run_trial(fragments, args.fragment_chars, coalesced=False) for _ in range(trials)]
     one_write = [run_trial(fragments, args.fragment_chars, coalesced=True) for _ in range(trials)]
     checkpointed = [run_checkpoint_trial(fragments, args.fragment_chars) for _ in range(trials)]
+    migration = [run_migration_trial() for _ in range(trials)]
     if args.check and (checkpointed[0][1] >= baseline[0][1]
                        or checkpointed[0][2] < 1
-                       or checkpointed[0][3] > STREAM_INDEX_DELAY_SECONDS + SCHEDULER_INTERVAL_SECONDS):
+                       or checkpointed[0][3] > STREAM_INDEX_DELAY_SECONDS + SCHEDULER_INTERVAL_SECONDS
+                       or migration[0][1] >= ITEM_BACKFILL_BATCH_SIZE):
         raise SystemExit("scheduler checkpoint work or freshness bound failed")
     report = {}
     for name, values in (("burst_per_fragment_microbenchmark", baseline),
@@ -133,6 +165,16 @@ def main():
             report[name]["scheduler_checkpoints"] = values[0][2]
             report[name]["max_dirty_age_seconds"] = values[0][3]
             report[name]["freshness_bound_seconds"] = STREAM_INDEX_DELAY_SECONDS + SCHEDULER_INTERVAL_SECONDS
+    migration_ms = [value[0] * 1000 for value in migration]
+    report["legacy_item_migration_long_excerpt_batch"] = {
+        "p50_ms": statistics.median(migration_ms),
+        "p95_ms": percentile(migration_ms, .95),
+        "p99_ms": percentile(migration_ms, .99),
+        "rows_processed": migration[0][1],
+        "row_limit": ITEM_BACKFILL_BATCH_SIZE,
+        "excerpt_bytes_per_row": migration[0][2],
+        "text_byte_budget": ITEM_BACKFILL_TEXT_BUDGET_BYTES,
+    }
     report["timing_scope"] = "In-memory SQLite production-code microbenchmark; not durable filesystem or application latency."
     print(json.dumps(report, sort_keys=True, indent=2))
 

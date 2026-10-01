@@ -211,6 +211,9 @@ class PortableHistoryContract(unittest.TestCase):
 
     def test_unavailable_full_studio_text_does_not_silently_truncate(self):
         self.rt.add('chat:item', 'short', truncated=True)
+        with self.rt.db() as db:
+            db.execute('INSERT INTO runtime_search(rowid,body) VALUES(1,?)', ('short',))
+            db.execute('INSERT INTO runtime_search_rows VALUES(?,1)', ('chat:item',))
         with self.assertRaisesRegex(ValueError, 'full Studio item is unavailable'):
             self.export()
         self.assertEqual(list((self.rt.root / 'portable-history').iterdir()), [])

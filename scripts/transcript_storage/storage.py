@@ -7,7 +7,8 @@ import sqlite3
 STREAM_INDEX_DELAY_SECONDS = 2.0
 INDEX_BATCH_SIZE = 32
 ADDRESS_BATCH_SIZE = 8192
-ITEM_BACKFILL_BATCH_SIZE = 8192
+ITEM_BACKFILL_BATCH_SIZE = 128
+ITEM_BACKFILL_TEXT_BUDGET_BYTES = 2 * 1024 * 1024
 
 
 def initialize(db):
@@ -39,15 +40,10 @@ def initialize(db):
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), rowid INTEGER NOT NULL,
             done INTEGER NOT NULL DEFAULT 0
         );
-        CREATE TABLE IF NOT EXISTS runtime_search_partial_cursor (
-            singleton INTEGER PRIMARY KEY CHECK(singleton=1), rowid INTEGER NOT NULL,
-            done INTEGER NOT NULL DEFAULT 0
-        );
     """)
     db.execute("INSERT OR IGNORE INTO runtime_search_address_cursor(singleton,rowid,done) VALUES (1,0,?)",
                (int(prior_address_map),))
     db.execute("INSERT OR IGNORE INTO runtime_search_item_cursor(singleton,rowid,done) VALUES (1,0,0)")
-    db.execute("INSERT OR IGNORE INTO runtime_search_partial_cursor(singleton,rowid,done) VALUES (1,0,0)")
 
 
 def persist(db, key, agent, kind, body, *, streaming=False, now=None):
@@ -89,6 +85,14 @@ def body(db, key, fallback=None, *, agent=None):
         row = None
     if row is not None:
         return row[0]
+    item = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
+    if item is not None:
+        import json
+        item = json.loads(item[0])
+        if item.get("truncated") and fallback == item.get("text", ""):
+            fallback = None
+    else:
+        item = None
     try:
         partial = db.execute("SELECT 1 FROM runtime_search_partial WHERE id=?", (key,)).fetchone()
     except sqlite3.OperationalError as error:
@@ -121,7 +125,11 @@ def body(db, key, fallback=None, *, agent=None):
             if not any(message in str(error) for message in ("no such table", "no such column")):
                 raise
             row = None
-    return row[0] if row is not None else fallback
+    if row is None:
+        return fallback
+    if item is not None and item.get("truncated") and row[0] == item.get("text", ""):
+        return None
+    return row[0]
 
 
 def index_item(db, key, agent, kind, text):
@@ -186,8 +194,7 @@ def has_pending(db, agents=None):
         params.extend(agents)
     if db.execute(
         "SELECT 1 FROM runtime_search_address_cursor WHERE singleton=1 AND done=0 "
-        "UNION ALL SELECT 1 FROM runtime_search_item_cursor WHERE singleton=1 AND done=0 "
-        "UNION ALL SELECT 1 FROM runtime_search_partial_cursor WHERE singleton=1 AND done=0 LIMIT 1"
+        "UNION ALL SELECT 1 FROM runtime_search_item_cursor WHERE singleton=1 AND done=0 LIMIT 1"
     ).fetchone():
         return True
     return db.execute(
@@ -252,7 +259,8 @@ def backfill_items(db, limit=ITEM_BACKFILL_BATCH_SIZE):
     limit = max(1, int(limit))
     try:
         rows = db.execute(
-            "SELECT i.rowid,i.id,i.agent,i.record,a.id AS addressed,s.id AS indexed,p.id AS pending "
+            "SELECT i.rowid,i.id,i.agent,i.record,a.id AS addressed,s.id AS indexed,p.id AS pending,"
+            "a.search_rowid "
             "FROM runtime_items i LEFT JOIN runtime_search_rows a ON a.id=i.id "
             "LEFT JOIN runtime_search_indexed s ON s.id=i.id "
             "LEFT JOIN runtime_search_pending p ON p.id=i.id "
@@ -264,55 +272,37 @@ def backfill_items(db, limit=ITEM_BACKFILL_BATCH_SIZE):
         db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
         return 0
     import json
+    processed = 0
+    text_bytes = 0
+    last_rowid = state[0]
     for row in rows:
-        if row[4] or row[5] or row[6]:
-            continue
         record = json.loads(row[3])
         text = record.get("text", "")
         if not isinstance(text, str):
             text = ""
-        index_item(db, row[1], row[2], record.get("title", "message"), text)
+        row_text_bytes = len(text.encode("utf-8"))
+        if processed and text_bytes + row_text_bytes > ITEM_BACKFILL_TEXT_BUDGET_BYTES:
+            break
+        if not (row[4] or row[5] or row[6]):
+            index_item(db, row[1], row[2], record.get("title", "message"), text)
         if record.get("truncated"):
-            db.execute("INSERT OR IGNORE INTO runtime_search_partial VALUES (?)", (row[1],))
-    if rows:
-        done = int(len(rows) < limit)
-        db.execute("UPDATE runtime_search_item_cursor SET rowid=?,done=? WHERE singleton=1", (rows[-1][0], done))
+            complete = db.execute("SELECT 1 FROM runtime_item_bodies WHERE id=?", (row[1],)).fetchone()
+            legacy = db.execute("SELECT body FROM runtime_search WHERE rowid=?", (row[7],)).fetchone() if row[7] is not None else None
+            if complete or (legacy is not None and legacy[0] != text):
+                db.execute("DELETE FROM runtime_search_partial WHERE id=?", (row[1],))
+            else:
+                db.execute("INSERT OR IGNORE INTO runtime_search_partial VALUES (?)", (row[1],))
+        else:
+            db.execute("DELETE FROM runtime_search_partial WHERE id=?", (row[1],))
+        processed += 1
+        text_bytes += row_text_bytes
+        last_rowid = row[0]
+    if processed:
+        done = int(processed == len(rows) and len(rows) < limit)
+        db.execute("UPDATE runtime_search_item_cursor SET rowid=?,done=? WHERE singleton=1", (last_rowid, done))
     else:
         db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
-    return len(rows)
-
-
-def backfill_partials(db, limit=ITEM_BACKFILL_BATCH_SIZE):
-    """Classify truncated legacy rows even when an older item cursor is complete."""
-    address_state = db.execute("SELECT done FROM runtime_search_address_cursor WHERE singleton=1").fetchone()
-    if address_state is not None and not address_state[0]:
-        return 0
-    state = db.execute("SELECT rowid,done FROM runtime_search_partial_cursor WHERE singleton=1").fetchone()
-    if state is None or state[1]:
-        return 0
-    limit = max(1, int(limit))
-    rows = db.execute("SELECT rowid,id,record FROM runtime_items WHERE rowid>? ORDER BY rowid LIMIT ?",
-                      (state[0], limit)).fetchall()
-    import json
-    for row in rows:
-        record = json.loads(row[2])
-        if not record.get("truncated"):
-            continue
-        complete = db.execute("SELECT body FROM runtime_item_bodies WHERE id=?", (row[1],)).fetchone()
-        if complete is not None:
-            continue
-        address = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (row[1],)).fetchone()
-        legacy = db.execute("SELECT body FROM runtime_search WHERE rowid=?", (address[0],)).fetchone() if address else None
-        excerpt = record.get("text", "")
-        if legacy is None or legacy[0] == excerpt:
-            db.execute("INSERT OR IGNORE INTO runtime_search_partial VALUES (?)", (row[1],))
-    if rows:
-        done = int(len(rows) < limit)
-        db.execute("UPDATE runtime_search_partial_cursor SET rowid=?,done=? WHERE singleton=1",
-                   (rows[-1][0], done))
-    else:
-        db.execute("UPDATE runtime_search_partial_cursor SET done=1 WHERE singleton=1")
-    return len(rows)
+    return processed
 
 
 def remove(db, key):
