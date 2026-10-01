@@ -34,6 +34,12 @@ from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
 # entity sync; 24 September is the oldest selected input.
 LEGACY_REVISIONS = ("03efa7a4fa0cfee12b949fd6718e4cac5d639a40",
                     "db16e483ea4a9d191cd445d5f511a285c658ed01")
+FEDERATION_TABLES = {
+    "runtime_federation_settings", "runtime_federation_identity",
+    "runtime_federation_peers", "runtime_federation_invites",
+    "runtime_federation_rooms", "runtime_federation_outbox",
+    "runtime_federation_inbox", "runtime_federation_nonces",
+}
 
 
 def seed_with_revision(revision: str, state: Path) -> None:
@@ -125,10 +131,32 @@ class UpgradeContract(unittest.TestCase):
                     before_task = canvas_db.execute("SELECT record FROM runtime_tasks WHERE id='legacy-task'").fetchone()[0]
                     before_rows = {name: canvas_db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
                                    for name in ("runtime_checkpoints", "runtime_tool_requests", "runtime_tool_results")}
+                    before_tables = {row[0] for row in canvas_db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    self.assertTrue(FEDERATION_TABLES.isdisjoint(before_tables))
                 finally:
                     canvas_db.close()
 
                 runtime = Runtime(state, IdleServer)
+                with runtime.read_db() as db:
+                    after_tables = {row[0] for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")}
+                    self.assertTrue(FEDERATION_TABLES.issubset(after_tables))
+                    self.assertFalse(db.execute(
+                        "SELECT 1 FROM runtime_federation_settings WHERE id='global'").fetchone())
+                    for table in ("runtime_federation_identity", "runtime_federation_peers",
+                                  "runtime_federation_invites", "runtime_federation_rooms",
+                                  "runtime_federation_outbox", "runtime_federation_inbox",
+                                  "runtime_federation_nonces"):
+                        self.assertEqual(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0], 0)
+                    lead = runtime.agent(agent_id, db)
+                self.assertIsNone(runtime._federation_service)
+                peer_tool = next(tool for tool in runtime.tool_definitions(lead)
+                                 if tool["name"] == "orchestration_peers")
+                message_tool = next(tool for tool in runtime.tool_definitions(lead)
+                                    if tool["name"] == "orchestration_message")
+                self.assertNotIn("user-approved remote peers", peer_tool["description"])
+                self.assertNotIn("approved remote peer", message_tool["description"])
                 canvas = Canvas(state)
                 canvas.runtime = runtime
                 server = make_server(canvas, port=0)

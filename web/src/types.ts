@@ -60,11 +60,67 @@ export interface Room {
   peerTeamName?: string;
   id: string;
   name: string;
-  kind: "private" | "broadcast";
+  kind: "private" | "broadcast" | "federated";
   rootId?: string;
   members: string[];
+  federated?: boolean;
+  peerId?: string;
+  peerLabel?: string;
+  localMembers?: string[];
+  remoteMembers?: {
+    id: string;
+    name?: string;
+    role?: string;
+    status?: string;
+  }[];
   updated: number;
   lastMessage?: { seq: number; text: string; sender: string; created: number };
+}
+export interface FederationPeer {
+  stateId: string;
+  label: string;
+  origin: string;
+  publicKey: string;
+  status: string;
+  localApproved: boolean;
+  remoteApproved: boolean;
+  whoisStatus?: string;
+  whoisUser?: string | null;
+  created?: number;
+  updated?: number;
+  lastError?: string;
+}
+export interface FederationRoom {
+  id: string;
+  peerId: string;
+  peerLabel: string;
+  name: string;
+  status: string;
+  localMembers: string[];
+  remoteMembers: {
+    id: string;
+    name?: string;
+    role?: string;
+    status?: string;
+  }[];
+  shareNames: boolean;
+  shareStatus: boolean;
+  created?: number;
+}
+export interface FederationSnapshot {
+  version: number;
+  enabled: boolean;
+  identity: { stateId: string; label: string; fingerprint: string } | null;
+  peers: FederationPeer[];
+  invites: {
+    id: string;
+    created: number;
+    expires: number;
+    status: string;
+    expectedUser?: string;
+  }[];
+  rooms: FederationRoom[];
+  queued: number;
 }
 export interface Complaint extends Json {
   recipient?: "user" | "lead";
@@ -124,6 +180,7 @@ export interface Snapshot {
     projectOrganizationVersion?: number;
     peerTeamsVersion?: number;
     peerTeams?: PeerTeam[];
+    federation?: FederationSnapshot;
     agents: Agent[];
     projects?: {
       id: string;

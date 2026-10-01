@@ -1336,9 +1336,34 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 return self.send({"error": str(error)}, 400)
 
         def do_POST(self):
-            if not self.trusted(write=True):
+            federation_path = self.path in {
+                "/api/federation/v1/pair", "/api/federation/v1/status",
+                "/api/federation/v1/message", "/api/federation/v1/pull",
+            }
+            if not federation_path and not self.trusted(write=True):
                 return self.send({"error": "Local origin and session token required"}, 403)
             try:
+                if federation_path:
+                    from codex_remote import RemoteAccess
+                    remote = RemoteAccess(canvas.root)
+                    if remote.request_origin(self.headers, self.client_address[0], self.server.server_port) is None:
+                        return self.send({"error": "Tailscale Serve origin required"}, 403)
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 256 * 1024:
+                        return self.send({"error": "Invalid federation request size"}, 413)
+                    if self.headers.get_content_type() != "application/json":
+                        return self.send({"error": "JSON required"}, 415)
+                    self.connection.settimeout(10)
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        return self.send({"error": "Incomplete federation request"}, 400)
+                    action = self.path.rsplit("/", 1)[-1]
+                    try:
+                        result = canvas.runtime.federation().route(
+                            action, self.headers, self.client_address[0], raw)
+                    except PermissionError as error:
+                        return self.send({"error": str(error)}, 403)
+                    return self.send(result)
                 length = int(self.headers.get("Content-Length", "0"))
                 if (
                     not 0
@@ -1396,6 +1421,14 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 if canvas.runtime:
                     runtime = canvas.runtime
                     agent = body.get("agent")
+                    if self.path == "/api/federation":
+                        from codex_federation import FederationService
+                        service = runtime.federation()
+                        action = body.get("action")
+                        if action == "approve_peer":
+                            return self.send(service.approve_peer(
+                                body.get("state_id"), body.get("accept_missing_whois", False)))
+                        return self.send(service.action(body))
                     if self.path == "/api/panel/layout":
                         from codex_progress_layout import LayoutConflict, record_layout
                         try:
@@ -1499,6 +1532,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                     if self.path == "/api/native-command":
                         return self.send(runtime.native_command_action(body))
                     if self.path == "/api/messages":
+                        if runtime.federation().has_room(body.get("room")):
+                            result = runtime.federation().user_message(
+                                body.get("room"), body.get("text", ""), body.get("id"))
+                            result["id"] = body.get("id")
+                            return self.send(result)
                         with runtime.db() as db:
                             managed = db.execute(
                                 "SELECT 1 FROM runtime_agents WHERE id=?",

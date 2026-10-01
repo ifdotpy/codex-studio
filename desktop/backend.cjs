@@ -70,7 +70,11 @@ function backendSources(scripts) {
       const file = path.join(directory, name);
       const child = fs.lstatSync(file);
       if (child.isSymbolicLink()) {
-        if (name.endsWith(".py") || symlinkIsDirectory(file))
+        if (
+          name.endsWith(".py") ||
+          name === "codex_federation_crypto.mjs" ||
+          symlinkIsDirectory(file)
+        )
           throw new Error(
             `Backend source must not be a symlink: ${relativeName(file)}`,
           );
@@ -93,7 +97,9 @@ function backendSources(scripts) {
         );
     } else if (
       info.isFile() &&
-      (name.endsWith(".py") || name === "codex-canvas")
+      (name.endsWith(".py") ||
+        name === "codex-canvas" ||
+        name === "codex_federation_crypto.mjs")
     ) {
       add(file);
     } else if (info.isDirectory() && isPackage(file)) {
@@ -315,6 +321,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         ...env,
         CODEX_AGENTS_STATE_DIR: canonicalState,
         CODEX_BIN: codex,
+        CODEX_NODE: process.execPath,
         PATH: `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`,
       },
     });

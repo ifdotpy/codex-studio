@@ -98,6 +98,7 @@ import ProjectAccount from "./components/ProjectAccount";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { ExecutionSettings } from "./components/agents/ExecutionSettings";
+import { FederationSettings } from "./components/FederationSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -2040,6 +2041,7 @@ export default function App() {
             <Tabs.List aria-label="Studio settings">
               <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
               <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
+              <Tabs.Tab value="federation">Federation</Tabs.Tab>
               <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="accounts" pt="md">
@@ -2183,6 +2185,17 @@ export default function App() {
                   </label>
                 </section>
               </div>
+            </Tabs.Panel>
+            <Tabs.Panel value="federation" pt="md">
+              {lead?.isLead && (
+                <FederationSettings
+                  active={studioSettingsOpen}
+                  leadId={lead.id}
+                  agents={data?.runtime.agents || []}
+                  refresh={refresh}
+                  notify={notify}
+                />
+              )}
             </Tabs.Panel>
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">
