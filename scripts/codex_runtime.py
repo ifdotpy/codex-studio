@@ -2424,8 +2424,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_speak", "orchestration_agent_manage", "orchestration_spawn"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn"}:
                 continue
+            if not lead and definition["name"] == "orchestration_agent_manage":
+                definition = {**definition, "description": "Park yourself or a descendant on a named event, list parked workers, or cancel a wait. Only the lead emits events.",
+                              "inputSchema": {**definition["inputSchema"], "properties": {**definition["inputSchema"]["properties"],
+                                  "action": {"type": "string", "enum": ["park", "list_parked", "cancel_park"]}}}}
             if definition["name"] == "orchestration_spawn" and actor.get("cwd"):
                 definition = {**definition, "description": definition["description"] + (
                     " Default cwd for your workers: " + actor["cwd"] + ". A shell cd does not change it;"
@@ -3431,6 +3435,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
             self.sync_chat_delivery(db, event_id, a["id"])
+            from codex_agent_management import reviewer_result_delivered
+            reviewer_result_delivered(self, db, a["id"], event_id)
         if not attempt["events"]:
             return True
         item_id = a["id"] + ":" + attempt["events"][0]
@@ -4088,6 +4094,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                   (a["id"], a["epoch"])).fetchone()):
                             # Waiting input starts the next turn, as after a normal completion.
                             a["status"] = "queued"
+                        from codex_agent_management import parked_after_turn
+                        parked_after_turn(a)
                         self.put(db, "agents", a)
                     return
                 known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
@@ -4156,6 +4164,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                       json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
+                from codex_agent_management import parked_after_turn
+                parked_after_turn(a)
                 if (a.get("worktreeReady")
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     self.queue_checkpoint_after_turn(db, a, turn.get("id"))

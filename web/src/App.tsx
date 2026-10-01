@@ -1374,7 +1374,7 @@ export default function App() {
                     ? indicators.get(agent.id)?.label
                     : livePhase?.id === agent.id
                       ? livePhase.label
-                      : [statusLabel(agent.status, agent.activity?.phase), nativeReleaseLabel(agent)]
+                      : [statusLabel(agent.status, agent.activity?.phase, agent.parkedEvent), nativeReleaseLabel(agent)]
                           .filter(Boolean).join(" · ")
                   : room?.radio
                     ? "Shared chat · One agent speaks at a time"

@@ -2,10 +2,14 @@
 
 import hashlib
 import json
+import re
+import subprocess
+import threading
 import time
 import uuid
+from pathlib import Path
 
-from codex_agent_management import management_tools
+from codex_agent_management import management_tools, manage_agent, _worktree_check
 
 
 def text_field(value, name, maximum=32000, empty=False):
@@ -76,6 +80,107 @@ def work_tools(tool, text):
 
 
 class WorkMixin:
+    def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+        result = self._work_action(agent_id, data, key, actor, epoch)
+        if data.get('action') != 'accept' or result.get('status') != 'accepted':
+            return result
+        if 'archive' in result:
+            return result
+        lock = self.__dict__.setdefault('_accepted_archive_lock', threading.RLock())
+        with lock:
+            return self._finish_accepted_action(agent_id, result, key, epoch)
+
+    def _finish_accepted_action(self, agent_id, result, key, epoch):
+        with self.lock, self.db() as db:
+            stored = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
+            prior = json.loads(stored[0]).get('archive') if stored else None
+        try:
+            archive = prior or self._archive_accepted_owner(agent_id, result, epoch)
+        except Exception as error:
+            archive = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
+        with self.lock, self.db() as db:
+            row = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
+            if not row:
+                raise ValueError('Accepted work item disappeared during archive check')
+            work = json.loads(row[0])
+            if work['status'] != 'accepted':
+                raise ValueError('Accepted work item changed during archive check')
+            if not work.get('archive'):
+                work['archive'] = archive
+                self.put(db, 'work', work)
+            result['archive'] = work['archive']
+            if key:
+                db.execute('UPDATE runtime_operation_receipts SET result=? WHERE id=?',
+                           (json.dumps(result), key))
+            if (result['archive']['status'] != 'archived' and work.get('owner')
+                    and work['owner'] != work['rootId']):
+                owner = self.agent(work['owner'], db)
+                if not owner.get('deletedAt'):
+                    decision = work['decisions'][-1]
+                    self.enqueue(db, owner, 'work_decision', json.dumps({
+                        'task': work['id'], 'decision': 'accept', 'reason': decision['reason']}),
+                        'work-decision:' + work['id'] + ':' + str(work['version'] - 1))
+        return result
+
+    def _archive_accepted_owner(self, agent_id, result, epoch):
+        owner_id = result.get('owner')
+        if not owner_id or owner_id == result['rootId']:
+            return {'status': 'skipped', 'reason': 'The task owner is the lead or is unassigned'}
+        with self.lock, self.db() as db:
+            owner = self.agent(owner_id, db)
+            work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
+                                         (result['id'],)).fetchone()[0])
+            open_tasks = [row[0] for row in db.execute(
+                "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+                "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled')",
+                (owner_id,))]
+        if open_tasks:
+            return {'status': 'kept', 'reason': 'The owner has another open task', 'tasks': open_tasks[:20]}
+        if owner.get('agentArchive'):
+            if owner['agentArchive'].get('reason') == 'Accepted task result is on main':
+                cleaned = owner.get('cleanedWorktree')
+                return {'status': 'archived', 'worktree': {'state': 'removed',
+                        'bytes': cleaned.get('bytes')} if cleaned else {'state': 'none', 'bytes': 0}}
+            return {'status': 'kept', 'reason': 'The owner was archived for another reason'}
+        if owner.get('deletedAt'):
+            return {'status': 'kept', 'reason': 'The owner is already removed'}
+        revision = work['results'][-1].get('revision', '')
+        if not re.fullmatch(r'[0-9a-fA-F]{7,64}', revision):
+            return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
+        try:
+            cwd = Path(owner['cwd']).resolve()
+            repo = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'],
+                                  check=True, capture_output=True, timeout=30).stdout.decode().strip()
+            submitted = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+                                        revision + '^{commit}'], check=True, capture_output=True,
+                                       timeout=30).stdout.decode().strip()
+            main = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+                                   'refs/heads/main^{commit}'], check=True, capture_output=True,
+                                  timeout=30).stdout.decode().strip()
+            reached = subprocess.run(['git', '-C', repo, 'merge-base', '--is-ancestor', submitted, main],
+                                     capture_output=True, timeout=30)
+        except (KeyError, OSError, subprocess.SubprocessError, UnicodeError):
+            return {'status': 'kept', 'reason': 'The result commit or main branch cannot be checked'}
+        if reached.returncode != 0:
+            return {'status': 'kept', 'reason': 'The result commit is not reachable from main'}
+        if owner.get('worktreeReady'):
+            _, reason = _worktree_check(self, agent_id, owner_id, epoch)
+            if reason:
+                return {'status': 'kept', 'reason': reason}
+        try:
+            archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
+                                                      'reason': 'Accepted task result is on main'}, epoch)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            return {'status': 'kept', 'reason': str(error)[:180]}
+        if archived['status'] != 'archived':
+            blockers = archived.get('blockers') or []
+            return {'status': 'kept', 'reason': ', '.join(item['kind'] for item in blockers) or archived['status']}
+        cleanup = archived.get('worktree') or {}
+        if cleanup.get('state') == 'kept':
+            return {'status': 'archived', 'worktree': cleanup,
+                    'reason': cleanup.get('reason', 'The worktree was kept')}
+        return {'status': 'archived', 'worktree': cleanup}
+
     def setup_work(self, db):
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -159,7 +264,7 @@ class WorkMixin:
             )
         return result
 
-    def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None):
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id, actor)
             if epoch is not None and self.agent(actor, db)["epoch"] != epoch:
@@ -357,7 +462,8 @@ class WorkMixin:
                            "WHERE id=? AND kind='work_review' AND status='pending' AND agent=?",
                            ('The exact result already has a decision',
                             "work-result:" + w["results"][-1]["id"], a["rootId"]))
-                if w.get("owner") and w["owner"] != actor:
+                if (w.get('owner') and w['owner'] != actor
+                        and (action == 'reject' or w['owner'] == a['rootId'])):
                     self.enqueue(
                         db,
                         self.agent(w["owner"], db),

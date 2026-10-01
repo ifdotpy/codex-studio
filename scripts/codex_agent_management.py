@@ -14,9 +14,14 @@ def management_tools(tool, text):
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore recreates a removed worktree and returns an archived worker paused; use orchestration_send to resume. '
-        'list_archived is paged. maintenance_report lists old archived or deleted worktrees without removal. Only the lead may use this tool.',
-        {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report']},
+        'list_archived is paged. maintenance_report lists old archived or deleted worktrees without removal. '
+        'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
+        'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
+        'Only the lead may archive, restore, recover, reset tools, or emit an event.',
+        {'action': {'type': 'string', 'enum': ['inspect', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report', 'park', 'list_parked', 'cancel_park', 'emit_event']},
          'agent_id': text, 'reason': {'type': 'string', 'maxLength': 1000},
+         'event': {'type': 'string', 'minLength': 1, 'maxLength': 120},
+         'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200},
          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}, 'cursor': text}, ['action'])]
 
 
@@ -40,7 +45,7 @@ def _authorize(rt, db, actor_id, epoch, target=None):
 
 def _brief(a):
     return {k: a.get(k) for k in ('id', 'name', 'parentId', 'status', 'inFlight', 'threadId',
-                                 'turnId', 'error', 'lastEvent', 'agentArchive', 'nativeRelease')}
+                                 'turnId', 'error', 'lastEvent', 'agentArchive', 'nativeRelease', 'parkedEvent')}
 
 
 def _completed_native_turn(a):
@@ -118,6 +123,8 @@ def _blockers(rt, db, a):
         if ids: result.append({'kind': kind, 'count': len(ids), 'ids': ids[:20]})
     if a.get('inFlight') or a['status'] in {'starting', 'running', 'approval', 'queued'}:
         add('active_turn', [key])
+    if a.get('parkedEvent'):
+        add('parked_event', [a['parkedEvent']])
     if a.get('workspaceOperation'): add('workspace_operation', [key])
     preparation = rt.preparations.get(key)
     if preparation and not preparation['future'].done(): add('thread_preparation', [key])
@@ -307,6 +314,186 @@ def _finished(a):
     return a['status'] in {'completed', 'failed', 'interrupted'} or (a['status'] == 'paused' and not a.get('autoWake'))
 
 
+def parked_after_turn(a):
+    """Apply a park requested during a turn after its result reaches the parent."""
+    if not a.get('parkedEvent'):
+        return
+    if a.get('parkAfterTurn'):
+        a.pop('parkAfterTurn', None)
+        a['autoWake'] = False
+    if not a.get('autoWake'):
+        a['status'] = 'parked'
+
+
+def _park_actor(rt, db, actor_id, epoch):
+    actor = rt.agent(actor_id, db)
+    if (actor.get('deletedAt') or not actor.get('autoWake')
+            or (epoch is not None and actor['epoch'] != epoch)):
+        raise ValueError('The caller is stopped')
+    return actor
+
+
+def _park_target(rt, db, actor, target):
+    if target.get('deletedAt') or target.get('agentArchive') or target.get('isLead'):
+        raise ValueError('Choose a live worker')
+    if target['rootId'] != actor['rootId']:
+        raise ValueError('This worker belongs to another team')
+    if target['id'] == actor['id']:
+        return
+    seen = set()
+    current = target
+    while current.get('parentId') != actor['id']:
+        if not current.get('parentId') or current['id'] in seen:
+            raise ValueError('This worker is not your descendant')
+        seen.add(current['id'])
+        current = rt.agent(current['parentId'], db)
+
+
+def _event_name(value):
+    if (not isinstance(value, str) or not 1 <= len(value) <= 120
+            or value != value.strip() or any(ord(char) < 33 or ord(char) > 126 for char in value)):
+        raise ValueError('Use an event name with 1 to 120 visible ASCII characters')
+    return value
+
+
+def _park_action(rt, actor_id, args, epoch):
+    action = args['action']
+    with rt.lock, rt.db() as db:
+        actor = _park_actor(rt, db, actor_id, epoch)
+        if action == 'list_parked':
+            rows = [_brief(a) for a in rt.records(db, 'agents')
+                    if a['rootId'] == actor['rootId'] and a.get('parkedEvent')
+                    and not a.get('deletedAt')]
+            if not actor.get('isLead'):
+                visible = []
+                for row in rows:
+                    target = rt.agent(row['id'], db)
+                    try:
+                        _park_target(rt, db, actor, target)
+                    except ValueError:
+                        continue
+                    visible.append(row)
+                rows = visible
+            return rt.model_page(sorted(rows, key=lambda a: a['id']), args,
+                                 [actor['rootId'], actor_id, 'parked_workers'])
+        if action == 'emit_event':
+            if not actor.get('isLead'):
+                raise ValueError('Only the lead can emit an event')
+            name = _event_name(args.get('event'))
+            request_id = args.get('request_id')
+            if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
+                raise ValueError('Supply a stable request_id')
+            request_key = 'park-request:' + actor['rootId'] + ':' + request_id
+            signature, previous = rt.operation_receipt(
+                db, request_key, {'action': action, 'event': name})
+            if previous is not None:
+                return previous
+            event_key = 'park-event:' + actor['rootId'] + ':' + name
+            event_signature, fired = rt.operation_receipt(
+                db, event_key, {'action': action, 'event': name})
+            if fired is not None:
+                return rt.save_receipt(db, request_key, signature, {**fired, 'replayed': True})
+            woken = []
+            for target in rt.records(db, 'agents'):
+                if (target['rootId'] != actor['rootId'] or target.get('deletedAt')
+                        or target.get('parkedEvent') != name):
+                    continue
+                target.pop('parkedEvent', None)
+                target.pop('parkAfterTurn', None)
+                target['autoWake'] = True
+                if target['status'] == 'parked':
+                    target['status'] = 'queued'
+                rt.put(db, 'agents', target)
+                rt.enqueue(db, target, 'event_wake',
+                           'Event ' + name + ' occurred. Continue your assigned work.',
+                           'park-wake:' + actor['rootId'] + ':' + name + ':' + target['id'])
+                woken.append(target['id'])
+            result = {'event': name, 'woken': woken, 'count': len(woken)}
+            rt.save_receipt(db, event_key, event_signature, result)
+            return rt.save_receipt(db, request_key, signature, result)
+        target = rt.agent(args.get('agent_id'), db)
+        _park_target(rt, db, actor, target)
+        if action == 'park':
+            name = _event_name(args.get('event'))
+            _, fired = rt.operation_receipt(
+                db, 'park-event:' + actor['rootId'] + ':' + name,
+                {'action': 'emit_event', 'event': name})
+            if fired is not None:
+                raise ValueError('This event already occurred')
+            if target.get('parkedEvent'):
+                if target['parkedEvent'] != name:
+                    raise ValueError('Cancel the current event wait first')
+                return {'status': target['status'], 'agent': _brief(target), 'replayed': True}
+            pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                                 "AND status IN ('pending','reserved','dispatching','uncertain') LIMIT 1",
+                                 (target['id'], target['epoch'])).fetchone()
+            if pending:
+                raise ValueError('Deliver or resolve pending input before parking')
+            if target.get('inFlight'):
+                target['parkAfterTurn'] = True
+            else:
+                target.update(autoWake=False, status='parked')
+            target['parkSequence'] = target.get('parkSequence', 0) + 1
+            target['parkedEvent'] = name
+            rt.put(db, 'agents', target)
+            return {'status': target['status'], 'agent': _brief(target)}
+        if not target.get('parkedEvent'):
+            return {'status': target['status'], 'agent': _brief(target), 'replayed': True}
+        old = target.pop('parkedEvent')
+        target.pop('parkAfterTurn', None)
+        target['autoWake'] = True
+        if target['status'] == 'parked':
+            target['status'] = 'queued'
+        rt.put(db, 'agents', target)
+        rt.enqueue(db, target, 'event_wake', 'The wait for event ' + old + ' was cancelled. Continue your assigned work.',
+                   'park-cancel:' + target['id'] + ':' + str(target['parkSequence']))
+        return {'status': target['status'], 'agent': _brief(target)}
+
+
+def reviewer_result_delivered(rt, db, parent_id, event_id):
+    """Queue cleanup only after native delivery confirms the child result."""
+    if not event_id.startswith('child:'):
+        return
+    event = db.execute("SELECT kind,text,status FROM runtime_events WHERE id=? AND agent=?",
+                       (event_id, parent_id)).fetchone()
+    if not event or event['kind'] != 'child_result' or event['status'] != 'delivered':
+        return
+    try:
+        child_id = json.loads(event['text'])['agent_id']
+        child = rt.agent(child_id, db)
+    except (KeyError, TypeError, ValueError):
+        return
+    if (child.get('role') != 'reviewer' or child.get('parentId') != parent_id
+            or child.get('agentArchive') or child.get('reviewArchiveScheduled')
+            or child.get('status') != 'completed'):
+        return
+    child['reviewArchiveScheduled'] = event_id
+    rt.put(db, 'agents', child)
+    rt.delivery_executor().submit(_archive_reviewer, rt, child['rootId'], parent_id, child_id, event_id)
+
+
+def _archive_reviewer(rt, lead_id, parent_id, child_id, event_id):
+    with rt.lock, rt.db() as db:
+        event = db.execute('SELECT status FROM runtime_events WHERE id=? AND agent=?',
+                           (event_id, parent_id)).fetchone()
+        child = rt.agent(child_id, db)
+        if (not event or event['status'] != 'delivered'
+                or child.get('reviewArchiveScheduled') != event_id):
+            return
+    try:
+        outcome = manage_agent(rt, lead_id, {'action': 'archive', 'agent_id': child_id,
+                                             'reason': 'Reviewer result delivered to parent'})
+        error = None if outcome['status'] == 'archived' else str(outcome.get('blockers'))[:180]
+    except Exception as caught:
+        error = str(caught)[:180]
+    if error:
+        with rt.lock, rt.db() as db:
+            child = rt.agent(child_id, db)
+            child['reviewArchiveError'] = error
+            child.pop('reviewArchiveScheduled', None)
+            rt.put(db, 'agents', child)
+
+
 def _archive_finished(rt, actor_id, epoch):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
@@ -394,8 +581,11 @@ def _restore_worktree(info):
 
 def manage_agent(rt, actor_id, args, epoch=None):
     action = args.get('action')
-    if action not in {'inspect','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report'}:
+    if action not in {'inspect','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report',
+                      'park','list_parked','cancel_park','emit_event'}:
         raise ValueError('Unknown agent management action')
+    if action in {'park', 'list_parked', 'cancel_park', 'emit_event'}:
+        return _park_action(rt, actor_id, args, epoch)
     if action == 'archive_finished':
         return _archive_finished(rt, actor_id, epoch)
     if action == 'maintenance_report':
