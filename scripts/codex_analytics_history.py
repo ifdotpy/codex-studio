@@ -11,6 +11,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 
 from analytics.rollout_parser import rollout_actions
 from codex_analytics import event_payload_measurements, model_payload_measurements
@@ -124,13 +125,14 @@ def prepare_budget_migration(runtime):
     """Create the bounded history-scan index before the worker takes the writer lock."""
     if getattr(runtime, "_budget_index_ready", False):
         return
-    with runtime.db() as db:
+    opener = getattr(runtime, "analytics_connection", None) if hasattr(runtime, "analytics_db") else None
+    with (opener() if opener else runtime.db()) as db:
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
             db.execute("CREATE INDEX IF NOT EXISTS analytics_usage_migration ON analytics_usage(agent,seq)")
     runtime._budget_index_ready = True
 
 
-def migrate_budget_usage(db, agent, limit=64):
+def migrate_budget_usage(db, agent, limit=64, budget_db=None):
     """Import one idempotent page of stored usage into the durable budget ledger."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
         return False
@@ -151,7 +153,7 @@ def migrate_budget_usage(db, agent, limit=64):
                    "requestUsage": record.get("requestUsage"),
                    "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
                    "_analyticsTimestampSource": record.get("timestampSource")}
-        budget_capture(db, agent, payload, at=record.get("at", 0), source="rollout")
+        budget_capture(budget_db or db, agent, payload, at=record.get("at", 0), source="rollout")
         state["cursor"] = seq
     if len(rows) < limit:
         state["cursor"] = state["end"]
@@ -176,8 +178,17 @@ def _history_worker_state(runtime):
 
 
 class AnalyticsHistoryMixin:
+    def analytics_history_db(self, fallback=None):
+        opener = getattr(self, "analytics_connection", None)
+        if opener and hasattr(self, "analytics_db"):
+            return opener(fallback) if fallback is not None else opener()
+        if fallback is not None:
+            return nullcontext(fallback)
+        return self.db()
+
     def analytics_history_init(self, db):
-        db.execute("CREATE TABLE IF NOT EXISTS analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)")
+        with self.analytics_history_db(db) as analytics_db:
+            analytics_db.execute("CREATE TABLE IF NOT EXISTS analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)")
         _history_worker_state(self)
         self._analytics_history_schema_ready = True
 
@@ -206,7 +217,7 @@ class AnalyticsHistoryMixin:
                         startup_memory_mark("analytics-import-first-step")
                         startup_memory_mark("analytics-import-progress", once=False, interval_seconds=30)
                         if failures or not reported_healthy:
-                            with self.lock, self.db() as db:
+                            with self.analytics_history_db() as db:
                                 row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()
                                 if row:
                                     diagnostic = json.loads(row[0])
@@ -227,7 +238,7 @@ class AnalyticsHistoryMixin:
                             'error': detail, 'consecutiveFailures': failures,
                             'errorPersisted': False}
                         try:
-                            with self.lock, self.db() as db:
+                            with self.analytics_history_db() as db:
                                 db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (
                                     'importer', '', json.dumps({'status': 'error', 'error': detail,
                                                                'updated': time.time()})))
@@ -285,10 +296,10 @@ class AnalyticsHistoryMixin:
             return False
         try:
             if not getattr(self, "_analytics_history_schema_ready", False):
-                with self.lock, self.db() as db:
+                with self.analytics_history_db() as db:
                     self.analytics_history_init(db)
             prepare_budget_migration(self)
-            with self.lock, self.db() as db:
+            with self.analytics_history_db() as db:
                 repair_terminal_errors(db)
                 # Decode all agents once per round, not once per step. Each
                 # step reads only its own agent under the shared lock.
@@ -308,8 +319,12 @@ class AnalyticsHistoryMixin:
             if a is None or not a.get("threadId"):
                 return False
             key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
-            with self.lock, self.db() as db:
-                budget_advanced = migrate_budget_usage(db, a)
+            with self.analytics_history_db() as db:
+                if hasattr(self, "analytics_db"):
+                    with self.db() as budget_db:
+                        budget_advanced = migrate_budget_usage(db, a, budget_db=budget_db)
+                else:
+                    budget_advanced = migrate_budget_usage(db, a)
                 row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
             state = json.loads(row[0]) if row else {
                 "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),
@@ -410,7 +425,7 @@ class AnalyticsHistoryMixin:
                             measurements = (event_payload_measurements(method, p) if kind == 'event'
                                             else model_payload_measurements(p) if kind == 'payload' else None)
                             collected.append((action, dict(context), measurements))
-                with self.lock, self.db() as db:
+                with self.analytics_history_db() as db:
                     current = self.agent(a["id"], db)
                     if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
                         return False
@@ -442,7 +457,7 @@ class AnalyticsHistoryMixin:
             self._analytics_history_guard.release()
 
     def _analytics_history_save(self, key, a, state):
-        with self.lock, self.db() as db:
+        with self.analytics_history_db() as db:
             self._analytics_history_record(db, key, a["id"], state)
         return False
 

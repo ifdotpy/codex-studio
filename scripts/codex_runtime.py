@@ -894,6 +894,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "canvas.sqlite3"
+        self.analytics_db_path = self.root / "analytics.sqlite3"
         self.lock = threading.RLock()
         self.ui_condition = threading.Condition(self.lock)
         self.ui_revisions = {}
@@ -1099,6 +1100,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for warning in self.monitor_recovery_warnings:
             print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
         os.chmod(self.db_path, 0o600)
+        os.chmod(self.analytics_db_path, 0o600)
         if server_factory is AppServer:
             self.search_migration_start()
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
@@ -1106,6 +1108,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         startup_memory_mark("runtime-init-complete")
         if server_factory is AppServer:
             self.analytics_history_start()
+            from codex_analytics_storage import start as start_analytics_migration
+            start_analytics_migration(self)
 
     def voice(self):
         with self.lock:
@@ -1122,6 +1126,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if db is None:
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
             db.row_factory = sqlite3.Row
+            # Retain compatibility for internal callers that execute analytics
+            # SQL on the runtime connection; normal writers use analytics_db().
+            db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
             if reusable:
                 local.connection = db
         sqlite_assert_clean(db, "Runtime.db reuse")
@@ -1177,6 +1184,29 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         finally:
             db.rollback()
             db.close()
+
+    @contextmanager
+    def analytics_db(self):
+        """Open analytics on its own WAL connection and attach runtime state read-only."""
+        db = sqlite_connect(self.analytics_db_path, timeout=15, site="Runtime.analytics")
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            canvas_uri = self.db_path.absolute().as_uri() + "?mode=ro"
+            db.execute("ATTACH DATABASE ? AS canvas", (canvas_uri,))
+            with sqlite_scope(db, "Runtime.analytics"):
+                yield db
+        finally:
+            db.close()
+
+    @contextmanager
+    def analytics_read_db(self):
+        """Read a complete old+new analytics view while an online copy is active."""
+        with self.analytics_db() as db:
+            from codex_analytics_storage import install_legacy_read_views
+            install_legacy_read_views(db)
+            db.execute("PRAGMA query_only=ON")
+            yield db
 
     def records(self, db, table=None, *, shared=False):
         # Calls already in progress may still use the former static form.
@@ -6230,9 +6260,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         deliveryError=event["error"], pending=event["status"] == "pending")
             live = a["status"] in {"running", "starting", "approval"} and a.get("autoWake")
             failed_turns = {item['turnId'] for item in items if item.get('turnStatus') == 'failed' and item.get('turnId')}
-            turn_errors = {turn['turnId']: turn['error'] for turn in
-                           self.analytics_turn_errors(db, key, a['threadId'], failed_turns)
-                           if turn['status'] == 'failed' and turn['error']} if a.get('threadId') else {}
+            if a.get('threadId'):
+                with self.analytics_read_db() as analytics_db:
+                    turn_errors = {turn['turnId']: turn['error'] for turn in
+                                   self.analytics_turn_errors(analytics_db, key, a['threadId'], failed_turns)
+                                   if turn['status'] == 'failed' and turn['error']}
+            else:
+                turn_errors = {}
             for item in items:
                 if item.get('turnId') in failed_turns:
                     item.update(turnError=turn_errors.get(item['turnId']), turnErrorResolved=True)
@@ -6244,7 +6278,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     task = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (item["id"],)).fetchone()
                     item["toolStatus"] = json.loads(task[0])["status"] if task else "interrupted"
             from codex_reasoning_history import reasoning_history
-            items = reasoning_history(db, a, rows[:limit], items)
+            with self.analytics_read_db() as analytics_db:
+                items = reasoning_history(analytics_db, a, rows[:limit], items)
             return {"items": items, "truncated": bool(next_cursor), "nextCursor": next_cursor, "nextAfterCursor": next_after_cursor, "historyVersion": str(a.get("threadId")) + ":" + str(a.get("restoredCheckpoint")), "unavailable": None,
                     "agent": {k: a.get(k) for k in ("id", "status", "activity", "inFlight", "contextUsage", "compactions", "compactionsObservedOnly")}}
 

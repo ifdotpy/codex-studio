@@ -30,6 +30,9 @@ class SessionCostReader:
     def __init__(self, db_path, pricing, accounts=None, *, state_root=None, clock=time.time):
         self.db_path = Path(db_path)
         self.state_root = Path(state_root) if state_root else self.db_path.parent
+        self.analytics_path = self.state_root / "analytics.sqlite3"
+        self._separate_analytics = self.analytics_path.exists()
+        self._runtime_prefix = "canvas." if self._separate_analytics else ""
         self.pricing = pricing
         self.accounts = accounts
         self.clock = clock
@@ -42,6 +45,16 @@ class SessionCostReader:
     def _cache_path(self, root):
         digest = hashlib.sha256(root.encode("utf-8")).hexdigest()
         return self.state_root / "session-costs" / ("cost-" + digest + ".json")
+
+    def _connect(self):
+        path = self.analytics_path if self._separate_analytics else self.db_path
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3)
+        db.row_factory = sqlite3.Row
+        if self._separate_analytics:
+            db.execute("ATTACH DATABASE ? AS canvas", (self.db_path.absolute().as_uri() + "?mode=ro",))
+            from codex_analytics_storage import install_legacy_read_views
+            install_legacy_read_views(db)
+        return db
 
     def _valid_cached(self, root, value):
         return (isinstance(value, dict) and value.get("rootId") == root
@@ -94,7 +107,7 @@ class SessionCostReader:
         except sqlite3.OperationalError:
             agents = []
         if not any(key == agent_id for key, _ in agents):
-            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+            row = db.execute(f"SELECT record FROM {self._runtime_prefix}runtime_agents WHERE id=?", (agent_id,)).fetchone()
             if not row:
                 raise ValueError("Unknown chat")
             agents.append((agent_id, json.loads(row["record"])))
@@ -225,13 +238,12 @@ class SessionCostReader:
                 self.refreshing.discard(root)
 
     def snapshot(self, agent_id):
-        db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=3)
-        db.row_factory = sqlite3.Row
+        db = self._connect()
         try:
             db.execute("BEGIN")
             row = db.execute("SELECT record FROM analytics_agents WHERE id=?", (agent_id,)).fetchone()
             if not row:
-                row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+                row = db.execute(f"SELECT record FROM {self._runtime_prefix}runtime_agents WHERE id=?", (agent_id,)).fetchone()
             if not row:
                 raise ValueError("Unknown chat")
             root = json.loads(row["record"]).get("rootId") or agent_id
@@ -381,8 +393,7 @@ class SessionCostReader:
         return rows
 
     def _compute(self, agent_id, root):
-        db = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=3)
-        db.row_factory = sqlite3.Row
+        db = self._connect()
         try:
             catalog = self.pricing.snapshot()
             if catalog is None:

@@ -9,6 +9,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import nullcontext
 import statistics
+import threading
 
 from codex_budget import budget_capture
 
@@ -237,8 +238,17 @@ class _ContextBuckets:
 
 
 class AnalyticsMixin:
+    def analytics_connection(self, fallback=None):
+        opener = getattr(self, 'analytics_db', None)
+        return opener() if opener else nullcontext(fallback)
+
+    def analytics_read_connection(self, fallback=None):
+        opener = getattr(self, 'analytics_read_db', None)
+        return opener() if opener else self.analytics_connection(fallback)
+
     def analytics_init(self, db):
-        db.executescript('''
+        with self.analytics_connection(db) as analytics_db:
+            analytics_db.executescript('''
           CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS analytics_turns (
@@ -265,35 +275,52 @@ class AnalyticsMixin:
           CREATE INDEX IF NOT EXISTS analytics_items_scope ON analytics_items(agent,at);
           CREATE INDEX IF NOT EXISTS analytics_items_team ON analytics_items(root,at);
           CREATE INDEX IF NOT EXISTS analytics_items_tool ON analytics_items(name,at);
-        ''')
-        db.execute('INSERT OR IGNORE INTO analytics_meta VALUES (?,?)', ('trackingSince', str(time.time())))
-        for a in self.records(db, 'agents'):
-            self.analytics_agent(db, a)
+            ''')
+            analytics_db.execute('INSERT OR IGNORE INTO analytics_meta VALUES (?,?)', ('trackingSince', str(time.time())))
+            for a in self.records(db, 'agents'):
+                self.analytics_agent(analytics_db, a)
 
     def analytics_safe(self, db, operation, *args, **kwargs):
         """An analytics failure cannot consume a native result or lifecycle notice."""
-        # An outermost SAVEPOINT commits on RELEASE. Keep every sample in the
-        # caller's transaction so a batch needs only one durable commit.
-        if not db.in_transaction:
-            db.execute('BEGIN')
-        db.execute('SAVEPOINT analytics_capture')
-        try:
-            result = operation(db, *args, **kwargs)
-            db.execute('RELEASE analytics_capture')
-            return result
-        except Exception as error:
-            db.execute('ROLLBACK TO analytics_capture')
-            db.execute('RELEASE analytics_capture')
-            detail = {'at': time.time(), 'operation': getattr(operation, '__name__', type(operation).__name__), 'error': str(error)[:1000]}
+        with self.analytics_connection(db) as analytics_db:
+            if not analytics_db.in_transaction:
+                analytics_db.execute('BEGIN')
+            analytics_db.execute('SAVEPOINT analytics_capture')
+            budget_context = self.__dict__.setdefault('_analytics_budget_context', threading.local())
+            previous_budget_db = getattr(budget_context, 'connection', None)
+            budget_context.connection = db
             try:
-                row = db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
-                previous = json.loads(row[0]) if row else {'count': 0, 'last': None}
-                previous.update(count=previous['count'] + 1, last=detail)
-                db.execute("INSERT INTO analytics_meta VALUES ('captureErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(previous),))
-            except Exception:
-                import sys
-                print('Analytics capture failed: ' + json.dumps(detail), file=sys.stderr)
-            return None
+                result = operation(analytics_db, *args, **kwargs)
+                budget_context.connection = previous_budget_db
+                analytics_db.execute('RELEASE analytics_capture')
+                return result
+            except Exception as error:
+                budget_context.connection = previous_budget_db
+                analytics_db.execute('ROLLBACK TO analytics_capture')
+                analytics_db.execute('RELEASE analytics_capture')
+                detail = {'at': time.time(), 'operation': getattr(operation, '__name__', type(operation).__name__), 'error': str(error)[:1000]}
+                try:
+                    row = analytics_db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
+                    previous = json.loads(row[0]) if row else {'count': 0, 'last': None}
+                    previous.update(count=previous['count'] + 1, last=detail)
+                    analytics_db.execute("INSERT INTO analytics_meta VALUES ('captureErrors',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(previous),))
+                except Exception:
+                    import sys
+                    print('Analytics capture failed: ' + json.dumps(detail), file=sys.stderr)
+                return None
+
+    def analytics_budget_capture(self, db, agent, params, *, at, source):
+        # Budget admission and the visible agent fields remain runtime state;
+        # keep that brief write on a runtime connection, outside analytics SQL.
+        opener = getattr(self, 'db', None)
+        if hasattr(self, 'analytics_db') and opener:
+            context = self.__dict__.setdefault('_analytics_budget_context', threading.local())
+            current = getattr(context, 'connection', None)
+            if current is not None:
+                return budget_capture(current, agent, params, at=at, source=source)
+            with opener() as runtime_db:
+                return budget_capture(runtime_db, agent, params, at=at, source=source)
+        return budget_capture(db, agent, params, at=at, source=source)
 
     def analytics_limit(self, db, account_key, value):
         if self.analytics_limit_changed(db, account_key, value):
@@ -355,7 +382,7 @@ class AnalyticsMixin:
                 if known.get('accountKey') == meta['accountKey'] and known.get('cyberAccessProgram') is not None:
                     meta.update(daybreakEnabled=known.get('daybreakEnabled'),
                                 cyberAccessProgram=known['cyberAccessProgram'])
-            captured_tokens = budget_capture(db, a, p, at=at, source=source)
+            captured_tokens = self.analytics_budget_capture(db, a, p, at=at, source=source)
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
             # Totals identify a request across native notices and rollout records.
@@ -600,7 +627,7 @@ class AnalyticsMixin:
                 raise ValueError('Invalid analytics time')
             return value
         start, end = timestamp('from'), timestamp('to')
-        with self.db() as db:
+        with self.analytics_read_connection() as db:
             agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
             selected = next((a for a in agents if a['id'] == agent), None)
             if scope != 'all' and not selected:
@@ -669,7 +696,7 @@ class AnalyticsMixin:
             turns = list(dict.fromkeys((options.get('turns') or '').split(',')))
             if scope != 'agent' or not thread or not all(turns) or len(turns) > 120:
                 raise ValueError('Select one thread and up to 120 turns')
-            with self.db() as db:
+            with self.analytics_read_connection() as db:
                 return {'turns': self.analytics_turn_errors(db, agent, thread, turns)}
         if options.get('view') == 'detail':
             return self.analytics_detail_page(agent, scope, options)
@@ -688,7 +715,7 @@ class AnalyticsMixin:
         export = str(options.get('export', '0')) == '1'
         tool = options.get('tool') or None
         read_started = time.perf_counter() if timing else None
-        with (nullcontext(shared_db) if shared_db is not None else self.db()) as db:
+        with (nullcontext(shared_db) if shared_db is not None else self.analytics_read_connection()) as db:
             if not db.in_transaction:
                 db.execute('BEGIN')
             agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
@@ -815,7 +842,7 @@ class AnalyticsMixin:
             agent_ids = sorted(relevant_ids)
             agent_filter = (' IN (' + ','.join('?' for _ in agent_ids) + ')') if agent_ids else ' IN (NULL)'
             runtime_agents = {row['id']: json.loads(row['record']) for row in db.execute(
-                'SELECT id,record FROM runtime_agents WHERE id' + agent_filter, agent_ids)}
+                'SELECT id,record FROM canvas.runtime_agents WHERE id' + agent_filter, agent_ids)}
             for entry in agents:
                 if entry['id'] in runtime_agents:
                     current_agent = runtime_agents[entry['id']]
@@ -829,7 +856,7 @@ class AnalyticsMixin:
                 for table in ('monitors', 'requests')
             }
             queued_events = [dict(row) for row in db.execute(
-                'SELECT agent,kind,status,created FROM runtime_events WHERE agent' + agent_filter,
+                'SELECT agent,kind,status,created FROM canvas.runtime_events WHERE agent' + agent_filter,
                 agent_ids)]
             notification_rows = [dict(row) for row in db.execute(
                 'SELECT * FROM analytics_notifications WHERE agent' + agent_filter, agent_ids)]
@@ -963,7 +990,7 @@ class AnalyticsMixin:
         """Yield one JSON export while keeping large histories outside memory."""
         options = {key: value for key, value in options.items() if key != '_db'}
         options['export'] = '0'
-        with self.db() as db:
+        with self.analytics_read_connection() as db:
             if not db.in_transaction:
                 db.execute('BEGIN')
             result = self.analytics(agent, scope, _db=db, **options)

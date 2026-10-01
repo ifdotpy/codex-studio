@@ -148,10 +148,18 @@ def _coverage(db, a, state):
         return None if not state['spent'] else 'Native usage history is unavailable'
     if not state['spent'] and not a.get('turnId') and not a.get('lastCompletedTurn'):
         return None
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_history'").fetchone():
+    schema = None
+    for candidate in ('main', 'analytics'):
+        try:
+            if db.execute(f"SELECT 1 FROM {candidate}.sqlite_master WHERE type='table' AND name='analytics_history'").fetchone():
+                schema = candidate
+                break
+        except sqlite3.OperationalError:
+            continue
+    if schema is None:
         return 'Native usage history is unavailable'
     key = a['id'] + ':' + a.get('accountKey', 'default') + ':' + a['threadId']
-    row = db.execute('SELECT record FROM analytics_history WHERE id=?', (key,)).fetchone()
+    row = db.execute(f'SELECT record FROM {schema}.analytics_history WHERE id=?', (key,)).fetchone()
     history = json.loads(row[0]) if row else {}
     if history.get('status') != 'current' or history.get('coverage') == 'partial':
         return 'Native usage history is incomplete'

@@ -182,4 +182,5 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "nativeAccounts": dict(sorted(native_accounts.items())),
             "studioLoadedThreads": studio_loaded, "queues": queues,
             "runtimeLockSamples": sampled,
-            "sqliteContention": sqlite_diagnostics()}
+            "sqliteContention": sqlite_diagnostics(),
+            "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"})}
