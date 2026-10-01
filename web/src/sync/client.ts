@@ -168,8 +168,9 @@ async function pull(
   const fresh = initialHigh !== undefined
     ? `&fresh=1&initialHigh=${initialHigh}`
     : "";
+  const reset = scope === "state:entities:v1" ? "&reset=1" : "";
   const result = await api(
-    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}`,
+    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}${reset}`,
   );
   if (result.workspaceId !== workspaceId)
     throw new Error("The server workspace changed. Reload to synchronize.");
@@ -408,6 +409,55 @@ async function persistProjectionBatch(
     if (!result.error.length) return;
   }
 }
+async function writeProjectionRows(
+  collection: RxCollection<SyncDocument>,
+  rows: Array<{ previous?: RxDocumentData<SyncDocument>; document: RxDocumentData<SyncDocument> }>,
+) {
+  if (!rows.length) return;
+  const result = await collection.storageInstance.bulkWrite(rows, "studio-projection-reset");
+  if (result.error.length)
+    throw new Error("Could not reset the local entity projection safely.");
+}
+async function resetEntityProjection(
+  collection: RxCollection<SyncDocument>,
+) {
+  const markerId = "state:entities:ready";
+  const found = await collection.storageInstance.findDocumentsById(
+    [markerId, "state:entities:checkpoint", "state:entities:initial"], true,
+  );
+  const byId = new Map(found.map((row) => [row.id, row]));
+  const marker = byId.get(markerId);
+  const checkpoint = byId.get("state:entities:checkpoint");
+  const initial = byId.get("state:entities:initial");
+  const markerSeq = Math.max(0, marker?.seq ?? 0);
+  const raw = (id: string, payload: string, seq: number, deleted = false,
+    previous?: RxDocumentData<SyncDocument>) => ({
+      previous,
+      document: {
+        id, payload, seq, _deleted: deleted, _attachments: {},
+        _meta: { lwt: 1 }, _rev: "",
+      } as RxDocumentData<SyncDocument>,
+    });
+  // Hide the current projection first. The marker stays hidden until every
+  // replacement page has been stored, so observers never see a partial set.
+  await writeProjectionRows(collection, [
+    raw(markerId, "resetting", markerSeq + 1, false, marker),
+    raw("state:entities:checkpoint", "{}", 0, false, checkpoint),
+    ...(initial ? [raw("state:entities:initial", "{}", 0, true, initial)] : []),
+  ]);
+  const docs = await collection.find({
+    selector: { id: { $gte: "entity:", $lt: "entity;" } },
+  }).exec();
+  const stored = await collection.storageInstance.findDocumentsById(
+    docs.map((doc: any) => doc.id), true,
+  );
+  const rows = stored.map((previous) => {
+    return raw(previous.id, previous.payload, 0, true, previous);
+  });
+  for (let offset = 0; offset < rows.length; offset += ENTITY_BATCH_SIZE)
+    await writeProjectionRows(collection, rows.slice(offset, offset + ENTITY_BATCH_SIZE));
+  return markerSeq + 2;
+}
 type ProjectionState = {
   users: number;
   foreground: number;
@@ -436,6 +486,7 @@ async function acquireProjection(
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
+    let resetReadySeq: number | undefined;
     const checkpointId =
       remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
     const refresh = (): Promise<void> => {
@@ -454,8 +505,12 @@ async function acquireProjection(
             ? await db.projections.storageInstance.findDocumentsById(
                 ["state:entities:ready", "state:entities:initial"], true)
             : [];
-          const ready = markers.find((row) => row.id === "state:entities:ready" && !row._deleted);
+          const ready = markers.find((row) => row.id === "state:entities:ready" &&
+            !row._deleted && row.payload === "ready");
           const initialMarker = markers.find((row) => row.id === "state:entities:initial" && !row._deleted);
+          const readyMarker = markers.find((row) => row.id === "state:entities:ready");
+          if (readyMarker?.payload === "resetting" && resetReadySeq === undefined)
+            resetReadySeq = await resetEntityProjection(db.projections);
           let initialHigh: number | undefined = remoteScope === "state:entities:v1" && !ready
             ? initialMarker?.seq ?? 0
             : undefined;
@@ -482,6 +537,11 @@ async function acquireProjection(
               initialHigh,
             );
             if (stopped) return;
+            if (remoteScope === "state:entities:v1" && result.reset === true) {
+              resetReadySeq = await resetEntityProjection(db.projections);
+              initialHigh = 0;
+              continue;
+            }
             if (remoteScope === "state:entities:v1" && initialHigh !== undefined)
               await persistProjection(db.projections, {
                 id: "state:entities:initial",
@@ -567,7 +627,7 @@ async function acquireProjection(
           await persistProjection(db.projections, {
             id: "state:entities:ready",
             payload: "ready",
-            seq: 1,
+            seq: resetReadySeq ?? 1,
           });
       })()
         .catch((error) => {

@@ -22,6 +22,7 @@ class SyncStore:
     def __init__(self, connect, snapshot, transcript, chat_snapshot=None):
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
         self.chat_snapshot = chat_snapshot
+        self._entity_prune_lock = threading.Lock()
         # One scope stays serial: its compare-and-replace keeps one checkpoint
         # per version. Other scopes proceed; a slow state snapshot must not
         # delay transcript pulls. A fixed stripe count bounds memory.
@@ -64,6 +65,31 @@ class SyncStore:
         from codex_sync_entities import max_seq
         with self.connect() as db:
             return max_seq(db)
+
+    def _schedule_entity_pruning(self):
+        """Continue tombstone cleanup outside task writes and HTTP pulls."""
+        if not self._entity_prune_lock.acquire(blocking=False):
+            return
+
+        def prune():
+            try:
+                from codex_sync_entities import (ENTITY_TOMBSTONE_LIMIT,
+                                                 prune_entity_tombstones)
+                while True:
+                    with self.connect() as db:
+                        deleted = prune_entity_tombstones(db)
+                        remaining = db.execute("""SELECT COUNT(*) FROM sync_entities
+                            WHERE collection NOT LIKE 'transcript:%' AND deleted=1""").fetchone()[0]
+                    if deleted == 0 or remaining <= ENTITY_TOMBSTONE_LIMIT:
+                        break
+                    time.sleep(0.05)
+            except (sqlite3.Error, OSError):
+                # A later entity pull can safely resume this idempotent cleanup.
+                pass
+            finally:
+                self._entity_prune_lock.release()
+
+        threading.Thread(target=prune, name='entity-tombstone-pruner', daemon=True).start()
 
     def draft_sequence(self):
         with self.connect() as db:
@@ -228,13 +254,15 @@ class SyncStore:
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
                    (next_sequence(db), scope, key, encoded, int(deleted)))
 
-    def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0):
+    def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0,
+             reset_support=False):
         after = max(0, int(after))
         limit = min(500 if scope == 'state:entities:v1' else 100, max(1, int(limit)))
         with self.scope_lock(scope):
             self._ensure_versions()
             if scope == 'state:entities:v1':
-                from codex_sync_entities import (max_seq, seed, sync_task_window,
+                from codex_sync_entities import (entity_tombstone_floor, max_seq,
+                                                 prune_entity_tombstones, seed, sync_task_window,
                                                  sync_event_window, sync_monitor_window)
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
@@ -246,16 +274,28 @@ class SyncStore:
                     sync_task_window(db)
                     sync_event_window(db)
                     sync_monitor_window(db)
+                    db.commit()
+                    # A bounded synchronous slice advances the floor promptly;
+                    # remaining batches continue on a background connection.
+                    if not fresh:
+                        prune_entity_tombstones(db)
+                    self._schedule_entity_pruning()
+                    db.execute('BEGIN')
                     high = max_seq(db)
+                    floor = entity_tombstone_floor(db)
                     initial_high = (min(high, max(0, int(initial_high)))
                                     if fresh and int(initial_high) > 0 else high)
+                    if reset_support and not fresh and after > 0 and after < floor:
+                        return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                                'reset': True, 'floor': floor, 'maxSeq': high}
                     # A new browser has no rows to remove. Existing checkpoints
                     # still receive tombstones through the ordinary delta path.
                     rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
                                          WHERE collection NOT LIKE 'transcript:%' AND seq>?
+                                           AND (deleted=0 OR seq>?)
                                            AND (?=0 OR deleted=0 OR seq>?)
                                          ORDER BY seq LIMIT ?''',
-                                      (after, int(bool(fresh)), initial_high, limit)).fetchall()
+                                      (after, floor, int(bool(fresh)), initial_high, limit)).fetchall()
                     documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
                                   'seq': row[2], '_deleted': bool(row[4])} for row in rows]
                     checkpoint = (documents[-1]['seq'] if len(documents) == limit else high)

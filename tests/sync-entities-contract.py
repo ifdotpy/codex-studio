@@ -14,7 +14,8 @@ from codex_sync import SyncStore
 from codex_sync_entities import (AGENT_FIELDS, ensure_tables, project, put,
                                 sync_task_agent_change, sync_task_window, sync_task_write,
                                 sync_event_window, sync_monitor_window, sync_monitor_write,
-                                upgrade_agent_organization)
+                                upgrade_agent_organization, prune_entity_tombstones,
+                                entity_tombstone_floor)
 
 with tempfile.TemporaryDirectory() as directory:
     path = Path(directory) / "state.sqlite3"
@@ -321,4 +322,66 @@ with tempfile.TemporaryDirectory() as directory:
             break
     assert [row["id"] for row in continuation if row["_deleted"]] == [f"entity:agent:{removed}"]
     assert not any("removed-" in row["id"] for row in continuation)
+
+    # Entity tombstones have a bounded replay window and an explicit opt-in
+    # reset contract. Legacy callers receive their ordinary response shape.
+    with connect() as db:
+        db.execute("DELETE FROM sync_entities")
+        db.execute("DELETE FROM sync_entity_meta")
+        rng = random.Random(82461)
+        for index in range(45):
+            key = f"random-live-{index}"
+            assert put(db, "agent", key, {"id": key, "name": f"live {rng.randrange(1_000_000)}"})
+        for index in range(70):
+            key = f"random-deleted-{index}"
+            put(db, "agent", key, {"id": key, "name": f"old {rng.randrange(1_000_000)}"})
+            put(db, "agent", key, {}, deleted=True)
+        tombstones_before = db.execute(
+            "SELECT count(*) FROM sync_entities WHERE deleted=1 AND collection NOT LIKE 'transcript:%'"
+        ).fetchone()[0]
+        assert tombstones_before == 70
+        pruned = prune_entity_tombstones(db, limit=10, batch_size=3, max_batches=1)
+        assert pruned == 3
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE deleted=1").fetchone()[0] == 67
+        while db.execute("SELECT count(*) FROM sync_entities WHERE deleted=1").fetchone()[0] > 10:
+            pruned += prune_entity_tombstones(db, limit=10, batch_size=3)
+        assert pruned == 60
+        tombstones_after = db.execute(
+            "SELECT count(*) FROM sync_entities WHERE deleted=1 AND collection NOT LIKE 'transcript:%'"
+        ).fetchone()[0]
+        assert tombstones_after == 10
+        floor = entity_tombstone_floor(db)
+        assert floor > 0
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='agent' AND deleted=0").fetchone()[0] == 45
+
+    legacy = store.pull("state:entities:v1", after=floor - 1, limit=7)
+    assert "reset" not in legacy, legacy
+    assert {"workspaceId", "documents", "checkpoint", "maxSeq", "initialHigh"} <= legacy.keys()
+    opted_in = store.pull("state:entities:v1", after=floor - 1, limit=7,
+                          reset_support=True)
+    assert opted_in == {"workspaceId": "a" * 32, "reset": True,
+                        "floor": floor, "maxSeq": legacy["maxSeq"]}
+    replay = []
+    cursor = 0
+    baseline_high = 0
+    while True:
+        page = store.pull("state:entities:v1", after=cursor, limit=7,
+                          fresh=True, initial_high=baseline_high,
+                          reset_support=True)
+        replay.extend(page["documents"])
+        cursor = page["checkpoint"]["seq"]
+        baseline_high = page["initialHigh"]
+        if cursor >= page["maxSeq"]:
+            break
+    assert all(not row["_deleted"] or row["seq"] > floor for row in replay)
+    client_live = {
+        f"{json.loads(row['payload'])['collection']}:{json.loads(row['payload'])['id']}"
+        for row in replay if not row["_deleted"]
+    }
+    with connect() as db:
+        server_live = {f"{collection}:{key}" for collection, key in db.execute(
+            "SELECT collection,id FROM sync_entities WHERE deleted=0 AND collection NOT LIKE 'transcript:%'")}
+    assert client_live == server_live, (len(client_live), len(server_live),
+                                        sorted(client_live - server_live)[:10],
+                                        sorted(server_live - client_live)[:10])
     print("sync entity contract passed")

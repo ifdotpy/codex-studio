@@ -3,6 +3,11 @@ import hashlib
 import json
 import sqlite3
 
+ENTITY_TOMBSTONE_LIMIT = 10_000
+ENTITY_TOMBSTONE_PRUNE_BATCH = 5_000
+ENTITY_TOMBSTONE_PRUNE_MAX_BATCHES_PER_PULL = 5
+ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
+
 
 AGENT_FIELDS = frozenset("""
     id name status source kind parentId rootId threadId orchestratorId orchestratorName
@@ -459,4 +464,48 @@ def next_sequence(db):
 
 def max_seq(db):
     row = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'").fetchone()
-    return row[0]
+    return max(row[0], entity_tombstone_floor(db))
+
+
+def entity_tombstone_floor(db):
+    row = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
+                     (ENTITY_TOMBSTONE_FLOOR_KEY,)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def prune_entity_tombstones(db, limit=ENTITY_TOMBSTONE_LIMIT,
+                            batch_size=ENTITY_TOMBSTONE_PRUNE_BATCH,
+                            max_batches=ENTITY_TOMBSTONE_PRUNE_MAX_BATCHES_PER_PULL):
+    """Prune old entity tombstones in committed bounded batches.
+
+    Entity pulls run this maintenance; entity writes never pay its cost.
+    Live rows and transcript history are outside this retention policy.
+    """
+    total_deleted = 0
+    batches = 0
+    while True:
+        if max_batches is not None and batches >= max_batches:
+            break
+        db.execute("BEGIN IMMEDIATE")
+        excess = db.execute("""SELECT COUNT(*) FROM sync_entities
+            WHERE collection NOT LIKE 'transcript:%' AND deleted=1""").fetchone()[0] - limit
+        if excess <= 0:
+            db.commit()
+            break
+        rows = db.execute("""SELECT collection,id,seq FROM sync_entities
+            WHERE collection NOT LIKE 'transcript:%' AND deleted=1
+            ORDER BY seq,collection,id LIMIT ?""",
+                          (min(batch_size, excess),)).fetchall()
+        if not rows:
+            db.commit()
+            break
+        floor = max(entity_tombstone_floor(db), max(row[2] for row in rows))
+        db.executemany("DELETE FROM sync_entities WHERE collection=? AND id=? AND deleted=1",
+                       [(row[0], row[1]) for row in rows])
+        db.execute("""INSERT INTO sync_entity_meta(key,value) VALUES(?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+                   (ENTITY_TOMBSTONE_FLOOR_KEY, str(floor)))
+        db.commit()
+        total_deleted += len(rows)
+        batches += 1
+    return total_deleted
