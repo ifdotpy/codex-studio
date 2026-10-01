@@ -247,19 +247,19 @@ class EfficiencyMixin:
                     native = None
             if native:
                 full = None
-                if native.get('truncated') and db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search'").fetchone():
+                if native.get('truncated'):
                     # Runtime.item indexes the original text in the same transaction
                     # before it clips the transcript view. Reuse that durable body.
-                    full = db.execute('SELECT s.body FROM runtime_search_rows r JOIN runtime_search s ON s.rowid=r.search_rowid '
-                                      'WHERE r.id=? AND s.id=? AND s.agent=?', (key, key, actor['id'])).fetchone()
+                    from transcript_storage.storage import body as transcript_body
+                    full = transcript_body(db, key, agent=actor['id'])
                 try:
-                    payload = json.loads(full[0] if full else native['text'])
+                    payload = json.loads(full if full is not None else native['text'])
                 except (ValueError, TypeError, KeyError):
                     raise ValueError('Saved command output is truncated or unreadable. Do not repeat the command.') from None
                 text = payload.get('aggregatedOutput') if isinstance(payload, dict) else None
                 if not isinstance(text, str):
                     raise ValueError('Saved command output is unavailable. Do not repeat the command.')
-                native = {**native, 'truncated': bool(payload.get('outputTruncated')) or bool(native.get('truncated') and not full)}
+                native = {**native, 'truncated': bool(payload.get('outputTruncated')) or bool(native.get('truncated') and full is None)}
                 result = {'success': payload.get('status') == 'completed' and payload.get('exitCode') == 0}
                 receipt = {'outcome': 'unknown'}
             else:

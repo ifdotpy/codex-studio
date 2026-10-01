@@ -558,11 +558,12 @@ class WorkspaceMixin:
             }
             if record is None or record.get("afterRestore"):
                 return result
-            full = db.execute("SELECT body FROM runtime_search WHERE id=?", (record["id"],)).fetchone()
+            from transcript_storage.storage import body as transcript_body
+            full = transcript_body(db, record["id"], None if record.get("truncated") else record.get("text", ""), agent=agent_id)
             if full is None and record.get("truncated"):
                 raise ValueError("The complete reported changes are unavailable")
             try:
-                payload = json.loads(full[0] if full else record["text"])
+                payload = json.loads(full if full is not None else record["text"])
                 patch = payload["diff"]
                 if not isinstance(patch, str):
                     raise ValueError("Invalid diff")
@@ -988,16 +989,9 @@ class WorkspaceMixin:
                         )
                         if visible:
                             record.pop("afterRestore", None)
-                            if not db.execute(
-                                "SELECT 1 FROM runtime_search WHERE id=?", (record["id"],)
-                            ).fetchone():
-                                self.index_item(
-                                    db,
-                                    record["id"],
-                                    key,
-                                    record.get("title", "message"),
-                                    record.get("text", ""),
-                                )
+                            from transcript_storage.storage import body as transcript_body, ensure_indexed
+                            full = transcript_body(db, record["id"], record.get("text", ""), agent=key)
+                            ensure_indexed(db, record["id"], key, record.get("title", "message"), full)
                         else:
                             record["afterRestore"] = checkpoint["id"]
                         db.execute(
@@ -1291,7 +1285,8 @@ class WorkspaceMixin:
                         prompt = next((entry for index, entry in enumerate(item["inputs"])
                             if data.get("message_id") == (key + ":" + entry['id'] if entry.get('id') else item['id'] + ':' + str(index))), item["inputs"][0])
                     event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (prompt.get("id", "").removeprefix(key + ":"), key)).fetchone()
-                    full = db.execute("SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid FROM runtime_search_rows WHERE id=?)", (item["id"],)).fetchone() if not item.get("inputs") else None
+                    from transcript_storage.storage import body as transcript_body
+                    full = transcript_body(db, item["id"], None if item.get("truncated") else item.get("text", ""), agent=key) if not item.get("inputs") else None
                     preceding = []
                     prefix_assets = []
                     for entry in item.get("inputs", []):
@@ -1302,7 +1297,7 @@ class WorkspaceMixin:
                         prior_event = db.execute("SELECT text FROM runtime_events WHERE id=? AND agent=?", (entry.get("id"), key)).fetchone()
                         preceding.append(prior_event[0] if prior_event else entry.get("text", ""))
                         prefix_assets.extend(entry.get("assets", []))
-                    lead = {**lead, "draft": {"text": event[0] if event else full[0] if full else prompt.get("text", ""),
+                    lead = {**lead, "draft": {"text": event[0] if event else full if full is not None else prompt.get("text", ""),
                         "prefixText": "\n\n".join(preceding),
                         "assets": copy_assets([*prefix_assets, *prompt.get("assets", [])])}}
                 result = self.save_receipt(db, data.get("id"), signature, lead)

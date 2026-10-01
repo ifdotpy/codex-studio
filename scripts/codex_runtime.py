@@ -1098,6 +1098,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 remaining -= len(excerpt)
         db.execute("INSERT INTO runtime_items VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (key, agent, json.dumps(record), time.time()))
+        from transcript_storage.storage import persist as persist_transcript
+        persist_transcript(db, key, agent, title or role, text, streaming=bool(metadata.get("streaming")))
         # Store the batch location beside each receipt. Transcript reads can
         # resolve it by primary key without scanning historical JSON payloads.
         receipt_ids = [r.get("id") for r in inputs] if inputs is not None else (
@@ -1109,7 +1111,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "WHERE id=? AND EXISTS (SELECT 1 FROM runtime_events WHERE id=? AND agent=?)",
                     (key, receipt_id, receipt_id, agent),
                 )
-        self.index_item(db, key, agent, title or role, text)
         if role == "assistant":
             from codex_radio import observe_item
             observe_item(self, db, agent, key, role, text, metadata)
@@ -2031,6 +2032,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("UPDATE runtime_event_meta SET record=? WHERE id=?", (json.dumps(meta), message_id))
             # The queued event is shown as pending until its turn materializes it.
             db.execute("DELETE FROM runtime_items WHERE id=? AND agent=?", (item_id, a["id"]))
+            from transcript_storage.storage import remove as remove_transcript
+            remove_transcript(db, item_id)
             if not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
                 a["status"] = "queued"
                 self.put(db, "agents", a)
@@ -2396,6 +2399,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_tick()
                 self.usage_resume_tick()
                 self.dispatch()
+                from transcript_storage.storage import backfill_addresses, drain
+                with self.lock, self.db() as db:
+                    drain(db)
+                    backfill_addresses(db)
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
                 try:
@@ -3116,10 +3123,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 key = a["id"] + ":" + p.get("itemId", "message")
                 row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
                 previous = json.loads(row[0]) if row else {}
-                full = (db.execute("SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid "
-                                   "FROM runtime_search_rows WHERE id=?)", (key,)).fetchone()
-                        if previous.get("truncated") else None)
-                text = (full[0] if full is not None else previous.get("text", "")) + p.get("delta", "")
+                from transcript_storage.storage import body as transcript_body
+                prior_text = transcript_body(db, key, previous.get("text", ""), agent=a["id"]) if row else ""
+                text = prior_text + p.get("delta", "")
                 self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
                           streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=previous.get("phase"))
                 a["activity"] = {"phase": "writing", "at": time.time()}
@@ -3199,7 +3205,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     item.update(aggregatedOutput=output[-12000:],
                                 outputTruncated=bool(item.get("outputTruncated")) or record.get("truncated", False) or len(output) > 12000)
                     self.item(db, a["id"], p["itemId"], "output", json.dumps(item, ensure_ascii=False), "commandExecution",
-                              toolStatus="running", turnId=p.get("turnId") or a.get("turnId"))
+                              toolStatus="running", turnId=p.get("turnId") or a.get("turnId"), streaming=True)
             elif method in {"turn/plan/updated", "turn/diff/updated"}:
                 if method == "turn/plan/updated":
                     row = db.execute(

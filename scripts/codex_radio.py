@@ -374,10 +374,10 @@ def _reconcile(runtime, db, room, a, turn):
                           "AND json_extract(record,'$.turnId')=? AND json_extract(record,'$.role')='assistant' ORDER BY created,id",
                           (a['id'], turn)).fetchall():
         item = json.loads(row['record'])
-        full = db.execute('SELECT body FROM runtime_search WHERE rowid=(SELECT search_rowid '
-                          'FROM runtime_search_rows WHERE id=?)', (row['id'],)).fetchone()
+        from transcript_storage.storage import body as transcript_body
+        full = transcript_body(db, row['id'], None, agent=a['id'])
         if full is not None:
-            text = full[0]
+            text = full
         elif not item.get('truncated'):
             text = item.get('text', '')
         else:

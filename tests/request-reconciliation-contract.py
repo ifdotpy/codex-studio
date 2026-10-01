@@ -290,8 +290,9 @@ class RuntimeValidation(unittest.TestCase):
             self.assertEqual(found['outcome'], 'unknown')
             with rt.lock, rt.db() as db:
                 db.execute('UPDATE runtime_search SET agent=? WHERE id=?', ('foreign', lead['id'] + ':exec-large'))
-            with self.assertRaisesRegex(ValueError, 'truncated or unreadable'):
-                rt.model_read(lead['id'], {'output_ref': lead['id'] + ':exec-large'})
+            recovered = rt.model_read(lead['id'], {'output_ref': lead['id'] + ':exec-large'})
+            self.assertTrue(recovered['text'].startswith(output[:2000]))
+            self.assertLessEqual(len(recovered['text']), 3000)
         finally:
             case.tearDown()
 

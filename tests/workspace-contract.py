@@ -492,6 +492,7 @@ class WorkspaceContract(unittest.TestCase):
         self.assertTrue(reported["truncated"])
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("DELETE FROM runtime_search WHERE id=?", (lead["id"] + ":turn/diff/updated",))
+            db.execute("DELETE FROM runtime_item_bodies WHERE id=?", (lead["id"] + ":turn/diff/updated",))
         with self.assertRaisesRegex(ValueError, "complete reported changes are unavailable"):
             self.runtime.changes(lead["id"], scope="chat")
 
@@ -626,6 +627,21 @@ class WorkspaceContract(unittest.TestCase):
         self.runtime = ControlledRuntime(self.state, WorkspaceServer)
         self.assertEqual(len(self.runtime.search_work("newneedle")["results"]), 1)
         self.assertEqual(self.runtime.search_work('" OR *')["results"], [])
+
+    def test_search_reports_pending_index_then_returns_complete_snapshot_on_retry(self):
+        lead = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            for index in range(40):
+                self.runtime.item(db, lead["id"], f"fresh-{index}", "assistant", f"freshneedle result {index}", streaming=True)
+        from transcript_storage.storage import drain as real_drain
+        with patch("transcript_storage.storage.drain", side_effect=lambda db, **kwargs: real_drain(db, limit=32, **kwargs)):
+            with self.assertRaisesRegex(ValueError, "Transcript search is indexing"):
+                self.runtime.search_work("freshneedle", lead["id"])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_search_pending").fetchone()[0], 8)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_search WHERE runtime_search MATCH 'freshneedle'").fetchone()[0], 32)
+        results = self.runtime.search_work("freshneedle", lead["id"])["results"]
+        self.assertEqual(len(results), 40)
 
     def test_upload_validation_receipts_and_image_inputs(self):
         lead = self.lead()

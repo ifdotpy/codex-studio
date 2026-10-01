@@ -4,16 +4,15 @@ import sys
 import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_work import WorkMixin
+from transcript_storage.storage import backfill_addresses, index_item, initialize
 
 class SearchIndex(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(':memory:')
         self.db.executescript("""
         CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body);
-        CREATE TABLE runtime_search_indexed (id TEXT PRIMARY KEY);
         """)
-        self.work = WorkMixin()
+        initialize(self.db)
 
     def tearDown(self):
         self.db.close()
@@ -23,34 +22,33 @@ class SearchIndex(unittest.TestCase):
             ((str(n), 'agent', 'assistant', 'original evidence') for n in range(count)))
         self.db.commit()
 
-    def test_migration_updates_restart_and_rollback(self):
+    def test_bounded_address_migration_updates_restart_and_rollback(self):
         self.seed(30)
-        self.work.setup_search_rows(self.db)
-        self.work.setup_search_rows(self.db)
+        self.assertEqual(backfill_addresses(self.db, limit=10), 10)
+        self.assertEqual(backfill_addresses(self.db, limit=10), 10)
+        self.assertEqual(backfill_addresses(self.db, limit=10), 10)
         with self.db:
-            self.work.index_item(self.db, '4', 'agent', 'assistant', 'changed evidence')
-            self.work.index_item(self.db, 'new', 'other', 'assistant', 'new evidence')
+            index_item(self.db, '4', 'agent', 'assistant', 'changed evidence')
+            index_item(self.db, 'new', 'other', 'assistant', 'new evidence')
         self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search').fetchone()[0], 31)
         self.assertEqual(self.db.execute("SELECT id FROM runtime_search WHERE runtime_search MATCH 'changed'").fetchall(), [('4',)])
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search WHERE runtime_search MATCH 'original'").fetchone()[0], 29)
         self.db.execute('BEGIN')
-        self.work.index_item(self.db, '4', 'agent', 'assistant', 'rolledback')
+        index_item(self.db, '4', 'agent', 'assistant', 'rolledback')
         self.db.rollback()
-        self.work.setup_search_rows(self.db)
         with self.db:
-            self.work.index_item(self.db, '4', 'agent', 'assistant', 'durable')
+            index_item(self.db, '4', 'agent', 'assistant', 'durable')
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search WHERE runtime_search MATCH 'rolledback'").fetchone()[0], 0)
         self.assertEqual(self.db.execute("SELECT id FROM runtime_search WHERE runtime_search MATCH 'durable'").fetchall(), [('4',)])
         self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search s JOIN runtime_search_rows r ON s.rowid=r.search_rowid AND s.id=r.id').fetchone()[0], 31)
 
-    def test_failed_migration_leaves_no_partial_table(self):
+    def test_duplicate_legacy_ids_are_cleaned_by_next_update(self):
         self.seed(1)
         self.db.execute("INSERT INTO runtime_search VALUES ('0','agent','assistant','duplicate')")
+        self.db.execute("INSERT INTO runtime_search_indexed VALUES ('0')")
         self.db.commit()
-        with self.assertRaises(sqlite3.IntegrityError):
-            self.work.setup_search_rows(self.db)
-        self.assertIsNone(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone())
-        self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search').fetchone()[0], 2)
+        index_item(self.db, '0', 'agent', 'assistant', 'one current body')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search WHERE id=?', ('0',)).fetchone()[0], 1)
 
 
     def steps(self, callback):
@@ -67,9 +65,10 @@ class SearchIndex(unittest.TestCase):
 
     def test_updates_do_not_scan_history(self):
         self.seed(5000)
-        self.work.setup_search_rows(self.db)
+        while backfill_addresses(self.db, limit=128):
+            pass
         old = self.steps(lambda: self.db.execute('SELECT rowid FROM runtime_search WHERE id=?', ('2500',)).fetchall())
-        new = self.steps(lambda: self.work.index_item(self.db, '2500', 'agent', 'assistant', 'updated evidence'))
+        new = self.steps(lambda: index_item(self.db, '2500', 'agent', 'assistant', 'updated evidence'))
         self.assertLess(new * 10, old, (new, old))
         self.assertEqual(self.db.execute('SELECT count(*) FROM runtime_search WHERE id=?', ('2500',)).fetchone()[0], 1)
         print({'legacyScanSteps': old, 'indexedUpdateSteps': new})
