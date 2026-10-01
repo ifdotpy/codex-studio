@@ -6,7 +6,7 @@ import json
 import math
 import struct
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 import statistics
 
 from codex_budget import budget_capture
@@ -118,6 +118,45 @@ class _ItemTotals:
                 'mean': statistics.mean(values) if values else None,
                 'p50': statistics.median(values) if values else None,
                 'p95': values[max(0, math.ceil(len(values) * .95) - 1)] if values else None}
+
+
+class _UsageTotals:
+    def __init__(self, *, metrics=True):
+        self.metrics = metrics
+        self.count = 0
+        self.exact = 0
+        self.legacy = 0
+        self.baseline_missing = 0
+        self.cache_pairs = 0
+        self.peak_context = None
+        self.peak_percent = None
+        self.deltas = {field: [] for field in TOKEN_FIELDS}
+
+    def add(self, row):
+        self.count += 1
+        for field in TOKEN_FIELDS:
+            value = row['delta'].get(field)
+            if value is not None:
+                self.deltas[field].append(value)
+        if not self.metrics:
+            return
+        self.exact += bool(row.get('responseId'))
+        self.legacy += not row.get('responseId')
+        self.baseline_missing += row['baselineMissing']
+        delta = row['delta']
+        if (number(delta.get('inputTokens')) is not None
+                and number(delta.get('cachedInputTokens')) is not None
+                and delta['cachedInputTokens'] <= delta['inputTokens']):
+            self.cache_pairs += 1
+        context = number(row['last'].get('totalTokens'))
+        if context is not None:
+            self.peak_context = max(self.peak_context, context) if self.peak_context is not None else context
+            if row.get('modelContextWindow'):
+                percent = row['last']['totalTokens'] / row['modelContextWindow'] * 100
+                self.peak_percent = max(self.peak_percent, percent) if self.peak_percent is not None else percent
+
+    def tokens(self):
+        return {field: sum(values) if values else None for field, values in self.deltas.items()}
 
 
 class AnalyticsMixin:
@@ -601,7 +640,6 @@ class AnalyticsMixin:
                 'SELECT record FROM analytics_items' + call_clause + ' ORDER BY at DESC,id'
                 + (' LIMIT ? OFFSET ?' if not export else ''),
                 call_args + ([] if export else [limit, offset]))]
-            usage = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args)]
             # Provisional-vs-authoritative deduplication is local to the selected
             # agent/team. The former global JSON scan touched every usage row on
             # each agent analytics request, despite the scope indexes above.
@@ -614,8 +652,30 @@ class AnalyticsMixin:
             authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute(
                 'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
                 + ' AND '.join(authoritative_where), authoritative_args)}
-            provisional = [r for r in usage if not r.get('responseId') and (r['agentId'], r.get('threadId'), r.get('turnId')) in authoritative_turns]
-            usage = [r for r in usage if r.get('responseId') or (r['agentId'], r.get('threadId'), r.get('turnId')) not in authoritative_turns]
+            usage_totals = _UsageTotals()
+            provisional_count = 0
+            timeline = [] if export else deque(maxlen=500)
+            provisional_rows = [] if export else deque(maxlen=100)
+            usage_agents, usage_turns = set(), set()
+            usage_by_model, usage_by_account, usage_by_agent = {}, {}, {}
+            for raw, in db.execute('SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args):
+                row = json.loads(raw)
+                if not row.get('responseId') and (row['agentId'], row.get('threadId'), row.get('turnId')) in authoritative_turns:
+                    provisional_count += 1
+                    provisional_rows.append(row)
+                    continue
+                usage_totals.add(row)
+                timeline.append(row)
+                usage_agents.add(row['agentId'])
+                if row.get('turnId'):
+                    usage_turns.add((row['agentId'], row['turnId']))
+                for groups, key in ((usage_by_model, row.get('model')),
+                                    (usage_by_account, row.get('accountKey')),
+                                    (usage_by_agent, row['agentId'])):
+                    group = groups.get(key)
+                    if group is None:
+                        group = groups[key] = _UsageTotals(metrics=False)
+                    group.add(row)
             turns_total = db.execute('SELECT COUNT(*) FROM analytics_turns' + clause, args).fetchone()[0]
             turns = [json.loads(row[0]) for row in db.execute(
                 'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC'
@@ -638,9 +698,15 @@ class AnalyticsMixin:
                 if row.get('turnId'):
                     item_turns.add((row['agentId'], row['turnId']))
                 kind = row['type']
-                item_groups.setdefault(kind, _ItemTotals()).add(row)
+                group = item_groups.get(kind)
+                if group is None:
+                    group = item_groups[kind] = _ItemTotals()
+                group.add(row)
                 detail_key = (kind, row.get('payloadBoundary'), row.get('category'), row.get('role'))
-                detailed_item_groups.setdefault(detail_key, _ItemTotals()).add(row)
+                group = detailed_item_groups.get(detail_key)
+                if group is None:
+                    group = detailed_item_groups[detail_key] = _ItemTotals()
+                group.add(row)
                 if kind == 'contextCompaction' and row.get('finishedAt') is not None:
                     compactions.append(row)
                 elif kind == 'compactionSnapshot':
@@ -651,14 +717,21 @@ class AnalyticsMixin:
                         non_tool_items.append(row)
                     continue
                 key = (row['name'], kind)
-                by_tool.setdefault(key, _ItemTotals(duration_samples=True, duration_total=True)).add(row)
+                group = by_tool.get(key)
+                if group is None:
+                    group = by_tool[key] = _ItemTotals(duration_samples=True, duration_total=True)
+                group.add(row)
                 tool_boundaries.setdefault(key, row.get('payloadBoundary', 'protocol'))
                 if tool is not None and row['name'] != tool:
                     continue
                 call_items.add(row)
                 boundary = 'model' if row.get('payloadBoundary') == 'model' else 'protocol'
                 (model_items if boundary == 'model' else protocol_items).add(row)
-                agent_call_items.setdefault((row['agentId'], boundary), _ItemTotals(duration_samples=True)).add(row)
+                agent_key = (row['agentId'], boundary)
+                group = agent_call_items.get(agent_key)
+                if group is None:
+                    group = agent_call_items[agent_key] = _ItemTotals(duration_samples=True)
+                group.add(row)
             relevant_agents = [a for a in agents if scope == 'all' or a['id'] == agent and scope == 'agent' or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
             relevant_ids = {a['id'] for a in relevant_agents}
             agent_ids = sorted(relevant_ids)
@@ -729,41 +802,35 @@ class AnalyticsMixin:
                   'inputMeasurements': rows.input_measurements, 'outputMeasurements': rows.output_measurements, 'duration': durations(rows)}
                  for (name, kind), rows in by_tool.items()]
         tools.sort(key=lambda row: row['outputBytes'] or 0, reverse=True)
-        tokens = {field: nullable_sum(r['delta'].get(field) for r in usage) for field in TOKEN_FIELDS}
-        cache_pairs = [r for r in usage if number(r['delta'].get('inputTokens')) is not None and number(r['delta'].get('cachedInputTokens')) is not None and r['delta']['cachedInputTokens'] <= r['delta']['inputTokens']]
-        contexts = [number(r['last'].get('totalTokens')) for r in usage]
-        percents = [r['last']['totalTokens'] / r['modelContextWindow'] * 100 for r in usage if number(r['last'].get('totalTokens')) is not None and r.get('modelContextWindow')]
+        tokens = usage_totals.tokens()
         native_compaction_turns = {(r['agentId'], r.get('turnId')) for r in compactions}
         compactions += [r for r in snapshots if (r['agentId'], r.get('turnId')) not in native_compaction_turns]
-        selected_ids = item_agent_ids | {r['agentId'] for r in usage}
-        item_turns.update((r['agentId'], r.get('turnId')) for r in usage if r.get('turnId'))
+        selected_ids = item_agent_ids | usage_agents
+        item_turns.update(usage_turns)
         summary = {'agents': len(selected_ids), 'turns': len(item_turns),
-                   'usageSamples': len(usage), 'provisionalUsageSamples': len(provisional), 'exactResponseSamples': sum(bool(r.get('responseId')) for r in usage), 'legacyUsageSamples': sum(not r.get('responseId') for r in usage), 'modelToolCalls': model_items.count, 'protocolToolCalls': protocol_items.count, 'observedToolRows': call_items.count, 'toolCalls': model_items.count, 'failedToolCalls': model_items.failed, 'modelFailedToolCalls': model_items.failed, 'protocolFailedToolCalls': protocol_items.failed,
+                   'usageSamples': usage_totals.count, 'provisionalUsageSamples': provisional_count, 'exactResponseSamples': usage_totals.exact, 'legacyUsageSamples': usage_totals.legacy, 'modelToolCalls': model_items.count, 'protocolToolCalls': protocol_items.count, 'observedToolRows': call_items.count, 'toolCalls': model_items.count, 'failedToolCalls': model_items.failed, 'modelFailedToolCalls': model_items.failed, 'protocolFailedToolCalls': protocol_items.failed,
                    'compactions': len(compactions), 'inputBytes': size(model_items, 'input', 'bytes'), 'outputBytes': size(model_items, 'output', 'bytes'),
                    'modelInputBytes': size(model_items, 'input', 'bytes'), 'modelOutputBytes': size(model_items, 'output', 'bytes'),
                    'protocolInputBytes': size(protocol_items, 'input', 'bytes'), 'protocolOutputBytes': size(protocol_items, 'output', 'bytes'),
                    'durationMs': model_items.duration_total(),
                    'modelDurationMs': model_items.duration_total(),
                    'protocolDurationMs': protocol_items.duration_total(), 'tokens': tokens,
-                   'tokenObservations': {field: sum(r['delta'].get(field) is not None for r in usage) for field in TOKEN_FIELDS},
-                   'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if len(cache_pairs) == len(usage) and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
-                   'cacheHitRateSamples': len(cache_pairs), 'cacheHitRateTotalSamples': len(usage),
-                   'peakContextTokens': max((v for v in contexts if v is not None), default=None),
-                   'peakContextPercent': max(percents, default=None), 'baselineMissingSamples': sum(r['baselineMissing'] for r in usage)}
+                   'tokenObservations': {field: len(usage_totals.deltas[field]) for field in TOKEN_FIELDS},
+                   'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if usage_totals.cache_pairs == usage_totals.count and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
+                   'cacheHitRateSamples': usage_totals.cache_pairs, 'cacheHitRateTotalSamples': usage_totals.count,
+                   'peakContextTokens': usage_totals.peak_context,
+                   'peakContextPercent': usage_totals.peak_percent, 'baselineMissingSamples': usage_totals.baseline_missing}
         def within(value):
             return value is not None and (start is None or value >= start) and (end is None or value <= end)
-        def group_usage(field):
-            groups = defaultdict(list)
-            for sample in usage:
-                groups[sample.get(field)].append(sample)
-            return [{field: key, 'samples': len(rows), 'tokens': {f: nullable_sum(r['delta'].get(f) for r in rows) for f in TOKEN_FIELDS}} for key, rows in groups.items()]
+        def group_usage(field, groups):
+            return [{field: key, 'samples': rows.count, 'tokens': rows.tokens()} for key, rows in groups.items()]
         agent_totals = []
         for entry in relevant_agents:
-            samples = [r for r in usage if r['agentId'] == entry['id']]
+            samples = usage_by_agent.get(entry['id'], _UsageTotals(metrics=False))
             own_model = agent_call_items.get((entry['id'], 'model'), _ItemTotals(duration_samples=True))
             own_protocol = agent_call_items.get((entry['id'], 'protocol'), _ItemTotals(duration_samples=True))
-            agent_totals.append({**entry, 'tokens': {field: nullable_sum(r['delta'].get(field) for r in samples) for field in TOKEN_FIELDS},
-                                'usageSamples': len(samples), 'toolCalls': own_model.count, 'modelToolCalls': own_model.count, 'protocolToolCalls': own_protocol.count,
+            agent_totals.append({**entry, 'tokens': samples.tokens(),
+                                'usageSamples': samples.count, 'toolCalls': own_model.count, 'modelToolCalls': own_model.count, 'protocolToolCalls': own_protocol.count,
                                 'failedToolCalls': own_model.failed, 'protocolFailedToolCalls': own_protocol.failed,
                                 'compactions': sum(r['agentId'] == entry['id'] for r in compactions), 'duration': durations(own_model), 'protocolDuration': durations(own_protocol)})
         monitors = [{k: m.get(k) for k in ('id', 'agent', 'status', 'created', 'finished', 'bytes', 'exitCode', 'error', 'timeout_ms')}
@@ -775,7 +842,7 @@ class AnalyticsMixin:
         approvals = [r for r in operational['requests'] if r.get('agent') in relevant_ids]
         notifications = [r for r in notification_rows if r['agent'] in relevant_ids and (start is None or r['hour'] + 3600 > start) and (end is None or r['hour'] <= end)]
         result = {'version': 1, 'generatedAt': time.time(), 'filters': {'agent': agent, 'scope': scope, 'from': start, 'to': end, 'tool': tool},
-                'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': len(provisional), 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
+                'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': provisional_count, 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
                              'history': 'live_and_stored_history', 'notes': [
                                  'Tool filters affect tool calls only. Provider usage is scoped to the selected agents and time.',
                                  'Item date filters use start time when known, otherwise completion time or the first observation. History can establish an earlier start.',
@@ -790,12 +857,12 @@ class AnalyticsMixin:
                                  'Model and native tool calls, failures, and durations are separate populations. Main aliases describe model calls only.',
                                  'Duration sums include parallel calls and are not elapsed session time. Missing measurements remain null.']},
                 'summary': summary, 'agents': relevant_agents, 'agentTotals': agent_totals, 'tools': tools,
-                'modelTotals': group_usage('model'), 'accountTotals': group_usage('accountKey'),
+                'modelTotals': group_usage('model', usage_by_model), 'accountTotals': group_usage('accountKey', usage_by_account),
                 'operations': {'monitors': monitors, 'eventCounts': dict(counts),
                                'approvalCounts': {status: sum(r.get('status') == status for r in approvals) for status in {r.get('status') for r in approvals}}},
                 'notifications': notifications, 'history': [r for r in history if not r.get('agent') and not r.get('agentId') or r.get('agent') in relevant_ids or r.get('agentId') in relevant_ids],
                 'rateLimits': [{'accountKey': r['account'], 'at': r['at'], 'data': json.loads(r['record'])} for r in limit_rows if r['account'] in account_keys and within(r['at'])],
-                'turns': turns, 'timeline': usage if export else usage[-500:], 'timelineTotal': len(usage), 'provisionalUsage': provisional if export else provisional[-100:],
+                'turns': turns, 'timeline': list(timeline), 'timelineTotal': usage_totals.count, 'provisionalUsage': list(provisional_rows),
                 'calls': calls_page,
                 'items': [{'type': kind, 'count': rows.count, 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],
