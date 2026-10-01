@@ -222,9 +222,22 @@ try {
   assert.equal(await count("waiting"), 16);
   assert.equal(await count("stopped"), 1);
   assert.equal(await count("attention"), 1);
+  assert.deepEqual(await summary.locator("dt").allInnerTexts(), [
+    "Need you",
+    "Failed",
+    "Working",
+    "Waiting",
+    "Stopped",
+    "Finished",
+  ]);
   assert.deepEqual(
-    await summary.locator("dt").allInnerTexts(),
-    ["Need you", "Failed", "Working", "Waiting", "Stopped", "Finished"],
+    await team
+      .locator("#workers .team-status-group")
+      .evaluateAll((groups) =>
+        groups.map((group) => group.getAttribute("aria-label")),
+      ),
+    ["Working", "Need you", "Failed", "Waiting", "Stopped"],
+    "grouped panel puts Working first and keeps Need you visible",
   );
   for (const name of ["Need you", "Failed"])
     assert.equal(
@@ -350,9 +363,7 @@ try {
       exact: true,
     })
     .click();
-  await page
-    .getByRole("menuitem", { name: "Delete", exact: true })
-    .click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
   const [deletedResponse] = await Promise.all([
     page.waitForResponse(
       (response) =>
