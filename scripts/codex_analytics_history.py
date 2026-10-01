@@ -13,6 +13,7 @@ import time
 import uuid
 
 from analytics.rollout_parser import rollout_actions
+from codex_analytics import event_payload_measurements, model_payload_measurements
 from codex_budget import budget_capture
 
 
@@ -402,19 +403,24 @@ class AnalyticsHistoryMixin:
                     if record is not None:
                         identity_key = hashlib.sha256((key + ":" + str(state["identity"]) + ":" + str(offset)).encode()).hexdigest()
                         for action in rollout_actions(record, context, identity_key, info.st_mtime):
-                            collected.append((action, dict(context)))
+                            kind, method, p, at = action
+                            measurements = (event_payload_measurements(method, p) if kind == 'event'
+                                            else model_payload_measurements(p) if kind == 'payload' else None)
+                            collected.append((action, dict(context), measurements))
                 with self.lock, self.db() as db:
                     current = self.agent(a["id"], db)
                     if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
                         return False
-                    for (action, method, p, at), event_context in collected:
+                    for (action, method, p, at), event_context, measurements in collected:
                         event_agent = {**a, "turnId": event_context.get("turnId"),
                                        "model": event_context.get("model"), "effort": event_context.get("effort")}
                         if action == "event":
-                            self.analytics_event(db, event_agent, method, p, at=at, source="rollout")
+                            self.analytics_event(db, event_agent, method, p, at=at, source="rollout",
+                                                 measurements=measurements)
                         elif action == "payload":
                             self.analytics_model_payload(db, event_agent, p, at=at,
-                                turn_id=p.get("_analyticsTurnId"), source="rollout")
+                                turn_id=p.get("_analyticsTurnId"), source="rollout",
+                                measurements=measurements)
                         elif action == "coverage":
                             state[method] = state.get(method, 0) + 1
                     state.update(offset=next_offset, importedRecords=state["importedRecords"] + len(records),

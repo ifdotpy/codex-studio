@@ -2,7 +2,7 @@
 // Isolated HTTP fixture and deterministic analytics responses. No model calls.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -449,8 +449,11 @@ try {
   const file = await downloaded;
   const path = join(root, "export.json");
   await file.saveAs(path);
-  assert.equal(observed.at(-1).export, "1");
-  assert.equal(observed.at(-1).tool, longName);
+  const exported = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(exported.filters.scope, "team");
+  assert.equal(exported.filters.tool, longName);
+  assert.ok(exported.filters.from > now - 86410);
+  assert.equal(exported.pagination.hasMore, false);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: join(root, "resize-390.png") });
   await dialog.locator(".analytics-call-row").first().click();

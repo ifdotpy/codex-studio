@@ -6,7 +6,8 @@ import json
 import math
 import struct
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
+from contextlib import nullcontext
 import statistics
 
 from codex_budget import budget_capture
@@ -69,9 +70,170 @@ def payload_size(value):
     return result
 
 
+def item_payload_values(kind, item):
+    input_value = item.get('arguments', item.get('command', item.get('query')))
+    output_value = item.get('aggregatedOutput', item.get('contentItems', item.get('result')))
+    if kind == 'fileChange':
+        output_value = item.get('changes')
+    elif kind == 'userMessage':
+        input_value = item.get('content')
+    elif kind == 'agentMessage':
+        output_value = item.get('text')
+    elif kind == 'reasoning':
+        output_value = {k: item[k] for k in ('summary', 'content', 'text') if k in item} or None
+    return input_value, output_value
+
+
+def event_payload_measurements(method, p):
+    """Measure rollout payloads before the importer takes the runtime lock."""
+    item = p.get('item') or {}
+    if not item and not p.get('itemId'):
+        return {}
+    if method in {'item/started', 'item/completed'}:
+        if not item.get('type'):
+            return None
+        input_value, output_value = item_payload_values(item.get('type'), item)
+        return {'input': payload_size(input_value) if input_value is not None else None,
+                'output': payload_size(output_value) if output_value is not None else None}
+    delta = p.get('delta')
+    if isinstance(delta, str) and (method.endswith('Delta') or method.endswith('/delta')):
+        return {'stream': payload_size(delta)}
+    return {}
+
+
+def model_payload_measurements(p):
+    kind = p.get('type', 'unknown')
+    if kind in {'function_call', 'custom_tool_call', 'tool_call'}:
+        return {'input': payload_size(p.get('arguments', p.get('input')))}
+    if kind in {'function_call_output', 'custom_tool_call_output', 'tool_result'}:
+        return {'output': payload_size(p.get('output', p.get('content')))}
+    direction = 'input' if p.get('role') in {'user', 'system', 'developer'} else 'output'
+    return {direction: payload_size(p.get('content', p.get('summary')))}
+
+
 def nullable_sum(values):
     known = [n for n in values if n is not None]
     return sum(known) if known else None
+
+
+class _ItemTotals:
+    def __init__(self, *, duration_samples=False, duration_total=False):
+        self.count = 0
+        self.failed = 0
+        self.values = {}
+        self.input_measurements = 0
+        self.output_measurements = 0
+        self.durations = [] if duration_samples else None
+        self.duration_values = [] if duration_total else None
+
+    def add(self, row):
+        self.count += 1
+        self.failed += row.get('status') == 'failed'
+        for direction in ('input', 'output'):
+            payload = row.get(direction)
+            if payload is not None:
+                if direction == 'input':
+                    self.input_measurements += 1
+                else:
+                    self.output_measurements += 1
+            for key in ('bytes', 'chars', 'imageCount'):
+                value = (payload or {}).get(key)
+                if value is not None:
+                    slot = (direction, key)
+                    self.values[slot] = self.values.get(slot, 0) + value
+        duration = row.get('durationMs')
+        if self.duration_values is not None and duration is not None:
+            self.duration_values.append(duration)
+        if self.durations is not None and number(duration) is not None:
+            self.durations.append(duration)
+
+    def size(self, direction, key):
+        return self.values.get((direction, key))
+
+    def duration_total(self):
+        return sum(self.duration_values) if self.duration_values else None
+
+    def duration(self):
+        values = sorted(self.durations)
+        return {'count': len(values), 'min': min(values) if values else None,
+                'max': max(values) if values else None,
+                'mean': statistics.mean(values) if values else None,
+                'p50': statistics.median(values) if values else None,
+                'p95': values[max(0, math.ceil(len(values) * .95) - 1)] if values else None}
+
+
+class _UsageTotals:
+    def __init__(self, *, metrics=True):
+        self.metrics = metrics
+        self.count = 0
+        self.exact = 0
+        self.legacy = 0
+        self.baseline_missing = 0
+        self.cache_pairs = 0
+        self.peak_context = None
+        self.peak_percent = None
+        self.deltas = {field: [] for field in TOKEN_FIELDS}
+
+    def add(self, row):
+        self.count += 1
+        for field in TOKEN_FIELDS:
+            value = row['delta'].get(field)
+            if value is not None:
+                self.deltas[field].append(value)
+        if not self.metrics:
+            return
+        self.exact += bool(row.get('responseId'))
+        self.legacy += not row.get('responseId')
+        self.baseline_missing += row['baselineMissing']
+        delta = row['delta']
+        if (number(delta.get('inputTokens')) is not None
+                and number(delta.get('cachedInputTokens')) is not None
+                and delta['cachedInputTokens'] <= delta['inputTokens']):
+            self.cache_pairs += 1
+        context = number(row['last'].get('totalTokens'))
+        if context is not None:
+            self.peak_context = max(self.peak_context, context) if self.peak_context is not None else context
+            if row.get('modelContextWindow'):
+                percent = row['last']['totalTokens'] / row['modelContextWindow'] * 100
+                self.peak_percent = max(self.peak_percent, percent) if self.peak_percent is not None else percent
+
+    def tokens(self):
+        return {field: sum(values) if values else None for field, values in self.deltas.items()}
+
+
+class _ContextBuckets:
+    def __init__(self, limit=500):
+        self.limit = limit
+        self.width = 3600
+        self.points = {}
+
+    @staticmethod
+    def percent(row):
+        last = number(row.get('last', {}).get('totalTokens'))
+        window = number(row.get('modelContextWindow'))
+        return last / window if last is not None and window else None
+
+    def add(self, row):
+        percent = self.percent(row)
+        at = number(row.get('at'))
+        if percent is None or at is None:
+            return
+        bucket = int(at // self.width)
+        previous = self.points.get(bucket)
+        if previous is None or percent > self.percent(previous):
+            self.points[bucket] = row
+        while len(self.points) > self.limit:
+            self.width *= 2
+            compacted = {}
+            for point in self.points.values():
+                key = int(point['at'] // self.width)
+                old = compacted.get(key)
+                if old is None or self.percent(point) > self.percent(old):
+                    compacted[key] = point
+            self.points = compacted
+
+    def rows(self):
+        return sorted(self.points.values(), key=lambda row: row['at'])
 
 
 class AnalyticsMixin:
@@ -165,7 +327,7 @@ class AnalyticsMixin:
                 'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
                 'daybreakEnabled': a.get('daybreakEnabled'), 'cyberAccessProgram': a.get('cyberAccessProgram')}
 
-    def analytics_event(self, db, a, method, p, *, at=None, source='live'):
+    def analytics_event(self, db, a, method, p, *, at=None, source='live', measurements=None):
         at = time.time() if at is None else at
         meta = self.analytics_agent(db, a)
         if source != 'live':
@@ -304,7 +466,7 @@ class AnalyticsMixin:
             if not isinstance(delta, str):
                 return
             # Increment counters only. A final authoritative payload replaces these.
-            size = payload_size(delta)
+            size = measurements['stream'] if measurements is not None and 'stream' in measurements else payload_size(delta)
             stream = record.get('stream') or {'bytes': 0, 'chars': 0, 'lines': 0, 'deltas': 0}
             for field in ('bytes', 'chars', 'lines'):
                 stream[field] += size[field] if field != 'lines' else delta.count('\n')
@@ -345,20 +507,11 @@ class AnalyticsMixin:
             supplied = number(item.get('durationMs'))
             record['durationMs'] = supplied if supplied is not None else (max(0, (record['finishedAt'] - record['startedAt']) * 1000) if method == 'item/completed' and record.get('startedAt') is not None else None)
             record['durationSource'] = 'provider' if supplied is not None else 'observed_wall_time' if record['durationMs'] is not None else None
-            input_value = item.get('arguments', item.get('command', item.get('query')))
-            output_value = item.get('aggregatedOutput', item.get('contentItems', item.get('result')))
-            if kind == 'fileChange':
-                output_value = item.get('changes')
-            elif kind == 'userMessage':
-                input_value = item.get('content')
-            elif kind == 'agentMessage':
-                output_value = item.get('text')
-            elif kind == 'reasoning':
-                output_value = {k: item[k] for k in ('summary', 'content', 'text') if k in item} or None
+            input_value, output_value = item_payload_values(kind, item)
             if input_value is not None:
-                record['input'] = payload_size(input_value)
+                record['input'] = measurements['input'] if measurements is not None else payload_size(input_value)
             if output_value is not None:
-                record['output'] = payload_size(output_value)
+                record['output'] = measurements['output'] if measurements is not None else payload_size(output_value)
             record['coverage'] = 'protocol_payload' if source == 'live' else source
             record['payloadTruncated'] = item.get('outputTruncated')
         self.analytics_store_item(db, record)
@@ -379,7 +532,7 @@ class AnalyticsMixin:
         params = {**p, 'item': {'id': item_id, 'type': 'dynamicToolCall', 'tool': p.get('tool'), 'arguments': p.get('arguments'), **result}}
         self.analytics_event(db, a, 'item/completed', params, at=at, source=source)
 
-    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source='rollout'):
+    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source='rollout', measurements=None):
         at = time.time() if at is None else at
         kind = p.get('type', 'unknown')
         outputs = {'function_call_output', 'custom_tool_call_output', 'tool_result'}
@@ -402,17 +555,17 @@ class AnalyticsMixin:
             record['name'] = (p['namespace'] + '.' if p.get('namespace') else '') + p['name']
             record['namespace'] = p.get('namespace')
         if kind in inputs:
-            record['input'] = record['modelInput'] = payload_size(p.get('arguments', p.get('input')))
+            record['input'] = record['modelInput'] = (measurements['input'] if measurements is not None else payload_size(p.get('arguments', p.get('input'))))
             record['startedAt'] = at
             record['status'] = 'completed' if record.get('finishedAt') is not None else 'running'
         elif kind in outputs:
-            record['output'] = record['modelOutput'] = payload_size(p.get('output', p.get('content')))
+            record['output'] = record['modelOutput'] = (measurements['output'] if measurements is not None else payload_size(p.get('output', p.get('content'))))
             record['finishedAt'] = at
             record['status'] = 'failed' if p.get('is_error') is True else 'completed'
         else:
             direction = 'input' if p.get('role') in {'user', 'system', 'developer'} else 'output'
             # Never retain hidden reasoning text. Sizes only, if the provider exposes a payload.
-            record[direction] = payload_size(p.get('content', p.get('summary')))
+            record[direction] = (measurements[direction] if measurements is not None else payload_size(p.get('content', p.get('summary'))))
             record['status'] = 'completed'
             record['finishedAt'] = at
         if record.get('startedAt') is not None and record.get('finishedAt') is not None:
@@ -499,6 +652,9 @@ class AnalyticsMixin:
                                              'hasMore': offset + len(page) < total}}
 
     def analytics(self, agent=None, scope='agent', **options):
+        shared_db = options.pop('_db', None)
+        if shared_db is not None and not hasattr(shared_db, 'execute'):
+            raise ValueError('Invalid analytics database')
         timing = options.get('timing') == '1'
         request_started = time.perf_counter() if timing else None
         if scope not in {'agent', 'team', 'all'}:
@@ -528,8 +684,9 @@ class AnalyticsMixin:
         export = str(options.get('export', '0')) == '1'
         tool = options.get('tool') or None
         read_started = time.perf_counter() if timing else None
-        with self.db() as db:
-            db.execute('BEGIN')
+        with (nullcontext(shared_db) if shared_db is not None else self.db()) as db:
+            if not db.in_transaction:
+                db.execute('BEGIN')
             agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
             selected = next((a for a in agents if a['id'] == agent), None)
             if scope != 'all' and not selected:
@@ -555,7 +712,6 @@ class AnalyticsMixin:
                 'SELECT record FROM analytics_items' + call_clause + ' ORDER BY at DESC,id'
                 + (' LIMIT ? OFFSET ?' if not export else ''),
                 call_args + ([] if export else [limit, offset]))]
-            usage = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args)]
             # Provisional-vs-authoritative deduplication is local to the selected
             # agent/team. The former global JSON scan touched every usage row on
             # each agent analytics request, despite the scope indexes above.
@@ -568,14 +724,88 @@ class AnalyticsMixin:
             authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute(
                 'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
                 + ' AND '.join(authoritative_where), authoritative_args)}
-            provisional = [r for r in usage if not r.get('responseId') and (r['agentId'], r.get('threadId'), r.get('turnId')) in authoritative_turns]
-            usage = [r for r in usage if r.get('responseId') or (r['agentId'], r.get('threadId'), r.get('turnId')) not in authoritative_turns]
+            usage_totals = _UsageTotals()
+            chart_buckets = _ContextBuckets()
+            provisional_count = 0
+            timeline = [] if export else deque(maxlen=500)
+            provisional_rows = [] if export else deque(maxlen=100)
+            usage_agents, usage_turns = set(), set()
+            usage_by_model, usage_by_account, usage_by_agent = {}, {}, {}
+            for raw, in db.execute('SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args):
+                row = json.loads(raw)
+                if not row.get('responseId') and (row['agentId'], row.get('threadId'), row.get('turnId')) in authoritative_turns:
+                    provisional_count += 1
+                    provisional_rows.append(row)
+                    continue
+                usage_totals.add(row)
+                chart_buckets.add(row)
+                timeline.append(row)
+                usage_agents.add(row['agentId'])
+                if row.get('turnId'):
+                    usage_turns.add((row['agentId'], row['turnId']))
+                for groups, key in ((usage_by_model, row.get('model')),
+                                    (usage_by_account, row.get('accountKey')),
+                                    (usage_by_agent, row['agentId'])):
+                    group = groups.get(key)
+                    if group is None:
+                        group = groups[key] = _UsageTotals(metrics=False)
+                    group.add(row)
             turns_total = db.execute('SELECT COUNT(*) FROM analytics_turns' + clause, args).fetchone()[0]
             turns = [json.loads(row[0]) for row in db.execute(
                 'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC'
                 + (' LIMIT ? OFFSET ?' if not export else ''),
                 args + ([] if export else [100, 0]))]
-            records = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_items' + clause + ' ORDER BY at DESC,id', args)]
+            item_groups = {}
+            detailed_item_groups = {}
+            by_tool = {}
+            tool_boundaries = {}
+            model_items = _ItemTotals(duration_total=True)
+            protocol_items = _ItemTotals(duration_total=True)
+            call_items = _ItemTotals()
+            agent_call_items = {}
+            item_agent_ids, item_turns = set(), set()
+            non_tool_items, non_tool_total = [], 0
+            compactions, snapshots = [], []
+            for raw, in db.execute('SELECT record FROM analytics_items' + clause + ' ORDER BY at DESC,id', args):
+                row = json.loads(raw)
+                item_agent_ids.add(row['agentId'])
+                if row.get('turnId'):
+                    item_turns.add((row['agentId'], row['turnId']))
+                kind = row['type']
+                group = item_groups.get(kind)
+                if group is None:
+                    group = item_groups[kind] = _ItemTotals()
+                group.add(row)
+                detail_key = (kind, row.get('payloadBoundary'), row.get('category'), row.get('role'))
+                group = detailed_item_groups.get(detail_key)
+                if group is None:
+                    group = detailed_item_groups[detail_key] = _ItemTotals()
+                group.add(row)
+                if kind == 'contextCompaction' and row.get('finishedAt') is not None:
+                    compactions.append(row)
+                elif kind == 'compactionSnapshot':
+                    snapshots.append(row)
+                if not row['isTool']:
+                    non_tool_total += 1
+                    if export or len(non_tool_items) < 100:
+                        non_tool_items.append(row)
+                    continue
+                key = (row['name'], kind)
+                group = by_tool.get(key)
+                if group is None:
+                    group = by_tool[key] = _ItemTotals(duration_samples=True, duration_total=True)
+                group.add(row)
+                tool_boundaries.setdefault(key, row.get('payloadBoundary', 'protocol'))
+                if tool is not None and row['name'] != tool:
+                    continue
+                call_items.add(row)
+                boundary = 'model' if row.get('payloadBoundary') == 'model' else 'protocol'
+                (model_items if boundary == 'model' else protocol_items).add(row)
+                agent_key = (row['agentId'], boundary)
+                group = agent_call_items.get(agent_key)
+                if group is None:
+                    group = agent_call_items[agent_key] = _ItemTotals(duration_samples=True)
+                group.add(row)
             relevant_agents = [a for a in agents if scope == 'all' or a['id'] == agent and scope == 'agent' or scope == 'team' and (a.get('rootId') or a['id']) == (selected.get('rootId') or agent)]
             relevant_ids = {a['id'] for a in relevant_agents}
             agent_ids = sorted(relevant_ids)
@@ -633,75 +863,49 @@ class AnalyticsMixin:
             tracking = float(db.execute("SELECT value FROM analytics_meta WHERE key='trackingSince'").fetchone()[0])
         read_ms = (time.perf_counter() - read_started) * 1000 if timing else None
         build_started = time.perf_counter() if timing else None
-        all_calls = [r for r in records if r['isTool']]
-        model_calls = [r for r in all_calls if r.get('payloadBoundary') == 'model' and (tool is None or r['name'] == tool)]
-        protocol_calls = [r for r in all_calls if r.get('payloadBoundary') != 'model' and (tool is None or r['name'] == tool)]
-        calls = [r for r in all_calls if tool is None or r['name'] == tool]
-        by_tool = defaultdict(list)
-        for call in all_calls:
-            by_tool[(call['name'], call['type'])].append(call)
         def size(rows, direction, key):
-            return nullable_sum((r.get(direction) or {}).get(key) for r in rows)
+            return rows.size(direction, key)
         def durations(rows):
-            values = sorted(r['durationMs'] for r in rows if number(r.get('durationMs')) is not None)
-            return {'count': len(values), 'min': min(values) if values else None, 'max': max(values) if values else None,
-                    'mean': statistics.mean(values) if values else None,
-                    'p50': statistics.median(values) if values else None,
-                    'p95': values[max(0, math.ceil(len(values) * .95) - 1)] if values else None}
-        tools = [{'name': name, 'type': kind, 'payloadBoundary': rows[0].get('payloadBoundary', 'protocol'), 'calls': len(rows), 'failed': sum(r['status'] == 'failed' for r in rows),
+            return rows.duration()
+        tools = [{'name': name, 'type': kind, 'payloadBoundary': tool_boundaries[(name, kind)], 'calls': rows.count, 'failed': rows.failed,
                   'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'),
                   'modelInputBytes': size(rows, 'input', 'bytes') if kind == 'modelToolCall' else None,
                   'modelOutputBytes': size(rows, 'output', 'bytes') if kind == 'modelToolCall' else None,
-                  'durationMs': nullable_sum(r.get('durationMs') for r in rows),
+                  'durationMs': rows.duration_total(),
                   'imageCount': nullable_sum([size(rows, 'input', 'imageCount'), size(rows, 'output', 'imageCount')]),
-                  'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows), 'duration': durations(rows)}
+                  'inputMeasurements': rows.input_measurements, 'outputMeasurements': rows.output_measurements, 'duration': durations(rows)}
                  for (name, kind), rows in by_tool.items()]
         tools.sort(key=lambda row: row['outputBytes'] or 0, reverse=True)
-        tokens = {field: nullable_sum(r['delta'].get(field) for r in usage) for field in TOKEN_FIELDS}
-        cache_pairs = [r for r in usage if number(r['delta'].get('inputTokens')) is not None and number(r['delta'].get('cachedInputTokens')) is not None and r['delta']['cachedInputTokens'] <= r['delta']['inputTokens']]
-        contexts = [number(r['last'].get('totalTokens')) for r in usage]
-        percents = [r['last']['totalTokens'] / r['modelContextWindow'] * 100 for r in usage if number(r['last'].get('totalTokens')) is not None and r.get('modelContextWindow')]
-        compactions = [r for r in records if r['type'] == 'contextCompaction' and r.get('finishedAt') is not None]
-        snapshots = [r for r in records if r['type'] == 'compactionSnapshot']
+        tokens = usage_totals.tokens()
         native_compaction_turns = {(r['agentId'], r.get('turnId')) for r in compactions}
         compactions += [r for r in snapshots if (r['agentId'], r.get('turnId')) not in native_compaction_turns]
-        item_groups = defaultdict(list)
-        for r in records:
-            item_groups[r['type']].append(r)
-        detailed_item_groups = defaultdict(list)
-        for r in records:
-            detailed_item_groups[(r['type'], r.get('payloadBoundary'), r.get('category'), r.get('role'))].append(r)
-        non_tool_items = [r for r in records if not r['isTool']]
-        selected_ids = {r['agentId'] for r in records + usage}
-        summary = {'agents': len(selected_ids), 'turns': len({(r['agentId'], r.get('turnId')) for r in records + usage if r.get('turnId')}),
-                   'usageSamples': len(usage), 'provisionalUsageSamples': len(provisional), 'exactResponseSamples': sum(bool(r.get('responseId')) for r in usage), 'legacyUsageSamples': sum(not r.get('responseId') for r in usage), 'modelToolCalls': len(model_calls), 'protocolToolCalls': len(protocol_calls), 'observedToolRows': len(calls), 'toolCalls': len(model_calls), 'failedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'modelFailedToolCalls': sum(r['status'] == 'failed' for r in model_calls), 'protocolFailedToolCalls': sum(r['status'] == 'failed' for r in protocol_calls),
-                   'compactions': len(compactions), 'inputBytes': size(model_calls, 'input', 'bytes'), 'outputBytes': size(model_calls, 'output', 'bytes'),
-                   'modelInputBytes': size(model_calls, 'input', 'bytes'), 'modelOutputBytes': size(model_calls, 'output', 'bytes'),
-                   'protocolInputBytes': size(protocol_calls, 'input', 'bytes'), 'protocolOutputBytes': size(protocol_calls, 'output', 'bytes'),
-                   'durationMs': nullable_sum(r.get('durationMs') for r in model_calls),
-                   'modelDurationMs': nullable_sum(r.get('durationMs') for r in model_calls),
-                   'protocolDurationMs': nullable_sum(r.get('durationMs') for r in protocol_calls), 'tokens': tokens,
-                   'tokenObservations': {field: sum(r['delta'].get(field) is not None for r in usage) for field in TOKEN_FIELDS},
-                   'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if len(cache_pairs) == len(usage) and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
-                   'cacheHitRateSamples': len(cache_pairs), 'cacheHitRateTotalSamples': len(usage),
-                   'peakContextTokens': max((v for v in contexts if v is not None), default=None),
-                   'peakContextPercent': max(percents, default=None), 'baselineMissingSamples': sum(r['baselineMissing'] for r in usage)}
+        selected_ids = item_agent_ids | usage_agents
+        item_turns.update(usage_turns)
+        summary = {'agents': len(selected_ids), 'turns': len(item_turns),
+                   'usageSamples': usage_totals.count, 'provisionalUsageSamples': provisional_count, 'exactResponseSamples': usage_totals.exact, 'legacyUsageSamples': usage_totals.legacy, 'modelToolCalls': model_items.count, 'protocolToolCalls': protocol_items.count, 'observedToolRows': call_items.count, 'toolCalls': model_items.count, 'failedToolCalls': model_items.failed, 'modelFailedToolCalls': model_items.failed, 'protocolFailedToolCalls': protocol_items.failed,
+                   'compactions': len(compactions), 'inputBytes': size(model_items, 'input', 'bytes'), 'outputBytes': size(model_items, 'output', 'bytes'),
+                   'modelInputBytes': size(model_items, 'input', 'bytes'), 'modelOutputBytes': size(model_items, 'output', 'bytes'),
+                   'protocolInputBytes': size(protocol_items, 'input', 'bytes'), 'protocolOutputBytes': size(protocol_items, 'output', 'bytes'),
+                   'durationMs': model_items.duration_total(),
+                   'modelDurationMs': model_items.duration_total(),
+                   'protocolDurationMs': protocol_items.duration_total(), 'tokens': tokens,
+                   'tokenObservations': {field: len(usage_totals.deltas[field]) for field in TOKEN_FIELDS},
+                   'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if usage_totals.cache_pairs == usage_totals.count and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
+                   'cacheHitRateSamples': usage_totals.cache_pairs, 'cacheHitRateTotalSamples': usage_totals.count,
+                   'peakContextTokens': usage_totals.peak_context,
+                   'peakContextPercent': usage_totals.peak_percent, 'baselineMissingSamples': usage_totals.baseline_missing}
         def within(value):
             return value is not None and (start is None or value >= start) and (end is None or value <= end)
-        def group_usage(field):
-            groups = defaultdict(list)
-            for sample in usage:
-                groups[sample.get(field)].append(sample)
-            return [{field: key, 'samples': len(rows), 'tokens': {f: nullable_sum(r['delta'].get(f) for r in rows) for f in TOKEN_FIELDS}} for key, rows in groups.items()]
+        def group_usage(field, groups):
+            return [{field: key, 'samples': rows.count, 'tokens': rows.tokens()} for key, rows in groups.items()]
         agent_totals = []
         for entry in relevant_agents:
-            samples = [r for r in usage if r['agentId'] == entry['id']]
-            own_calls = [r for r in calls if r['agentId'] == entry['id']]
-            own_model = [r for r in own_calls if r.get('payloadBoundary') == 'model']
-            own_protocol = [r for r in own_calls if r.get('payloadBoundary') != 'model']
-            agent_totals.append({**entry, 'tokens': {field: nullable_sum(r['delta'].get(field) for r in samples) for field in TOKEN_FIELDS},
-                                'usageSamples': len(samples), 'toolCalls': len(own_model), 'modelToolCalls': len(own_model), 'protocolToolCalls': len(own_protocol),
-                                'failedToolCalls': sum(r['status'] == 'failed' for r in own_model), 'protocolFailedToolCalls': sum(r['status'] == 'failed' for r in own_protocol),
+            samples = usage_by_agent.get(entry['id'], _UsageTotals(metrics=False))
+            own_model = agent_call_items.get((entry['id'], 'model'), _ItemTotals(duration_samples=True))
+            own_protocol = agent_call_items.get((entry['id'], 'protocol'), _ItemTotals(duration_samples=True))
+            agent_totals.append({**entry, 'tokens': samples.tokens(),
+                                'usageSamples': samples.count, 'toolCalls': own_model.count, 'modelToolCalls': own_model.count, 'protocolToolCalls': own_protocol.count,
+                                'failedToolCalls': own_model.failed, 'protocolFailedToolCalls': own_protocol.failed,
                                 'compactions': sum(r['agentId'] == entry['id'] for r in compactions), 'duration': durations(own_model), 'protocolDuration': durations(own_protocol)})
         monitors = [{k: m.get(k) for k in ('id', 'agent', 'status', 'created', 'finished', 'bytes', 'exitCode', 'error', 'timeout_ms')}
                     for m in operational['monitors'] if m.get('agent') in relevant_ids and within(m.get('created'))]
@@ -712,7 +916,7 @@ class AnalyticsMixin:
         approvals = [r for r in operational['requests'] if r.get('agent') in relevant_ids]
         notifications = [r for r in notification_rows if r['agent'] in relevant_ids and (start is None or r['hour'] + 3600 > start) and (end is None or r['hour'] <= end)]
         result = {'version': 1, 'generatedAt': time.time(), 'filters': {'agent': agent, 'scope': scope, 'from': start, 'to': end, 'tool': tool},
-                'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': len(provisional), 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
+                'coverage': {'trackingSince': tracking, 'captureErrors': capture_error, 'historyErrors': [r for r in history if r.get('status') == 'error'], 'provisionalUsageSamples': provisional_count, 'tokenAttribution': 'provider_usage_only', 'payloadMeasurement': 'observed_protocol_payload',
                              'history': 'live_and_stored_history', 'notes': [
                                  'Tool filters affect tool calls only. Provider usage is scoped to the selected agents and time.',
                                  'Item date filters use start time when known, otherwise completion time or the first observation. History can establish an earlier start.',
@@ -727,17 +931,18 @@ class AnalyticsMixin:
                                  'Model and native tool calls, failures, and durations are separate populations. Main aliases describe model calls only.',
                                  'Duration sums include parallel calls and are not elapsed session time. Missing measurements remain null.']},
                 'summary': summary, 'agents': relevant_agents, 'agentTotals': agent_totals, 'tools': tools,
-                'modelTotals': group_usage('model'), 'accountTotals': group_usage('accountKey'),
+                'modelTotals': group_usage('model', usage_by_model), 'accountTotals': group_usage('accountKey', usage_by_account),
                 'operations': {'monitors': monitors, 'eventCounts': dict(counts),
                                'approvalCounts': {status: sum(r.get('status') == status for r in approvals) for status in {r.get('status') for r in approvals}}},
                 'notifications': notifications, 'history': [r for r in history if not r.get('agent') and not r.get('agentId') or r.get('agent') in relevant_ids or r.get('agentId') in relevant_ids],
                 'rateLimits': [{'accountKey': r['account'], 'at': r['at'], 'data': json.loads(r['record'])} for r in limit_rows if r['account'] in account_keys and within(r['at'])],
-                'turns': turns, 'timeline': usage if export else usage[-500:], 'timelineTotal': len(usage), 'provisionalUsage': provisional if export else provisional[-100:],
+                'turns': turns, 'timeline': list(timeline), 'chartBuckets': chart_buckets.rows(),
+                'timelineTotal': usage_totals.count, 'provisionalUsage': list(provisional_rows),
                 'calls': calls_page,
-                'items': [{'type': kind, 'count': len(rows), 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
+                'items': [{'type': kind, 'count': rows.count, 'bytes': nullable_sum([size(rows, 'input', 'bytes'), size(rows, 'output', 'bytes')]),
                            'chars': nullable_sum([size(rows, 'input', 'chars'), size(rows, 'output', 'chars')])} for kind, rows in item_groups.items()],
-                'itemRecords': non_tool_items if export else non_tool_items[:100], 'itemRecordsTotal': len(non_tool_items),
-                'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': len(rows), 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': sum(r.get('input') is not None for r in rows), 'outputMeasurements': sum(r.get('output') is not None for r in rows)} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
+                'itemRecords': non_tool_items, 'itemRecordsTotal': non_tool_total,
+                'itemBreakdown': [{'type': kind, 'payloadBoundary': boundary, 'category': category, 'role': role, 'count': rows.count, 'inputBytes': size(rows, 'input', 'bytes'), 'outputBytes': size(rows, 'output', 'bytes'), 'inputMeasurements': rows.input_measurements, 'outputMeasurements': rows.output_measurements} for (kind, boundary, category, role), rows in detailed_item_groups.items()],
                 'compactions': compactions, 'compactionSnapshots': snapshots,
                 'pagination': {'limit': limit, 'offset': offset, 'total': calls_total, 'hasMore': not export and offset + limit < calls_total},
                 'detailPagination': {'rateLimits': {'limit': rate_limit_total if export else 100, 'offset': 0, 'total': rate_limit_total, 'hasMore': not export and 100 < rate_limit_total},
@@ -749,3 +954,128 @@ class AnalyticsMixin:
                 'analytics-total': (time.perf_counter() - request_started) * 1000,
             }
         return result
+
+    def analytics_export_chunks(self, agent=None, scope='agent', **options):
+        """Yield one JSON export while keeping large histories outside memory."""
+        options = {key: value for key, value in options.items() if key != '_db'}
+        options['export'] = '0'
+        with self.db() as db:
+            if not db.in_transaction:
+                db.execute('BEGIN')
+            result = self.analytics(agent, scope, _db=db, **options)
+            result.pop('__serverTiming', None)
+            filters = result['filters']
+            where, args = [], []
+            if scope == 'agent':
+                where.append('agent=?')
+                args.append(agent)
+            elif scope == 'team':
+                selected = json.loads(db.execute(
+                    'SELECT record FROM analytics_agents WHERE id=?', (agent,)).fetchone()[0])
+                where.append('root=?')
+                args.append(selected.get('rootId') or agent)
+            if filters['from'] is not None:
+                where.append('at>=?')
+                args.append(filters['from'])
+            if filters['to'] is not None:
+                where.append('at<=?')
+                args.append(filters['to'])
+            clause = ' WHERE ' + ' AND '.join(where) if where else ''
+            call_where = [*where, 'is_tool=1']
+            call_args = list(args)
+            if filters['tool'] is not None:
+                call_where.append('name=?')
+                call_args.append(filters['tool'])
+            call_clause = ' WHERE ' + ' AND '.join(call_where)
+            item_clause = ' WHERE ' + ' AND '.join([*where, 'is_tool=0'])
+            authoritative_where, authoritative_args = [], []
+            if scope == 'agent':
+                authoritative_where.append('agent=?')
+                authoritative_args.append(agent)
+            elif scope == 'team':
+                authoritative_where.append('root=?')
+                authoritative_args.append(selected.get('rootId') or agent)
+            authoritative_where.append("json_extract(record,'$.responseId') IS NOT NULL")
+            authoritative_turns = None
+            accounts = {a.get('accountKey', 'default') for a in result['agents']}
+            limit_where, limit_args = [], []
+            if accounts:
+                limit_where.append('account IN (' + ','.join('?' for _ in accounts) + ')')
+                limit_args.extend(sorted(accounts))
+            else:
+                limit_where.append('0')
+            if filters['from'] is not None:
+                limit_where.append('at>=?')
+                limit_args.append(filters['from'])
+            if filters['to'] is not None:
+                limit_where.append('at<=?')
+                limit_args.append(filters['to'])
+            limit_clause = ' WHERE ' + ' AND '.join(limit_where)
+            result['pagination']['hasMore'] = False
+            for name in ('rateLimits', 'turns'):
+                result['detailPagination'][name]['limit'] = result['detailPagination'][name]['total']
+                result['detailPagination'][name]['hasMore'] = False
+
+            def records(query, parameters):
+                for raw, in db.execute(query, parameters):
+                    yield json.loads(raw)
+
+            def usage_rows(provisional):
+                nonlocal authoritative_turns
+                if authoritative_turns is None:
+                    authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute(
+                        'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
+                        + ' AND '.join(authoritative_where), authoritative_args)}
+                for raw, in db.execute(
+                        'SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args):
+                    row = json.loads(raw)
+                    duplicate = (not row.get('responseId')
+                                 and (row['agentId'], row.get('threadId'), row.get('turnId'))
+                                 in authoritative_turns)
+                    if duplicate == provisional:
+                        yield row
+
+            def rate_limits():
+                for account, at, raw in db.execute(
+                        'SELECT account,at,record FROM analytics_limits' + limit_clause
+                        + ' ORDER BY at DESC,id DESC', limit_args):
+                    yield {'accountKey': account, 'at': at, 'data': json.loads(raw)}
+
+            streams = {
+                'calls': lambda: records(
+                    'SELECT record FROM analytics_items' + call_clause + ' ORDER BY at DESC,id',
+                    call_args),
+                'turns': lambda: records(
+                    'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC',
+                    args),
+                'timeline': lambda: usage_rows(False),
+                'provisionalUsage': lambda: usage_rows(True),
+                'itemRecords': lambda: records(
+                    'SELECT record FROM analytics_items' + item_clause + ' ORDER BY at DESC,id',
+                    args),
+                'rateLimits': rate_limits,
+            }
+
+            def array_chunks(rows):
+                yield b'['
+                pending, size, first = [], 0, True
+                for row in rows:
+                    part = (b'' if first else b',') + json.dumps(row, ensure_ascii=False).encode()
+                    first = False
+                    if pending and size + len(part) > 65536:
+                        yield b''.join(pending)
+                        pending, size = [], 0
+                    pending.append(part)
+                    size += len(part)
+                if pending:
+                    yield b''.join(pending)
+                yield b']'
+
+            yield b'{'
+            for index, (key, value) in enumerate(result.items()):
+                yield (b',' if index else b'') + json.dumps(key).encode() + b':'
+                if key in streams:
+                    yield from array_chunks(streams[key]())
+                else:
+                    yield json.dumps(value, ensure_ascii=False).encode()
+            yield b'}'
