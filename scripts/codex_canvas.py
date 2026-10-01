@@ -854,11 +854,17 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             revision, previous, version, previous_order = -1, {}, 0, None
+            rate_previous = object()
+            agent_key = key
+            rate_at = 0
             try:
                 while not runtime.closed:
                     if not self.trusted():
                         break
-                    current, data = runtime.wait_transcript(key, revision)
+                    from codex_token_rate import token_rates
+                    rate = token_rates(runtime).snapshot(agent_key)
+                    rate_pending = rate != rate_previous or bool(rate and rate['active'])
+                    current, data = runtime.wait_transcript(agent_key, revision, timeout=.5 if rate_pending else 15)
                     if not self.trusted():
                         break
                     if current is None:
@@ -888,6 +894,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             payload["order"] = order
                         self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
                         revision, previous, previous_order = current, records, order
+                    rate = token_rates(runtime).snapshot(agent_key)
+                    if rate != rate_previous and time.monotonic() - rate_at >= .5:
+                        self.wfile.write(("event: token-rate\ndata: " + json.dumps(rate) + "\n\n").encode())
+                        rate_previous = rate
+                        rate_at = time.monotonic()
                     self.wfile.flush()
                     time.sleep(.08)  # Coalesce fast deltas without polling an idle model.
             except OSError:
@@ -984,6 +995,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
             self.end_headers()
             previous = None
             observed_generation = None
+            rate_previous = object()
             try:
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
@@ -1010,6 +1022,12 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
                         self.wfile.write(b": heartbeat\n\n")
+                    if transcript_id is not None and canvas.runtime:
+                        from codex_token_rate import token_rates
+                        rate = token_rates(canvas.runtime).snapshot(transcript_id)
+                        if rate != rate_previous:
+                            self.wfile.write(("event: token-rate\ndata: " + json.dumps(rate) + "\n\n").encode())
+                            rate_previous = rate
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)

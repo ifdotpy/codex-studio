@@ -4188,6 +4188,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                         turn_id=p.get('turnId'), force=True)
         if consume_native_notification(self, message, account_key, connection_id):
             return
+        from codex_token_rate import token_rates
+        if method in {'item/agentMessage/delta', 'item/reasoning/textDelta'}:
+            token_rates(self).stream(method, p, account_key, connection_id)
         if method in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
             from codex_streaming import StreamBuffer
             stream = getattr(self, '_stream_buffer', None)
@@ -4663,6 +4666,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.changed.set()
             if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
+            if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
+                token_rates(self).observe(a, method, p, account_key, connection_id)
             self.put(db, "agents", a)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.

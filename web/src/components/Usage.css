@@ -403,3 +403,22 @@
 .account-limit-recovery p {
   margin: 6px 0 0;
 }
+
+/* Reserve the same space before, during, and after each turn. */
+.usage-footer .token-rate {
+  flex: 0 0 12ch;
+  width: 12ch;
+  min-height: 1.3em;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.token-rate[data-active="false"] {
+  opacity: .55;
+}
+@media (max-width: 600px) {
+  .usage-footer .session-cost-summary {
+    flex: 1 1 calc(100% - 12ch - 8px);
+  }
+}

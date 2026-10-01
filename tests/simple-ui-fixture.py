@@ -169,6 +169,8 @@ def fixture_events():
             with c.runtime.lock, c.runtime.db() as db:
                 agent = c.runtime.agent(params['agent'], db)
                 active = params['status'] in {'starting', 'running', 'approval'}
+                if params.get('threadId'):
+                    agent['threadId'] = params['threadId']
                 agent.update(status=params['status'], inFlight=active,
                              turnId='fixture-turn' if active else None)
                 c.runtime.put(db, 'agents', agent)
