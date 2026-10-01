@@ -48,6 +48,12 @@ export const TEAM_STATES = [
   ["completed", "Finished"],
 ] as const;
 
+// Keep active work at the top of the panel in compact and grouped layouts.
+export const TEAM_PANEL_STATES = [
+  ...TEAM_STATES.filter(([state]) => state === "working"),
+  ...TEAM_STATES.filter(([state]) => state !== "working"),
+];
+
 export function TeamSummary({
   workers,
   answers,

@@ -31,9 +31,10 @@ export function WorkerDiskLabel({
   return (
     <small
       className="worker-disk"
-      title="Allocated disk blocks. APFS clones can share blocks."
+      title={disk?.measure || "Disk size is not measured yet."}
     >
       Disk: {label}
+      {disk?.state === "ready" && disk.measure ? ` (${disk.measure})` : ""}
     </small>
   );
 }
@@ -54,13 +55,25 @@ export function TeamDiskTotal({
     0,
   );
   const unknown = measured.filter((row) => row?.state !== "ready").length;
+  const measures = new Set(
+    measured
+      .filter((row) => row?.state === "ready")
+      .map((row) => row.measure || "allocated blocks"),
+  );
+  const measure =
+    measures.size === 1
+      ? [...measures][0]
+      : measures.size
+        ? "mixed measures"
+        : "";
   return (
     <div
       className="team-disk-total"
-      title="Allocated disk blocks. APFS clones can share blocks."
+      title={measure || "Disk size is not measured yet."}
     >
       <span>
         Worktrees: {formatDiskBytes(bytes)}
+        {measure ? ` (${measure})` : ""}
         {unknown ? `, ${unknown} not measured` : ""}
       </span>
       {disk.error && <span>Disk measure unavailable.</span>}

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import urllib.error
 import urllib.request
@@ -437,6 +438,30 @@ class CanvasContract(unittest.TestCase):
         (self.root / "codex-swarm-status.one.json").write_text("broken")
         with self.assertRaises(RuntimeError):
             self.canvas.snapshot()
+
+    def test_worktree_disk_route_forwards_priority_ids(self):
+        class RecordingScanner:
+            def snapshot(self, priority_ids=()):
+                return {"priority": list(priority_ids)}
+
+        server = make_server(self.canvas)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        self.canvas.runtime = SimpleNamespace(root=self.root, lock=threading.RLock())
+        with patch("codex_worktree_disk.scanner", return_value=RecordingScanner()) as get_scanner:
+            try:
+                with urllib.request.urlopen(
+                    base + "/api/worktree-disk?workers=worker-one%2Cworker-two",
+                    timeout=5,
+                ) as response:
+                    payload = json.loads(response.read())
+                self.assertEqual(payload["priority"], ["worker-one", "worker-two"])
+                get_scanner.assert_called_once_with(self.canvas.root)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_http_local_origin_token_and_routes(self):
         server = make_server(self.canvas)

@@ -14,7 +14,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_worktree_creation import create_worker_worktree
-from codex_worktree_disk import WorktreeDiskScanner, _allocated_bytes, management_view
+from codex_worktree_disk import (
+    WorktreeDiskScanner,
+    _allocated_bytes,
+    _apfs_private_bytes,
+    _measure_worktree,
+    management_view,
+)
 
 
 class WorktreeContracts(unittest.TestCase):
@@ -91,7 +97,16 @@ class WorktreeContracts(unittest.TestCase):
         db.commit()
         db.close()
         scanner = WorktreeDiskScanner(state, pause=lambda _: None)
-        scanner.scan_once()
+        with patch('codex_worktree_disk._measure_worktree', wraps=_measure_worktree) as measure:
+            order = scanner.scan_once(priority_ids=['child', 'missing'])
+            scanner.scan_once()
+        self.assertEqual(measure.call_count, 2, 'unchanged worktrees use the path cache')
+        self.assertEqual(measure.call_args_list[0].args[0], child)
+        self.assertEqual(order[:2], ['child', 'missing'])
+        with patch('codex_worktree_disk._measure_worktree', wraps=_measure_worktree) as measure:
+            (self.path / 'new-root-entry').write_bytes(b'changed')
+            scanner.scan_once()
+        self.assertEqual(measure.call_count, 1, 'a changed root signature invalidates its cache')
         with patch.dict(os.environ, {'CODEX_WORKTREE_DISK_LIMIT_BYTES': '1'}):
             result = scanner.snapshot()
         self.assertIn('worker', result['workers'])
@@ -100,11 +115,43 @@ class WorktreeContracts(unittest.TestCase):
         self.assertNotIn('lead', result['workers'])
         self.assertGreater(result['totalBytes'], 0)
         self.assertTrue(result['warning'])
-        self.assertEqual(result['totalBytes'], _allocated_bytes(self.path, pause=lambda _: None))
+        self.assertEqual(result['totalBytes'], sum(
+            row.get('bytes', 0) for row in result['workers'].values()
+            if row['state'] == 'ready'))
+        self.assertIn(result['workers']['worker']['measure'],
+                      ('private on APFS', 'allocated blocks'))
+        self.assertEqual(set(scanner.cache), {str(self.path), str(child)})
         with patch('codex_worktree_disk.scanner', return_value=scanner):
             by_agent, scoped = management_view(SimpleNamespace(root=state), [{'id': 'worker'}])
         self.assertEqual(scoped['totalBytes'], by_agent['worker']['bytes'])
         self.assertLess(scoped['totalBytes'], scoped['allWorkersBytes'])
+
+    def test_apfs_private_measure_excludes_a_clone_fixture(self):
+        if sys.platform != 'darwin':
+            self.skipTest('ATTR_CMNEXT_PRIVATESIZE requires macOS')
+        root = self.root / 'apfs-clone-fixture'
+        root.mkdir()
+        source = root / 'source.bin'
+        clone = root / 'clone.bin'
+        source.write_bytes(os.urandom(32768))
+        subprocess.run(['cp', '-c', str(source), str(clone)], check=True)
+        source_private = _apfs_private_bytes(source)
+        clone_private = _apfs_private_bytes(clone)
+        if source_private is None or clone_private is None:
+            self.skipTest('Temporary volume does not support APFS private-size attributes')
+        measured, measure = _measure_worktree(root, pause=lambda _: None)
+        allocated = _allocated_bytes(root, pause=lambda _: None)
+        self.assertEqual(measure, 'private on APFS')
+        self.assertEqual(measured, source_private + clone_private)
+        self.assertLess(measured, allocated, 'the clone shares allocated extents')
+
+    def test_non_apfs_uses_allocated_blocks(self):
+        self.path.mkdir(parents=True)
+        (self.path / 'file.bin').write_bytes(b'x' * 2048)
+        with patch('codex_worktree_disk._apfs_private_bytes', return_value=None):
+            measured, measure = _measure_worktree(self.path, pause=lambda _: None)
+        self.assertEqual(measure, 'allocated blocks')
+        self.assertEqual(measured, _allocated_bytes(self.path, pause=lambda _: None))
 
 
 if __name__ == '__main__':

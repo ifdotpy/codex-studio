@@ -99,7 +99,7 @@ import WorkerCard, {
   awaitingAnswerIds,
   TeamSummary,
   workerState,
-  TEAM_STATES,
+  TEAM_PANEL_STATES,
 } from "./components/WorkerOverview";
 import { TeamDiskTotal } from "./components/WorktreeDisk";
 import Workspace from "./components/Workspace";
@@ -224,7 +224,6 @@ export default function App() {
       null,
     ),
     [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
-  const worktreeDisk = useWorktreeDisk(Boolean(data?.stateDir));
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
@@ -338,6 +337,11 @@ export default function App() {
         ),
     team = lead ? agents.filter((a) => a.rootId === lead.id) : [],
     workers = team.filter((a) => !a.isLead);
+  const worktreeDisk = useWorktreeDisk(
+    Boolean(data?.stateDir),
+    workers.map((a) => a.id),
+    teamOpen || wideTeamOpen,
+  );
   const readState = useChatReadState(
     data,
     opened,
@@ -1128,14 +1132,18 @@ export default function App() {
           : true,
   );
   // The same states and names as the team summary; Finished stays collapsed below.
-  const groups = TEAM_STATES.filter(([state]) => state !== "completed").map(
-    ([state, name]) => ({
-      name,
-      workers: shown.filter(
-        (a) => workerState(a, answerIds, deferredIds) === state,
-      ),
-    }),
-  );
+  const panelState = (a: Agent) =>
+    a.inFlight && ["running", "starting"].includes(a.status)
+      ? "working"
+      : workerState(a, answerIds, deferredIds);
+  const groups = TEAM_PANEL_STATES.filter(
+    ([state]) => state !== "completed",
+  ).map(([state, name]) => ({
+    name,
+    workers: shown.filter(
+      (a) => panelState(a) === state,
+    ),
+  }));
   const completed = shown.filter(
     (a) => workerState(a, answerIds, deferredIds) === "completed",
   );

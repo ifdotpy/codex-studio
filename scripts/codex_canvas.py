@@ -895,7 +895,11 @@ def make_server(canvas, port=0, public_origin=None):
                                       "token": token})
                 if path.path == "/api/worktree-disk" and canvas.runtime:
                     from codex_worktree_disk import scanner
-                    return self.send(scanner(canvas.root).snapshot())
+                    query = parse_qs(path.query)
+                    requested = query.get("workers", [""])[0][:24000]
+                    worker_ids = [value for value in requested.split(",")
+                                  if value and len(value) <= 128][:500]
+                    return self.send(scanner(canvas.root).snapshot(worker_ids))
                 if path.path == "/api/costs":
                     with terminal_lock:
                         if cost_reader[0] is None:
