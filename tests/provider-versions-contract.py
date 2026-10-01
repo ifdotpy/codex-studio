@@ -39,6 +39,22 @@ class Runtime:
         self.changed = threading.Event()
 
 
+class SnapshotLock:
+    """Reentrant runtime lock that exposes the publisher's acquisition point."""
+    def __init__(self, publisher_waiting):
+        self.lock = threading.RLock()
+        self.publisher_waiting = publisher_waiting
+
+    def __enter__(self):
+        if threading.current_thread().name == "provider-publisher":
+            self.publisher_waiting.set()
+        self.lock.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.lock.release()
+
+
 class ProviderVersionContract(unittest.TestCase):
     def test_baseline_means_lowest_version_recorded_in_repo_evidence(self):
         self.assertIsNone(version_warning("codex", "codex-cli 0.153.4"))
@@ -98,6 +114,52 @@ class ProviderVersionContract(unittest.TestCase):
         entries = monitor.status()["providers"]
         self.assertEqual({entry["status"] for entry in entries}, {"error"})
         self.assertTrue(all(entry["error"] for entry in entries))
+
+    def test_missing_reader_status_is_reported_as_error(self):
+        runtime = Runtime()
+        monitor = ProviderVersionMonitor(read_version=lambda *_args: None)
+        monitor.tick(runtime)
+        monitor.worker.join(2)
+        entries = monitor.status()["providers"]
+        self.assertEqual({entry["status"] for entry in entries}, {"error"})
+        self.assertTrue(all(entry["error"] for entry in entries))
+
+    def test_snapshot_can_read_status_while_publisher_waits_for_runtime_lock(self):
+        runtime = Runtime()
+        runtime.servers = {}
+        runtime.connection_ids = {}
+        publisher_waiting = threading.Event()
+        runtime.lock = SnapshotLock(publisher_waiting)
+        monitor = ProviderVersionMonitor()
+        monitor.signature = ()
+        monitor.next_check = time.monotonic() + 60
+        runtime.provider_version_monitor = monitor
+        publisher = threading.Thread(
+            name="provider-publisher",
+            target=monitor._publish,
+            args=(runtime, (), monitor.generation, []),
+        )
+
+        with runtime.lock:
+            publisher.start()
+            self.assertTrue(publisher_waiting.wait(1))
+            monitor_lock_was_available = monitor.lock.acquire(blocking=False)
+            if monitor_lock_was_available:
+                monitor.lock.release()
+            # This mirrors Runtime.snapshot: runtime.lock is held while status
+            # calls tick() and then reads the monitor's status. Avoid blocking
+            # in a broken lock order so a regression fails instead of hanging.
+            if monitor_lock_was_available:
+                monitor.tick(runtime)
+                status = monitor.status()
+            else:
+                status = None
+
+        publisher.join(2)
+        self.assertFalse(publisher.is_alive())
+        self.assertTrue(monitor_lock_was_available)
+        self.assertEqual(status["providers"], [])
+        self.assertTrue(runtime.changed.is_set())
 
     def test_version_detection_runs_off_thread_and_returns_scoped_advisories(self):
         runtime = Runtime()

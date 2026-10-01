@@ -242,9 +242,8 @@ class ProviderVersionMonitor:
                     continue
                 versions = (self.read_version(provider, server, account) if self.read_version
                             else VERSION_READERS[provider](server, account))
-                if isinstance(versions, str):
-                    # Test adapters written against the original reader contract.
-                    versions = {"runningVersion": versions, "installedVersion": versions}
+                if not isinstance(versions, dict):
+                    raise ValueError("Provider version reader returned no status object")
                 diagnostic = _diagnostic(account_key, provider, versions)
                 if not self._is_current(runtime, signature):
                     return
@@ -256,11 +255,31 @@ class ProviderVersionMonitor:
                         providers.append(_diagnostic(account_key, provider, {
                             "error": "Could not check the provider CLI version.",
                         }))
-        with self.lock:
-            if generation != self.generation or not self._is_current(runtime, signature):
-                return
-            self.providers = providers
-            self.checked_at = time.time()
+        self._publish(runtime, signature, generation, providers)
+
+    def _publish(self, runtime, signature, generation, providers):
+        # Runtime snapshots hold runtime.lock before reading our status. Keep
+        # publication in the same order so a snapshot cannot wait on self.lock
+        # while this worker waits on runtime.lock.
+        start_lock = getattr(runtime, "start_lock", None)
+        if start_lock:
+            start_lock.acquire()
+        try:
+            with runtime.lock:
+                offline = getattr(runtime, "offline_accounts", set())
+                current = tuple(
+                    (key, id(server), runtime.connection_ids.get(key))
+                    for key, server in runtime.servers.items()
+                    if key not in offline
+                )
+                with self.lock:
+                    if generation != self.generation or current != signature:
+                        return
+                    self.providers = providers
+                    self.checked_at = time.time()
+        finally:
+            if start_lock:
+                start_lock.release()
         runtime.changed.set()
 
     def status(self):
