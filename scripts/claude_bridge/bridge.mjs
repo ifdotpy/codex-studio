@@ -27,6 +27,7 @@ import path from "node:path";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
+import { createSessionStore } from "./session-store.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
@@ -52,9 +53,12 @@ let lastLimits;
 const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
-const sessions = new Map(),
-  queries = new Map(),
+const queries = new Map(),
   pending = new Map();
+const sessionStore = createSessionStore(root, {
+  isPinned: (id) => queries.has(id),
+});
+const sessions = sessionStore.sessions;
 const configuredIdle = Number(process.env.STUDIO_CLAUDE_IDLE_SECONDS);
 const idleSeconds = Number.isFinite(configuredIdle) && configuredIdle > 0
   ? Math.max(1, configuredIdle)
@@ -67,7 +71,10 @@ const querySweep = setInterval(() => {
         now - active.idleSince < idleSeconds * 1000) continue;
     active.input.close();
     active.q?.close();
-    if (queries.get(id) === active) queries.delete(id);
+    if (queries.get(id) === active) {
+      queries.delete(id);
+      void sessionStore.evict(id);
+    }
   }
 }, Math.min(30000, idleSeconds * 500));
 querySweep.unref();
@@ -96,39 +103,8 @@ const request = (method, params, signal) =>
     signal?.addEventListener("abort", abort, { once: true });
     send({ id, method, params });
   });
-const sessionPath = (id) => {
-  if (!/^[a-f0-9-]{36}$/.test(id))
-    throw new Error("Invalid Claude session identity");
-  return path.join(root, "sessions", id + ".json");
-};
-const writes = new Map();
-const persist = (session) => {
-  const previous = writes.get(session.id) || Promise.resolve();
-  const next = previous.catch(() => {}).then(() => save(session));
-  writes.set(session.id, next);
-  return next;
-};
-const save = async (session) => {
-  const file = sessionPath(session.id),
-    tmp = file + "." + randomUUID() + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(session), { mode: 0o600 });
-  await fs.rename(tmp, file);
-};
-async function session(id) {
-  if (!sessions.has(id)) {
-    const saved = JSON.parse(await fs.readFile(sessionPath(id), "utf8"));
-    for (const turn of saved.turns)
-      if (turn.status === "inProgress") {
-        turn.status = "interrupted";
-        turn.error = {
-          message:
-            "Claude connection ended. Review the saved transcript before continuing.",
-        };
-      }
-    sessions.set(id, saved);
-  }
-  return sessions.get(id);
-}
+const persist = sessionStore.persist;
+async function session(id) { return sessionStore.get(id); }
 const settings = (s) => ({
   cwd: s.cwd,
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
@@ -895,7 +871,10 @@ async function startSession(s, active, p) {
     admit();
     active.input.close();
     active.q?.close();
-    if (queries.get(s.id) === active) queries.delete(s.id);
+    if (queries.get(s.id) === active) {
+      queries.delete(s.id);
+      void sessionStore.evict(s.id);
+    }
   }
 }
 // The SDK reports a closed or aborted Claude process with these messages.
@@ -1062,6 +1041,7 @@ async function handle(method, p) {
       backgroundQueries: values.filter((active) => active.tasks.size).length,
       idleQueries: values.filter((active) => !active.turn && !active.tasks.size).length,
       idleLimitSeconds: idleSeconds,
+      sessionCache: sessionStore.stats(),
     };
   }
   if (method === "claude/settings") {
@@ -1157,6 +1137,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    await sessionStore.evict(p.threadId);
     return {};
   }
   if (method === "thread/fork") {
@@ -1492,7 +1473,7 @@ function shutdown() {
       }
     }
     await commands.close();
-    await Promise.allSettled(writes.values());
+    await sessionStore.drain();
     process.exit(0);
   })();
   return closing;

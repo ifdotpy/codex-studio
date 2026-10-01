@@ -157,7 +157,14 @@ class Bridge(unittest.TestCase):
         for helper in (ROOT / 'scripts/claude_bridge').glob('*.mjs'):
             (root / helper.name).write_text(helper.read_text().replace("@anthropic-ai/claude-agent-sdk", "./fake.mjs"))
         (root / 'fake.mjs').write_text(SDK)
-        (root / 'node_modules').symlink_to(ROOT / 'scripts/claude_bridge/node_modules', target_is_directory=True)
+        dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
+        if dependency_modules.exists():
+            (root / 'node_modules').symlink_to(dependency_modules, target_is_directory=True)
+        else:
+            zod = root / 'node_modules' / 'zod'
+            zod.mkdir(parents=True)
+            (zod / 'package.json').write_text('{"name":"zod","type":"module","exports":"./index.js"}')
+            (zod / 'index.js').write_text('export const z={fromJSONSchema:schema=>schema};')
         self.proc = subprocess.Popen([shutil.which('node'), str(root / 'bridge.mjs'), str(root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test',
@@ -236,6 +243,7 @@ class Bridge(unittest.TestCase):
         while self.call('claude/diagnostics', {})['liveQueries'] and time.monotonic() < deadline:
             time.sleep(.1)
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
+        self.assertEqual(self.call('claude/diagnostics', {})['sessionCache']['cachedSessions'], 0)
         self.turn('hello', 'second')
         self.assertEqual(self.completed()['status'], 'completed')
         starts = [json.loads(line) for line in (self.root / '.queries').read_text().splitlines()]
@@ -243,6 +251,16 @@ class Bridge(unittest.TestCase):
         self.assertEqual(starts[1]['resume'], starts[0]['sessionId'])
         self.assertEqual(len(self.call('thread/read', {'threadId': self.thread,
                                                      'includeTurns': True})['thread']['turns']), 2)
+
+    def test_unsubscribe_evicts_then_reload_preserves_request_identity(self):
+        original = self.turn('hello', 'stable-request')
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.call('thread/unsubscribe', {'threadId': self.thread})
+        self.assertEqual(self.call('claude/diagnostics', {})['sessionCache']['cachedSessions'], 0)
+        restored = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})
+        self.assertEqual(restored['thread']['turns'][0]['id'], original['turn']['id'])
+        duplicate = self.turn('hello', 'stable-request')
+        self.assertEqual(duplicate['turn']['id'], original['turn']['id'])
 
     def test_background_task_keeps_query_until_task_finishes(self):
         self.turn('background-hold', 'background-hold')
@@ -472,7 +490,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 12)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
-                  'input': [{'type': 'text', 'text': 'Native followup'}]}
+                  'input': [{'type': 'text', 'text': 'replacement'}]}
         answer = self.call('turn/start', params)
         self.assertTrue(answer['steered'])
         self.assertEqual(answer['turn']['id'], first)
