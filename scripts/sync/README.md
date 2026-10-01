@@ -54,12 +54,14 @@ conflict handling, and immutable message request IDs remain unchanged.
   and unrelated FTS writes own no UI generation. Adding a new UI projection source
   requires adding it to the trigger map and its migration test.
 
-Startup upgrades existing databases idempotently: it creates missing counters,
-rebuilds only the scoped trigger set from the current ownership map, and retains
-existing broad triggers. When it discovers a newly created source table, it
-also invalidates the affected scope if rows were committed before its triggers
-could be installed. Version 2 SSE carries the workspace identity and
-generation map. A new client subscribes by projection scope; every stream
+Startup upgrades existing databases idempotently: it creates missing counters
+and reconciles the broad and scoped triggers against their current definitions.
+Correct triggers stay in place; missing triggers are added, and changed or
+obsolete sync-owned definitions are replaced. A schema change in an unrelated
+table therefore does not rebuild the scoped trigger set. When it discovers a
+new source table, it also invalidates the affected scope if rows were committed
+before its triggers could be installed. Version 2 SSE carries the workspace
+identity and generation map. A new client subscribes by projection scope; every stream
 connection first sends the complete map, which reconciles missed events after
 sleep or network loss. It also polls the compact map as a scoped fallback. Invalid
 or unknown event data, a changed workspace identity, a counter rollback, and

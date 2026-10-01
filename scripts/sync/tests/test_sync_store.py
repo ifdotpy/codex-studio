@@ -2,6 +2,7 @@
 import contextlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import tempfile
 import threading
@@ -11,7 +12,7 @@ import sys
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
-from sync.sync_store import SyncStore
+from sync.sync_store import SyncStore, STATE_TABLES, TRANSCRIPT_TABLES
 
 
 class SyncStoreTests(unittest.TestCase):
@@ -51,6 +52,23 @@ class SyncStoreTests(unittest.TestCase):
         finally:
             db.close()
 
+    def traced_connect(self, statements):
+        @contextlib.contextmanager
+        def connect():
+            db = sqlite3.connect(self.path, timeout=5)
+            db.set_trace_callback(statements.append)
+            try:
+                with db:
+                    yield db
+            finally:
+                db.close()
+        return connect
+
+    @staticmethod
+    def trigger_ddl(statements):
+        return [sql.strip() for sql in statements
+                if sql.lstrip().upper().startswith(("CREATE TRIGGER", "DROP TRIGGER"))]
+
     def test_existing_database_migration_preserves_broad_and_adds_scoped_triggers(self):
         before = self.store.generations()
         with self.connect() as db:
@@ -65,6 +83,68 @@ class SyncStoreTests(unittest.TestCase):
         self.assertGreater(self.store.generations()["transcripts"], before["transcripts"])
         upgraded = SyncStore(self.connect, lambda: {}, lambda key: {})
         self.assertEqual(upgraded.generations(), self.store.generations())
+
+    def test_restart_keeps_correct_trigger_definitions_without_ddl(self):
+        statements = []
+        upgraded = SyncStore(self.traced_connect(statements), lambda: {}, lambda key: {})
+        ddl = self.trigger_ddl(statements)
+        self.assertEqual(ddl, [])
+        self.assertEqual(upgraded.generations(), self.store.generations())
+
+    def test_startup_installs_the_expected_trigger_map(self):
+        with self.connect() as db:
+            tables = {row[1] for row in db.execute("PRAGMA table_list")
+                      if row[0] == "main" and row[2] == "table"}
+            actual = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND (name LIKE 'sync_watch_%' OR name LIKE 'sync_scope_%')"
+            )}
+        base_tables = {table for table in tables
+                       if not table.startswith(("sync_", "sqlite_")) and
+                       re.fullmatch(r"[a-zA-Z0-9_]+", table)}
+        expected = {f"sync_watch_{table}_{op}" for table in base_tables
+                    for op in ("INSERT", "UPDATE", "DELETE")}
+        expected.update(f"sync_scope_{scope}_{table}_{op}"
+                        for scope, owned in (("state", STATE_TABLES),
+                                             ("transcripts", TRANSCRIPT_TABLES))
+                        for table in owned.intersection(tables)
+                        for op in ("INSERT", "UPDATE", "DELETE"))
+        if "runtime_items" in tables:
+            expected.update(("sync_scope_state_runtime_items_first",
+                             "sync_scope_state_runtime_items_last"))
+        self.assertEqual(actual, expected)
+
+    def test_unrelated_schema_drift_adds_only_new_broad_clock_triggers(self):
+        statements = []
+        self.store.connect = self.traced_connect(statements)
+        with self.connect() as db:
+            db.execute("CREATE TABLE unrelated_late_table(id TEXT PRIMARY KEY)")
+        statements.clear()
+
+        self.store.generations()
+
+        ddl = self.trigger_ddl(statements)
+        self.assertEqual(len(ddl), 3, ddl)
+        self.assertTrue(all(sql.lstrip().upper().startswith("CREATE TRIGGER") for sql in ddl), ddl)
+        self.assertEqual(
+            {f'sync_watch_unrelated_late_table_{op}' for op in ("INSERT", "UPDATE", "DELETE")},
+            {sql.split('"', 2)[1] for sql in ddl},
+        )
+
+    def test_changed_owned_trigger_body_is_migrated_alone(self):
+        name = "sync_scope_state_runtime_agents_INSERT"
+        with self.connect() as db:
+            db.execute(f'DROP TRIGGER "{name}"')
+            db.execute(f'''CREATE TRIGGER "{name}" AFTER INSERT ON "runtime_agents" BEGIN
+                UPDATE sync_generation SET value=value+2 WHERE id=1; END''')
+        statements = []
+
+        SyncStore(self.traced_connect(statements), lambda: {}, lambda key: {})
+
+        ddl = self.trigger_ddl(statements)
+        self.assertEqual(len(ddl), 2, ddl)
+        self.assertEqual(ddl[0], f'DROP TRIGGER "{name}"')
+        self.assertIn(f'CREATE TRIGGER "{name}"', ddl[1])
 
     def test_analytics_churn_reuses_snapshot_but_ui_write_rebuilds(self):
         first = self.store.pull("state")
@@ -137,7 +217,12 @@ class SyncStoreTests(unittest.TestCase):
         with self.connect() as db:
             db.execute("CREATE TABLE runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             db.execute("INSERT INTO runtime_native_notices VALUES ('already-here','{}')")
+        statements = []
+        store.connect = self.traced_connect(statements)
         current = store.generations()["state"]
+        ddl = self.trigger_ddl(statements)
+        self.assertEqual(len(ddl), 6, ddl)
+        self.assertTrue(all(sql.lstrip().upper().startswith("CREATE TRIGGER") for sql in ddl), ddl)
         self.assertGreater(current, first_generation)
         updated = store.pull("state", first["checkpoint"]["seq"])
         self.assertEqual(json.loads(updated["documents"][0]["payload"])["notices"], ["already-here"])
