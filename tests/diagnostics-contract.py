@@ -101,7 +101,9 @@ class DiagnosticsContract(unittest.TestCase):
                                            / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
-                    self.assertEqual(json.loads(cli.stdout), {"processTree": {"kinds": {}}})
+                    printed = json.loads(cli.stdout)
+                    self.assertEqual(printed.pop("processTree"), {"kinds": {}})
+                    self.assertEqual(set(printed), {"supervisor"})
             finally:
                 server.shutdown()
                 server.server_close()
