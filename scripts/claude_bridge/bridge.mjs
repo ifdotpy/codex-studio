@@ -55,6 +55,22 @@ await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
 const sessions = new Map(),
   queries = new Map(),
   pending = new Map();
+const configuredIdle = Number(process.env.STUDIO_CLAUDE_IDLE_SECONDS);
+const idleSeconds = Number.isFinite(configuredIdle) && configuredIdle > 0
+  ? Math.max(1, configuredIdle)
+  : 15 * 60;
+const querySweep = setInterval(() => {
+  const now = Date.now();
+  for (const [id, active] of queries) {
+    if (active.turn || active.tasks.size || active.pendingSteers.size ||
+        active.reservingInput || active.idleSince == null || operations.get(id) ||
+        now - active.idleSince < idleSeconds * 1000) continue;
+    active.input.close();
+    active.q?.close();
+    if (queries.get(id) === active) queries.delete(id);
+  }
+}, Math.min(30000, idleSeconds * 500));
+querySweep.unref();
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const emit = (method, params) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
@@ -423,6 +439,7 @@ async function finishTurn(s, active, result, error) {
   s.updatedAt = Math.floor(Date.now() / 1000);
   await persist(s);
   active.turn = null;
+  if (!active.tasks.size) active.idleSince = Date.now();
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
   emit("turn/completed", {
@@ -548,6 +565,7 @@ async function startSession(s, active, p) {
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
         active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        if (!active.turn) active.idleSince = active.tasks.size ? null : Date.now();
         continue;
       }
       if (m.type === "user" && m.isReplay) {
@@ -657,6 +675,7 @@ async function startSession(s, active, p) {
           )
             active.tasks.delete(id);
           else active.tasks.set(id, task);
+          if (!active.turn) active.idleSince = active.tasks.size ? null : Date.now();
           const taskTurn = turn || s.turns.at(-1);
           if (taskTurn)
             finishItem(s, taskTurn, {
@@ -900,6 +919,7 @@ function newActive(turn) {
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
     reportedUsage: 0,
+    idleSince: null,
     lastUsage: null,
   };
   active.ready = new Promise((resolve, reject) => {
@@ -1032,6 +1052,16 @@ async function handle(method, p) {
       nativeId: s.nativeId || s.id,
       contextWindow: s.contextWindow,
       totalTokens: s.totalTokens,
+    };
+  }
+  if (method === "claude/diagnostics") {
+    const values = [...queries.values()];
+    return {
+      liveQueries: values.length,
+      activeTurns: values.filter((active) => active.turn).length,
+      backgroundQueries: values.filter((active) => active.tasks.size).length,
+      idleQueries: values.filter((active) => !active.turn && !active.tasks.size).length,
+      idleLimitSeconds: idleSeconds,
     };
   }
   if (method === "claude/settings") {
@@ -1246,6 +1276,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.idleSince = null;
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
