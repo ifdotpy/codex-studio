@@ -211,7 +211,11 @@ class PayloadContract(unittest.TestCase):
             receipt = self.runtime.chat_message(worker['id'], lead['id'], body + str(i), 'history-' + str(i))
         room = receipt['room']
         full = self.runtime.chat_read(room, lead['id'])
-        self.assertEqual(len(full['messages']), 100)
+        self.assertLessEqual(len(full['messages']), 100)
+        self.assertGreater(len(full['messages']), 0)
+        self.assertIsNotNone(full['nextBefore'])
+        self.assertLessEqual(sum(len(m['text'].encode()) + len(json.dumps(m['deliveries']).encode()) + 256
+                                 for m in full['messages']), 1_000_000)
         ids, before = [], None
         while True:
             page = self.runtime.chat_read(room, lead['id'], before, model=True)

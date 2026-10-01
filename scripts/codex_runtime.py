@@ -1342,7 +1342,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 room = (self.broadcast_room(db, record) if record.get("kind") == "broadcast"
                         and record.get("rootId") != "all" else None)
                 if room is None:
-                    room = next(iter(self.chat_rooms(db, room_id=record["id"])), None)
+                    room = next(iter(self.chat_rooms(db, room_id=record["id"],
+                                                     include_last_message=False)), None)
                 sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
@@ -4917,17 +4918,66 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return c
             raise ValueError("Choose submit, read, or respond")
 
-    def chat_rooms(self, db, viewer=None, room_id=None):
-        agents = {a["id"]: a for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")}
-        viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
-        from codex_peer_teams import snapshot as peer_snapshot
-        peer_teams = peer_snapshot(self, db)
+    def chat_rooms(self, db, viewer=None, room_id=None, *, include_last_message=None):
+        if include_last_message is None:
+            include_last_message = room_id is None
+        targeted_room = None
+        if room_id is None:
+            agents = {a["id"]: a for a in self.records(db, "agents", shared=True)
+                      if not a.get("deletedAt")}
+            from codex_peer_teams import snapshot as peer_snapshot
+            peer_teams = peer_snapshot(self, db)
+            viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
+        else:
+            room_row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+            if not room_row:
+                return []
+            targeted_room = json.loads(room_row[0])
+            room = targeted_room
+            if room.get("kind") == "broadcast":
+                if viewer:
+                    viewer_agent = self.agent(viewer, db)
+                    if viewer_agent.get("deletedAt") or room.get("rootId") != viewer_agent.get("rootId"):
+                        return []
+                    agents = {a["id"]: a for a in self.team_agents(db, viewer_agent["rootId"])
+                              if not a.get("deletedAt")}
+                else:
+                    agents = {a["id"]: a for a in self.team_agents(db, room.get("rootId"))
+                              if not a.get("deletedAt")} if room.get("rootId") != "all" else {
+                                  a["id"]: a for a in self.records(db, "agents", shared=True)
+                                  if not a.get("deletedAt")}
+            else:
+                member_ids = sorted(set(room.get("members", [])))
+                if member_ids:
+                    rows = db.execute("SELECT record FROM runtime_agents WHERE id IN (" +
+                                      ",".join("?" for _ in member_ids) + ")", member_ids)
+                    agents = {a["id"]: a for a in
+                              (json.loads(row[0]) for row in rows) if not a.get("deletedAt")}
+                else:
+                    agents = {}
+            if viewer and viewer not in agents:
+                return []
+            viewer_root = agents.get(viewer, {}).get("rootId") if viewer else None
+            peer_teams = []
+            if (room.get("kind") == "private" and len(room.get("members", [])) == 2
+                    and all(member in agents for member in room["members"])):
+                member_roots = {agents[m].get("rootId") for m in room["members"] if m in agents}
+                if len(member_roots) > 1:
+                    from codex_peer_teams import peer_pair_allowed
+                    left, right = room["members"]
+                    if peer_pair_allowed(db, left, right):
+                        path = agents[left].get("cwd")
+                        project_row = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+                        if project_row:
+                            project = json.loads(project_row[0])
+                            from codex_peer_teams import _teams
+                            teams = _teams(project, agents)
+                            peer_teams = [team for team in teams if set(room["members"]).issubset(team["members"])]
         rooms = []
         if room_id is None:
             room_records = self.records(db, "rooms")
         else:
-            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
-            room_records = [json.loads(row[0])] if row else []
+            room_records = [targeted_room] if targeted_room else []
         for room in room_records:
             members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
                        if room["kind"] == "broadcast" else room["members"])
@@ -4953,8 +5003,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             agents[room["rootId"]]["name"] + " · Broadcast" if room["kind"] == "broadcast" else
                             " ↔ ".join(agents[m]["name"] for m in members))
             room["name"] = room.get("customName") or room["name"]
-            last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=? ORDER BY seq DESC LIMIT 1", (room["id"],)).fetchone()
-            room["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
+            if include_last_message:
+                last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=? ORDER BY seq DESC LIMIT 1", (room["id"],)).fetchone()
+                room["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
             rooms.append(room)
         return sorted(rooms, key=lambda r: r["updated"], reverse=True)
 
@@ -4970,11 +5021,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                               for p in self.records(db, "agents", shared=True) if not p.get("deletedAt") and (p["rootId"] == a["rootId"] or p["id"] in peer_ids)],
                     "rooms": self.chat_rooms(db, viewer)}
 
-    def chat_read(self, room_id, viewer=None, before=None, limit=100, *, model=False):
+    def chat_read(self, room_id, viewer=None, before=None, limit=100, *, after=None, model=False):
         if before is not None and (not isinstance(before, int) or before < 1):
             raise ValueError("Invalid message cursor")
+        if after is not None and (not isinstance(after, int) or after < 1):
+            raise ValueError("Invalid message cursor")
+        if before is not None and after is not None:
+            raise ValueError("Use one message cursor")
+        if type(limit) is not int:
+            raise ValueError("Invalid message limit")
+        limit = max(1, min(100, limit))
         with self.read_db() as db:
-            rooms = self.chat_rooms(db, viewer)
             if isinstance(room_id, str) and room_id.startswith("feed:"):
                 if viewer is not None or model:
                     raise ValueError("The combined feed is available only in the user interface")
@@ -4982,26 +5039,62 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 root = self.agent(root_id, db)
                 if not root.get("isLead") or root.get("deletedAt"):
                     raise ValueError("Team is unavailable")
-                members = {a["id"] for a in self.records(db, "agents", shared=True)
-                           if (a["id"] == root_id or a.get("rootId") == root_id) and not a.get("deletedAt")}
-                ids = [r["id"] for r in rooms if
-                       (r.get("kind") == "broadcast" and r.get("rootId") == root_id) or
-                       (r.get("kind") != "broadcast" and r.get("members") and
-                        (set(r["members"]).issubset(members) or
-                         (r.get("peerTeamId") and set(r["members"]) & members)))]
+                members = [a["id"] for a in self.team_agents(db, root_id)]
                 room = {"id": room_id, "name": root["name"], "members": sorted(members)}
+                team_json = json.dumps(members)
+                feed_rooms = """SELECT r.id FROM runtime_rooms r
+                    WHERE (json_extract(r.record,'$.kind')='broadcast'
+                           AND json_extract(r.record,'$.rootId')=?)
+                       OR (json_extract(r.record,'$.kind')!='broadcast'
+                           AND json_array_length(json_extract(r.record,'$.members'))>0
+                           AND NOT EXISTS (SELECT 1 FROM json_each(r.record,'$.members') x
+                                           WHERE x.value NOT IN (SELECT value FROM json_each(?))))
+                       OR (json_extract(r.record,'$.kind')='private'
+                           AND json_array_length(json_extract(r.record,'$.members'))=2
+                           AND EXISTS (SELECT 1 FROM runtime_projects p,
+                                             json_each(p.record,'$.peerTeams') pt
+                                       WHERE EXISTS (SELECT 1 FROM json_each(pt.value,'$.members') pm
+                                                     WHERE pm.value IN (SELECT value FROM json_each(?)))
+                                         AND (SELECT count(*) FROM json_each(r.record,'$.members') rm
+                                              WHERE rm.value IN (SELECT value FROM json_each(pt.value,'$.members')))=2))"""
+                ordering = "ASC" if after is not None else "DESC"
+                cursor_filter = "AND seq>?" if after is not None else "AND (? IS NULL OR seq<?)"
+                cursor_params = ((after,) if after is not None else (before, before))
                 rows = db.execute(
-                    "SELECT * FROM runtime_chat_messages WHERE room IN (SELECT value FROM json_each(?)) "
-                    "AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
-                    (json.dumps(ids), before, before, limit + 1)).fetchall()
+                    f"SELECT * FROM runtime_chat_messages WHERE room IN ({feed_rooms}) "
+                    f"{cursor_filter} ORDER BY seq {ordering} LIMIT ?",
+                    (root_id, team_json, team_json, *cursor_params, limit + 1)).fetchall()
             else:
-                room = next((r for r in rooms if r["id"] == room_id), None)
+                room = next(iter(self.chat_rooms(db, viewer, room_id=room_id,
+                                                 include_last_message=False)), None)
                 if not room:
                     raise ValueError("Chat is unavailable or you are not a participant")
-                rows = db.execute("SELECT * FROM runtime_chat_messages WHERE room=? AND (? IS NULL OR seq<?) ORDER BY seq DESC LIMIT ?",
-                                  (room_id, before, before, limit + 1)).fetchall()
-            messages = [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in reversed(rows[:limit])]
-            names = {a["id"]: a["name"] for a in self.records(db, "agents", shared=True)}
+                ordering = "ASC" if after is not None else "DESC"
+                cursor_filter = "AND seq>?" if after is not None else "AND (? IS NULL OR seq<?)"
+                cursor_params = ((after,) if after is not None else (before, before))
+                rows = db.execute(f"SELECT * FROM runtime_chat_messages WHERE room=? "
+                                  f"{cursor_filter} ORDER BY seq {ordering} LIMIT ?",
+                                  (room_id, *cursor_params, limit + 1)).fetchall()
+            page_rows = []
+            page_bytes = 0
+            for row in rows[:limit]:
+                row_bytes = len(row["text"].encode("utf-8")) + len(row["deliveries"].encode("utf-8")) + 256
+                if page_rows and page_bytes + row_bytes > 1_000_000:
+                    break
+                page_rows.append(row)
+                page_bytes += row_bytes
+            more = len(rows) > len(page_rows)
+            if after is None:
+                page_rows = list(reversed(page_rows))
+            messages = [{**dict(r), "deliveries": json.loads(r["deliveries"])} for r in page_rows]
+            names_requested = {m["sender"] for m in messages}
+            if names_requested:
+                name_rows = db.execute("SELECT record FROM runtime_agents WHERE id IN (" +
+                                        ",".join("?" for _ in names_requested) + ")",
+                                        sorted(names_requested)).fetchall()
+                names = {a["id"]: a["name"] for a in (json.loads(row[0]) for row in name_rows)}
+            else:
+                names = {}
             for m in messages:
                 m["senderName"] = names.get(m["sender"], m["sender"])
                 for recipient, status in list(m["deliveries"].items()):
@@ -5011,9 +5104,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         if event and event["status"] in {"delivered", "failed", "cancelled", "stored_only"}:
                             m["deliveries"][recipient] = event["status"]
             if model:
-                return self.model_chat_page(room, messages, len(rows) > limit)
+                return self.model_chat_page(room, messages, more)
             return {"room": room, "messages": messages,
-                    "nextBefore": messages[0]["seq"] if len(rows) > limit else None}
+                    "nextBefore": messages[0]["seq"] if messages and after is None and more else None,
+                    "nextAfter": (messages[-1]["seq"] if messages and after is not None and more else
+                                  messages[-1]["seq"] if messages and before is not None else None)}
 
     def chat_message(self, sender_id, target, text, key, epoch=None, *, importance="message", progress_key=None, progress_version=None):
         if importance not in {"message", "progress", "question", "blocker", "result"}:
@@ -5093,12 +5188,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 event_id = "chat:" + key + ":" + recipient["id"]
                 self.enqueue(db, recipient, "agent_message", event, event_id)
                 deliveries[recipient["id"]] = "queued"
-            db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
-                       (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
+            message_row = db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                                     (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
             derived_room = (self.broadcast_room(db, room) if room["kind"] == "broadcast"
                             and room.get("rootId") != "all" else
-                            next(iter(self.chat_rooms(db, room_id=room["id"])), None))
+                            next(iter(self.chat_rooms(db, room_id=room["id"],
+                                                      include_last_message=False)), None))
             if derived_room:
+                derived_room["lastMessage"] = {"seq": message_row.lastrowid, "text": text[:180],
+                                                "created": room["updated"], "sender": sender_id}
                 from codex_sync_entities import put as sync_entity_put
                 sync_entity_put(db, "room", room["id"], derived_room)
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})

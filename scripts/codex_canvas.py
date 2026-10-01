@@ -1091,7 +1091,10 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/agent-chat" and canvas.runtime:
                     query = parse_qs(path.query)
                     before = int(query["before"][0]) if query.get("before") else None
-                    return self.send(canvas.runtime.chat_read(query.get("room", [""])[0], before=before))
+                    after = int(query["after"][0]) if query.get("after") else None
+                    limit = int(query["limit"][0]) if query.get("limit") else 100
+                    return self.send(canvas.runtime.chat_read(query.get("room", [""])[0],
+                                                             before=before, after=after, limit=limit))
                 if path.path == "/api/models" and canvas.runtime:
                     query = parse_qs(path.query)
                     account = query.get("account_key", ["default"])[0]

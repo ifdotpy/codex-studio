@@ -186,9 +186,13 @@ try {
     .getByRole("button", { name: "Earlier messages", exact: true })
     .click();
   await poll(
-    async () => (await page.locator(".team-message").count()) === 106,
+    async () =>
+      (await page
+        .locator(".unified-message-scroll")
+        .getAttribute("data-room-retained")) === "106",
     "earlier history",
   );
+  assert.ok((await page.locator(".team-message").count()) < 60);
   await page.waitForTimeout(1100);
   assert.equal(
     await page

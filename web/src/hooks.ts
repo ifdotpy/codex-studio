@@ -282,6 +282,15 @@ type TranscriptPage = {
   latest?: Json;
 };
 
+type RoomPage = {
+  items: Message[];
+  size: number;
+  before: number | null;
+  after: number | null;
+  pollAfter: number | null;
+  anchorId?: string;
+};
+
 function mergeTranscript(earlier: Message[], later: Message[]): Message[] {
   return [
     ...new Map([...earlier, ...later].map((item) => [item.id, item])).values(),
@@ -306,6 +315,15 @@ export function useMessages(
   );
   const messageSizes = useRef(new WeakMap<Message, number>());
   const pages = useRef(new Map<string, TranscriptPage>());
+  const roomPages = useRef(new Map<string, RoomPage>());
+  const sizeOfMessage = (item: Message) => {
+    let size = messageSizes.current.get(item);
+    if (size === undefined) {
+      size = JSON.stringify(item).length * 2;
+      messageSizes.current.set(item, size);
+    }
+    return size;
+  };
   const retained =
     managed && kind === "agent" ? history.current.get(scope) : undefined;
   const prefetched =
@@ -544,24 +562,57 @@ export function useMessages(
         allowed();
       try {
         if (kind === "room") {
-          const d = await api(`/api/agent-chat?room=${encodeURIComponent(id)}`);
+          const page = roomPages.current.get(scope);
+          const cursor = page?.pollAfter ?? null;
+          const params = new URLSearchParams({ room: id, limit: "100" });
+          if (cursor != null) params.set("after", String(cursor));
+          const d = await api(`/api/agent-chat?${params}`);
           if (!current()) return;
           setNotice("");
           setLoadedId(scope);
-          setItems((old) =>
-            [
-              ...new Map(
-                [
-                  ...old,
-                  ...d.messages.map((m: Message) => ({
-                    ...m,
-                    role: "assistant",
-                  })),
-                ].map((m) => [m.id, m]),
-              ).values(),
-            ].sort((a, b) => (a.seq || 0) - (b.seq || 0)),
-          );
-          if (!expanded.current) setBefore(d.nextBefore);
+          const received = (d.messages || []).map((m: Message) => ({
+            ...m,
+            role: "assistant",
+          }));
+          if (!page || cursor == null) {
+            const bounded = boundTranscriptItems(received, sizeOfMessage);
+            const next: RoomPage = {
+              items: bounded.items,
+              size: bounded.bytes,
+              before: d.nextBefore ?? null,
+              after: null,
+              pollAfter: received.at(-1)?.seq ?? null,
+            };
+            roomPages.current.set(scope, next);
+            trimTranscriptPageCache(roomPages.current, scope);
+            setBefore(next.before);
+            setAfter(null);
+            setItems(next.items);
+          } else if (received.length) {
+            const bounded = boundTranscriptItems(
+              [...page.items, ...received],
+              sizeOfMessage,
+              "newest",
+              page.anchorId,
+            );
+            const next: RoomPage = {
+              items: bounded.items,
+              size: bounded.bytes,
+              before: bounded.droppedOldest
+                ? (bounded.items[0]?.seq ?? page.before)
+                : page.before,
+              after: bounded.droppedNewest
+                ? (bounded.items.at(-1)?.seq ?? page.after)
+                : page.after,
+              pollAfter: received.at(-1)?.seq ?? page.pollAfter,
+              anchorId: page.anchorId,
+            };
+            roomPages.current.set(scope, next);
+            trimTranscriptPageCache(roomPages.current, scope);
+            setBefore(next.before);
+            setAfter(next.after == null ? null : String(next.after));
+            setItems(next.items);
+          }
         } else if (kind === "legacy") {
           const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
           if (!current()) return;
@@ -603,10 +654,11 @@ export function useMessages(
     const retained =
       managed && kind === "agent" ? history.current.get(scope) : undefined;
     const page = pages.current.get(scope);
-    setLoadedId(retained || page ? scope : null);
-    setItems(page?.items || retained?.items || []);
+    const roomPage = kind === "room" ? roomPages.current.get(scope) : undefined;
+    setLoadedId(retained || page || roomPage ? scope : null);
+    setItems(page?.items || retained?.items || roomPage?.items || []);
     setHistorical(!!page?.focused);
-    setAfter(page?.after || null);
+    setAfter(page?.after || roomPage?.after?.toString() || null);
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
@@ -614,7 +666,7 @@ export function useMessages(
     setLiveAgent(null);
     setConnection("");
     setNotice(retained?.notice || "");
-    setBefore(page?.before || null);
+    setBefore(page?.before || roomPage?.before || null);
     expanded.current = false;
     if (seed) {
       syncActive.current = scope;
@@ -638,7 +690,7 @@ export function useMessages(
       await load(() => !stopped && !streamLive);
       polling = false;
       if (!stopped && !streamLive)
-        timer = setTimeout(poll, managed ? 2000 : 900);
+        timer = setTimeout(poll, managed || kind === "room" ? 2000 : 900);
     };
     if (!id || !managed || kind !== "agent") {
       void poll();
@@ -884,6 +936,15 @@ export function useMessages(
     }
   };
   const showLatest = () => {
+    if (kind === "room") {
+      roomPages.current.delete(scope);
+      setItems([]);
+      setBefore(null);
+      setAfter(null);
+      setLoadedId(null);
+      void load();
+      return;
+    }
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
@@ -910,8 +971,48 @@ export function useMessages(
     pageAnchor.current = anchorId ? { scope, id: anchorId } : null;
     const page = pages.current.get(scope);
     if (page) page.anchorId = anchorId || undefined;
+    const roomPage = roomPages.current.get(scope);
+    if (roomPage) roomPage.anchorId = anchorId || undefined;
   };
   const newer = async () => {
+    if (kind === "room" && id) {
+      const page = roomPages.current.get(scope);
+      if (!page?.after) return;
+      const params = new URLSearchParams({
+        room: id,
+        after: String(page.after),
+        limit: "100",
+      });
+      const d = await api(`/api/agent-chat?${params}`);
+      if (active.current !== scope) return;
+      const later = (d.messages || []).map((m: Message) => ({
+        ...m,
+        role: "assistant",
+      }));
+      const bounded = boundTranscriptItems(
+        [...page.items, ...later],
+        sizeOfMessage,
+        "newest",
+        page.anchorId,
+      );
+      const next: RoomPage = {
+        items: bounded.items,
+        size: bounded.bytes,
+        before: bounded.droppedOldest
+          ? (bounded.items[0]?.seq ?? page.before)
+          : page.before,
+        after: bounded.droppedNewest
+          ? (bounded.items.at(-1)?.seq ?? page.after)
+          : (d.nextAfter ?? null),
+        pollAfter: later.at(-1)?.seq ?? page.pollAfter,
+        anchorId: page.anchorId,
+      };
+      roomPages.current.set(scope, next);
+      setItems(next.items);
+      setBefore(next.before);
+      setAfter(next.after == null ? null : String(next.after));
+      return;
+    }
     if (after)
       await fetchPage({
         after,
@@ -923,6 +1024,46 @@ export function useMessages(
   };
   const older = async () => {
     if (!id || !before) return;
+    if (kind === "room") {
+      const page = roomPages.current.get(scope);
+      if (!page) return;
+      const params = new URLSearchParams({
+        room: id,
+        before: String(page.before ?? before),
+        limit: "100",
+      });
+      const d = await api(`/api/agent-chat?${params}`);
+      if (active.current !== scope) return;
+      const olderItems = (d.messages || []).map((m: Message) => ({
+        ...m,
+        role: "assistant",
+      }));
+      const bounded = boundTranscriptItems(
+        [...olderItems, ...page.items],
+        sizeOfMessage,
+        "oldest",
+        page.anchorId,
+      );
+      const next: RoomPage = {
+        items: bounded.items,
+        size: bounded.bytes,
+        before: bounded.droppedOldest
+          ? (bounded.items[0]?.seq ?? d.nextBefore ?? null)
+          : (d.nextBefore ?? null),
+        after: bounded.droppedNewest
+          ? (bounded.items.at(-1)?.seq ?? page.after)
+          : null,
+        pollAfter: page.pollAfter,
+        anchorId: page.anchorId,
+      };
+      roomPages.current.set(scope, next);
+      trimTranscriptPageCache(roomPages.current, scope);
+      expanded.current = true;
+      setBefore(next.before);
+      setAfter(next.after == null ? null : String(next.after));
+      setItems(next.items);
+      return;
+    }
     if (managed && kind === "agent") {
       await fetchPage({
         before: String(before),
