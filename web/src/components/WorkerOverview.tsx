@@ -30,6 +30,7 @@ export function workerState(
     return deferred?.has(agent.id) ? "waiting" : "answer";
   if (["failed", "interrupted"].includes(agent.status)) return "attention";
   if (["running", "starting"].includes(agent.status)) return "working";
+  if (agent.status === "parked") return "waiting";
   if (agent.status === "completed") return "completed";
   // A paused worker was stopped. It does not wait for input or delivery.
   if (agent.status === "paused") return "stopped";
@@ -199,7 +200,7 @@ export default function WorkerCard({
                           (agent.startAttempt?.prepareError ||
                             agent.startAttempt?.responseError)
                         ? "Waiting for Codex"
-                        : [statusLabel(agent.status), nativeReleaseLabel(agent)]
+                        : [statusLabel(agent.status, undefined, agent.parkedEvent), nativeReleaseLabel(agent)]
                             .filter(Boolean).join(" · ")}
               </small>
               <span

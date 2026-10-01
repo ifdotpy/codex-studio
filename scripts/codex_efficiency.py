@@ -106,7 +106,11 @@ class EfficiencyMixin:
 
     @staticmethod
     def task_brief(task):
-        return {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
+        brief = {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
+        if task.get('archive'):
+            brief['archive'] = {k: task['archive'].get(k) for k in ('status', 'reason')
+                                if task['archive'].get(k) is not None}
+        return brief
 
     def model_peers_directory(self, db, actor_id, args, actor):
         scope = args.get('scope', 'team')
@@ -151,7 +155,9 @@ class EfficiencyMixin:
             terminal_monitors = {'completed', 'failed', 'cancelled', 'lost'}
             def agent_record(a):
                 return {**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
-                        'error': clip(a.get('error') or '', 600)}
+                        'error': clip(a.get('error') or '', 600),
+                        **({'waitsForEvent': a['parkedEvent']}
+                           if a.get('status') == 'parked' and a.get('parkedEvent') else {})}
             def monitor_record(m):
                 return {**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
                         'error': clip(m.get('error') or '', 600)}

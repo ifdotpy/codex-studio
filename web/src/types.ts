@@ -24,6 +24,7 @@ export interface Agent extends Json {
   tail?: string;
   created: number;
   inFlight?: boolean;
+  parkedEvent?: string;
   compactions?: number;
   panelVersion?: number;
   panelDataVersion?: number;
@@ -162,7 +163,8 @@ export const nativeReleaseLabel = (agent: Agent) => {
     ? "Tool reset waits for Codex to close the native session"
     : "Native thread released";
 };
-export const statusLabel = (status: string, phase?: string) =>
+export const statusLabel = (status: string, phase?: string, parkedEvent?: string) =>
+  (status === "parked" && parkedEvent ? `Waits for event ${parkedEvent}` : null) ||
   (status === "running" &&
     phase &&
     (
@@ -184,6 +186,7 @@ export const statusLabel = (status: string, phase?: string) =>
     completed: "Complete",
     failed: "Failed",
     paused: "Stopped",
+    parked: "Waits for event",
     approval: "Needs an answer",
     interrupted: "Interrupted",
   }[status] ||
