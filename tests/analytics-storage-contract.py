@@ -81,9 +81,9 @@ class AnalyticsStorageContract(unittest.TestCase):
             self.assertTrue(migrated["writesMs"])
 
     def test_space_check_refuses_before_copy(self):
-        class Usage:
+        class LowUsage:
             free = storage.COPY_SPACE_BYTES - 1
-        with patch.object(storage.shutil, "disk_usage", return_value=Usage()):
+        with patch.object(storage.shutil, "disk_usage", return_value=LowUsage()):
             advanced, status, _ = storage.copy_step(self.analytics, self.canvas)
         self.assertFalse(advanced)
         self.assertEqual(status, "insufficientSpace")
@@ -92,6 +92,16 @@ class AnalyticsStorageContract(unittest.TestCase):
             self.assertEqual(state["copied"], 0)
         with database(self.canvas) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM analytics_items").fetchone()[0], 400)
+        class RecoveredUsage:
+            free = storage.COPY_SPACE_BYTES + storage.MIN_FREE_BYTES
+        with patch.object(storage.shutil, "disk_usage", return_value=RecoveredUsage()):
+            advanced, status, _ = storage.copy_step(self.analytics, self.canvas)
+        self.assertTrue(advanced)
+        self.assertEqual(status, "checkSpace")
+        with patch.object(storage.shutil, "disk_usage", return_value=RecoveredUsage()):
+            advanced, status, _ = storage.copy_step(self.analytics, self.canvas)
+        self.assertTrue(advanced)
+        self.assertEqual(status, "copy")
 
 
 if __name__ == "__main__":

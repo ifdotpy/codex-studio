@@ -40,6 +40,19 @@ def copy_step(analytics_path, canvas_path):
         state = db.execute("SELECT value FROM analytics_meta WHERE key='fileMigrationV1'").fetchone()
         migration = json.loads(state[0]) if state else {"phase": "checkSpace", "tables": {}, "copied": 0,
                                                          "batches": 0, "writesMs": []}
+        if migration["phase"] == "insufficientSpace":
+            free = shutil.disk_usage(analytics_path.parent).free
+            if free < COPY_SPACE_BYTES:
+                migration["freeBytes"] = free
+                _save(db, migration)
+                db.commit()
+                return False, "insufficientSpace", 0
+            migration["phase"] = "checkSpace"
+            migration["freeBytes"] = free
+            _save(db, migration)
+            db.commit()
+            return True, "checkSpace", 0
+
         if migration["phase"] == "checkSpace":
             unknown = sorted(source - TABLES.keys())
             if unknown:
@@ -225,10 +238,10 @@ def start(runtime):
             try:
                 advanced, status, _elapsed = copy_step(runtime.analytics_db_path, runtime.db_path)
                 runtime.analytics_migration_status = {"status": status, "updated": time.time()}
-                if status in {"complete", "insufficientSpace", "unsupportedTables", "missingTargetTable"}:
+                if status in {"complete", "unsupportedTables", "missingTargetTable"}:
                     return
                 if not advanced:
-                    time.sleep(30 if status == "waitingForSpace" else .5)
+                    time.sleep(30 if status in {"waitingForSpace", "insufficientSpace"} else .5)
             except Exception as error:
                 runtime.analytics_migration_status = {"status": "error", "updated": time.time(),
                                                       "error": f"{type(error).__name__}: {error}"[:1000]}

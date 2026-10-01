@@ -371,6 +371,7 @@ class WorkMixin:
                         self._search_cleanup_batch(db)
                     else:
                         return
+                self.search_migration_error = None
                 if blocked_for_space:
                     delay = 30
                 time.sleep(delay)

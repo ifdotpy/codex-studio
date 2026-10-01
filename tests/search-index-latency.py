@@ -3,12 +3,17 @@ import hashlib
 import json
 import sqlite3
 import sys
+import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_search_text import search_text, search_texts
 from codex_work import WorkMixin
+import codex_work
 
 
 class SearchIndex(unittest.TestCase):
@@ -21,6 +26,8 @@ class SearchIndex(unittest.TestCase):
         CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);
         CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61');
         CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER UNIQUE);
+        CREATE TABLE runtime_search_rows_rollout(id INTEGER PRIMARY KEY,cursor INTEGER);
+        INSERT INTO runtime_search_rows_rollout VALUES(1,0);
         CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
         CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
         CREATE TABLE runtime_search_next_meta(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,search_rowid INTEGER UNIQUE);
@@ -137,6 +144,47 @@ class SearchIndex(unittest.TestCase):
         self.work.delete_search_item(self.db, key)
         self.db.rollback()
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_next WHERE runtime_search_next MATCH 'updated'").fetchone()[0], 1)
+
+    def test_finished_row_check_can_be_reentered_before_search_build(self):
+        self.seed(3)
+        final_rowid = self.db.execute("SELECT max(rowid) FROM runtime_search").fetchone()[0]
+        self.db.execute("UPDATE runtime_search_rows_rollout SET cursor=? WHERE id=1", (final_rowid,))
+        self.assertFalse(self.work._check_search_rows_batch(self.db))
+        self.assertIsNone(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows_rollout'").fetchone())
+        # The migration worker calls the row-check helper again on its next
+        # pass. Completion must be idempotent so the new FTS index can proceed.
+        self.assertFalse(self.work._check_search_rows_batch(self.db))
+        self.assertTrue(self.work._search_migration_batch(self.db, batch_size=2))
+
+    def test_low_disk_waits_with_legacy_index_intact(self):
+        self.seed(2)
+        self.db.execute("UPDATE runtime_search_rollout SET phase='building' WHERE id=1")
+        self.db.commit()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "canvas.sqlite3"
+            path.write_bytes(b"fixture")
+            owner = self
+            class Migrator(WorkMixin):
+                closed = False
+                lock = threading.RLock()
+                db_path = path
+                @contextmanager
+                def db(self):
+                    yield owner.db
+            migrator = Migrator()
+            class Usage:
+                free = 0
+            def pause(_seconds):
+                migrator.closed = True
+            with patch.object(codex_work.shutil, "disk_usage", return_value=Usage()), \
+                    patch.object(codex_work.time, "sleep", side_effect=pause):
+                migrator._search_migration_run()
+            self.assertEqual(self.db.execute(
+                "SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()[0], "waiting_for_space")
+            self.assertIsNotNone(self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='runtime_search'").fetchone())
+            self.assertEqual(self.db.execute(
+                "SELECT count(*) FROM runtime_search WHERE runtime_search MATCH 'original'").fetchone()[0], 2)
 
     def test_text_accessor_prefers_fulltext_and_resolves_input_events(self):
         body = "complete " * 3000

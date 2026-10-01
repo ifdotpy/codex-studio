@@ -679,6 +679,8 @@ def make_server(canvas, port=0, public_origin=None):
                 sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript,
                                           chat_snapshot=lambda: snapshot(include_work=False),
                                           state_signature=state_signature)
+                if canvas.runtime is not None:
+                    canvas.runtime.sync_store = sync_store[0]
             return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):

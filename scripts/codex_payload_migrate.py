@@ -7,6 +7,7 @@ serving requests. Each batch commits its cursor and changes together.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -47,7 +48,13 @@ def _connect(database: Path) -> sqlite3.Connection:
     db.execute("PRAGMA synchronous=NORMAL")
     ensure_payload_schema(db)
     db.execute("CREATE TABLE IF NOT EXISTS runtime_payload_migrations "
-               "(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0)")
+               "(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,"
+               "status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT)")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(runtime_payload_migrations)")}
+    for name, declaration in (("status", "TEXT NOT NULL DEFAULT 'pending'"),
+                              ("updated", "REAL"), ("error", "TEXT")):
+        if name not in columns:
+            db.execute(f"ALTER TABLE runtime_payload_migrations ADD COLUMN {name} {declaration}")
     return db
 
 
@@ -93,7 +100,14 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
         return {"table": table, "done": True, "cursor": cursor, "rows": 0, "movedBytes": 0, "lockMs": 0}
     free = shutil.disk_usage(state).free
     if free < FREE_SPACE_RESERVE:
-        raise OSError("Not enough free disk space to begin a payload migration batch")
+        db.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete,status,updated,error) "
+                   "VALUES (?,?,0,'waitingForSpace',?,NULL) ON CONFLICT(name) DO UPDATE SET "
+                   "status='waitingForSpace',updated=excluded.updated,error=NULL",
+                   (key, cursor, now))
+        db.commit()
+        release_db_writer_lock(db)
+        return {"table": table, "done": False, "waitingForSpace": True, "cursor": cursor,
+                "rows": 0, "movedBytes": 0, "lockMs": 0}
 
     rows = db.execute(f"SELECT rowid,id,{column} FROM {runtime_table} WHERE rowid>? ORDER BY rowid LIMIT ?",
                       (cursor, batch_rows)).fetchall()
@@ -123,8 +137,21 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
             staged.append((row, raw_record, updated, next_record))
             if staged_bytes >= batch_bytes:
                 break
-    except BaseException:
+    except BaseException as error:
         release_db_writer_lock(db)
+        waiting = isinstance(error, OSError) and error.errno == errno.ENOSPC
+        try:
+            db.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete,status,updated,error) "
+                       "VALUES (?,?,0,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                       "status=excluded.status,updated=excluded.updated,error=excluded.error",
+                       (key, cursor, "waitingForSpace" if waiting else "error", now,
+                        None if waiting else f"{type(error).__name__}: {error}"[:500]))
+            db.commit()
+        except Exception:
+            pass
+        if waiting:
+            return {"table": table, "done": False, "waitingForSpace": True, "cursor": cursor,
+                    "rows": 0, "movedBytes": 0, "lockMs": 0}
         raise
 
     started = time.perf_counter_ns()
@@ -161,9 +188,11 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
             scanned += 1
             last = row["rowid"]
         done = not conflict and len(rows) < batch_rows and len(staged) == len(rows)
-        db.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete) VALUES (?,?,?) "
-                   "ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor,complete=excluded.complete",
-                   (key, last, int(done)))
+        db.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete,status,updated,error) "
+                   "VALUES (?,?,?, ?,?,NULL) ON CONFLICT(name) DO UPDATE SET "
+                   "cursor=excluded.cursor,complete=excluded.complete,status=excluded.status,"
+                   "updated=excluded.updated,error=NULL",
+                   (key, last, int(done), "complete" if done else "running", now))
         db.commit()
     except BaseException:
         db.rollback()
@@ -194,6 +223,10 @@ def run(state: Path, *, tables: list[str], batch_rows: int, batch_bytes: int,
                 if result.get("busy"):
                     time.sleep(0.05)
                     unfinished = True
+                    continue
+                if result.get("waitingForSpace"):
+                    unfinished = True
+                    time.sleep(30)
                     continue
                 if not result["done"]:
                     unfinished = True

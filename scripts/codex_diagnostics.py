@@ -115,6 +115,52 @@ def lock_samples(runtime, count=5):
     return values
 
 
+def migration_status(runtime):
+    """Expose durable migration cursors and transient errors to operators."""
+    status = {}
+    try:
+        with runtime.db() as db:
+            tables = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            if "runtime_search_rollout" in tables:
+                row = db.execute("SELECT phase,cursor,updated FROM runtime_search_rollout WHERE id=1").fetchone()
+                if row:
+                    status["search"] = {"phase": row[0], "cursor": row[1], "updated": row[2],
+                                         "error": getattr(runtime, "search_migration_error", None),
+                                         "lastBatchBytes": getattr(runtime, "search_migration_last_batch_bytes", None)}
+            if "runtime_payload_migrations" in tables:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(runtime_payload_migrations)")}
+                selected = "name,cursor,complete" + (",status,updated,error" if "status" in columns else "")
+                payload = {}
+                for row in db.execute("SELECT " + selected + " FROM runtime_payload_migrations"):
+                    payload[row[0]] = {"cursor": row[1], "complete": bool(row[2]),
+                                       "status": row[3] if len(row) > 3 else ("complete" if row[2] else "pending"),
+                                       "updated": row[4] if len(row) > 4 else None,
+                                       "error": row[5] if len(row) > 5 else None}
+                status["payloads"] = {name: payload.get("payload-v1:" + name,
+                                                       {"cursor": 0, "complete": False,
+                                                        "status": "pending", "updated": None,
+                                                        "error": None})
+                                       for name in ("checkpoints", "tool_requests", "tool_results", "tasks")}
+            else:
+                status["payloads"] = {name: {"cursor": 0, "complete": False,
+                                             "status": "pending", "updated": None, "error": None}
+                                       for name in ("checkpoints", "tool_requests", "tool_results", "tasks")}
+            if "sync_entity_meta" in tables:
+                values = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
+                                         "('entity_tombstone_count','entity_tombstone_floor')"))
+                status["entityTombstones"] = {
+                    "count": int(values.get("entity_tombstone_count", 0)),
+                    "floor": int(values.get("entity_tombstone_floor", 0)),
+                    "pruning": getattr(getattr(runtime, "sync_store", None),
+                                       "entity_prune_status", {"status": "notStarted"}),
+                }
+    except Exception as error:
+        status["stateReadError"] = f"{type(error).__name__}: {error}"[:500]
+    status["analyticsFile"] = getattr(runtime, "analytics_migration_status", {"status": "idle"})
+    return status
+
+
 def snapshot(runtime, root_pid=None, ps_output=None):
     root_pid = os.getpid() if root_pid is None else root_pid
     started = time.monotonic()
@@ -183,5 +229,6 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "studioLoadedThreads": studio_loaded, "queues": queues,
             "runtimeLockSamples": sampled,
             "sqliteContention": sqlite_diagnostics(),
+            "migrations": migration_status(runtime),
             "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"}),
             "searchMigrationError": getattr(runtime, "search_migration_error", None)}

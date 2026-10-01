@@ -29,6 +29,7 @@ class SyncStore:
         self._observed_state_signature = None
         self._signature_lock = threading.Lock()
         self._entity_prune_lock = threading.Lock()
+        self.entity_prune_status = {"status": "idle", "updated": time.time(), "deleted": 0}
         # One scope stays serial: its compare-and-replace keeps one checkpoint
         # per version. Other scopes proceed; a slow state snapshot must not
         # delay transcript pulls. A fixed stripe count bounds memory.
@@ -99,8 +100,10 @@ class SyncStore:
         """Continue tombstone cleanup outside task writes and HTTP pulls."""
         if not self._entity_prune_lock.acquire(blocking=False):
             return
+        self.entity_prune_status = {"status": "running", "updated": time.time(), "deleted": 0}
 
         def prune():
+            total_deleted = 0
             try:
                 from codex_sync_entities import (ENTITY_TOMBSTONE_LIMIT,
                                                  prune_entity_tombstones)
@@ -114,14 +117,23 @@ class SyncStore:
                     except sqlite3.OperationalError as error:
                         if 'locked' not in str(error).lower() and 'busy' not in str(error).lower():
                             raise
+                        self.entity_prune_status = {"status": "waitingForLock", "updated": time.time(),
+                                                    "deleted": total_deleted}
                         time.sleep(0.15)
                         continue
+                    total_deleted += deleted
+                    self.entity_prune_status = {"status": "running", "updated": time.time(),
+                                                "deleted": total_deleted, "remaining": remaining}
                     if deleted == 0 or remaining <= ENTITY_TOMBSTONE_LIMIT:
                         break
                     time.sleep(0.15)
-            except (sqlite3.Error, OSError):
-                # A later entity pull can safely resume this idempotent cleanup.
-                pass
+                self.entity_prune_status = {"status": "complete", "updated": time.time(),
+                                            "deleted": total_deleted, "remaining": remaining}
+            except Exception as error:
+                # Keep the failure visible; a later entity pull can retry.
+                self.entity_prune_status = {"status": "error", "updated": time.time(),
+                                            "deleted": total_deleted,
+                                            "error": f"{type(error).__name__}: {error}"[:500]}
             finally:
                 self._entity_prune_lock.release()
 

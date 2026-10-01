@@ -9,10 +9,12 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from codex_payload_migrate import migrate_batch
+import codex_payload_migrate
 from codex_payloads import (
     EXTERNALIZE_THRESHOLD,
     TASK_PREVIEW_BYTES,
@@ -39,7 +41,8 @@ class PayloadStorageContract(unittest.TestCase):
         self.db.execute("CREATE INDEX runtime_task_agent_created_id ON runtime_tasks "
                         "(json_extract(record,'$.agent'),json_extract(record,'$.created') DESC,id DESC)")
         self.db.execute("CREATE TABLE runtime_payload_migrations "
-                        "(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0)")
+                        "(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,"
+                        "status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT)")
         self.db.commit()
 
     def tearDown(self):
@@ -106,6 +109,24 @@ class PayloadStorageContract(unittest.TestCase):
         self.assertEqual(result, {"deleted": 1, "bytes": len(b"orphan")})
         self.assertTrue((self.root / "blobs" / ref["sha256"][:2] / ref["sha256"][2:4] / ref["sha256"]).exists())
         self.assertEqual(load_bytes(self.root, ref), b"referenced")
+
+    def test_low_space_persists_waiting_status_without_changing_payload_rows(self):
+        record = {"id": "cp", "items": ["large-" + "x" * 1000]}
+        self.db.execute("INSERT INTO runtime_checkpoints VALUES (?,?)", ("cp", json.dumps(record)))
+        self.db.commit()
+
+        class Usage:
+            free = codex_payload_migrate.FREE_SPACE_RESERVE - 1
+
+        with patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()):
+            result = migrate_batch(self.root, self.db, "checkpoints")
+        self.assertFalse(result["done"])
+        self.assertTrue(result["waitingForSpace"])
+        self.assertEqual(json.loads(self.db.execute(
+            "SELECT record FROM runtime_checkpoints WHERE id='cp'").fetchone()[0]), record)
+        status = self.db.execute("SELECT status,cursor FROM runtime_payload_migrations "
+                                 "WHERE name='payload-v1:checkpoints'").fetchone()
+        self.assertEqual(tuple(status), ("waitingForSpace", 0))
 
 
 if __name__ == "__main__":

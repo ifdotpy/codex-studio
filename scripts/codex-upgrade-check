@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Print target checkout, disk, running-agent, and migration prechecks as JSON."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import sqlite3
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from codex_state import ACTIVE, state_dir as default_state_dir
+
+
+PAYLOAD_TABLES = ("checkpoints", "tool_requests", "tool_results", "tasks")
+
+
+def git_status(repo: Path) -> dict:
+    try:
+        branch = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"],
+                                check=True, text=True, capture_output=True, timeout=5).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1"],
+                               check=True, text=True, capture_output=True, timeout=5).stdout.splitlines()
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              check=True, text=True, capture_output=True, timeout=5).stdout.strip()
+        return {"ok": not dirty, "branch": branch, "head": head, "dirtyFiles": dirty}
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"ok": False, "error": f"{type(error).__name__}: {error}"}
+
+
+def table_names(db: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def local_migrations(state: Path) -> dict:
+    result = {"search": {"phase": "unavailable"},
+              "payloads": {name: {"cursor": 0, "complete": False, "status": "pending",
+                                  "updated": None, "error": None} for name in PAYLOAD_TABLES},
+              "entityTombstones": {"status": "unavailable"},
+              "analyticsFile": {"status": "unavailable"}}
+    canvas = state / "canvas.sqlite3"
+    if canvas.exists():
+        db = None
+        try:
+            db = sqlite3.connect(f"file:{canvas}?mode=ro", uri=True, timeout=2)
+            names = table_names(db)
+            missing = {"runtime_agents", "runtime_items"} - names
+            if missing:
+                result["canvasReadError"] = "missing required runtime tables: " + ", ".join(sorted(missing))
+            if "runtime_search_rollout" in names:
+                row = db.execute("SELECT phase,cursor,updated FROM runtime_search_rollout WHERE id=1").fetchone()
+                result["search"] = (dict(phase=row[0], cursor=row[1], updated=row[2])
+                                     if row else {"phase": "missingState"})
+            elif "runtime_search" in names:
+                result["search"] = {"phase": "legacy", "cursor": None, "updated": None}
+            if "runtime_payload_migrations" in names:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(runtime_payload_migrations)")}
+                selected = "name,cursor,complete" + (",status,updated,error" if "status" in columns else "")
+                rows = {}
+                for row in db.execute("SELECT " + selected + " FROM runtime_payload_migrations"):
+                    rows[row[0]] = {"cursor": row[1], "complete": bool(row[2]),
+                                    "status": row[3] if len(row) > 3 else ("complete" if row[2] else "pending"),
+                                    "updated": row[4] if len(row) > 4 else None,
+                                    "error": row[5] if len(row) > 5 else None}
+                result["payloads"] = {name: rows.get("payload-v1:" + name,
+                                                       {"cursor": 0, "complete": False,
+                                                        "status": "pending", "updated": None,
+                                                        "error": None})
+                                       for name in PAYLOAD_TABLES}
+            if "sync_entity_meta" in names:
+                values = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
+                                         "('entity_tombstone_count','entity_tombstone_floor')"))
+                result["entityTombstones"] = {"status": "ready",
+                    "count": int(values.get("entity_tombstone_count", 0)),
+                    "floor": int(values.get("entity_tombstone_floor", 0))}
+            if "runtime_agents" in names:
+                active = []
+                for (raw,) in db.execute("SELECT record FROM runtime_agents"):
+                    record = json.loads(raw)
+                    if record.get("status") in ACTIVE | {"approval"}:
+                        active.append(record.get("id"))
+                result["runningAgents"] = active
+            if not (state / "analytics.sqlite3").exists() and any(
+                    name.startswith("analytics_") for name in names):
+                result["analyticsFile"] = {"status": "pending", "source": "canvas.sqlite3"}
+        except (OSError, sqlite3.Error, ValueError) as error:
+            result["canvasReadError"] = f"{type(error).__name__}: {error}"
+        finally:
+            if db is not None:
+                db.close()
+    analytics = state / "analytics.sqlite3"
+    if analytics.exists():
+        db = None
+        try:
+            db = sqlite3.connect(f"file:{analytics}?mode=ro", uri=True, timeout=2)
+            if "analytics_meta" in table_names(db):
+                row = db.execute("SELECT value FROM analytics_meta WHERE key='fileMigrationV1'").fetchone()
+                result["analyticsFile"] = json.loads(row[0]) if row else {"phase": "notStarted"}
+        except (OSError, sqlite3.Error, ValueError) as error:
+            result["analyticsReadError"] = f"{type(error).__name__}: {error}"
+        finally:
+            if db is not None:
+                db.close()
+    return result
+
+
+def live_diagnostics(url: str) -> tuple[dict | None, str | None]:
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            data = json.load(response)
+        return data, None
+    except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        return None, f"{type(error).__name__}: {error}"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
+    parser.add_argument("--diagnostics-url", default="http://127.0.0.1:4620/api/diagnostics")
+    args = parser.parse_args()
+    repo, state = args.repo.expanduser().resolve(), args.state_dir.expanduser().resolve()
+    canvas = state / "canvas.sqlite3"
+    size = canvas.stat().st_size if canvas.exists() else 0
+    try:
+        free = shutil.disk_usage(state if state.exists() else state.parent).free
+        disk_error = None
+    except OSError as error:
+        free, disk_error = None, f"{type(error).__name__}: {error}"
+    git = git_status(repo)
+    py_ok = sys.version_info >= (3, 11)
+    sqlite_ok = sqlite3.sqlite_version_info >= (3, 43, 0)
+    live, live_error = live_diagnostics(args.diagnostics_url)
+    local = local_migrations(state)
+    migrations = live.get("migrations") if live and isinstance(live.get("migrations"), dict) else local
+    report = {
+        "repo": str(repo), "stateDir": str(state),
+        "prechecks": {
+            "git": git,
+            "python": {"version": sys.version.split()[0], "minimum": "3.11", "ok": py_ok},
+            "sqlite": {"version": sqlite3.sqlite_version, "minimum": "3.43.0", "ok": sqlite_ok},
+            "disk": {"freeBytes": free, "canvasBytes": size,
+                     "freeToCanvasRatio": (round(free / size, 3) if free is not None and size else None),
+                     "analyticsCopyRequiredBytes": 16_500_000_000,
+                     "analyticsPauseBelowBytes": 4 * 1024**3,
+                     "status": "unknown" if free is None else "measured", "error": disk_error},
+            "stateDatabase": {"exists": canvas.exists(), "readable": canvas.exists()
+                              and "canvasReadError" not in local
+                              and "canvasReadError" not in migrations,
+                              "bytes": size},
+            "migrationStateReadErrors": [local[key] for key in ("canvasReadError", "analyticsReadError")
+                                         if key in local],
+            "diagnostics": {"url": args.diagnostics_url, "reachable": live is not None,
+                            "error": live_error},
+        },
+        "runningAgents": local.get("runningAgents"),
+        "runningAgentCount": len(local.get("runningAgents", [])),
+        "migrations": migrations,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
