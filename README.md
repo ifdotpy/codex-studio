@@ -241,7 +241,8 @@ Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. Mobile sync uses one shared event stream.
+histories through its existing API. Mobile sync uses separate event streams for
+entity state, drafts, and open transcripts.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
 The current chat loads first. At most two background histories load at once.
@@ -250,13 +251,17 @@ After a network change or a return to Studio, sync replaces the old connection.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `npm --prefix web run test:mobile` for the mobile regression suite.
-Set `BROWSER=webkit` for the WebKit lifecycle and delivery checks.
-The performance fixture uses Chromium network and CPU controls in either run.
+Run `BROWSER=webkit npm --prefix web run test:mobile` for the WebKit suite, where supported.
+The performance fixture emulates a 390-pixel phone. Chromium uses Fast 4G and
+four-times CPU slowdown. WebKit throttles asset responses only. Its local fixture
+API and CPU are not throttled.
 These checks do not replace a test on a physical iPhone.
 
 Run `npm --prefix web run test:responsiveness` for the draft and transcript checks.
-The final fixture measures the production UI with 301 messages and a CPU slowdown of four.
-See [the measurement report](docs/verification/2026-09-12-ui-responsiveness.md) for results and limits.
+The mobile fixture measures 1,500 agents, 2,700 entity rows, and 1,500-message
+transcripts. See [the measurement report](docs/verification/2026-09-12-ui-responsiveness.md)
+for earlier results and limits. See [the mobile performance report](docs/verification/2026-10-01-mobile-performance.md)
+for current startup, sync, transcript, and memory measurements.
 
 Start voice inside the selected chat. Native Codex voice uses that chat's
 ChatGPT account through its app-server. No separate API key is required.

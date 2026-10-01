@@ -1,6 +1,6 @@
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../accountUsage";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tabs } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
@@ -11,7 +11,7 @@ import { limitRecovery } from "../limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 export { limitRecovery } from "../limitRecovery";
 import "./Usage.css";
-import Analytics from "./Analytics";
+const Analytics = lazy(() => import("./Analytics"));
 
 export type UsageAccount = {
   key: string;
@@ -485,11 +485,13 @@ export default function Usage({
         </Popover.Dropdown>
       </Popover>
       {analyticsOpen && (
-        <Analytics
-          key={agent.id}
-          agent={agent}
-          onClose={() => setAnalyticsOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <Analytics
+            key={agent.id}
+            agent={agent}
+            onClose={() => setAnalyticsOpen(false)}
+          />
+        </Suspense>
       )}
       <Popover
         opened={limitsOpened}

@@ -34,11 +34,9 @@ import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
 import { useWorkspaceTaskFeed } from "./useWorkspaceTaskFeed";
 import { copyText } from "../clipboard";
+import { activeTask } from "./backgroundTaskModel";
 
-export const activeTask = (task: BackgroundTask) =>
-  ["running", "starting", "approval", "pending", "stopping"].includes(
-    task.status,
-  );
+export { activeTask, backgroundTasks } from "./backgroundTaskModel";
 const labels: Record<string, string> = {
   running: "Running",
   starting: "Starting",
@@ -115,15 +113,6 @@ const taskKindLabel = (task: BackgroundTask, owner?: Agent) => {
         owner.turnId !== task.turnId));
   return outsideTurn ? "Background command" : "Command";
 };
-export function backgroundTasks(data: Snapshot | null): BackgroundTask[] {
-  return [
-    ...(data?.runtime.monitors || []).map(
-      (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
-    ),
-    ...(data?.runtime.tasks || []),
-  ];
-}
-
 export default function BackgroundTasks({
   opened,
   close,

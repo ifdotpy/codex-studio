@@ -1,4 +1,3 @@
-import { ClaudeSettings } from "./components/ClaudeSettings";
 import { menuActions, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
@@ -49,8 +48,10 @@ import {
   useCallback,
   useMemo,
   useEffect,
+  lazy,
   useRef,
   useState,
+  Suspense,
   type ReactNode,
 } from "react";
 import { api, ApiError, errorText, save, saved } from "./api";
@@ -92,7 +93,6 @@ import SharedChatCreate, {
   sharedCreationKey,
 } from "./components/SharedChatCreate";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
-import TerminalDock from "./components/TerminalDock";
 import "./desktop";
 import "./components/team-navigation.css";
 import WorkerCard, {
@@ -102,11 +102,15 @@ import WorkerCard, {
   TEAM_PANEL_STATES,
 } from "./components/WorkerOverview";
 import { TeamDiskTotal } from "./components/WorktreeDisk";
-import Workspace from "./components/Workspace";
-import BackgroundTasks, {
-  activeTask,
-  backgroundTasks,
-} from "./components/BackgroundTasks";
+import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
+const ClaudeSettings = lazy(() =>
+  import("./components/ClaudeSettings").then((module) => ({
+    default: module.ClaudeSettings,
+  })),
+);
+const TerminalDock = lazy(() => import("./components/TerminalDock"));
+const Workspace = lazy(() => import("./components/Workspace"));
+const BackgroundTasks = lazy(() => import("./components/BackgroundTasks"));
 export default function App() {
   reportPromptComposerRender("app");
   const outbox = useOutbox();
@@ -212,6 +216,8 @@ export default function App() {
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
+    [tasksRendered, setTasksRendered] = useState(false),
+    [workspaceRendered, setWorkspaceRendered] = useState(false),
     [workspaceSection, setWorkspaceSection] = useState("messages"),
     [workerQuery, setWorkerQuery] = useState(""),
     [workerFilter, setWorkerFilter] = useState("all"),
@@ -234,6 +240,10 @@ export default function App() {
     [data?.runtime.events],
   );
   useChatPrefetch(data, opened, workspaceId);
+  useEffect(() => {
+    if (tasksOpen) setTasksRendered(true);
+    if (workspaceOpen) setWorkspaceRendered(true);
+  }, [tasksOpen, workspaceOpen]);
   const cancelledSends = outgoingMessages
     .filter((entry) => receipts.get(entry.id)?.status === "cancelled")
     .map((entry) => entry.id)
@@ -1773,43 +1783,53 @@ export default function App() {
           teamPanel
         ) : null)}
       {!mobileClient && (
-        <TerminalDock data={data} agent={agent || lead} notify={notify} />
+        <Suspense fallback={null}>
+          <TerminalDock data={data} agent={agent || lead} notify={notify} />
+        </Suspense>
       )}
-      <Workspace
-        allRequests={data.runtime.requests}
-        key={`workspace:${lead?.id || "none"}`}
-        initialSection={workspaceSection}
-        initialFocus={workspaceFocus}
-        opened={workspaceOpen}
-        onClose={() => setWorkspaceOpen(false)}
-        agent={agent || lead}
-        data={chatData!}
-        onSelect={open}
-        refresh={refresh}
-        notify={notify}
-      />
-      <BackgroundTasks
-        key={`background:${lead?.id || "none"}`}
-        opened={tasksOpen}
-        initialFocus={taskFocus}
-        close={() => setTasksOpen(false)}
-        afterClose={() =>
-          requestAnimationFrame(() => {
-            const source =
-              taskFocus && taskFocus.leadId === lead?.id
-                ? document.querySelector<HTMLButtonElement>(
-                    `[data-activity-id="${CSS.escape(taskFocus.id)}"]`,
-                  )
-                : null;
-            (source || chatActionsButton.current)?.focus();
-          })
-        }
-        data={chatData!}
-        leadId={lead?.id}
-        openAgent={open}
-        refresh={refresh}
-        notify={notify}
-      />
+      {(workspaceRendered || workspaceOpen) && (
+        <Suspense fallback={null}>
+          <Workspace
+            allRequests={data.runtime.requests}
+            key={`workspace:${lead?.id || "none"}`}
+            initialSection={workspaceSection}
+            initialFocus={workspaceFocus}
+            opened={workspaceOpen}
+            onClose={() => setWorkspaceOpen(false)}
+            agent={agent || lead}
+            data={chatData!}
+            onSelect={open}
+            refresh={refresh}
+            notify={notify}
+          />
+        </Suspense>
+      )}
+      {(tasksRendered || tasksOpen) && (
+        <Suspense fallback={null}>
+          <BackgroundTasks
+            key={`background:${lead?.id || "none"}`}
+            opened={tasksOpen}
+            initialFocus={taskFocus}
+            close={() => setTasksOpen(false)}
+            afterClose={() =>
+              requestAnimationFrame(() => {
+                const source =
+                  taskFocus && taskFocus.leadId === lead?.id
+                    ? document.querySelector<HTMLButtonElement>(
+                        `[data-activity-id="${CSS.escape(taskFocus.id)}"]`,
+                      )
+                    : null;
+                (source || chatActionsButton.current)?.focus();
+              })
+            }
+            data={chatData!}
+            leadId={lead?.id}
+            openAgent={open}
+            refresh={refresh}
+            notify={notify}
+          />
+        </Suspense>
+      )}
       <Modal
         opened={settingsOpen}
         closeOnEscape={
@@ -1922,7 +1942,11 @@ export default function App() {
               />
             )}
           </section>
-          {agent?.provider === "claude" && <ClaudeSettings agent={agent} />}
+          {agent?.provider === "claude" && (
+            <Suspense fallback={null}>
+              <ClaudeSettings agent={agent} />
+            </Suspense>
+          )}
           <section className="settings-group settings-appearance">
             <h2>Appearance</h2>
             <NativeSelect
