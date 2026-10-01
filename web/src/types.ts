@@ -1,7 +1,13 @@
 import { nativeErrorView } from "./nativeErrors";
+import type {
+  AgentEntityDto,
+  EventEntityDto,
+  MonitorEntityDto,
+  TaskEntityDto,
+} from "./generatedEntityTypes";
 // The app-server publishes extensible JSON objects for tool and approval payloads.
 export type Json = Record<string, any>;
-export interface Agent extends Json {
+export interface Agent extends Json, AgentEntityDto {
   id: string;
   name: string;
   isLead?: boolean;
@@ -81,7 +87,7 @@ export const complaintNeedsUserResponse = (complaint: Complaint) =>
     ? complaint.recipient === "user" && complaint.needsResponse
     : complaint.author === complaint.leadId;
 
-export interface BackgroundTask {
+export interface BackgroundTask extends TaskEntityDto {
   id: string;
   turnId?: string;
   agent: string;
@@ -133,13 +139,18 @@ export interface Snapshot {
     }[];
     rooms: Room[];
     complaints: Complaint[];
-    monitors: Json[];
+    monitors: (Omit<MonitorEntityDto, "id" | "agent" | "status" | "created"> & Json & {
+      id: string;
+      agent: string;
+      status: string;
+      created: number;
+    })[];
     tasks?: BackgroundTask[];
     work?: Json[];
     rules?: Json[];
     tasksHistoryLimit?: number;
     requests: Json[];
-    events?: Json[];
+    events?: (Omit<EventEntityDto, "id"> & { id: string })[];
     rateLimits?: Json;
     rateLimitsByAccount?: Record<string, Json>;
     nativeNotices?: Json[];

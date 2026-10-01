@@ -6077,7 +6077,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["nativeThreadBlock"] = block
             a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
                      wave="Team: " + team_names.get(a["rootId"], "Team"))
-        events = [dict(r) for r in db.execute("SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC LIMIT 200")]
+        from codex_entity_contracts import event_records
+        from codex_sync_entities import project
+        events = [project("event", record) for record in event_records(db)]
         return {
             "agents": agents,
             "projects": self.projects(db=db)["items"],

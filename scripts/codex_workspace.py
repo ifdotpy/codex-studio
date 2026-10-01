@@ -17,6 +17,7 @@ import uuid
 from codex_native_errors import NativeRpcError
 from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
+from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
 
 
 def active_task_records(db, statuses=("running",), *, agent=None):
@@ -33,9 +34,6 @@ def active_task_records(db, statuses=("running",), *, agent=None):
     return [json.loads(row[0]) for row in rows]
 
 
-# Every status a monitor can end in. recent_monitors reads each one through its index.
-MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
-ACTIVE_MONITOR_STATUSES = ("running", "starting", "approval")
 SKILL_CATALOG_TIMEOUT_SECONDS = 5
 
 
@@ -1814,39 +1812,9 @@ class WorkspaceMixin:
             raise WorkspaceBusyError(blockers)
 
     def recent_tasks(self, db, root=None):
-        scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"
-        params = () if root is None else (root, root)
-        rows = db.execute(
-            f"""SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                {scope} AND json_extract(t.record,'$.status')='running'
-                UNION ALL SELECT record FROM (SELECT t.record FROM runtime_tasks t JOIN runtime_agents a
-                ON json_extract(t.record,'$.agent')=a.id WHERE json_extract(a.record,'$.deletedAt') IS NULL
-                {scope} AND json_extract(t.record,'$.status')!='running'
-                ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)""",
-            params,
-        ).fetchall()
-        return [
-            {k: v for k, v in json.loads(row[0]).items() if k not in {"tail", "arguments", "error"}}
-            for row in rows
-        ]
+        from codex_sync_entities import project
+        return [project("task", record) for record in task_records(db, root)]
 
     def recent_monitors(self, db, root=None):
-        scope = "" if root is None else """ AND json_extract(record,'$.agent') IN (
-            SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
-            AND json_extract(record,'$.deletedAt') IS NULL)"""
-        params = () if root is None else (root, root)
-        # "NOT IN" cannot use the
-        # (status, created) index and scanned every monitor (26k rows, 2-4 s).
-        # Read the newest 100 of each terminal status through the index instead.
-        terminal = " UNION ALL ".join(
-            f"""SELECT * FROM (SELECT record, json_extract(record,'$.created') AS created FROM runtime_monitors
-            WHERE json_extract(record,'$.status')='{status}' {scope}
-            ORDER BY json_extract(record,'$.created') DESC LIMIT 100)"""
-            for status in MONITOR_TERMINAL_STATUSES)
-        rows = db.execute(
-            f"""SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {scope}
-          UNION ALL SELECT record FROM (SELECT record, created FROM ({terminal}) ORDER BY created DESC LIMIT 100)""",
-            params[:1] * (1 + len(MONITOR_TERMINAL_STATUSES)),
-        ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        from codex_sync_entities import project
+        return [project("monitor", record) for record in monitor_records(db, root)]
