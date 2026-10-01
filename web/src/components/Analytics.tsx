@@ -388,7 +388,6 @@ export default function Analytics({
   const [loadedQuery, setLoadedQuery] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
-  const [exporting, setExporting] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<string | null>("overview");
   const [knownTools, setKnownTools] = useState<string[]>([]);
@@ -475,26 +474,12 @@ export default function Analytics({
     change();
     setOffset(0);
   };
-  const download = async () => {
-    setExporting(true);
+  const download = () => {
     setError("");
-    try {
-      const result = await api<Json>(`/api/analytics?${query}&export=1`);
-      const url = URL.createObjectURL(
-        new Blob([JSON.stringify(result, null, 2)], {
-          type: "application/json",
-        }),
-      );
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`;
-      a.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setExporting(false);
-    }
+    const a = document.createElement("a");
+    a.href = `/api/analytics?${query}&export=1`;
+    a.download = `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`;
+    a.click();
   };
   const s = data?.summary || {};
   const timeline: Json[] = data?.timeline || [];
@@ -576,7 +561,6 @@ export default function Analytics({
               variant="light"
               size="xs"
               leftSection={<ArrowDownToLine size={14} />}
-              loading={exporting}
               disabled={busy || !data}
               onClick={() => void download()}
             >

@@ -7,6 +7,7 @@ import math
 import struct
 import time
 from collections import defaultdict, deque
+from contextlib import nullcontext
 import statistics
 
 from codex_budget import budget_capture
@@ -651,6 +652,9 @@ class AnalyticsMixin:
                                              'hasMore': offset + len(page) < total}}
 
     def analytics(self, agent=None, scope='agent', **options):
+        shared_db = options.pop('_db', None)
+        if shared_db is not None and not hasattr(shared_db, 'execute'):
+            raise ValueError('Invalid analytics database')
         timing = options.get('timing') == '1'
         request_started = time.perf_counter() if timing else None
         if scope not in {'agent', 'team', 'all'}:
@@ -680,8 +684,9 @@ class AnalyticsMixin:
         export = str(options.get('export', '0')) == '1'
         tool = options.get('tool') or None
         read_started = time.perf_counter() if timing else None
-        with self.db() as db:
-            db.execute('BEGIN')
+        with (nullcontext(shared_db) if shared_db is not None else self.db()) as db:
+            if not db.in_transaction:
+                db.execute('BEGIN')
             agents = [json.loads(row[0]) for row in db.execute('SELECT record FROM analytics_agents')]
             selected = next((a for a in agents if a['id'] == agent), None)
             if scope != 'all' and not selected:
@@ -949,3 +954,128 @@ class AnalyticsMixin:
                 'analytics-total': (time.perf_counter() - request_started) * 1000,
             }
         return result
+
+    def analytics_export_chunks(self, agent=None, scope='agent', **options):
+        """Yield one JSON export while keeping large histories outside memory."""
+        options = {key: value for key, value in options.items() if key != '_db'}
+        options['export'] = '0'
+        with self.db() as db:
+            if not db.in_transaction:
+                db.execute('BEGIN')
+            result = self.analytics(agent, scope, _db=db, **options)
+            result.pop('__serverTiming', None)
+            filters = result['filters']
+            where, args = [], []
+            if scope == 'agent':
+                where.append('agent=?')
+                args.append(agent)
+            elif scope == 'team':
+                selected = json.loads(db.execute(
+                    'SELECT record FROM analytics_agents WHERE id=?', (agent,)).fetchone()[0])
+                where.append('root=?')
+                args.append(selected.get('rootId') or agent)
+            if filters['from'] is not None:
+                where.append('at>=?')
+                args.append(filters['from'])
+            if filters['to'] is not None:
+                where.append('at<=?')
+                args.append(filters['to'])
+            clause = ' WHERE ' + ' AND '.join(where) if where else ''
+            call_where = [*where, 'is_tool=1']
+            call_args = list(args)
+            if filters['tool'] is not None:
+                call_where.append('name=?')
+                call_args.append(filters['tool'])
+            call_clause = ' WHERE ' + ' AND '.join(call_where)
+            item_clause = ' WHERE ' + ' AND '.join([*where, 'is_tool=0'])
+            authoritative_where, authoritative_args = [], []
+            if scope == 'agent':
+                authoritative_where.append('agent=?')
+                authoritative_args.append(agent)
+            elif scope == 'team':
+                authoritative_where.append('root=?')
+                authoritative_args.append(selected.get('rootId') or agent)
+            authoritative_where.append("json_extract(record,'$.responseId') IS NOT NULL")
+            authoritative_turns = None
+            accounts = {a.get('accountKey', 'default') for a in result['agents']}
+            limit_where, limit_args = [], []
+            if accounts:
+                limit_where.append('account IN (' + ','.join('?' for _ in accounts) + ')')
+                limit_args.extend(sorted(accounts))
+            else:
+                limit_where.append('0')
+            if filters['from'] is not None:
+                limit_where.append('at>=?')
+                limit_args.append(filters['from'])
+            if filters['to'] is not None:
+                limit_where.append('at<=?')
+                limit_args.append(filters['to'])
+            limit_clause = ' WHERE ' + ' AND '.join(limit_where)
+            result['pagination']['hasMore'] = False
+            for name in ('rateLimits', 'turns'):
+                result['detailPagination'][name]['limit'] = result['detailPagination'][name]['total']
+                result['detailPagination'][name]['hasMore'] = False
+
+            def records(query, parameters):
+                for raw, in db.execute(query, parameters):
+                    yield json.loads(raw)
+
+            def usage_rows(provisional):
+                nonlocal authoritative_turns
+                if authoritative_turns is None:
+                    authoritative_turns = {(row['agent'], row['thread'], row['turn']) for row in db.execute(
+                        'SELECT DISTINCT agent,thread,turn FROM analytics_usage WHERE '
+                        + ' AND '.join(authoritative_where), authoritative_args)}
+                for raw, in db.execute(
+                        'SELECT record FROM analytics_usage' + clause + ' ORDER BY at,seq', args):
+                    row = json.loads(raw)
+                    duplicate = (not row.get('responseId')
+                                 and (row['agentId'], row.get('threadId'), row.get('turnId'))
+                                 in authoritative_turns)
+                    if duplicate == provisional:
+                        yield row
+
+            def rate_limits():
+                for account, at, raw in db.execute(
+                        'SELECT account,at,record FROM analytics_limits' + limit_clause
+                        + ' ORDER BY at DESC,id DESC', limit_args):
+                    yield {'accountKey': account, 'at': at, 'data': json.loads(raw)}
+
+            streams = {
+                'calls': lambda: records(
+                    'SELECT record FROM analytics_items' + call_clause + ' ORDER BY at DESC,id',
+                    call_args),
+                'turns': lambda: records(
+                    'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC',
+                    args),
+                'timeline': lambda: usage_rows(False),
+                'provisionalUsage': lambda: usage_rows(True),
+                'itemRecords': lambda: records(
+                    'SELECT record FROM analytics_items' + item_clause + ' ORDER BY at DESC,id',
+                    args),
+                'rateLimits': rate_limits,
+            }
+
+            def array_chunks(rows):
+                yield b'['
+                pending, size, first = [], 0, True
+                for row in rows:
+                    part = (b'' if first else b',') + json.dumps(row, ensure_ascii=False).encode()
+                    first = False
+                    if pending and size + len(part) > 65536:
+                        yield b''.join(pending)
+                        pending, size = [], 0
+                    pending.append(part)
+                    size += len(part)
+                if pending:
+                    yield b''.join(pending)
+                yield b']'
+
+            yield b'{'
+            for index, (key, value) in enumerate(result.items()):
+                yield (b',' if index else b'') + json.dumps(key).encode() + b':'
+                if key in streams:
+                    yield from array_chunks(streams[key]())
+                else:
+                    yield json.dumps(value, ensure_ascii=False).encode()
+            yield b'}'

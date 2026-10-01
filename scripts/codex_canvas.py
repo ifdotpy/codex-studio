@@ -911,6 +911,27 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.request_action(agent,
                             {"action": "get", "request_id": request_id} if request_id else {"action": "list"}))
                     if path.path == "/api/analytics":
+                        if q.get("export") == "1":
+                            chunks = runtime.analytics_export_chunks(**q)
+                            first = next(chunks)
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Content-Disposition", 'attachment; filename="codex-studio-analytics.json"')
+                            self.send_header("Cache-Control", "no-store")
+                            self.send_header("X-Content-Type-Options", "nosniff")
+                            self.end_headers()
+                            self.close_connection = True
+                            try:
+                                self.wfile.write(first)
+                                for chunk in chunks:
+                                    self.wfile.write(chunk)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            except (sqlite3.Error, ValueError, RuntimeError) as error:
+                                print(f"Analytics export interrupted: {error}", file=sys.stderr)
+                            finally:
+                                chunks.close()
+                            return
                         result = runtime.analytics(**q)
                         timing = result.pop("__serverTiming", None)
                         return self.send(result, server_timing=timing)
