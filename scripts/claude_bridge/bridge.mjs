@@ -176,19 +176,18 @@ async function catalog() {
     throw error;
   }
 }
-function wireThread(s) {
+function wireThread(s, metadata, includeTurns = true) {
+  const id = s?.id || metadata.id;
   return {
-    historyVersion: createHash("sha256")
-      .update(JSON.stringify([s.nativeId || s.id, s.turns]))
-      .digest("hex"),
-    id: s.id,
-    cwd: s.cwd,
-    createdAt: s.createdAt,
-    updatedAt: s.updatedAt || s.createdAt,
-    preview: s.preview || "",
-    name: s.name ?? null,
-    turns: s.turns,
-    status: { type: queries.get(s.id)?.turn ? "active" : "idle" },
+    id,
+    cwd: metadata.cwd,
+    createdAt: metadata.createdAt,
+    updatedAt: metadata.updatedAt,
+    preview: metadata.preview,
+    name: metadata.name,
+    historyVersion: createHash("sha256").update(metadata.revision).digest("hex"),
+    ...(includeTurns ? { turns: s.turns } : { turns: [] }),
+    status: { type: queries.get(id)?.turn ? "active" : "idle" },
     modelProvider: "claude",
   };
 }
@@ -1077,7 +1076,7 @@ async function handle(method, p) {
     };
     sessions.set(s.id, s);
     await persist(s);
-    return { ...p, thread: wireThread(s), model: s.model, sandbox: null };
+    return { ...p, thread: wireThread(s, await sessionStore.metadata(s.id)), model: s.model, sandbox: null };
   }
   if (method === "thread/turns/list" || method === "thread/turns/items/list") {
     const s = await session(p.threadId);
@@ -1101,15 +1100,36 @@ async function handle(method, p) {
     };
   }
   if (method === "thread/list") {
-    const data = [];
-    for (const file of await fs.readdir(path.join(root, "sessions")))
-      if (file.endsWith(".json"))
-        data.push(wireThread(await session(file.slice(0, -5))));
-    return { data, nextCursor: null };
+    const page = await sessionStore.listMetadata(p.cursor, p.limit);
+    return {
+      data: page.data.map((metadata) => ({
+        id: metadata.id,
+        cwd: metadata.cwd,
+        createdAt: metadata.createdAt,
+        updatedAt: metadata.updatedAt,
+        preview: metadata.preview,
+        name: metadata.name,
+        historyVersion: createHash("sha256").update(metadata.revision).digest("hex"),
+        turns: [],
+        status: { type: queries.get(metadata.id)?.turn ? "active" : "idle" },
+        modelProvider: "claude",
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
   if (method === "skills/extraRoots/set")
     throw new Error("Claude uses its native skills and MCP configuration");
   if (method === "thread/resume" || method === "thread/read") {
+    if (method === "thread/read" && p.includeTurns !== true) {
+      const metadata = await sessionStore.metadata(p.threadId);
+      return {
+        thread: wireThread(null, metadata, false),
+        model: metadata.model,
+        sandbox: null,
+        approvalPolicy: metadata.approvalPolicy,
+        activePermissionProfile: metadata.activePermissionProfile,
+      };
+    }
     const s = await session(p.threadId);
     if (method === "thread/resume") {
       const active = queries.get(s.id);
@@ -1121,13 +1141,15 @@ async function handle(method, p) {
       Object.assign(s, p);
       await persist(s);
     }
+    const includeTurns = method === "thread/read"
+      ? p.includeTurns === true
+      : p.excludeTurns !== true;
     return {
-      ...s,
+      thread: wireThread(s, await sessionStore.metadata(s.id), includeTurns),
+      model: s.model,
       sandbox: null,
-      thread: {
-        ...wireThread(s),
-        ...(!p.includeTurns && method === "thread/read" ? { turns: [] } : {}),
-      },
+      approvalPolicy: s.approvalPolicy ?? null,
+      activePermissionProfile: s.activePermissionProfile ?? null,
     };
   }
   if (method === "thread/unsubscribe") {
@@ -1150,7 +1172,13 @@ async function handle(method, p) {
       persist,
     });
     sessions.set(s.id, s);
-    return { ...s, sandbox: null, thread: wireThread(s) };
+    return {
+      thread: wireThread(s, await sessionStore.metadata(s.id), p.excludeTurns !== true),
+      model: s.model,
+      sandbox: null,
+      approvalPolicy: s.approvalPolicy ?? null,
+      activePermissionProfile: s.activePermissionProfile ?? null,
+    };
   }
   if (method === "thread/compact/start") {
     const s = await session(p.threadId);
