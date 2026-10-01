@@ -69,6 +69,47 @@ def payload_size(value):
     return result
 
 
+def item_payload_values(kind, item):
+    input_value = item.get('arguments', item.get('command', item.get('query')))
+    output_value = item.get('aggregatedOutput', item.get('contentItems', item.get('result')))
+    if kind == 'fileChange':
+        output_value = item.get('changes')
+    elif kind == 'userMessage':
+        input_value = item.get('content')
+    elif kind == 'agentMessage':
+        output_value = item.get('text')
+    elif kind == 'reasoning':
+        output_value = {k: item[k] for k in ('summary', 'content', 'text') if k in item} or None
+    return input_value, output_value
+
+
+def event_payload_measurements(method, p):
+    """Measure rollout payloads before the importer takes the runtime lock."""
+    item = p.get('item') or {}
+    if not item and not p.get('itemId'):
+        return {}
+    if method in {'item/started', 'item/completed'}:
+        if not item.get('type'):
+            return None
+        input_value, output_value = item_payload_values(item.get('type'), item)
+        return {'input': payload_size(input_value) if input_value is not None else None,
+                'output': payload_size(output_value) if output_value is not None else None}
+    delta = p.get('delta')
+    if isinstance(delta, str) and (method.endswith('Delta') or method.endswith('/delta')):
+        return {'stream': payload_size(delta)}
+    return {}
+
+
+def model_payload_measurements(p):
+    kind = p.get('type', 'unknown')
+    if kind in {'function_call', 'custom_tool_call', 'tool_call'}:
+        return {'input': payload_size(p.get('arguments', p.get('input')))}
+    if kind in {'function_call_output', 'custom_tool_call_output', 'tool_result'}:
+        return {'output': payload_size(p.get('output', p.get('content')))}
+    direction = 'input' if p.get('role') in {'user', 'system', 'developer'} else 'output'
+    return {direction: payload_size(p.get('content', p.get('summary')))}
+
+
 def nullable_sum(values):
     known = [n for n in values if n is not None]
     return sum(known) if known else None
@@ -250,7 +291,7 @@ class AnalyticsMixin:
                 'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
                 'daybreakEnabled': a.get('daybreakEnabled'), 'cyberAccessProgram': a.get('cyberAccessProgram')}
 
-    def analytics_event(self, db, a, method, p, *, at=None, source='live'):
+    def analytics_event(self, db, a, method, p, *, at=None, source='live', measurements=None):
         at = time.time() if at is None else at
         meta = self.analytics_agent(db, a)
         if source != 'live':
@@ -389,7 +430,7 @@ class AnalyticsMixin:
             if not isinstance(delta, str):
                 return
             # Increment counters only. A final authoritative payload replaces these.
-            size = payload_size(delta)
+            size = measurements['stream'] if measurements is not None and 'stream' in measurements else payload_size(delta)
             stream = record.get('stream') or {'bytes': 0, 'chars': 0, 'lines': 0, 'deltas': 0}
             for field in ('bytes', 'chars', 'lines'):
                 stream[field] += size[field] if field != 'lines' else delta.count('\n')
@@ -430,20 +471,11 @@ class AnalyticsMixin:
             supplied = number(item.get('durationMs'))
             record['durationMs'] = supplied if supplied is not None else (max(0, (record['finishedAt'] - record['startedAt']) * 1000) if method == 'item/completed' and record.get('startedAt') is not None else None)
             record['durationSource'] = 'provider' if supplied is not None else 'observed_wall_time' if record['durationMs'] is not None else None
-            input_value = item.get('arguments', item.get('command', item.get('query')))
-            output_value = item.get('aggregatedOutput', item.get('contentItems', item.get('result')))
-            if kind == 'fileChange':
-                output_value = item.get('changes')
-            elif kind == 'userMessage':
-                input_value = item.get('content')
-            elif kind == 'agentMessage':
-                output_value = item.get('text')
-            elif kind == 'reasoning':
-                output_value = {k: item[k] for k in ('summary', 'content', 'text') if k in item} or None
+            input_value, output_value = item_payload_values(kind, item)
             if input_value is not None:
-                record['input'] = payload_size(input_value)
+                record['input'] = measurements['input'] if measurements is not None else payload_size(input_value)
             if output_value is not None:
-                record['output'] = payload_size(output_value)
+                record['output'] = measurements['output'] if measurements is not None else payload_size(output_value)
             record['coverage'] = 'protocol_payload' if source == 'live' else source
             record['payloadTruncated'] = item.get('outputTruncated')
         self.analytics_store_item(db, record)
@@ -464,7 +496,7 @@ class AnalyticsMixin:
         params = {**p, 'item': {'id': item_id, 'type': 'dynamicToolCall', 'tool': p.get('tool'), 'arguments': p.get('arguments'), **result}}
         self.analytics_event(db, a, 'item/completed', params, at=at, source=source)
 
-    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source='rollout'):
+    def analytics_model_payload(self, db, a, p, *, at=None, turn_id=None, source='rollout', measurements=None):
         at = time.time() if at is None else at
         kind = p.get('type', 'unknown')
         outputs = {'function_call_output', 'custom_tool_call_output', 'tool_result'}
@@ -487,17 +519,17 @@ class AnalyticsMixin:
             record['name'] = (p['namespace'] + '.' if p.get('namespace') else '') + p['name']
             record['namespace'] = p.get('namespace')
         if kind in inputs:
-            record['input'] = record['modelInput'] = payload_size(p.get('arguments', p.get('input')))
+            record['input'] = record['modelInput'] = (measurements['input'] if measurements is not None else payload_size(p.get('arguments', p.get('input'))))
             record['startedAt'] = at
             record['status'] = 'completed' if record.get('finishedAt') is not None else 'running'
         elif kind in outputs:
-            record['output'] = record['modelOutput'] = payload_size(p.get('output', p.get('content')))
+            record['output'] = record['modelOutput'] = (measurements['output'] if measurements is not None else payload_size(p.get('output', p.get('content'))))
             record['finishedAt'] = at
             record['status'] = 'failed' if p.get('is_error') is True else 'completed'
         else:
             direction = 'input' if p.get('role') in {'user', 'system', 'developer'} else 'output'
             # Never retain hidden reasoning text. Sizes only, if the provider exposes a payload.
-            record[direction] = payload_size(p.get('content', p.get('summary')))
+            record[direction] = (measurements[direction] if measurements is not None else payload_size(p.get('content', p.get('summary'))))
             record['status'] = 'completed'
             record['finishedAt'] = at
         if record.get('startedAt') is not None and record.get('finishedAt') is not None:
