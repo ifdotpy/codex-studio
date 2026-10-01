@@ -314,9 +314,11 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_commit=None, supervisor_event_applied=None):
         import queue
         self.notification, self.request, self.died = notification, request, died
+        self.supervisor_commit = supervisor_commit
+        self.supervisor_event_applied = supervisor_event_applied
         self.lock = threading.RLock()
         self.write_lock = threading.RLock()
         self.pending = {}
@@ -345,10 +347,19 @@ class AppServer:
         if provider == "claude":
             from codex_claude import transport
             command, env = transport(root, provider_options) if provider_options else transport(root)
-        self.proc = subprocess.Popen(
-            command, env=env,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", bufsize=1, start_new_session=True)
+        self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+        if self.supervisor_mode:
+            if not supervisor_handle:
+                raise RuntimeError("Supervisor mode requires a stable native-process handle")
+            from codex_process_supervisor import attach
+            self.proc = attach(root, supervisor_handle, command, env)
+            if self.proc is None:
+                raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
+        else:
+            self.proc = subprocess.Popen(
+                command, env=env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", bufsize=1, start_new_session=True)
         self.stderr_writer = None
         if getattr(self.proc, "stderr", None) is not None:
             self.stderr_writer = threading.Thread(target=self.drain_stderr, daemon=True)
@@ -364,14 +375,17 @@ class AppServer:
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         try:
-            self.initialize_result = self.call("initialize", {"clientInfo": {"name": "codex_agents_canvas",
-                "version": "1.0.0"}, "capabilities": {"experimentalApi": True}})
-            self.write({"method": "initialized"})
+            if getattr(self.proc, "initialize_result", None) is not None:
+                self.initialize_result = self.proc.initialize_result
+            else:
+                self.initialize_result = self.call("initialize", {"clientInfo": {"name": "codex_agents_canvas",
+                    "version": "1.0.0"}, "capabilities": {"experimentalApi": True}})
+                self.write({"method": "initialized"})
         except Exception:
             self.close()
             raise
 
-    def write(self, value):
+    def write(self, value, operation_id=None):
         import select
         deadline = time.monotonic() + self.WRITE_TIMEOUT
         if not self.write_lock.acquire(timeout=self.WRITE_TIMEOUT):
@@ -379,6 +393,9 @@ class AppServer:
         try:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
+            if self.supervisor_mode:
+                self.proc.send_write(value, operation_id=operation_id)
+                return
             text = json.dumps(value) + "\n"
             try:
                 fd = self.proc.stdin.fileno()
@@ -412,14 +429,14 @@ class AppServer:
     def call(self, method, params, timeout=60):
         return self.wait(self.submit(method, params), timeout)
 
-    def submit(self, method, params):
+    def submit(self, method, params, *, operation_id=None):
         future = concurrent.futures.Future()
         with self.lock:
             self.sequence += 1
             key = self.sequence
             self.pending[key] = future
         try:
-            self.write({"id": key, "method": method, "params": params})
+            self.write({"id": key, "method": method, "params": params}, operation_id=operation_id)
         except Exception as error:
             if isinstance(error, SubmissionRejected) or (isinstance(error, RuntimeError) and str(error) == "Codex app-server is offline"):
                 with self.lock:
@@ -712,7 +729,7 @@ class AppServer:
 
     def enqueue(self, callback, message):
         import queue
-        if (callback == self.request and isinstance(message, dict) and "id" in message
+        if (not self.supervisor_mode and callback == self.request and isinstance(message, dict) and "id" in message
                 and message.get("method") == "item/tool/call"):
             # Tool calls must not wait behind a long notification backlog.
             with self.callback_lock:
@@ -723,6 +740,9 @@ class AppServer:
         try:
             with self.callback_lock:
                 if not self.dispatch_stopped:
+                    if self.supervisor_mode:
+                        self.callbacks.put_nowait((callback, message))
+                        return
                     if callback == self.notification and isinstance(message, dict) and "id" not in message:
                         if self.coalesce_latest(callback, message):
                             return
@@ -802,14 +822,48 @@ class AppServer:
                         if count > 1:
                             message = {**message, "params": {**params, "delta": "".join(p["delta"] for p in samples)},
                                        "_studioNotificationSamples": samples}
+                sequence = message.get("_studioSupervisorSequence") if isinstance(message, dict) else None
+                try:
+                    already_applied = (sequence is not None and callback == self.notification
+                                       and self.supervisor_event_applied
+                                       and self.supervisor_event_applied(sequence))
+                except Exception as error:
+                    self.fail_transport(error)
+                    for _ in range(count):
+                        self.callbacks.task_done()
+                    break
+                if already_applied:
+                    try:
+                        self.proc.ack(sequence)
+                    except Exception as error:
+                        self.fail_transport(error)
+                        for _ in range(count):
+                            self.callbacks.task_done()
+                        break
+                    for _ in range(count):
+                        self.callbacks.task_done()
+                    continue
                 callback_started = time.monotonic()
+                callback_ok = False
                 try:
                     if isinstance(message, dict):
                         message["_studioDispatchedAt"] = time.time()
                     callback(message)
+                    if (sequence is not None and callback == self.notification
+                            and self.supervisor_commit):
+                        self.supervisor_commit(message, sequence)
+                    callback_ok = True
                 except Exception as error:
                     self.protocol_error(error)
+                    if sequence is not None:
+                        self.fail_transport(error)
                 finally:
+                    sequence = message.get("_studioSupervisorSequence") if isinstance(message, dict) else None
+                    if sequence is not None and callback_ok:
+                        try:
+                            self.proc.ack(sequence)
+                        except Exception as error:
+                            self.protocol_error(f"Supervisor event ACK failed at {sequence}: {error}")
                     duration = (time.monotonic() - callback_started) * 1000
                     metadata = message if isinstance(message, dict) else {}
                     received = metadata.get("_studioReceivedAt")
@@ -830,6 +884,9 @@ class AppServer:
                             pass
                     for _ in range(count):
                         self.callbacks.task_done()
+                if sequence is not None and not callback_ok:
+                    self.fail_transport("Supervisor event was not durably applied")
+                    break
             if not self.closed:
                 self.died()
         finally:
@@ -841,11 +898,17 @@ class AppServer:
             for line in self.proc.stdout:
                 try:
                     message = json.loads(line)
+                    sequence = getattr(self.proc.stdout, "current_sequence", None)
+                    if sequence is not None:
+                        message["_studioSupervisorSequence"] = sequence
                     if "method" in message:
                         message["_studioReceivedAt"] = time.time()
                         if "id" in message:
                             if message["method"] == "currentTime/read":
-                                self.enqueue_clock(message)
+                                if self.supervisor_mode:
+                                    self.enqueue(self.request, message)
+                                else:
+                                    self.enqueue_clock(message)
                             else:
                                 self.enqueue(self.request, message)
                         else:
@@ -858,6 +921,9 @@ class AppServer:
                                 future.set_exception(NativeRpcError(message["error"]))
                             else:
                                 future.set_result(message.get("result", {}))
+                        sequence = message.get("_studioSupervisorSequence")
+                        if sequence is not None:
+                            self.enqueue(lambda _, sequence=sequence: self.proc.ack(sequence), {})
                 except Exception as error:
                     self.protocol_error(error)
                     if self.transport_error:
@@ -1563,7 +1629,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             server = self.factory(root, *callbacks, home=home,
                                                   isolated=account_key != "default", provider=provider,
                                                   provider_options=account if provider == "claude" else None,
-                                                  executable=selected["path"] if selected else None)
+                                                  executable=selected["path"] if selected else None,
+                                                  supervisor_handle="account:" + account_key,
+                                                  supervisor_commit=lambda message, sequence: self.commit_supervisor_event(
+                                                      "account:" + account_key, message, sequence, account_key, connection_id),
+                                                  supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
+                                                      "account:" + account_key, sequence))
                             if selected:
                                 server.native_binary = selected
                         else:
@@ -1583,6 +1654,28 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.connection_ids.get(account_key) == connection_id
             and account_key not in self.offline_accounts
         )
+
+    def supervisor_event_applied(self, handle, sequence):
+        with self.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+            row = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchone()
+            return bool(row and sequence <= row[0])
+
+    def commit_supervisor_event(self, handle, message, sequence, account, connection):
+        method = message.get("method")
+        params = message.get("params") or {}
+        if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"}:
+            stream = getattr(self, "_stream_buffer", None)
+            if stream is not None and isinstance(params, dict):
+                with self.lock, self.db() as db:
+                    stream.flush_locked(db, account=account, thread_id=params.get("threadId"),
+                                        item_id=params.get("itemId"), turn_id=params.get("turnId"),
+                                        force=True, supervisor_handle=handle, supervisor_sequence=sequence)
+                return
+        with self.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+            db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                       (handle, sequence))
 
     def reply(self, message, account_key="default", connection_id=None):
         # Never deliver an old approval or tool result to a replacement process.
@@ -2722,8 +2815,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         error.future.add_done_callback(ready)
 
     @staticmethod
-    def submit_reserved(server, method, params):
+    def submit_reserved(server, method, params, operation_id=None):
         try:
+            if operation_id is not None and isinstance(server, AppServer):
+                return server.submit(method, params, operation_id=operation_id)
             return server.submit(method, params)
         except SubmissionUnknown as error:
             return error.submitted
@@ -3528,7 +3623,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A submitted reservation is durable before native I/O. If the answer
             # is lost, recovery inspects native history; it never sends this batch again.
             timing["nativeSubmitBeganAt"] = time.monotonic_ns()
-            submitted = self.submit_reserved(server, "turn/start", params)
+            submitted = self.submit_reserved(server, "turn/start", params,
+                operation_id="turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id))
             timing["submittedAt"] = time.monotonic_ns()
             try:
                 with self.db() as db:
@@ -5466,7 +5562,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation, configurationPending=False)
                 self.put(db, "monitors", current_monitor)
                 db.commit()
-                submitted = self.submit_reserved(server, "command/exec", params)
+                submitted = self.submit_reserved(server, "command/exec", params,
+                                                 operation_id="monitor:" + key)
             try:
                 result = server.wait(submitted, timeout=m["timeout_ms"] / 1000 + 60)
             except ResponseTimeout as error:

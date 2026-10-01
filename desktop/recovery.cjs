@@ -16,6 +16,8 @@ const restartKeys = [
   "SHELL",
   "LANG",
   "LC_ALL",
+  "CODEX_AGENTS_SUPERVISOR_MODE",
+  "CODEX_AGENTS_SUPERVISOR_FALLBACK",
 ];
 
 function atomicJSON(filename, data) {
@@ -170,6 +172,7 @@ async function configureRecovery({
   atomicJSON(files.config, {
     version: 1,
     enabled: true,
+    supervisorEnabled: launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1",
     stateDir: files.state,
     resources: path.resolve(resources),
     python,

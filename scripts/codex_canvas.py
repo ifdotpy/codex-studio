@@ -951,6 +951,14 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
                     from codex_browser import diagnostics as browser_diagnostics
+                    supervisor_status = None
+                    if (os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+                            or (Path(canvas.root) / "supervisor.sock").exists()):
+                        from codex_process_supervisor import status as process_supervisor_status
+                        try:
+                            supervisor_status = process_supervisor_status(canvas.root)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            supervisor_status = {"error": str(error)[:300]}
                     browser_account = parse_qs(path.query).get("account_key", ["default"])[0]
                     return self.send(
                         {
@@ -964,16 +972,35 @@ def make_server(canvas, port=0, public_origin=None):
                                            if getattr(canvas.runtime, "live_updates", None) else None),
                             "restartEnvironment": {key: os.environ[key] for key in (
                                 "CODEX_HOME", "CODEX_CANVAS_CWD",
-                                "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL")
+                                "CODEX_CANVAS_CONCURRENCY", "CODEX_BIN", "SHELL", "LANG", "LC_ALL",
+                                "CODEX_AGENTS_SUPERVISOR_MODE")
                                 if key in os.environ},
                             "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
+                            "supervisorMode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
+                            "supervisor": supervisor_status,
+                            "supervisorFallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
+                            "supervisorNotice": ("The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted."
+                                                 if os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1" else None),
                             "stateDir": str(Path(canvas.root).resolve()),
                         }
                     )
                 if path.path == "/api/diagnostics" and canvas.runtime:
                     from codex_diagnostics import snapshot as diagnostics_snapshot
-                    return self.send(diagnostics_snapshot(canvas.runtime))
+                    diagnostics = diagnostics_snapshot(canvas.runtime)
+                    diagnostics["supervisor"] = {
+                        "mode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
+                        "fallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
+                        "notice": ("The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted."
+                                   if os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1" else None),
+                    }
+                    if diagnostics["supervisor"]["mode"]:
+                        try:
+                            from codex_process_supervisor import status as process_supervisor_status
+                            diagnostics["supervisor"]["health"] = process_supervisor_status(canvas.root)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            diagnostics["supervisor"]["health"] = {"error": str(error)[:300]}
+                    return self.send(diagnostics)
                 if path.path == "/api/terminals":
                     return self.send(terminals().listing())
                 if path.path == "/api/terminals/output":

@@ -225,6 +225,11 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const canonicalState = fs.realpathSync(state);
   const origin = `http://127.0.0.1:${port}`;
   const existing = await identity(origin, canonicalState);
+  if (existing && env.CODEX_AGENTS_SUPERVISOR_MODE === "1" && existing.supervisorMode !== true
+      && existing.supervisorFallback !== true)
+    throw new Error(
+      "Supervisor mode is enabled, but the running backend does not use it. Use the coordinated restart preflight before attaching.",
+    );
   if (existing)
     return {
       ...existing,
@@ -250,6 +255,32 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     { timeout: 5000 },
   );
   const codex = executable("codex", env);
+  if (env.CODEX_AGENTS_SUPERVISOR_MODE === "1") {
+    const supervisor = path.join(resources, "scripts/codex_process_supervisor.py");
+    if (!fs.existsSync(supervisor))
+      throw new Error("Supervisor mode is enabled but its packaged script is missing.");
+    const deadline = Date.now() + 10000;
+    let lastError;
+    while (Date.now() < deadline) {
+      try {
+        execFileSync(python, ["-B", supervisor, "--check", "--state", canonicalState], {
+          timeout: 2000,
+          stdio: "ignore",
+          env: { ...env, CODEX_AGENTS_STATE_DIR: canonicalState },
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        await sleep(100);
+      }
+    }
+    if (lastError) {
+      throw new Error(
+        `Supervisor mode is enabled but no compatible supervisor is ready for ${canonicalState}. The backend was not started: ${lastError.message}`,
+      );
+    }
+  }
   const log = path.join(state, "canvas.log");
   const fd = fs.openSync(log, "a", 0o600);
   let child;

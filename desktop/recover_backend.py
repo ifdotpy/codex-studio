@@ -45,10 +45,27 @@ def lease_available(state):
         return True
 
 
+def process_start_time(pid):
+    try:
+        value = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart="],
+                                        text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+        state = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "stat="],
+                                        text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 1:
+            return None
+        raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
+    return value if value and not state.startswith("Z") else None
+
+
 def load_config(filename, state):
     config = json.loads(filename.read_text())
     if config.get("version") != 1 or Path(config["stateDir"]).resolve() != state:
         raise RuntimeError("The recovery configuration uses a different state directory.")
+    if "supervisorEnabled" in config and type(config["supervisorEnabled"]) is not bool:
+        raise RuntimeError("The recovery supervisor setting is invalid.")
     if type(config.get("port")) is not int or not 1024 <= config["port"] <= 65535:
         raise RuntimeError("The recovery port is invalid.")
     for name in ("python", "codex", "resources"):
@@ -57,19 +74,61 @@ def load_config(filename, state):
     return config
 
 
-def launch_environment(config, state):
+def launch_environment(config, state, supervisor_fallback=False):
     env = dict(os.environ)
     for key in config.get("unsetEnvironment", []):
         env.pop(key, None)
     env.update(config.get("environment", {}))
     env.update({"CODEX_AGENTS_STATE_DIR": str(state), "CODEX_BIN": config["codex"]})
+    if supervisor_fallback:
+        env.pop("CODEX_AGENTS_SUPERVISOR_MODE", None)
+        env["CODEX_AGENTS_SUPERVISOR_FALLBACK"] = "1"
+    else:
+        env.pop("CODEX_AGENTS_SUPERVISOR_FALLBACK", None)
+        if config.get("supervisorEnabled") is True:
+            env["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
+        else:
+            env.pop("CODEX_AGENTS_SUPERVISOR_MODE", None)
     return env
 
 
-def tick(config, state, child=None):
+def supervisor_tick(config, state, child=None):
+    """Start or validate the stable process owner before any backend starts."""
+    if config.get("supervisorEnabled") is not True:
+        return child, "disabled"
+    script = Path(config["resources"]) / "scripts/codex_process_supervisor.py"
+    if not script.is_file():
+        raise RuntimeError("Supervisor mode is enabled but its packaged script is missing.")
+    check = [config["python"], "-B", str(script), "--status-json", "--state", str(state)]
+    try:
+        probe = subprocess.run(check, check=True, timeout=2, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, env=launch_environment(config, state))
+        health = json.loads(probe.stdout)
+        recovery = health.get("recovery") or {}
+        if recovery.get("blocked"):
+            raise RuntimeError(recovery["blocked"])
+        if recovery.get("degraded") and recovery.get("fallbackReady"):
+            return child, "supervisor degraded"
+        return child, "supervisor ready"
+    except (OSError, subprocess.SubprocessError):
+        if child is not None and child.poll() is None:
+            return child, "supervisor starting"
+    with (state / "supervisor.log").open("ab", buffering=0) as log:
+        child = subprocess.Popen([config["python"], "-B", str(script), "--state", str(state)], cwd=Path.home(),
+            env=launch_environment(config, state), stdin=subprocess.DEVNULL,
+            stdout=log, stderr=log, start_new_session=True)
+    return child, "supervisor starting"
+
+
+def tick(config, state, child=None, supervisor_fallback=False):
     if child is not None and child.poll() is None:
         return child, "starting"
     existing = identity(config["port"], state)
+    if existing and supervisor_fallback and existing.get("supervisorFallback") is True:
+        return None, "fallback attached"
+    if existing and supervisor_fallback and existing.get("supervisorMode") is True:
+        os.kill(existing["pid"], signal.SIGTERM)
+        return None, "supervisor backend stopping for fallback"
     if existing:
         return None, "attached"
     if not lease_available(state):
@@ -78,7 +137,7 @@ def tick(config, state, child=None):
     script = resources / "scripts/codex-canvas"
     if not script.is_file() or not (resources / "web/dist/index.html").is_file():
         raise RuntimeError("The installed backend or web assets are unavailable.")
-    env = launch_environment(config, state)
+    env = launch_environment(config, state, supervisor_fallback=supervisor_fallback)
     with (state / "canvas.log").open("ab", buffering=0) as log:
         child = subprocess.Popen([config["python"], "-B", str(script), "--port", str(config["port"])],
                                  cwd=Path.home(), env=env, stdin=subprocess.DEVNULL,
@@ -142,7 +201,10 @@ def run(filename, interval=5):
         except BlockingIOError:
             return
         child = None
+        supervisor = None
         desktop = None
+        fallback_pid = None
+        fallback_start = None
         desktop_attempt = 0
         previous = None
         while not stopping:
@@ -150,7 +212,39 @@ def run(filename, interval=5):
                 config = load_config(filename, state)
                 if config.get("enabled") is not True:
                     return
-                child, status = tick(config, state, child)
+                supervisor, supervisor_status = supervisor_tick(config, state, supervisor)
+                if supervisor_status == "supervisor degraded":
+                    existing = identity(config["port"], state)
+                    fallback_exited = (fallback_pid is not None and fallback_start is not None
+                                       and process_start_time(fallback_pid) != fallback_start)
+                    if fallback_exited:
+                        script = Path(config["resources"]) / "scripts/codex_process_supervisor.py"
+                        subprocess.run([config["python"], "-B", str(script), "--finish-fallback",
+                                        "--state", str(state)], check=True, timeout=3,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                        fallback_pid = fallback_start = None
+                        supervisor_status = "supervisor ready"
+                        child, status = tick(config, state, None)
+                    elif existing and existing.get("supervisorFallback") is True:
+                        fallback_pid = existing["pid"]
+                        fallback_start = process_start_time(fallback_pid)
+                        status = "fallback backend attached"
+                    elif existing and existing.get("supervisorMode") is True:
+                        os.kill(existing["pid"], signal.SIGTERM)
+                        status = "supervisor backend stopping for fallback"
+                    elif child is not None and child.poll() is None:
+                        status = "fallback backend starting"
+                    else:
+                        child, status = tick(config, state, child, supervisor_fallback=True)
+                        if status == "started":
+                            fallback_pid = child.pid
+                            fallback_start = process_start_time(fallback_pid)
+                elif config.get("supervisorEnabled") is True and supervisor_status != "supervisor ready":
+                    status = supervisor_status
+                else:
+                    child, status = tick(config, state, child)
+                    if supervisor_status == "supervisor ready":
+                        status = f"{status}; {supervisor_status}"
                 if time.monotonic() >= desktop_attempt:
                     desktop, desktop_status = desktop_tick(config, state, desktop)
                     if desktop_status == "desktop started":

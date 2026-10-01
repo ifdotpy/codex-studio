@@ -329,6 +329,32 @@ class TerminalsContract(unittest.TestCase):
         f.eventually(lambda: "Терминал🙂" in self.manager.output(task["id"])["text"])
         self.assertIsNone(self.runtime.server)
 
+    def test_supervisor_utf8_decoder_state_survives_backend_generation(self):
+        task = self.create()
+        key = task["id"]
+        owned = self.manager.processes[key]
+        self.assertEqual(owned["decoder"].decode(b"\xe2"), "")
+        pending, _ = owned["decoder"].getstate()
+        self.manager.append(key, "", supervisor_sequence=4, decoder_pending=pending)
+
+        restored = None
+        try:
+            with patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "1"}):
+                restored = TerminalManager(self.fixture.state)
+            decoder = restored.processes[key]["decoder"]
+            text = decoder.decode(b"\x82\xac")
+            pending, _ = decoder.getstate()
+            restored.append(key, text, supervisor_sequence=5, decoder_pending=pending)
+            self.assertEqual(text, "€")
+            self.assertIn("€", self.manager.output(key)["text"])
+            with restored.db() as db:
+                self.assertEqual(db.execute(
+                    "SELECT sequence FROM user_terminal_event_cursor WHERE terminal=?", (key,)
+                ).fetchone()[0], 5)
+        finally:
+            if restored:
+                restored.close()
+
     def test_http_origin_token_identity_and_manual_monitor_absent(self):
         canvas = Canvas(self.fixture.state)
         canvas.runtime = self.runtime

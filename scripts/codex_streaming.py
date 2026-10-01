@@ -45,9 +45,10 @@ class StreamBuffer:
                 batches[-1] = ((previous[0] + retained)[-12000:], previous[1] + len(samples),
                                previous[2] + size, previous[3], previous[4],
                                previous[5] + metrics[0], previous[6] + metrics[1],
-                               previous[7] + metrics[2])
+                               previous[7] + metrics[2], message.get('_studioSupervisorSequence'))
             else:
-                batches.append((retained, len(samples), size, now, stored_params, *metrics))
+                batches.append((retained, len(samples), size, now, stored_params, *metrics,
+                                message.get('_studioSupervisorSequence')))
             self._schedule_locked()
         return True
 
@@ -75,7 +76,8 @@ class StreamBuffer:
                 self._schedule_locked()
 
     def flush_locked(self, db, *, account=None, thread_id=None, item_id=None, turn_id=None,
-                     close=False, close_commands=True, force=False):
+                     close=False, close_commands=True, force=False,
+                     supervisor_handle=None, supervisor_sequence=None):
         """Caller holds Runtime.lock. Commit before consuming buffered batches."""
         with self.lock:
             selected = [(key, entry, list(entry['batches'])) for key, entry in self.entries.items()
@@ -204,6 +206,12 @@ class StreamBuffer:
                 self.runtime.put(db, 'agents', agent)
             applied.append((key, entry, len(batches), target))
         if applied:
+            if supervisor_handle is not None and supervisor_sequence is not None:
+                db.execute('CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor '
+                           '(handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)')
+                db.execute('INSERT INTO runtime_supervisor_cursor VALUES (?,?) '
+                           'ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)',
+                           (supervisor_handle, supervisor_sequence))
             db.commit()
             with self.lock:
                 for key, entry, length, target in applied:

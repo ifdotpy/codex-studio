@@ -82,6 +82,7 @@ import SessionActivity from "./components/SessionActivity";
 import { useWorkerModels } from "./components/WorkerModelPicker";
 import { ExecutionSettings } from "./components/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
+import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
@@ -1355,6 +1356,7 @@ export default function App() {
         }}
       />
       <main className="workspace">
+        <SupervisorRecoveryNotice />
         <header className="workspace-header simple-workspace-header">
           <ActionIcon
             id="sidebar-toggle"

@@ -133,6 +133,7 @@ test("register and read back the exact-state launch agent without storing creden
     );
     assert.equal(calls[1][1], "gui/777");
     const config = JSON.parse(readFileSync(result.config, "utf8"));
+    assert.equal(config.supervisorEnabled, false);
     assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
     assert.equal(
       config.environment.CODEX_CANVAS_CWD,
@@ -155,6 +156,27 @@ test("register and read back the exact-state launch agent without storing creden
     assert.equal(plist.Label, result.label);
   } finally {
     rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
+
+test("supervisor mode is opt-in in the saved launchd configuration", async () => {
+  const data = fixture();
+  let registered = false;
+  try {
+    const result = await configureRecovery({
+      ...data,
+      enabled: true,
+      restartEnvironment: { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
+      run: async (_file, args) => {
+        if (args[0] === "print" && !registered) throw new Error("absent");
+        if (args[0] === "bootstrap") registered = true;
+      },
+    });
+    const config = JSON.parse(readFileSync(result.config, "utf8"));
+    assert.equal(config.supervisorEnabled, true);
+    assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, "1");
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
   }
 });
 

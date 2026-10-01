@@ -159,6 +159,51 @@ test("a slow existing backend attaches without spawning a process", async () => 
   );
 });
 
+test("supervisor mode refuses a backend without supervisor ownership", async () => {
+  const canonicalState = realpathSync(tmpdir());
+  await serve(
+    (_req, res) => res.end(JSON.stringify({ ...record, stateDir: canonicalState })),
+    async (origin) => {
+      await assert.rejects(
+        ensureBackend({
+          resources: "/missing-desktop-assets",
+          port: Number(new URL(origin).port),
+          env: {
+            CODEX_AGENTS_STATE_DIR: canonicalState,
+            CODEX_AGENTS_SUPERVISOR_MODE: "1",
+          },
+        }),
+        /does not use it/,
+      );
+    },
+  );
+});
+
+test("the desktop may attach to a diagnosed fallback generation", async () => {
+  const canonicalState = realpathSync(tmpdir());
+  const fallback = {
+    ...record,
+    stateDir: canonicalState,
+    supervisorMode: false,
+    supervisorFallback: true,
+  };
+  await serve(
+    (_req, res) => res.end(JSON.stringify(fallback)),
+    async (origin) => {
+      const result = await ensureBackend({
+        resources: "/missing-desktop-assets",
+        port: Number(new URL(origin).port),
+        env: {
+          CODEX_AGENTS_STATE_DIR: canonicalState,
+          CODEX_AGENTS_SUPERVISOR_MODE: "1",
+        },
+      });
+      assert.equal(result.supervisorFallback, true);
+      assert.equal(result.owned, false);
+    },
+  );
+});
+
 function sourceFixture(run) {
   const root = mkdtempSync(path.join(tmpdir(), "studio-backend-identity-"));
   mkdirSync(path.join(root, "scripts"));

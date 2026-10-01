@@ -37,7 +37,12 @@ async function setBackgroundRecovery(enabled) {
     supervisor: path.join(process.resourcesPath, "recover_backend.py"),
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
     enabled,
-    restartEnvironment: backend?.restartEnvironment,
+    restartEnvironment: backend?.supervisorFallback
+      ? {
+          ...backend.restartEnvironment,
+          CODEX_AGENTS_SUPERVISOR_MODE: "1",
+        }
+      : backend?.restartEnvironment,
   });
   recoveryEnabled = result.enabled;
   recoveryAvailable = true;
@@ -414,10 +419,6 @@ async function start() {
   backendResources = app.isPackaged
     ? path.join(process.resourcesPath, "workspace")
     : path.resolve(__dirname, "..");
-  backend = await ensureBackend({
-    resources: backendResources,
-    port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
-  });
   if (recoverySupported) {
     try {
       if (!isInstalledApplication(app.getAppPath()))
@@ -429,6 +430,10 @@ async function start() {
       markBackgroundRecoveryUnavailable(error);
     }
   }
+  backend = await ensureBackend({
+    resources: backendResources,
+    port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
+  });
   const primaryDisplay = screen.getPrimaryDisplay();
   const restoredWindow = loadWindowState(app.getPath("userData"), [
     primaryDisplay,
