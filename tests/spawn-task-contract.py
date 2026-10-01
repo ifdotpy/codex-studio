@@ -42,6 +42,14 @@ class SpawnTask(unittest.TestCase):
         with self.rt.db() as db:
             return db.execute('SELECT text FROM runtime_events WHERE id=?', (agent_id + ':initial',)).fetchone()[0]
 
+    def init_git(self, repo):
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.name', 'Fixture'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.email', 'fixture@example.test'], check=True)
+        (repo / 'tracked.txt').write_text('fixture\n')
+        subprocess.run(['git', '-C', str(repo), 'add', 'tracked.txt'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'fixture'], check=True)
+
     def test_spawn_assigns_task_and_worker_can_submit(self):
         value = self.rt.spawn_agents(self.lead, {'agents': [
             {'name': 'Reviewer', 'prompt': 'Count folders', 'role': 'reviewer', 'task_id': self.task['id']}]}, 'spawn-task')
@@ -105,6 +113,8 @@ class SpawnTask(unittest.TestCase):
         self.assertIn('orchestration_spawn', names(self.rt.agent(self.lead['id'])))
         spawn = next(d for d in self.rt.tool_definitions(self.rt.agent(self.lead['id'])) if d['name'] == 'orchestration_spawn')
         self.assertIn('Default cwd for your workers: ' + self.lead['cwd'], spawn['description'])
+        self.assertIn('base_ref', spawn['inputSchema']['properties']['agents']['items']['properties'])
+        self.assertIn('project', spawn['description'])
         self.assertNotIn('Default cwd for your workers', next(d for d in codex_runtime_tools() if d['name'] == 'orchestration_spawn')['description'])
 
 
@@ -124,7 +134,7 @@ class SpawnTask(unittest.TestCase):
     def test_worker_in_git_subfolder_gets_worktree_without_warning(self):
         repo = Path(self.tmp.name) / 'repo'
         (repo / 'sub').mkdir(parents=True)
-        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        self.init_git(repo)
         value = self.spawn('repo', cwd='repo/sub')
         self.assertEqual(value['cwd'], str((repo / 'sub').resolve()))
         self.assertTrue(value['worktree'])
@@ -199,7 +209,7 @@ class SpawnTask(unittest.TestCase):
     def test_prepare_works_in_place_when_the_folder_left_git(self):
         repo = Path(self.tmp.name) / 'gone'
         repo.mkdir()
-        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        self.init_git(repo)
         value = self.spawn('gone', cwd=str(repo))
         self.assertTrue(value['worktree'])
         subprocess.run(['rm', '-rf', str(repo / '.git')], check=True)

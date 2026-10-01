@@ -1,4 +1,4 @@
-import { Button, Checkbox, NativeSelect } from "@mantine/core";
+import { Button, Checkbox, NativeSelect, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
 import type { Snapshot } from "../types";
@@ -21,12 +21,14 @@ export default function ProjectAccount({
   const [keys, setKeys] = useState(
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
+  const [workerBase, setWorkerBase] = useState(project?.workerBaseRef || "");
   const selectableKeys = keys.filter((accountKey) => {
     const account = accounts.accounts.find((item) => item.id === accountKey);
     return account?.status === "ready" && !account.disconnected;
   });
   const displayedKey = selectableKeys.includes(key) ? key : "";
   const save = useProjectSave("/api/projects", saved);
+  const saveWorkerBase = useProjectSave("/api/projects", saved);
   const activeAccounts = accounts.accounts;
   const archivedMemberships = (accounts.archivedAccounts || []).filter(
     (account) => keys.includes(account.id),
@@ -34,6 +36,7 @@ export default function ProjectAccount({
   const selected = accounts.accounts.find((account) => account.id === key);
   const ready = selected?.status === "ready" && !selected.disconnected;
   const revision = useRef(project?.accountRevision || 0);
+  const workerBaseRevision = useRef(project?.workerBaseRevision || 0);
   return (
     <form
       onSubmit={(event) => {
@@ -120,6 +123,37 @@ export default function ProjectAccount({
         disabled={!save.frozen && (!keys.length || !key || !ready)}
       >
         {save.retryLabel || "Save accounts"}
+      </Button>
+      <TextInput
+        mt="lg"
+        label="Default worker base ref"
+        description="Use a branch, tag, or commit for new worker worktrees. Leave empty to use repository HEAD."
+        placeholder="main or origin/main"
+        value={workerBase}
+        maxLength={1024}
+        disabled={saveWorkerBase.pending || saveWorkerBase.frozen}
+        onChange={(event) => setWorkerBase(event.currentTarget.value)}
+      />
+      {saveWorkerBase.error && (
+        <p role="alert" className="account-action-error">
+          {saveWorkerBase.error}
+        </p>
+      )}
+      <Button
+        mt="md"
+        type="button"
+        loading={saveWorkerBase.pending}
+        disabled={saveWorkerBase.frozen}
+        onClick={() =>
+          void saveWorkerBase.submit({
+            action: "set_worker_base",
+            path,
+            base_ref: workerBase.trim() || null,
+            expected_revision: workerBaseRevision.current,
+          })
+        }
+      >
+        {saveWorkerBase.retryLabel || "Save worker base"}
       </Button>
     </form>
   );

@@ -47,6 +47,7 @@ const projects = [
     created: 1,
     accountKey: "work",
     accountRevision: 1,
+    workerBaseRevision: 1,
   },
   {
     id: "/projects/Lumina",
@@ -55,6 +56,7 @@ const projects = [
     created: 1,
     accountKey: "other",
     accountRevision: 1,
+    workerBaseRevision: 1,
     folders: [{ id: "review", name: "Review", parentId: null }],
   },
 ];
@@ -209,8 +211,15 @@ const server = createServer(async (req, res) => {
         name: body.path.split("/").at(-1),
         created: 1,
         accountRevision: 0,
+        workerBaseRevision: 0,
       };
       projects.push(project);
+    }
+    if (body.action === "set_worker_base") {
+      assert.equal(body.expected_revision, project.workerBaseRevision);
+      project.workerBaseRef = body.base_ref;
+      project.workerBaseRevision++;
+      return json(project);
     }
     assert.equal(body.expected_revision, project.accountRevision);
     project.accountKey = body.account_key;
@@ -465,6 +474,21 @@ try {
     saves[0].body,
     saves[1].body,
     "Retry keeps account and revision",
+  );
+  await openProject("fixture");
+  await dialog.getByLabel("Default worker base ref").fill("origin/main");
+  await dialog.getByRole("button", { name: "Save worker base" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(projects[0].workerBaseRef, "origin/main");
+  assert.deepEqual(
+    bodies.filter((r) => r.path === "/api/projects").at(-1).body,
+    {
+      action: "set_worker_base",
+      path: "/tmp/fixture",
+      base_ref: "origin/main",
+      expected_revision: 1,
+    },
+    "Project worker base saves through project settings",
   );
   await openProject("arbitrary");
   await dialog
@@ -837,6 +861,7 @@ try {
         "obsolete rules removed",
         "390px and 320px project settings",
         "deleted project default removal, replacement, save, and new chat",
+        "project worker base setting",
       ],
       evidence,
     }),

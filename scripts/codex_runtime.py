@@ -117,7 +117,7 @@ TOOLS = [
          {"agent_id": TEXT}, ["agent_id"]),
     tool("orchestration_spawn", "Delegate a batch to managed agents. Returns immediately. "
          "Each child completion wakes you, even after your final answer. Use these agents "
-         "instead of native subagents. Implementers receive isolated git worktrees at HEAD; "
+         "instead of native subagents. Implementers receive isolated Git worktrees at the selected base commit. "
          "reviewers share your directory read-only. Never poll for their completion. "
          "Default: gpt-6-luna with high reasoning, unless the user sets team defaults. "
          "Choose model and effort for each task. Codex and Claude can delegate to each other. "
@@ -127,7 +127,7 @@ TOOLS = [
              "type": "object", "properties": {"name": TEXT, "prompt": TEXT,
                  "role": {"type": "string", "enum": ["implementer", "reviewer"]},
                  "model": TEXT, "account_key": TEXT, "effort": {"type": ["string", "null"]},
-                 "fast_mode": {"type": "boolean"}}, "required": ["name", "prompt"],
+                 "fast_mode": {"type": "boolean"}, "base_ref": {"type": "string", "maxLength": 1024}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
          "or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. "
@@ -189,6 +189,9 @@ for definition in TOOLS:
         definition["description"] += (" cwd sets the worker's folder (absolute, or relative to your folder); default is your folder."
                                       " An implementer gets a git worktree of the repository that contains cwd."
                                       " Outside a git repository it works directly in cwd and the result carries a warning.")
+        definition["description"] += (" Optional per-agent base_ref selects a branch, tag, or commit for an implementer."
+                                      " Otherwise Studio uses the closest project's worker base ref, then the repository HEAD."
+                                      " Studio records the resolved commit and reports when it is behind main.")
         definition["description"] += (" Pass task_id to assign an orchestration_task item to the new worker."
                                       " The worker receives the task id and submits its evidence to it.")
 
@@ -221,7 +224,7 @@ Choose the tool:
 Scope and authority:
 - The project directory is a working directory, not an access boundary. Use files and skills outside it when the task needs them.
   Native sandbox and approval settings still apply.
-- An implementer gets a worktree at committed HEAD of the git repository that contains its cwd.
+- An implementer gets a worktree at the selected base commit of the repository that contains its cwd.
   Outside git it works directly in cwd; give such workers separate folders or files.
 - Only the orchestrator contacts the user. Subagents send requests to the orchestrator.
   Only the user answers or closes a user message. The answer notifies you automatically. Do not create tasks for the user.
@@ -2359,6 +2362,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "worktreeReady": False,
                 "worktreeWarning": (None if not (p and role == "implementer") or data.get("_worktree", True)
                                     else no_worktree_warning(cwd)),
+                "workerBaseRef": data.get("_workerBaseRef"),
+                "workerBaseCommit": data.get("_workerBaseCommit"),
+                "workerBaseBehindMain": data.get("_workerBaseBehindMain"),
+                "workerBaseMainRef": data.get("_workerBaseMainRef"),
             }
             if is_lead:
                 a["workerDefaults"] = defaults
@@ -3099,15 +3106,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     registered = fields
                     break
             if registered is not None:
+                expected_head = a.get("workerBaseCommit") or registered.get("HEAD")
                 if (registered.get("branch") != "refs/heads/" + branch
+                        or registered.get("HEAD") != expected_head
                         or not Path(project_directory).is_dir()):
                     raise ValueError("Worker worktree identity differs from its reservation; inspect the existing directory")
                 from codex_worktree_creation import verify_registered_worktree
                 verify_registered_worktree(repo, directory, project_directory, branch,
-                                           registered.get("HEAD"))
+                                           expected_head)
             else:
                 from codex_worktree_creation import create_worker_worktree
-                if create_worker_worktree(repo, directory, project_directory, branch):
+                if create_worker_worktree(repo, directory, project_directory, branch,
+                                           base_commit=a.get("workerBaseCommit")):
                     registered = {"worktree": directory, "branch": "refs/heads/" + branch}
             if timing is not None:
                 timing["worktreeAddedAt"] = time.monotonic_ns()
@@ -4738,11 +4748,30 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Every worker needs a name, task and valid role")
             if "task_id" in spec and (not isinstance(spec["task_id"], str) or not spec["task_id"]):
                 raise ValueError("task_id must be a task id")
+            if "base_ref" in spec and (
+                    not isinstance(spec["base_ref"], str) or not spec["base_ref"].strip()
+                    or len(spec["base_ref"]) > 1024):
+                raise ValueError("base_ref must be a branch, tag, or commit")
         resolved = []
+        base_cache = {}
         for spec in specs:
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
             repo = git_toplevel(directory) if spec.get("role", "implementer") == "implementer" else None
-            resolved.append({**spec, "cwd": directory, "_worktree": repo is not None})
+            base = None
+            if "base_ref" in spec and repo is None:
+                raise ValueError("base_ref requires an implementer in a Git repository")
+            if repo is not None:
+                base_ref = spec.get("base_ref")
+                if base_ref is None:
+                    with self.lock, self.db() as db:
+                        base_ref = self.project_worker_base(directory, db=db)
+                cache_key = (repo, base_ref)
+                if cache_key not in base_cache:
+                    from codex_worker_base import resolve_worker_base
+                    base_cache[cache_key] = resolve_worker_base(repo, base_ref)
+                base = base_cache[cache_key]
+            resolved.append({**spec, "cwd": directory, "_worktree": repo is not None,
+                             "_workerBase": base})
         specs = resolved
         assigned = [spec["task_id"] for spec in specs if "task_id" in spec]
         if len(assigned) != len(set(assigned)):
@@ -4770,7 +4799,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             active, finished = team_capacity_counts(roster, current['rootId'])
             if active + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
                 raise ValueError(f"This batch exceeds the active agent limit; {finished} finished agents. Use archive_finished to free stored records. No workers were created")
-            children = [self.create({k: v for k, v in spec.items() if k != "task_id"}, current["id"],
+            children = [self.create({k: v for k, v in spec.items()
+                                     if k not in {"task_id", "base_ref", "_workerBase"}} | {
+                                         "_workerBaseRef": spec["_workerBase"]["baseRef"] if spec.get("_workerBase") else None,
+                                         "_workerBaseCommit": spec["_workerBase"]["baseCommit"] if spec.get("_workerBase") else None,
+                                         "_workerBaseBehindMain": spec["_workerBase"]["behindMain"] if spec.get("_workerBase") else None,
+                                         "_workerBaseMainRef": spec["_workerBase"]["mainRef"] if spec.get("_workerBase") else None,
+                                     }, current["id"],
                                     parent_epoch=current["epoch"], _catalog=selection, _validate_only=True,
                                     _capacity_validated_root=current["rootId"])
                         for spec, selection in zip(planned, selections)]
@@ -4785,6 +4820,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if child["id"] not in existing:
                     self.put(db, "agents", child)
                     text = child["prompt"]
+                    if child.get("workerBaseCommit"):
+                        text += ("\n\n[Studio worker worktree base] Commit " + child["workerBaseCommit"]
+                                 + " from ref " + str(child.get("workerBaseRef") or "HEAD") + ".")
+                        behind = child.get("workerBaseBehindMain")
+                        if behind:
+                            main_ref = child.get("workerBaseMainRef") or "main"
+                            text += (" This base is " + str(behind) + " commits behind "
+                                     + main_ref + ". Check for newer project instructions before starting.")
                     w = works.get(spec.get("task_id"))
                     if w:
                         w.update(owner=child["id"], version=w["version"] + 1, updated=time.time())
@@ -4793,7 +4836,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
             value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider", "cwd", "worktree")},
+                                                  **({"baseRef": c["workerBaseRef"], "baseCommit": c["workerBaseCommit"]}
+                                                     if c.get("workerBaseCommit") else {}),
                                                   **({"taskId": s["task_id"]} if "task_id" in s else {}),
+                                                  **({"baseBehindMain": c["workerBaseBehindMain"],
+                                                      "baseMainRef": c["workerBaseMainRef"],
+                                                      "baseWarning": ("Base commit " + c["workerBaseCommit"] + " is "
+                                                                      + str(c["workerBaseBehindMain"]) + " commits behind "
+                                                                      + str(c["workerBaseMainRef"] or "main"))}
+                                                     if c.get("workerBaseBehindMain") else {}),
                                                   **({"warning": c["worktreeWarning"]} if c.get("worktreeWarning") else {})}
                                                  for s, c in zip(planned, children)],
                      "delivery": "Results wake you automatically. Finish your turn while waiting."}

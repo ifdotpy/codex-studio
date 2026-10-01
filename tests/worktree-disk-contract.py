@@ -64,6 +64,19 @@ class WorktreeContracts(unittest.TestCase):
                                                'codex-agent/worker', run=run, sleep=lambda _: None))
         self.assertEqual((self.path / 'tracked.txt').read_text(), 'original')
 
+    def test_explicit_base_commit_is_used_after_repository_head_moves(self):
+        base = self.git('rev-parse', 'HEAD')
+        (self.repo / 'tracked.txt').write_text('newer')
+        self.git('add', 'tracked.txt')
+        self.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                 'commit', '-m', 'Newer')
+        create_worker_worktree(self.repo, self.path, self.path,
+                               'codex-agent/worker', base_commit=base)
+        head = subprocess.run(['git', '-C', str(self.path), 'rev-parse', 'HEAD'],
+                              check=True, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(head, base)
+        self.assertEqual((self.path / 'tracked.txt').read_text(), 'original')
+
     def test_unregistered_content_is_preserved(self):
         self.path.mkdir(parents=True)
         (self.path / 'keep.txt').write_text('keep')

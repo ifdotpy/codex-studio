@@ -281,6 +281,18 @@ class WorkspaceMixin:
             return max(matches, key=lambda p: len(Path(p["path"]).parts))["accountKey"]
         return self.accounts.default()
 
+    def project_worker_base(self, cwd, db=None):
+        if db is None:
+            with self.lock, self.db() as connection:
+                return self.project_worker_base(cwd, db=connection)
+        directory = Path(self.project_directory(cwd, require_existing=False))
+        matches = [p for p in self.records(db, "projects")
+                   if p.get("workerBaseRef") and directory.is_relative_to(
+                       Path(p["path"]).expanduser().resolve())]
+        if matches:
+            return max(matches, key=lambda p: len(Path(p["path"]).parts))["workerBaseRef"]
+        return None
+
     def ensure_project(self, path, account_key, db):
         """Register a chat project in its transaction; preserve an existing choice."""
         path = self.project_directory(path, require_existing=False)
@@ -306,7 +318,7 @@ class WorkspaceMixin:
         if action == "set_accounts":
             from codex_project_accounts import set_project_accounts
             return set_project_accounts(self, data)
-        if action not in ("register", "remove", "set_account"):
+        if action not in ("register", "remove", "set_account", "set_worker_base"):
             raise ValueError("Unknown project action")
         path = self.project_directory(data.get("path"), require_existing=action == "register")
         name = text_field(data["name"], "a project name", 255) if "name" in data else Path(path).name or path
@@ -314,6 +326,15 @@ class WorkspaceMixin:
             revision = data.get("expected_revision")
             if type(revision) is not int or revision < 0:
                 raise ValueError("Supply the current project account revision")
+        if action == "set_worker_base":
+            revision = data.get("expected_revision")
+            if type(revision) is not int or revision < 0:
+                raise ValueError("Supply the current worker base revision")
+            worker_base = data.get("base_ref")
+            if worker_base is not None and (
+                    not isinstance(worker_base, str) or len(worker_base.strip()) > 1024):
+                raise ValueError("Worker base ref must be empty or at most 1024 characters")
+            worker_base = worker_base.strip() or None if isinstance(worker_base, str) else None
         with self.lock, self.db() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if action == "remove":
@@ -335,13 +356,22 @@ class WorkspaceMixin:
                     raise ValueError("Project account changed. Reload it before saving")
                 if self.accounts.get(desired).get("disconnected"):
                     raise ValueError("Reconnect this account before selecting it")
+            elif action == "set_worker_base":
+                current = project.get("workerBaseRevision", 0) if project else 0
+                if project and project.get("workerBaseRef") == worker_base and revision in (current, current - 1):
+                    return project
+                if revision != current:
+                    raise ValueError("Worker base changed. Reload it before saving")
             else:
                 current = 0
                 desired = data.get("account_key") or self.project_account(path, db=connection)
                 self.accounts.get(desired)
             if project is None:
                 project = {"id": path, "path": path, "name": name, "created": time.time()}
-            project.update(accountKey=desired, accountRevision=current + 1)
+            if action == "set_worker_base":
+                project.update(workerBaseRef=worker_base, workerBaseRevision=current + 1)
+            else:
+                project.update(accountKey=desired, accountRevision=current + 1)
             if project.get("accountKeys") and desired not in project["accountKeys"]:
                 project["accountKeys"] = sorted([*project["accountKeys"], desired])
             self.put(connection, "projects", project)

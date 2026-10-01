@@ -133,6 +133,8 @@ export interface Snapshot {
       accountKey?: string;
       accountRevision?: number;
       accountKeys?: string[];
+      workerBaseRef?: string | null;
+      workerBaseRevision?: number;
       organizationRevision?: number;
       peerTeamsRevision?: number;
       folders?: { id: string; name: string; parentId: string | null }[];
