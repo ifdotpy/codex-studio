@@ -161,27 +161,78 @@ async function pull(
   limit: number,
   workspaceId: string,
   verifyWorkspace: () => Promise<void>,
+  initialHigh?: number,
 ) {
   await verifyWorkspace();
+  const fresh = initialHigh !== undefined
+    ? `&fresh=1&initialHigh=${initialHigh}`
+    : "";
   const result = await api(
-    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}`,
+    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}`,
   );
   if (result.workspaceId !== workspaceId)
     throw new Error("The server workspace changed. Reload to synchronize.");
   return result;
 }
-// All projection scopes and drafts share one stream and one fallback clock.
-// A background PWA must not retain one HTTP connection per conversation.
+// Legacy projections share one stream and one fallback clock. Drafts use their
+// own sequence so unrelated runtime writes do not pull the same draft cursor.
 const invalidations = new Set<() => void>();
 let stopInvalidations: (() => void) | undefined;
 const entityInvalidations = new Set<() => void>();
 let stopEntityInvalidations: (() => void) | undefined;
+const draftInvalidations = new Set<() => void>();
+let stopDraftInvalidations: (() => void) | undefined;
 export function watchSyncInvalidations(
   resync: () => void,
-  scope: "legacy" | "entities" = "legacy",
+  scope: "legacy" | "entities" | "drafts" = "legacy",
 ) {
-  const subscribers = scope === "entities" ? entityInvalidations : invalidations;
+  const subscribers = scope === "entities"
+    ? entityInvalidations
+    : scope === "drafts"
+      ? draftInvalidations
+      : invalidations;
   subscribers.add(resync);
+  if (scope === "drafts" && !stopDraftInvalidations) {
+    let source: EventSource | undefined;
+    let previous: number | undefined;
+    const available = () => !document.hidden && navigator.onLine !== false;
+    const close = () => {
+      source?.close();
+      source = undefined;
+    };
+    const connect = () => {
+      if (!available() || source) return;
+      source = new EventSource("/api/sync/stream?scope=drafts");
+      source.onmessage = (event) => {
+        const current = Number(event.data);
+        if (!Number.isSafeInteger(current) || current < 0) return;
+        if (previous === undefined || current > previous) {
+          previous = current;
+          for (const callback of draftInvalidations) callback();
+        }
+      };
+    };
+    const suspend = () => {
+      if (!available()) close();
+    };
+    const resume = () => {
+      close();
+      previous = undefined;
+      connect();
+    };
+    window.addEventListener("offline", suspend);
+    window.addEventListener("online", resume);
+    document.addEventListener("visibilitychange", suspend);
+    const stopResume = onResume(resume);
+    connect();
+    stopDraftInvalidations = () => {
+      close();
+      stopResume();
+      window.removeEventListener("offline", suspend);
+      window.removeEventListener("online", resume);
+      document.removeEventListener("visibilitychange", suspend);
+    };
+  }
   if (scope === "entities" && !stopEntityInvalidations) {
     let source: EventSource | undefined;
     let previous: number | undefined;
@@ -279,6 +330,10 @@ export function watchSyncInvalidations(
       stopEntityInvalidations?.();
       stopEntityInvalidations = undefined;
     }
+    if (scope === "drafts" && !draftInvalidations.size) {
+      stopDraftInvalidations?.();
+      stopDraftInvalidations = undefined;
+    }
     if (scope === "legacy") {
     invalidations.delete(resync);
     if (!invalidations.size) {
@@ -317,6 +372,41 @@ export async function persistProjection(
     if (failure.status !== 409) throw failure;
   }
 }
+async function persistProjectionBatch(
+  collection: RxCollection<SyncDocument>,
+  documents: SyncDocument[],
+) {
+  const pending = new Map(documents.map((row) => [row.id, row]));
+  while (pending.size) {
+    const existing = await collection.storageInstance.findDocumentsById(
+      [...pending.keys()], true,
+    );
+    const byId = new Map(existing.map((row) => [row.id, row]));
+    const writes = [];
+    for (const [id, incoming] of pending) {
+      const previous = byId.get(id);
+      if (previous && previous.seq >= incoming.seq) {
+        pending.delete(id);
+        continue;
+      }
+      const document: RxDocumentData<SyncDocument> = {
+        ...incoming,
+        _deleted: incoming._deleted === true,
+        _attachments: {},
+        _meta: { lwt: 1 },
+        _rev: "",
+      };
+      writes.push({ previous, document });
+    }
+    if (!writes.length) return;
+    const result = await collection.storageInstance.bulkWrite(
+      writes, "studio-projection-pull",
+    );
+    const failure = result.error.find((row) => row.status !== 409);
+    if (failure) throw failure;
+    if (!result.error.length) return;
+  }
+}
 type ProjectionState = {
   users: number;
   foreground: number;
@@ -326,6 +416,7 @@ type ProjectionState = {
 };
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
+const ENTITY_BATCH_SIZE = 500;
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,
@@ -358,6 +449,15 @@ async function acquireProjection(
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
+          const markers = remoteScope === "state:entities:v1"
+            ? await db.projections.storageInstance.findDocumentsById(
+                ["state:entities:ready", "state:entities:initial"], true)
+            : [];
+          const ready = markers.find((row) => row.id === "state:entities:ready" && !row._deleted);
+          const initialMarker = markers.find((row) => row.id === "state:entities:initial" && !row._deleted);
+          let initialHigh: number | undefined = remoteScope === "state:entities:v1" && !ready
+            ? initialMarker?.seq ?? 0
+            : undefined;
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -365,14 +465,29 @@ async function acquireProjection(
                 true,
               );
             const after = previous?.seq ?? 0;
+            if (initialHigh !== undefined && previous?.payload) {
+              try {
+                initialHigh = initialMarker?.seq ?? (JSON.parse(previous.payload).initialHigh || 0);
+              } catch { /* An old checkpoint continues with delta semantics. */
+                initialHigh = undefined;
+              }
+            }
             const result = await pull(
               remoteScope,
               after,
-              100,
+              remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
               workspaceId,
               verifyWorkspace,
+              initialHigh,
             );
             if (stopped) return;
+            if (remoteScope === "state:entities:v1" && initialHigh !== undefined)
+              await persistProjection(db.projections, {
+                id: "state:entities:initial",
+                payload: "{}",
+                seq: result.initialHigh,
+              });
+            const entityBatch: SyncDocument[] = [];
             for (const document of result.documents as SyncDocument[]) {
               if (
                 remoteScope === "state:entities:v1"
@@ -422,20 +537,24 @@ async function acquireProjection(
                   continue;
                 }
               }
+              if (remoteScope === "state:entities:v1") {
+                entityBatch.push(document);
+                continue;
+              }
               await persistProjection(
                 db.projections,
-                remoteScope === "state:entities:v1"
-                  ? document
-                  : { ...document, id: scope },
+                { ...document, id: scope },
               );
             }
             if (remoteScope === "state:entities:v1") {
+              await persistProjectionBatch(db.projections, entityBatch);
               await persistProjection(db.projections, {
                 id: checkpointId,
-                payload: "{}",
+                payload: JSON.stringify({ initialHigh: result.initialHigh }),
                 seq: result.checkpoint.seq,
               });
-              more = result.documents.length === 100 &&
+              initialHigh = result.initialHigh;
+              more = result.documents.length === ENTITY_BATCH_SIZE &&
                 result.checkpoint.seq < result.maxSeq;
             } else {
               more = false;
@@ -687,7 +806,9 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const stopInvalidation = watchSyncInvalidations(() => replication.reSync());
+  const stopInvalidation = watchSyncInvalidations(
+    () => replication.reSync(), "drafts",
+  );
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"

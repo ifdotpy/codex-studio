@@ -148,7 +148,7 @@ export function useSnapshot() {
         if (!replicated.current) await refresh(false);
       }
       polling = false;
-      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 1600);
+      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 5000);
     };
     const offline = () =>
       setError("Offline. Your chats and drafts are saved here.");

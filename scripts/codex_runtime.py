@@ -1315,6 +1315,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             elif table == "tasks":
                 from codex_sync_entities import sync_task_write
                 sync_task_write(db, record)
+            elif table == "monitors":
+                from codex_sync_entities import sync_monitor_write
+                sync_monitor_write(db, record)
             else:
                 sync_entity_put(db, collection, str(record["id"]), record)
             if table == "agents" and previous is not None and (
@@ -1322,6 +1325,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             ):
                 from codex_sync_entities import sync_task_agent_change
                 sync_task_agent_change(db, record["id"], bool(record.get("deletedAt")))
+                from codex_sync_entities import sync_monitor_agent_change
+                sync_monitor_agent_change(db)
         if (table == "agents" and previous and
                 any(previous.get(key) != record.get(key)
                     for key in ("name", "rootId", "deletedAt", "sharedRoomId", "cwd"))):

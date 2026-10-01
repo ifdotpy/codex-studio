@@ -13,6 +13,7 @@ sys.path.insert(0, str(root / "scripts"))
 from codex_sync import SyncStore
 from codex_sync_entities import (AGENT_FIELDS, ensure_tables, project, put,
                                 sync_task_agent_change, sync_task_window, sync_task_write,
+                                sync_event_window, sync_monitor_window, sync_monitor_write,
                                 upgrade_agent_organization)
 
 with tempfile.TemporaryDirectory() as directory:
@@ -223,12 +224,81 @@ with tempfile.TemporaryDirectory() as directory:
     assert json.loads(first_change["documents"][0]["payload"])["value"]["name"] == "Updated"
     with connect() as db:
         assert put(db, "agent", "a", {}, deleted=True)
+        assert put(db, "agent", "old", {}, deleted=True)
     for client in (store, second_window):
         tombstone = client.pull("state:entities:v1", after=changed_seq)
         assert tombstone["documents"][0]["_deleted"]
+    fresh = store.pull("state:entities:v1", fresh=True, limit=500)
+    assert all(not row["_deleted"] for row in fresh["documents"])
+    assert fresh["checkpoint"]["seq"] == fresh["maxSeq"]
+    with connect() as db:
+        assert put(db, "agent", "in-flight", {"id": "in-flight", "name": "Pending"})
+    first_attempt = store.pull("state:entities:v1", fresh=True, limit=500)
+    with connect() as db:
+        assert put(db, "agent", "in-flight", {}, deleted=True)
+    retried = store.pull("state:entities:v1", fresh=True, limit=500,
+                         initial_high=first_attempt["initialHigh"])
+    assert any(row["id"] == "entity:agent:in-flight" and row["_deleted"]
+               for row in retried["documents"])
+    with connect() as db:
+        assert put(db, "agent", "later", {"id": "later", "name": "Later"})
+        assert put(db, "agent", "later", {}, deleted=True)
+    delta = store.pull("state:entities:v1", after=retried["checkpoint"]["seq"],
+                       fresh=True, initial_high=retried["initialHigh"])
+    assert [row["id"] for row in delta["documents"]] == ["entity:agent:later"]
+    assert delta["documents"][0]["_deleted"]
     restarted = SyncStore(connect, lambda: snapshot, lambda _key: {})
-    assert not restarted.pull("state:entities:v1", after=tombstone["checkpoint"]["seq"])["documents"]
+    assert not restarted.pull("state:entities:v1", after=delta["checkpoint"]["seq"])["documents"]
     # The full state scope remains available to clients not yet reloaded.
     legacy = store.pull("state")
     assert "runtime" in json.loads(legacy["documents"][0]["payload"])
+    with connect() as db:
+        db.executescript("""CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT,
+            kind TEXT, status TEXT, created REAL, error TEXT);
+            CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);""")
+        db.execute("INSERT INTO runtime_agents VALUES ('owner',?)",
+                   (json.dumps({"id": "owner", "deletedAt": None}),))
+        for index in range(260):
+            event = {"id": f"event-{index}", "agent": "owner", "kind": "message",
+                     "status": "delivered", "created": index, "error": None}
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?)", tuple(event.values()))
+            put(db, "event", event["id"], event)
+        for index in range(160):
+            monitor = {"id": f"monitor-{index}", "agent": "owner",
+                       "status": "running" if index < 2 else "completed", "created": index}
+            db.execute("INSERT INTO runtime_monitors VALUES (?,?)",
+                       (monitor["id"], json.dumps(monitor)))
+            put(db, "monitor", monitor["id"], monitor)
+        assert sync_event_window(db) == 60
+        assert sync_monitor_window(db) == 58
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='event' AND deleted=0").fetchone()[0] == 200
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchone()[0] == 102
+        db.execute("UPDATE runtime_monitors SET record=? WHERE id='monitor-0'",
+                   (json.dumps({"id": "monitor-0", "agent": "owner", "status": "completed", "created": 0}),))
+        sync_monitor_write(db, {"id": "monitor-0", "agent": "owner", "status": "completed", "created": 0})
+        assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchone()[0] == 101
+        assert db.execute("SELECT deleted FROM sync_entities WHERE collection='monitor' AND id='monitor-0'").fetchone()[0] == 1
+        for index in range(650):
+            put(db, "agent", f"bulk-{index}", {"id": f"bulk-{index}", "name": "Bulk"})
+        for index in range(800):
+            put(db, "agent", f"removed-{index}", {}, deleted=True)
+    first = store.pull("state:entities:v1", fresh=True, limit=500)
+    assert len(first["documents"]) == 500
+    removed = next(row["id"].removeprefix("entity:agent:") for row in first["documents"]
+                   if row["id"].startswith("entity:agent:bulk-"))
+    with connect() as db:
+        put(db, "agent", removed, {}, deleted=True)
+    after = first["checkpoint"]["seq"]
+    initial_high = first["initialHigh"]
+    continuation = []
+    while True:
+        page = store.pull("state:entities:v1", after=after, limit=500,
+                          fresh=True, initial_high=initial_high)
+        continuation.extend(page["documents"])
+        after = page["checkpoint"]["seq"]
+        if after >= page["maxSeq"]:
+            break
+    assert [row["id"] for row in continuation if row["_deleted"]] == [f"entity:agent:{removed}"]
+    assert not any("removed-" in row["id"] for row in continuation)
     print("sync entity contract passed")
