@@ -245,9 +245,12 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 item['reason'] = 'The input changed during native history recovery'
                 continue
             if item['decision'] == 'delivered':
-                db.execute("UPDATE runtime_events SET status='delivered',turn_id=?,error=NULL WHERE id=? AND agent=? "
+                delivered_row = db.execute("UPDATE runtime_events SET status='delivered',turn_id=?,error=NULL WHERE id=? AND agent=? "
                            "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
                            (item['turnId'], item['id'], agent_id, identity[0]))
+                if delivered_row.rowcount:
+                    from codex_efficiency import remember_context_manifest
+                    remember_context_manifest(db, agent_id, item['id'])
             elif item['decision'] == 'not_delivered':
                 db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id=? AND agent=? "
                            "AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
@@ -464,14 +467,17 @@ def verified_events(db, a):
         repaired.update(receipt.get('checkedEventIds', []))
     repaired.update(_inherited_checked_events(db, a))
     events = [dict(r) for r in db.execute(
-        "SELECT e.* FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
+        "SELECT e.* FROM runtime_events e INDEXED BY runtime_event_repair_candidates_v2 "
+        "LEFT JOIN runtime_event_meta m ON m.id=e.id "
         "WHERE e.agent=? AND e.status='delivered' "
         "AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
         "AND length(e.text)>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1 "
         "ORDER BY e.created", (a['id'],)) if r['turn_id'] and r['id'] not in repaired]
     # Versioned role blocks are generated after the first event in a batch.
     # Their full text persists as user input across native remote compaction.
-    for row in db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+    for row in db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e "
+                          "INDEXED BY runtime_event_repair_candidates_v2 "
+                          "JOIN runtime_event_meta m ON m.id=e.id "
                           "WHERE e.agent=? AND e.status='delivered' AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
                           "AND json_extract(m.record,'$.contextManifest.versions.roleSkill') IS NOT NULL", (a['id'],)):
         row = dict(row)
@@ -486,7 +492,9 @@ def verified_events(db, a):
     # synthetic prefix alone cannot authorize replacement inside that user text.
     users = {}
     for turn, text in db.execute("SELECT turn_id,text FROM runtime_events WHERE agent=? "
-                                 "AND kind IN ('user','followup') AND status='delivered'", (a['id'],)):
+        "AND kind IN ('user','followup') AND status='delivered' AND turn_id IN ("
+        "SELECT turn_id FROM runtime_events WHERE agent=? AND status='delivered' "
+        "AND kind IN ('monitor_exit','agent_message','work_review','work_decision'))", (a['id'], a['id'])):
         users.setdefault(turn, []).append(text)
     return [e for e in events if not (e['kind'] == 'studio_role' and users.get(e['turn_id']))
             and not any('[Orchestration event: ' + e['kind'] + ']\n' + e['text'] in text

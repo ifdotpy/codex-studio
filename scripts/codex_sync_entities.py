@@ -103,6 +103,7 @@ def ensure_tables(db):
         hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(collection,id));
       CREATE INDEX IF NOT EXISTS sync_entities_seq ON sync_entities(seq);
+      CREATE INDEX IF NOT EXISTS sync_entities_collection_seq ON sync_entities(collection,seq);
       CREATE INDEX IF NOT EXISTS sync_entities_collection_deleted
         ON sync_entities(collection,deleted);
       CREATE TABLE IF NOT EXISTS sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -115,6 +116,10 @@ def ensure_tables(db):
         seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
         hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
     """)
+    # This index is built once by SQLite at startup and supports the bounded
+    # newest-event pull. IF NOT EXISTS avoids rebuilding it on every start.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
+        db.execute("CREATE INDEX IF NOT EXISTS runtime_event_created_id ON runtime_events(created DESC,id)")
 
 
 def register_functions(db):
@@ -250,15 +255,25 @@ def sync_event_window(db):
     """Match the 200 receipts in the chat snapshot."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
         return 0
+    changed = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
+    marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='event_window_seq'").fetchone()
+    if marker and int(marker[0]) == changed:
+        return 0
     recent = db.execute("""SELECT id,agent,kind,status,created,error FROM runtime_events
-                           ORDER BY created DESC LIMIT 200""").fetchall()
+                           ORDER BY created DESC,id LIMIT 200""").fetchall()
+    selected = [row[0] for row in recent]
     for row in recent:
         record = dict(zip(("id", "agent", "kind", "status", "created", "error"), row))
         put(db, "event", str(record["id"]), record)
-    stale = db.execute("""SELECT id FROM sync_entities WHERE collection='event' AND deleted=0
-        AND id NOT IN (SELECT id FROM runtime_events ORDER BY created DESC LIMIT 200)""").fetchall()
+    placeholders = ",".join("?" for _ in selected)
+    exclusion = f" AND id NOT IN ({placeholders})" if selected else ""
+    stale = db.execute("SELECT id FROM sync_entities WHERE collection='event' AND deleted=0" + exclusion,
+                       selected).fetchall()
     for (key,) in stale:
         put(db, "event", key, {}, deleted=True)
+    final_seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
+    db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('event_window_seq',?) "
+               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(final_seq),))
     return len(stale)
 
 
