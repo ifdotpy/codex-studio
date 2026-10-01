@@ -735,15 +735,33 @@ class WorkspaceMixin:
         ref = f"refs/codex-agents/checkpoints/{agent_id}/{key}"
         self.git(a, ["update-ref", ref, commit])
         with self.lock, self.db() as db:
-            visible = [
-                row[0]
-                for row in db.execute(
-                    "SELECT id FROM runtime_items WHERE agent=? AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created",
-                    (agent_id,),
-                )
-            ]
+            current = self.agent(agent_id, db)
+            parent_id = current.get("checkpointHistoryHead")
+            parent_boundary = None
+            if parent_id:
+                parent_row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?", (parent_id,)
+                ).fetchone()
+                if parent_row:
+                    parent_boundary = json.loads(parent_row[0]).get("historyBoundary")
+            boundary = db.execute(
+                "SELECT rowid,id FROM runtime_items WHERE agent=? "
+                "AND json_extract(record,'$.afterRestore') IS NULL "
+                "ORDER BY rowid DESC LIMIT 1",
+                (agent_id,),
+            ).fetchone()
+            query = (
+                "SELECT id FROM runtime_items WHERE agent=? "
+                "AND json_extract(record,'$.afterRestore') IS NULL"
+            )
+            params = [agent_id]
+            if parent_boundary:
+                query += " AND rowid>?"
+                params.append(parent_boundary)
             record = {
-                "items": visible,
+                "historyParent": parent_id,
+                "historyDelta": [row[0] for row in db.execute(query, params)],
+                "historyBoundary": boundary[0] if boundary else None,
                 "id": key,
                 "agent": agent_id,
                 "rootId": a["rootId"],
@@ -757,7 +775,47 @@ class WorkspaceMixin:
                 "cwd": a["cwd"],
             }
             self.put(db, "checkpoints", record)
+            current["checkpointHistoryHead"] = key
+            self.put(db, "agents", current)
             return record
+
+    @staticmethod
+    def _checkpoint_history_ids(db, checkpoint):
+        ids = set()
+        seen = set()
+        current = checkpoint
+        while current:
+            checkpoint_id = current.get("id")
+            if checkpoint_id in seen:
+                raise ValueError("Checkpoint history lineage contains a cycle")
+            seen.add(checkpoint_id)
+            if "items" in current:
+                ids.update(current["items"])
+            elif "historyDelta" in current:
+                ids.update(current["historyDelta"])
+            else:
+                ids.update(
+                    row[0]
+                    for row in db.execute(
+                        "SELECT id FROM runtime_items WHERE agent=? AND created<=?",
+                        (checkpoint["agent"], checkpoint.get("created", 0)),
+                    )
+                )
+            parent_id = current.get("historyParent")
+            if not parent_id:
+                break
+            row = db.execute(
+                "SELECT record FROM runtime_checkpoints WHERE id=?", (parent_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError("Checkpoint history parent is missing")
+            current = json.loads(row[0])
+        return ids
+
+    @staticmethod
+    def checkpoint_summary(checkpoint):
+        return {k: v for k, v in checkpoint.items()
+                if k not in {"items", "historyDelta"}}
 
     def checkpoint_after_turn(self, key, turn_id, operation_id):
         try:
@@ -772,7 +830,8 @@ class WorkspaceMixin:
         recovery_expected = None
         with self.lock, self.db() as db:
             row = db.execute(
-                "SELECT record FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
+                "SELECT json_remove(record,'$.items','$.historyDelta') "
+                "FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
             ).fetchone()
             if not row:
                 raise ValueError("Unknown checkpoint")
@@ -795,7 +854,7 @@ class WorkspaceMixin:
         if recovery_expected is not None:
             can_restore = can_restore and tree in {recovery_expected, checkpoint["tree"]}
         return {
-            "checkpoint": checkpoint,
+            "checkpoint": self.checkpoint_summary(checkpoint),
             "expectedTree": expected_tree,
             "diff": patch[:300000],
             "patch": patch[:300000],
@@ -815,85 +874,99 @@ class WorkspaceMixin:
         operation_id = self._workspace_operation_id("restore", key, data)
         resume_operation = None
         files_already_restored = False
-        with self.lock:
-            a = self.checked_actor_in_own_db(key)
+        completed = None
+        signature = self._workspace_restore_signature(key, data)
+        checkpoint_id = data.get("checkpoint_id") or data.get("checkpoint")
+        with self.lock, self.db() as db:
+            a = self.checked_actor(db, key)
             if not a.get("worktreeReady"):
+                raise ValueError("Restore is available only in an isolated worker worktree")
+            active = self._workspace_operations(db, key)
+            existing = self._workspace_operation(db, operation_id)
+            if existing and existing.get("signature") != signature:
+                raise ValueError("This restore request has different content")
+            if existing and existing.get("phase") == "completed":
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (existing.get("checkpoint"),),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                checkpoint = json.loads(row[0])
+                completed = (existing, checkpoint, a)
+            elif active:
+                matches = [op for op in active if op.get("id") == operation_id
+                           and op.get("kind") == "restore"]
+                if not matches:
+                    raise ValueError("Workspace recovery is required before retrying this operation")
+                resume_operation = matches[0]
+                self._assert_workspace_source(resume_operation, a)
+                if resume_operation.get("signature") != signature:
+                    raise ValueError("This restore request has different content")
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (resume_operation.get("checkpoint"),),
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                checkpoint = json.loads(row[0])
+                expected_tree = resume_operation.get("expectedTree")
+                if data.get("checkpoint_id") not in {None, checkpoint["id"]}:
+                    raise ValueError("This restore request has different content")
+                if data.get("expectedTree") != expected_tree:
+                    raise ValueError("This restore request has different content")
+                operation = resume_operation
+            else:
+                self.assert_workspace_idle(a)
+                row = db.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
+                ).fetchone()
+                if not row:
+                    raise ValueError("Unknown checkpoint")
+                checkpoint = json.loads(row[0])
+                if checkpoint.get("agent") != key:
+                    raise ValueError("Checkpoint belongs to another agent")
+                expected_tree = data.get("expectedTree")
+                if not isinstance(expected_tree, str) or not expected_tree:
+                    raise ValueError("Preview this checkpoint before restore")
+                operation = {
+                    "id": operation_id, "kind": "restore", "agent": key,
+                    "checkpoint": checkpoint["id"], "expectedTree": expected_tree,
+                    "signature": signature, "source": self._workspace_source(a),
+                    "phase": "provider_pending", "created": time.time(),
+                }
+                self._put_workspace_operation(db, operation)
+                a["workspaceOperation"] = "restore"
+                self.put(db, "agents", a)
+            preview = {"checkpoint": checkpoint, "expectedTree": expected_tree if not completed else None}
+
+        # Git snapshots and diffs can take seconds. Never hold Runtime.lock here.
+        if completed:
+            completed_op, checkpoint, a = completed
+            if self.snapshot_tree(a) != checkpoint["tree"]:
+                raise ValueError("Files changed after the completed restore. Preview again")
+            with self.lock, self.db() as db:
+                current = self.agent(key, db)
+                latest = self._workspace_operation(db, operation_id)
+                if (not latest or latest.get("phase") != "completed"
+                        or current.get("restoredCheckpoint") != checkpoint["id"]):
+                    raise ValueError("Restore state changed. Inspect the operation before retrying")
+                return latest.get("result") or {"status": "restored", "checkpoint": checkpoint_id}
+        if resume_operation:
+            current_tree = self.snapshot_tree(a)
+            if current_tree == checkpoint["tree"]:
+                files_already_restored = True
+            elif current_tree != preview["expectedTree"]:
                 raise ValueError(
-                    "Restore is available only in an isolated worker worktree"
+                    "Workspace recovery is required. Restore files to the saved checkpoint or preview tree before retrying"
                 )
-            checkpoint_id = data.get("checkpoint_id") or data.get("checkpoint")
-            with self.db() as db:
-                active = self._workspace_operations(db, key)
-                existing = self._workspace_operation(db, operation_id)
-                if existing and existing.get("phase") == "completed":
-                    if existing.get("signature") != self._workspace_restore_signature(key, data):
-                        raise ValueError("This restore request has different content")
-                    row = db.execute(
-                        "SELECT record FROM runtime_checkpoints WHERE id=?",
-                        (existing.get("checkpoint"),),
-                    ).fetchone()
-                    if not row or self.snapshot_tree(a) != json.loads(row[0])["tree"]:
-                        raise ValueError("Files changed after the completed restore. Preview again")
-                    return existing.get("result") or {
-                        "status": "restored",
-                        "checkpoint": checkpoint_id,
-                    }
-                if active:
-                    restore_ops = [
-                        operation
-                        for operation in active
-                        if operation.get("kind") == "restore"
-                        and operation.get("id") == operation_id
-                    ]
-                    if not restore_ops:
-                        raise ValueError(
-                            "Workspace recovery is required before retrying this operation"
-                        )
-                    resume_operation = restore_ops[0]
-                    self._assert_workspace_source(resume_operation, a)
-                    if resume_operation.get("signature") != self._workspace_restore_signature(key, data):
-                        raise ValueError("This restore request has different content")
-                    row = db.execute(
-                        "SELECT record FROM runtime_checkpoints WHERE id=?",
-                        (resume_operation.get("checkpoint"),),
-                    ).fetchone()
-                    if not row:
-                        raise ValueError("Unknown checkpoint")
-                    checkpoint = json.loads(row[0])
-                    expected_tree = resume_operation.get("expectedTree")
-                    if data.get("checkpoint_id") not in {None, checkpoint["id"]}:
-                        raise ValueError("This restore request has different content")
-                    if data.get("expectedTree") != expected_tree:
-                        raise ValueError("This restore request has different content")
-                    current_tree = self.snapshot_tree(a)
-                    if current_tree == checkpoint["tree"]:
-                        files_already_restored = True
-                    elif current_tree != expected_tree:
-                        raise ValueError(
-                            "Workspace recovery is required. Restore files to the saved checkpoint or preview tree before retrying"
-                        )
-                    preview = {"checkpoint": checkpoint, "expectedTree": expected_tree}
-                    operation = resume_operation
-                else:
-                    self.assert_workspace_idle(a)
-                    preview = self.checkpoint_preview(key, checkpoint_id)
-                    if data.get("expectedTree") != preview["expectedTree"]:
-                        raise ValueError("Files changed after the preview. Preview again")
-                    checkpoint = preview["checkpoint"]
-                    operation = {
-                        "id": operation_id,
-                        "kind": "restore",
-                        "agent": key,
-                        "checkpoint": checkpoint["id"],
-                        "expectedTree": preview["expectedTree"],
-                        "signature": self._workspace_restore_signature(key, data),
-                        "source": self._workspace_source(a),
-                        "phase": "provider_pending",
-                        "created": time.time(),
-                    }
-                    self._put_workspace_operation(db, operation)
-                    a["workspaceOperation"] = "restore"
-                    self.put(db, "agents", a)
+        else:
+            try:
+                if self.snapshot_tree(a) != preview["expectedTree"]:
+                    raise ValueError("Files changed after the preview. Preview again")
+            except Exception as error:
+                self._finish_workspace_operation(operation_id, key, error=error)
+                raise
         try:
             # Create the matching conversation before changing files. A provider rejection leaves files intact.
             with self.lock, self.db() as db:
@@ -961,6 +1034,8 @@ class WorkspaceMixin:
                     raise ValueError(
                         "Workspace files changed before restore metadata was saved"
                     )
+                with self.db() as history_db:
+                    visible_ids = self._checkpoint_history_ids(history_db, checkpoint)
                 with self.lock, self.db() as db:
                     current = self.agent(key, db)
                     self._assert_workspace_source(operation, current)
@@ -986,15 +1061,16 @@ class WorkspaceMixin:
                         "UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'",
                         (key,),
                     )
+                    current["checkpointHistoryHead"] = checkpoint["id"]
+                    self.put(db, "agents", current)
                     for item_row in db.execute(
                         "SELECT id,record,created FROM runtime_items WHERE agent=?", (key,)
                     ).fetchall():
                         record = json.loads(item_row["record"])
-                        visible = (
-                            item_row["id"] in checkpoint["items"]
-                            if "items" in checkpoint
-                            else item_row["created"] <= checkpoint["created"]
-                        )
+                        visible = item_row["id"] in visible_ids
+                        was_visible = "afterRestore" not in record
+                        if visible == was_visible:
+                            continue
                         if visible:
                             record.pop("afterRestore", None)
                             if not db.execute(
@@ -1579,8 +1655,9 @@ class WorkspaceMixin:
             clause = "id IN (" + placeholders + ")"
         else:
             clause = f"json_extract(record,'$.{field}') IN ({placeholders})"
+        field_sql = "json_remove(record,'$.items','$.historyDelta')" if table == "checkpoints" else "record"
         return [json.loads(row[0]) for row in db.execute(
-            f"SELECT record FROM runtime_{table} WHERE {clause}", tuple(ids))]
+            f"SELECT {field_sql} FROM runtime_{table} WHERE {clause}", tuple(ids))]
 
     @staticmethod
     def _workspace_requests(db, ids):
@@ -1645,16 +1722,23 @@ class WorkspaceMixin:
             m = json.loads(row[0])
             self.checked_actor(db, m["agent"])
             path = Path(m["log"])
-            if not path.resolve().is_relative_to(
-                (self.root / "monitor-logs").resolve()
-            ):
+            root = (self.root / "monitor-logs").resolve()
+            path = path.resolve()
+            if not path.is_relative_to(root):
                 raise ValueError("Invalid log path")
-            content = path.read_bytes() if path.exists() else m.get("tail", "").encode()
+            try:
+                size = path.stat().st_size
+                fallback = None
+            except FileNotFoundError:
+                size = 0
+                fallback = m.get("tail", "").encode()
             return {
+                "path": path,
+                "fallback": fallback,
+                "size": size,
                 "name": key + ".log",
                 "mime": "text/plain",
-                "base64": base64.b64encode(content).decode(),
-                "truncated": m.get("bytes", 0) > len(content),
+                "truncated": m.get("bytes", 0) > (size if fallback is None else len(fallback)),
             }
 
     def native_command_action(self, data):

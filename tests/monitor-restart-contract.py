@@ -24,6 +24,7 @@ spec.loader.exec_module(f)
 class MonitorRestart(unittest.TestCase):
     setUp = f.MonitorLifecycleContract.setUp
     tearDown = f.MonitorLifecycleContract.tearDown
+    monitor = f.MonitorLifecycleContract.monitor
     record = f.MonitorLifecycleContract.record
     exits = f.MonitorLifecycleContract.exits
 
@@ -60,6 +61,39 @@ class MonitorRestart(unittest.TestCase):
                             'default', connection)
         self.assertEqual(Path(m['log']).read_bytes(), payload)
         self.assertLessEqual(len(self.record(m['id'])['tail']),12000)
+
+    def test_monitor_log_metadata_does_not_read_file_bytes(self):
+        key = self.monitor()
+        monitor = self.record(key)
+        payload = b'large-log-' * (2 * 1024 * 1024)
+        Path(monitor['log']).parent.mkdir(parents=True, exist_ok=True)
+        Path(monitor['log']).write_bytes(payload)
+        with self.runtime.lock, self.runtime.db() as db:
+            monitor['bytes'] = len(payload) + 1
+            self.runtime.put(db, 'monitors', monitor)
+        original = Path.read_bytes
+        before_started = time.perf_counter()
+        with self.runtime.lock:
+            base64.b64encode(original(Path(monitor['log'])))
+        before_lock_ms = (time.perf_counter() - before_started) * 1000
+
+        def reject_log_read(path):
+            if path == Path(monitor['log']):
+                raise AssertionError('monitor_log must not read the file under Runtime.lock')
+            return original(path)
+
+        after_started = time.perf_counter()
+        with patch.object(Path, 'read_bytes', reject_log_read):
+            download = self.runtime.monitor_log(key)
+        after_ms = (time.perf_counter() - after_started) * 1000
+        self.assertEqual(download['size'], len(payload))
+        self.assertEqual(download['path'], Path(monitor['log']).resolve())
+        self.assertTrue(download['truncated'])
+        self.assertNotIn('base64', download)
+        print(
+            f'monitor log Runtime.lock ms: before read+base64={before_lock_ms:.1f}, '
+            f'after metadata={after_ms:.1f}; bytes={len(payload)}'
+        )
 
     def test_independent_writer_exit_and_database_rollback_recover_once(self):
         m, receipt = self.saved()

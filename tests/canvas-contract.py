@@ -17,6 +17,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
+import codex_canvas
 
 
 class CanvasContract(unittest.TestCase):
@@ -462,8 +463,39 @@ class CanvasContract(unittest.TestCase):
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/../../scripts/codex_canvas.py")[0], 404)
-            self.assertEqual(request("/")[0], 200)
+            web = Path(self.temp.name) / "web"
+            web.mkdir()
+            (web / "index.html").write_text("fixture")
+            with patch.object(codex_canvas, "WEB", web):
+                self.assertEqual(request("/")[0], 200)
             self.assertEqual(request("/api/chats", [], headers)[0], 400)
+            log = self.root / "monitor-logs" / "large.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            payload = (b"large-monitor-output\n" * 500000)
+            log.write_bytes(payload)
+
+            class DownloadRuntime:
+                lock = threading.RLock()
+
+                def monitor_log(_self, key):
+                    if key != "fixture-monitor":
+                        raise ValueError("Unknown monitor")
+                    return {
+                        "path": log, "fallback": None, "size": len(payload),
+                        "name": "large.log", "mime": "text/plain", "truncated": True,
+                    }
+
+            self.canvas.runtime = DownloadRuntime()
+            status, data = request("/api/monitor/log?id=fixture-monitor", headers={"Origin": base})
+            self.assertEqual(status, 200)
+            self.assertEqual(data, payload)
+            req = urllib.request.Request(
+                base + "/api/monitor/log?id=fixture-monitor",
+                headers={"Origin": base, "Range": "bytes=100-109"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as response:
+                self.assertEqual(response.status, 206)
+                self.assertEqual(response.read(), payload[100:110])
         finally:
             server.shutdown()
             server.server_close()
