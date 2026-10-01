@@ -1228,12 +1228,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute(
                 "UPDATE runtime_events SET status='uncertain', error='Server restarted before delivery acknowledgement' WHERE status IN ('dispatching','reserved')"
             )
+            held_restart_stops = []
             for a in self.records(db, "agents"):
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
                 from codex_restart_recovery import restore as restore_restart
                 restart_restored = restore_restart(db, a)
+                marker = a.get("restartRecovery") or {}
+                if marker.get("stage") == "held" and not a.get("deletedAt"):
+                    held_restart_stops.append((a["id"], marker.get("turnId") or marker.get("at")))
                 if not restart_restored and a["status"] in {"running", "starting", "approval"}:
                     a.update(status="interrupted", autoWake=False,
                              error="Server restarted during a turn. Review history, then send a new instruction.")
@@ -1272,6 +1276,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.analytics_history_init(db)
             startup_memory_mark("analytics-schema")
             self.setup_work(db)
+            for agent_id, marker in held_restart_stops:
+                agent = self.agent(agent_id, db)
+                self.child_stopped_event(db, agent, agent.get("status", "interrupted"),
+                    (agent.get("restartRecovery") or {}).get("reason") or agent.get("error")
+                    or "Restart recovery held this worker.", "restart:" + str(marker or "held"))
             startup_memory_mark("work-setup")
             from codex_payloads import ensure_payload_schema
             ensure_payload_schema(db)
@@ -4083,7 +4092,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
             if current_epoch and not unknown and a.get("status") == "failed":
-                self.parent_event(db, a, "start-failed:" + (attempt["events"][0] if attempt["events"] else attempt["id"]), str(error))
+                if not self.worker_continuation_pending(a):
+                    self.child_stopped_event(db, a, "failed", str(error),
+                        "start:" + str(attempt["id"]))
         self.changed.set()
 
     def parent_event(self, db, a, event_id, text):
@@ -4095,6 +4106,48 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.enqueue(db, parent, "child_result", json.dumps({"agent_id": a["id"],
                 "name": a["name"], "status": a["status"], "cwd": a["cwd"],
                 "branch": a.get("branch"), "result": text}, ensure_ascii=False), key)
+
+    def child_stopped_event(self, db, a, status, reason, marker, *, requested_by_lead=False):
+        """Save one parent event for a worker stop that will not continue by itself."""
+        if (a.get("isLead") or not a.get("parentId") or a.get("deletedAt")
+                or a.get("agentArchive")):
+            return None
+        task_row = db.execute(
+            "SELECT id,EXISTS(SELECT 1 FROM json_each(runtime_work.record,'$.results') "
+            "WHERE json_extract(json_each.value,'$.agent')=?) AS submitted "
+            "FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND json_extract(record,'$.rootId')=? "
+            "ORDER BY json_extract(record,'$.updated') DESC LIMIT 1",
+            (a["id"], a["id"], a["rootId"]),
+        ).fetchone()
+        task_id = task_row["id"] if task_row else None
+        result_submitted = bool(task_row["submitted"]) if task_row else False
+        activity = a.get("activity") or {}
+        last_activity = (activity.get("at") or a.get("lastEvent") or a.get("lastUpdated")
+                         or a.get("created"))
+        reason_text = reason if isinstance(reason, str) else json.dumps(reason, ensure_ascii=False)
+        payload = {
+            "agent_id": a["id"], "name": a["name"], "status": status,
+            "reason": reason, "result": reason_text, "last_activity": last_activity,
+            "task_id": task_id, "result_submitted": result_submitted,
+            "next_step": "send" if status == "paused" else "recover",
+            "requested_by_lead": bool(requested_by_lead),
+            "cwd": a["cwd"], "branch": a.get("branch"),
+        }
+        parent = self.agent(a["parentId"], db)
+        event_id = "child-stop:" + a["id"] + ":" + str(a["epoch"]) + ":" + str(marker or "stop")
+        self.enqueue(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
+        return event_id
+
+    @staticmethod
+    def worker_continuation_pending(a):
+        capacity = a.get("capacityRetry") or {}
+        usage = a.get("usageResume") or {}
+        restart = a.get("restartRecovery") or {}
+        return (capacity.get("status") in {"scheduled", "starting", "unknown"}
+                or usage.get("status") == "scheduled"
+                or (restart.get("stage") == "pending" and restart.get("autoWake")
+                    and restart.get("epoch") == a.get("epoch")))
 
     def record_task(self, db, a, method, p, stale):
         """Keep process lifetimes separate from model turns, including late exits."""
@@ -4652,10 +4705,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if (a["status"] != "waiting" and not retrying_after_input
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
-                    if a.get("status") == "failed":
-                        self.put(db, "agents", a)
-                    self.parent_event(db, a, turn.get("id", "unknown"),
-                                      json.dumps(a["error"]) if a["error"] else a.get("lastAnswer", "No final text returned"))
+                    if turn.get("status") == "completed":
+                        self.parent_event(db, a, turn.get("id", "unknown"),
+                                          a.get("lastAnswer", "No final text returned"))
+                    elif (a.get("status") in {"failed", "interrupted", "paused"}
+                          and not self.worker_continuation_pending(a)):
+                        self.child_stopped_event(db, a, a["status"],
+                            a.get("error") or "The turn ended without a final result.",
+                            "turn:" + str(turn.get("id") or "unknown"))
                 if pending and a["autoWake"] and not a.get("nativeFailureHold"):
                     a["status"] = "queued"
                 from codex_agent_management import parked_after_turn
@@ -6300,9 +6357,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for a in stopped:
                 self.capacity_reset(db, a, "The agent was stopped.")
                 self.usage_resume_cancel(db, a, "The agent was stopped.")
+                stopped_turn = a.get("turnId") or (a.get("startAttempt") or {}).get("id") or "stop"
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
+                self.child_stopped_event(db, a, "paused", reason,
+                    "stop:" + str(stopped_turn), requested_by_lead=bool(sender))
             for request in self.records(db, "requests"):
                 if request.get("agent") in ids and request["status"] == "pending" and request["method"] != "monitor/approve":
                     request["status"] = "expired"

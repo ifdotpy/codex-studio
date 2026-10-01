@@ -16,6 +16,18 @@ from codex_restart_recovery import capture, restore, settle_reconciled
 
 
 class RestartContract(fixture.ConnectionRecoveryContract):
+    def make_worker(self):
+        parent = self.runtime.create({'name': 'Parent', 'cwd': self.temp.name, 'prompt': ''},
+                                     draft=True, defer=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            worker = self.runtime.agent(self.key, db)
+            worker.update(isLead=False, name='Worker', parentId=parent['id'], rootId=parent['id'])
+            self.runtime.put(db, 'agents', worker)
+            parent_record = self.runtime.agent(parent['id'], db)
+            parent_record.update(status='completed', autoWake=True)
+            self.runtime.put(db, 'agents', parent_record)
+        return parent['id']
+
     def restart(self, **values):
         self.update(status='running', autoWake=True, inFlight=True, error=None, **values)
         native = copy.deepcopy(self.server.native)
@@ -38,14 +50,21 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.read_calls_only()
 
     def test_interrupted_turn_continues_once_across_second_restart(self):
+        parent_id = self.make_worker()
         self.server.native['turns'][0]['status'] = 'interrupted'
         self.restart()
         with self.runtime.lock, self.runtime.db() as db:
             scoped = self.runtime.scheduler_agents(db)
         self.assertIn(self.key, {agent['id'] for agent in scoped})
         self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'pending')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                                        (parent_id,)).fetchone()[0], 0)
         result = recover(self.runtime, self.key, automatic=True)
         self.assertTrue(result['continued'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                                        (parent_id,)).fetchone()[0], 0)
         a = self.runtime.agent(self.key)
         self.assertEqual(a['status'], 'queued')
         self.assertTrue(a['autoWake'])
@@ -92,12 +111,20 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='reserved-input'").fetchone()[0],'pending')
 
     def test_submitted_input_without_turn_is_held(self):
+        parent_id = self.make_worker()
         self.update(turnId=None)
         self.restart(startAttempt={'id':'attempt','epoch':self.a['epoch'],'accountKey':'default',
                                    'submitted':True,'events':['possibly-submitted']})
         a=self.runtime.agent(self.key)
         self.assertFalse(a['autoWake'])
         self.assertEqual(a['restartRecovery']['stage'],'held')
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (parent_id,)).fetchall()
+        self.assertEqual(len(rows), 1)
+        payload = json.loads(rows[0]['text'])
+        self.assertEqual(payload['status'], 'interrupted')
+        self.assertIn('no confirmed turn identity', payload['reason'])
 
     def test_explicit_pause_after_capture_is_not_undone(self):
         a=self.update(status='running',autoWake=True,inFlight=True)
