@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import tempfile
 import threading
 import time
 
@@ -72,7 +74,7 @@ def model_text_bytes(value):
 
 def efficiency_tools(tool, text):
     return [tool('orchestration_read',
-        'Read a full saved tool response or orchestration event by output_ref. Offsets are Unicode characters; pages are bounded. '
+        'Read a full saved tool response or orchestration event by output_ref. Offsets are Unicode characters; each page has up to 30000 characters. '
         'Use contains to locate relevant output. Same-agent records only. Never rerun a mutation to recover its result.',
         {'output_ref': text, 'offset': {'type': 'integer', 'minimum': 0},
          'contains': text}, ['output_ref']),
@@ -319,6 +321,15 @@ class EfficiencyMixin:
         result = tool_mode_context(self, actor, result, key)
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
+        for item in texts:
+            try:
+                page = json.loads(item.get('text', ''))
+                if (isinstance(page, dict) and isinstance(page.get('outputRef'), str)
+                        and type(page.get('offset')) is int and type(page.get('totalChars')) is int
+                        and isinstance(page.get('text'), str)):
+                    return result
+            except (ValueError, TypeError):
+                pass
         if len(packed(texts).encode()) <= 16000:
             return result
         # The full result was committed before this projection. Images and
@@ -409,7 +420,7 @@ class EfficiencyMixin:
                     return {'outputRef': key, 'found': False, 'success': result.get('success'), 'outcome': receipt['outcome'],
                             **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated'))} if native else {})}
                 offset = max(offset, found - 200)
-            excerpt = clip(text[offset:], 3000)
+            excerpt = text[offset:offset + 30000]
             end = offset + len(excerpt)
             return {'outputRef': key, 'success': result.get('success'), 'outcome': receipt['outcome'],
                     'offset': offset, 'nextOffset': end if end < len(text) else None,
@@ -444,7 +455,7 @@ class EfficiencyMixin:
             if found < 0:
                 return {'outputRef': key, 'found': False, 'source': source, 'identity': identity}
             offset = max(offset, found - 200)
-        excerpt = clip(text[offset:], 3000)
+        excerpt = text[offset:offset + 30000]
         end = offset + len(excerpt)
         return {'outputRef': key, 'source': source, 'identity': identity, 'offset': offset,
                 'nextOffset': end if end < len(text) else None, 'totalChars': len(text), 'text': excerpt}
@@ -579,10 +590,10 @@ class EfficiencyMixin:
                 value = json.loads(row[0]) if row else None
                 if value is None or self.agent(value['agent'], db)['rootId'] != actor['rootId']:
                     raise ValueError('Unknown monitor in this team')
-            elif topic == 'panel':
+            elif topic == 'panel' and actor.get('isLead'):
                 from codex_progress import progress_context
                 value = progress_context(self.root, actor['id']) + '\n\n' + self.panel_guidance()
-            elif topic == 'background':
+            elif topic == 'background' and actor.get('isLead'):
                 from codex_progress import progress_context
                 value = {'workflow': progress_context(self.root, actor['id']),
                          'monitor': 'Use orchestration_monitor for commands needing a result. wake_on=failure suppresses a successful exit notification; errors still wake you.',
@@ -601,12 +612,13 @@ class EfficiencyMixin:
         versions['agentMode'] = digest(mode)
         if known.get('agentMode') != versions['agentMode']:
             blocks.append(mode)
-        from codex_progress import progress_context
-        progress = progress_context(self.root, actor['id'])
-        versions['progressFile'] = digest(progress)
-        if known.get('progressFile') != versions['progressFile']:
-            self.progress_file(actor)
-            blocks.append('[Studio progress file]\n' + progress)
+        if actor.get('isLead'):
+            from codex_progress import progress_context
+            progress = progress_context(self.root, actor['id'])
+            versions['progressFile'] = digest(progress)
+            if known.get('progressFile') != versions['progressFile']:
+                self.progress_file(actor)
+                blocks.append('[Studio progress file]\n' + progress)
         role_skill = self.role_guidance(actor)
         versions['roleSkill'] = digest(role_skill)
         if known.get('roleSkill') != versions['roleSkill']:
@@ -669,6 +681,43 @@ class EfficiencyMixin:
 
     @staticmethod
     def bounded_event(row, text, byte_limit):
+        if row['kind'] in {'work_review', 'child_result'}:
+            try:
+                value = json.loads(text)
+                result = value.get('result') if isinstance(value, dict) else None
+                result_text = result.get('text') if isinstance(result, dict) else result
+                if isinstance(result_text, str) and len(result_text.encode('utf-8')) > 20000:
+                    path = result.get('resultFile') if isinstance(result, dict) else value.get('resultFile')
+                    if path and row['kind'] == 'work_review':
+                        event_result = {**result, 'text': result_text[:600],
+                                        'textTruncated': True,
+                                        'checks': str(result.get('checks', ''))[:800],
+                                        'checksTruncated': len(str(result.get('checks', ''))) > 800,
+                                        'resultFile': path}
+                        files = result.get('files', [])
+                        if isinstance(files, list) and len(packed(files).encode('utf-8')) > 1000:
+                            event_result['files'] = [str(item)[:160] for item in files[:8]]
+                            event_result['filesTruncated'] = True
+                        value['result'] = event_result
+                    elif path:
+                        value['result'] = result_text[:600]
+                        value['resultTruncated'] = True
+                        value['resultFile'] = path
+                    if path:
+                        value['read'] = {'tool': 'orchestration_read', 'output_ref': 'event:' + row['id']}
+                    text = packed(value)
+                elif (row['kind'] == 'work_review' and isinstance(result, dict)
+                      and result.get('resultFile') and len(packed(value).encode('utf-8')) > byte_limit):
+                    checks = str(result.get('checks', ''))
+                    result['checks'] = checks[:800]
+                    result['checksTruncated'] = len(checks) > 800
+                    files = result.get('files', [])
+                    if isinstance(files, list) and len(packed(files).encode('utf-8')) > 1000:
+                        result['files'] = [str(item)[:160] for item in files[:8]]
+                        result['filesTruncated'] = True
+                    text = packed(value)
+            except (ValueError, TypeError, AttributeError):
+                pass
         if len(text.encode()) <= byte_limit:
             return text
         ref = 'event:' + row['id']
@@ -678,6 +727,11 @@ class EfficiencyMixin:
         try:
             value = json.loads(text)
             if isinstance(value, dict):
+                result = value.get('result')
+                result_file = (result.get('resultFile') if isinstance(result, dict)
+                               else value.get('resultFile'))
+                if result_file:
+                    summary['resultFile'] = result_file
                 summary['identity'] = {k: value[k] for k in
                     ('id', 'agent_id', 'sender', 'room', 'message_id', 'turnId', 'turn_id',
                      'status', 'exitCode', 'importance', 'progress_key', 'progress_version',
@@ -698,8 +752,37 @@ class EfficiencyMixin:
             summary['tail'] = summary['tail'][len(summary['tail']) // 2:] if len(summary['tail']) > 1 else ''
         return packed(summary)
 
-    @staticmethod
-    def model_event_text(rows):
+    def _archive_child_result_event(self, row, value, result_text):
+        child_id = value.get('agent_id', '')
+        if not isinstance(child_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', child_id):
+            child_id = hashlib.sha256(str(child_id).encode()).hexdigest()
+        result_id = hashlib.sha256(row['id'].encode()).hexdigest()
+        path = Path(self.root).absolute() / 'results' / child_id / (result_id + '.md')
+        body = (f"# Worker result\n\nAgent: `{value.get('name', child_id)}`\n\n"
+                f"Event ID: `{row['id']}`\n\n## Result\n\n{result_text}\n")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix='.result-', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.read_text(encoding='utf-8') != body:
+                    raise ValueError('The saved child result file does not match its event')
+            finally:
+                os.unlink(temporary)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        return str(path)
+
+    def model_event_text(self, rows):
         # Only versioned progress for the same sender, room and topic supersedes an
         # earlier update. Keep every original event and receipt in the database.
         latest, counts, versions, conflicts = {}, {}, {}, set()
@@ -727,7 +810,7 @@ class EfficiencyMixin:
             counts[key] = counts.get(key, 0) + 1
         parts = []
         synthetic_count = sum(row['kind'] not in {'user', 'followup'} for row in rows)
-        event_limit = min(3000, 24000 // max(1, synthetic_count))
+        event_limit = min(22000, 24000 // max(1, synthetic_count))
         for row in rows:
             if row['kind'] == 'complaint' and not row.get('preserveComplaint'):
                 try:
@@ -738,6 +821,16 @@ class EfficiencyMixin:
                 except (ValueError, TypeError, AttributeError):
                     pass
             text = row['text']
+            if row['kind'] == 'child_result':
+                try:
+                    value = json.loads(text)
+                    if (isinstance(value, dict) and isinstance(value.get('result'), str)
+                            and len(value['result'].encode('utf-8')) > 20000
+                            and not value.get('resultFile')):
+                        value['resultFile'] = self._archive_child_result_event(row, value, value['result'])
+                        text = packed(value)
+                except (ValueError, TypeError, AttributeError):
+                    pass
             if row['kind'] == 'agent_message' and not row.get('preserveProgress'):
                 try:
                     value = json.loads(text)

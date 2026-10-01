@@ -115,6 +115,7 @@ import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import "./desktop";
 import "./components/team-navigation.css";
 import WorkerCard from "./components/agents/WorkerCard";
+import FilePreview, { type PreviewTarget } from "./components/FilePreview";
 import {
   awaitingAnswerIds,
   TeamSummary,
@@ -190,6 +191,7 @@ export default function App() {
   const [codexLoginKey, setCodexLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
+  const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
     try {
@@ -1251,6 +1253,9 @@ export default function App() {
         deferred={deferredIds.has(a.id)}
         indicator={indicators.get(a.id)}
         open={() => open(a.id)}
+        previewResult={() =>
+          setFilePreview({ agent: a.id, path: a.overview?.resultFile })
+        }
         remove={() => {
           setTeamOpen(false);
           remove(a.id, false, true);
@@ -2404,6 +2409,7 @@ export default function App() {
           {toast}
         </div>
       )}
+      <FilePreview target={filePreview} onClose={() => setFilePreview(null)} />
     </>
   );
 }

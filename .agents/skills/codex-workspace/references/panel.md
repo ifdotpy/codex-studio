@@ -1,6 +1,8 @@
-# Codex Studio progress file
+# Lead progress file
 
-Studio displays each managed agent's `PROGRESS.md` above that chat's composer.
+Only lead chats show this file in the progress panel. Worker chats do not use it.
+
+Studio displays the lead's `PROGRESS.md` above the lead chat's composer.
 Use ordinary file tools to read and edit it. No panel tool is required.
 
 ## File identity

@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import subprocess
 import threading
+import tempfile
 import time
 import unicodedata
 import uuid
@@ -85,6 +87,8 @@ def work_tools(tool, text):
 class WorkMixin:
     def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
         result = self._work_action(agent_id, data, key, actor, epoch)
+        if data.get('action') == 'submit' and result.get('results'):
+            self._archive_work_result(data.get('task_id'), result['results'][-1]['id'])
         if data.get('action') != 'accept' or result.get('status') != 'accepted':
             return result
         if 'archive' in result:
@@ -124,6 +128,52 @@ class WorkMixin:
                         'task': work['id'], 'decision': 'accept', 'reason': decision['reason']}),
                         'work-decision:' + work['id'] + ':' + str(work['version'] - 1))
         return result
+
+    def _archive_work_result(self, task_id, result_id):
+        """Write the committed result once, then return its stable absolute path."""
+        with self.lock, self.db() as db:
+            row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+            if not row:
+                raise ValueError('Submitted task result is unavailable')
+            work = json.loads(row[0])
+            result = next((item for item in work.get('results', []) if item['id'] == result_id), None)
+            if not result:
+                raise ValueError('Committed task result is unavailable')
+            path = Path(self.root).absolute() / 'results' / work['id'] / (result['id'] + '.md')
+            result['resultFile'] = str(path)
+            if not work.get('results')[-1].get('resultFile'):
+                work['results'][-1]['resultFile'] = str(path)
+                self.put(db, 'work', work)
+        # The database transaction above commits before any artifact write.
+        committed = result
+        body = (f"# {work['title']}\n\n"
+                f"Result ID: `{result_id}`\n\n"
+                "## Result\n\n" + committed['text'] + "\n\n"
+                "## Checks\n\n" + committed['checks'] + "\n\n"
+                "## Revision\n\n" + committed['revision'] + "\n\n"
+                "## Files\n\n" + ("\n".join(f"- `{item}`" for item in committed['files'])
+                                      if committed['files'] else "None") + "\n")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix='.result-', dir=path.parent)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8', newline='') as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.read_text(encoding='utf-8') != body:
+                    raise ValueError('The saved task result file does not match its committed record')
+            finally:
+                os.unlink(temporary)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        return str(path)
 
     def _archive_accepted_owner(self, agent_id, result, epoch):
         owner_id = result.get('owner')
@@ -229,6 +279,14 @@ class WorkMixin:
     def work_records(db, root_id):
         return [json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root_id,))]
+
+    @staticmethod
+    def latest_work_result_file(db, agent_id):
+        rows = db.execute("SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?",
+                          (agent_id,)).fetchall()
+        results = [item for row in rows for item in json.loads(row[0]).get('results', [])
+                   if item.get('agent') == agent_id and item.get('resultFile')]
+        return max(results, key=lambda item: item.get('created', 0))['resultFile'] if results else None
 
     @staticmethod
     def work_by_id(db, task_id, root_id):
@@ -659,6 +717,7 @@ class WorkMixin:
                     "files": files,
                     "created": time.time(),
                 }
+                result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
                 w["results"].append(result)
                 w["status"] = "review"
                 if actor != a["rootId"]:
@@ -667,7 +726,8 @@ class WorkMixin:
                         self.agent(a["rootId"], db),
                         "work_review",
                         json.dumps(
-                            {"task": w["id"], "title": w["title"], "result": result}
+                            {"task": w["id"], "title": w["title"], "result": result},
+                            ensure_ascii=False,
                         ),
                         "work-result:" + result["id"],
                     )

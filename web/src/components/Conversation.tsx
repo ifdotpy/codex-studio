@@ -1503,7 +1503,7 @@ export default function Conversation(p: {
         </p>
       ) : (
         <>
-          {managed && !p.legacy && agent && (
+          {managed && !p.legacy && agent && agent.isLead === true && (
             <AgentPanel
               key={`${p.data.stateDir}:${agent.id}`}
               agentId={agent.id}

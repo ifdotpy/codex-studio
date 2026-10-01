@@ -2,7 +2,7 @@
 // Production renderer with an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,14 @@ try {
     workers.find(
       (agent) => agent.name === `Worker ${String(n).padStart(2, "0")}`,
     );
+  const resultPath = join(root, "results", "task-one", "result-one.md");
+  await mkdir(join(initial.stateDir, "progress", worker(25).id), {
+    recursive: true,
+  });
+  await writeFile(
+    join(initial.stateDir, "progress", worker(25).id, "PROGRESS.md"),
+    "This worker progress file must not appear in its chat.\n",
+  );
   const task =
     "Check the exact response receipt before any repeated mutation. " +
     "This is a long assignment with complete instructions. ".repeat(14).trim();
@@ -94,6 +102,17 @@ try {
   await page.route("**/api/sync/**", (route) =>
     route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
   );
+  await page.route(/\/api\/file\?/, (route) =>
+    route.fulfill({
+      json: {
+        name: "result-one.md",
+        mime: "text/markdown",
+        base64: Buffer.from("# Submitted result\n\nVerified.").toString(
+          "base64",
+        ),
+      },
+    }),
+  );
   await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
     const response = await route.fetch();
     const data = await response.json();
@@ -125,6 +144,7 @@ try {
             task: "Verify receipt recovery",
             result: report,
             resultTruncated: true,
+            resultFile: resultPath,
           },
         });
     }
@@ -300,6 +320,13 @@ try {
     await result.locator(".worker-excerpt-preview").innerText(),
     report,
   );
+  const resultLink = card(25).getByRole("link", {
+    name: "Open submitted result",
+  });
+  assert.equal(await resultLink.getAttribute("href"), resultPath);
+  await resultLink.click();
+  await page.getByRole("heading", { name: "Submitted result" }).waitFor();
+  await page.keyboard.press("Escape");
   await result.locator("summary").click();
   assert.equal(
     await result.locator(".worker-excerpt-full p").innerText(),
@@ -309,6 +336,13 @@ try {
   assert.equal(
     await page.locator("#conversation-title").innerText(),
     worker(25).name,
+  );
+  assert.equal(await page.getByLabel("Agent progress").count(), 0);
+  assert.equal(
+    await page
+      .getByText("This worker progress file must not appear in its chat.")
+      .count(),
+    0,
   );
   await page
     .getByRole("button", { name: "Back to main agent", exact: true })

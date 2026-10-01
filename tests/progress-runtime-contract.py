@@ -19,21 +19,26 @@ class ProgressRuntimeContract(unittest.TestCase):
     worker = f.WorkspaceContract.worker
     agent_update = f.WorkspaceContract.agent_update
 
-    def test_only_this_agents_progress_directory_is_added_to_workspace_write(self):
+    def test_only_leads_get_progress_instructions_and_write_roots(self):
         lead = self.agent_update(self.lead(), yoloMode=False)
         other = self.worker(lead, role='implementer')
-        for actor in (lead, other):
-            params = self.runtime.new_thread_params(actor)
-            path = self.runtime.progress_file(actor)
-            self.assertTrue(path.is_file())
-            self.assertIn(str(path), params['developerInstructions'])
-            self.assertEqual(params['sandbox'], 'workspace-write')
-            self.assertEqual(params['config']['sandbox_workspace_write.writable_roots'], [str(path.parent)])
-            self.assertEqual(self.runtime.turn_permissions(actor), {
-                'approvalPolicy': 'on-request', 'sandboxPolicy': {
-                    'type': 'workspaceWrite', 'writableRoots': [actor['cwd'], str(path.parent)],
-                    'networkAccess': False}})
-        self.assertNotEqual(self.runtime.progress_file(lead).parent, self.runtime.progress_file(other).parent)
+        params = self.runtime.new_thread_params(lead)
+        path = self.runtime.progress_file(lead)
+        self.assertTrue(path.is_file())
+        self.assertIn(str(path), params['developerInstructions'])
+        self.assertEqual(params['config']['sandbox_workspace_write.writable_roots'], [str(path.parent)])
+        self.assertEqual(self.runtime.turn_permissions(lead)['sandboxPolicy']['writableRoots'],
+                         [lead['cwd'], str(path.parent)])
+
+        params = self.runtime.new_thread_params(other)
+        self.assertNotIn('PROGRESS.md', params['developerInstructions'])
+        self.assertNotIn('codex_progress_layout.py', params['developerInstructions'])
+        self.assertFalse((self.runtime.root / 'progress' / other['id']).exists())
+        self.assertNotIn('sandbox_workspace_write.writable_roots', params['config'])
+        self.assertEqual(self.runtime.turn_permissions(other)['sandboxPolicy']['writableRoots'], [other['cwd']])
+        for topic in ('panel', 'background'):
+            with self.assertRaisesRegex(ValueError, 'Unknown context topic'):
+                self.runtime.model_context(other['id'], {'topic': topic})
 
     def test_read_only_and_full_access_modes_keep_their_meaning(self):
         lead = self.agent_update(self.lead(), yoloMode=False)
@@ -98,7 +103,7 @@ class ProgressRuntimeContract(unittest.TestCase):
                     self.assertEqual(path.read_text(), preserved)
 
     def test_context_is_delivered_once_per_epoch_and_does_not_overwrite_the_file(self):
-        actor = self.worker(self.lead(), threadId='existing-thread')
+        actor = self.lead()
         path = self.runtime.progress_file(actor)
         path.write_text('Verified user content\n')
         def context(key, delivered=False, **changes):
