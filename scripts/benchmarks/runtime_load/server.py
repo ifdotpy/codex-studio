@@ -29,6 +29,63 @@ sys.path.insert(0, str(ROOT / "scripts"))
 FRONTEND_DIST = Path(sys.argv[3]).resolve() if len(sys.argv) > 3 and sys.argv[3] else None
 
 
+def diagnostic_synchronous_mode():
+    mode = os.environ.get("BENCH_SQLITE_SYNCHRONOUS", "FULL").upper()
+    if mode not in {"FULL", "NORMAL"}:
+        raise ValueError("BENCH_SQLITE_SYNCHRONOUS must be FULL or NORMAL")
+    return mode
+
+
+def configure_diagnostic_synchronous(db, mode):
+    if mode not in {"FULL", "NORMAL"}:
+        raise ValueError("diagnostic SQLite synchronous mode must be FULL or NORMAL")
+    db.execute(f"PRAGMA synchronous={mode}")
+
+
+def idle_connection_diagnostic_enabled():
+    enabled = os.environ.get("BENCH_SQLITE_IDLE_CONNECTION", "0")
+    if enabled not in {"0", "1"}:
+        raise ValueError("BENCH_SQLITE_IDLE_CONNECTION must be 0 or 1")
+    return enabled == "1"
+
+
+def open_idle_connection(database_path):
+    """Prime a connection before workload, then hold it transaction-free."""
+    connection = sqlite3.connect(database_path, timeout=15)
+    try:
+        cursor = connection.execute("SELECT name FROM sqlite_master")
+        cursor.fetchall()
+        cursor.close()
+        if connection.in_transaction:
+            raise RuntimeError("idle SQLite diagnostic retained its priming read transaction")
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
+def database_filesystem_type(path):
+    """Return only mounted filesystem type; never disclose the state path."""
+    resolved = os.path.realpath(path)
+    best_length = -1
+    filesystem_type = "unknown"
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as mounts:
+            for line in mounts:
+                before, separator, after = line.rstrip("\n").partition(" - ")
+                if not separator:
+                    continue
+                fields = before.split()
+                mountpoint = fields[4].replace("\\040", " ").replace("\\011", "\t")
+                if resolved == mountpoint or resolved.startswith(mountpoint.rstrip("/") + "/"):
+                    if len(mountpoint) > best_length:
+                        filesystem_type = after.split()[0]
+                        best_length = len(mountpoint)
+    except OSError:
+        pass
+    return filesystem_type
+
+
 class FakePipe:
     def __init__(self):
         self.lines = queue.Queue()
@@ -83,6 +140,13 @@ class BenchmarkRuntimeMixin:
         # launch native sessions or consume provider capacity in this fixture.
         return
 
+    @contextmanager
+    def db(self):
+        mode = diagnostic_synchronous_mode()
+        with super().db() as db:
+            configure_diagnostic_synchronous(db, mode)
+            yield db
+
 
 def percentile(values, p):
     if not values:
@@ -96,6 +160,14 @@ def stats(values):
     return {"samples": len(values), "p50": percentile(values, .5),
             "p95": percentile(values, .95), "p99": percentile(values, .99),
             "max": max(values) if values else None}
+
+
+def timing_stats(values, sample_count=None, total_ms=None):
+    count = len(values) if sample_count is None else sample_count
+    total = sum(values) if total_ms is None else total_ms
+    return {**stats(values), "samples": count,
+            "percentileWindowSamples": len(values), "totalMs": round(total, 6),
+            "meanMs": round(total / count, 6) if count else None}
 
 
 def phase_progress_turn_counts(phase, elapsed_seconds, scheduled, started_offers, completed):
@@ -122,53 +194,40 @@ def invoke_with_duration(callback, record_duration):
         record_duration((time.monotonic() - started) * 1000)
 
 
-class SampledSQLiteConnection(sqlite3.Connection):
-    """Measure first-DML elapsed time only on sampled benchmark connections."""
-    _DML = {"INSERT", "UPDATE", "DELETE", "REPLACE"}
-
-    def _run_statement(self, operation, sql):
-        recorder = getattr(self, "_benchmark_record", None)
-        first_dml = not getattr(self, "_benchmark_first_dml_seen", False)
-        keyword = sql.lstrip().split(None, 1)[0].upper() if isinstance(sql, str) and sql.strip() else ""
-        measure = recorder is not None and first_dml and keyword in self._DML
-        started = time.perf_counter_ns() if measure else None
-        try:
-            return operation()
-        finally:
-            if measure:
-                self._benchmark_first_dml_seen = True
-                recorder("firstDmlMs", (time.perf_counter_ns() - started) / 1_000_000)
-
-    def execute(self, sql, parameters=(), /):
-        return self._run_statement(lambda: super(SampledSQLiteConnection, self).execute(sql, parameters), sql)
-
-    def executemany(self, sql, seq_of_parameters, /):
-        return self._run_statement(
-            lambda: super(SampledSQLiteConnection, self).executemany(sql, seq_of_parameters), sql)
-
-
 @contextmanager
-def measured_sqlite_context_exit(db, record):
-    """Delegate commit/rollback to sqlite's native context exit and time it."""
-    try:
-        try:
+def measured_runtime_db_context(original_runtime_db, sampled, record=None):
+    """Optionally time, but always delegate, the original Runtime.db context."""
+    if not sampled:
+        with original_runtime_db() as db:
             yield db
-        except BaseException as error:
-            started = time.perf_counter_ns()
-            try:
-                suppressed = db.__exit__(type(error), error, error.__traceback__)
-            finally:
-                record("contextRollbackMs", (time.perf_counter_ns() - started) / 1_000_000)
-            if not suppressed:
-                raise
-        else:
-            started = time.perf_counter_ns()
-            try:
-                db.__exit__(None, None, None)
-            finally:
-                record("contextCommitMs", (time.perf_counter_ns() - started) / 1_000_000)
+        return
+
+    context = original_runtime_db()
+    entry_started = time.perf_counter_ns()
+    try:
+        db = context.__enter__()
     finally:
-        db.close()
+        record("contextEntryMs", (time.perf_counter_ns() - entry_started) / 1_000_000)
+
+    body_started = time.perf_counter_ns()
+    try:
+        yield db
+    except BaseException as error:
+        record("contextBodyMs", (time.perf_counter_ns() - body_started) / 1_000_000)
+        exit_started = time.perf_counter_ns()
+        try:
+            suppressed = context.__exit__(type(error), error, error.__traceback__)
+        finally:
+            record("contextExitAndCloseMs", (time.perf_counter_ns() - exit_started) / 1_000_000)
+        if not suppressed:
+            raise
+    else:
+        record("contextBodyMs", (time.perf_counter_ns() - body_started) / 1_000_000)
+        exit_started = time.perf_counter_ns()
+        try:
+            context.__exit__(None, None, None)
+        finally:
+            record("contextExitAndCloseMs", (time.perf_counter_ns() - exit_started) / 1_000_000)
 
 
 def delta_identity(params):
@@ -487,6 +546,9 @@ def main():
     import codex_canvas
     from codex_runtime import AppServer, Runtime, SnapshotDeferred
 
+    sqlite_synchronous = diagnostic_synchronous_mode()
+    idle_connection_diagnostic = idle_connection_diagnostic_enabled()
+
     class BenchRuntime(BenchmarkRuntimeMixin, Runtime):
         pass
 
@@ -633,32 +695,41 @@ def main():
     transaction_timing_lock = threading.Lock()
     transaction_timing_samples = {
         context: {name: deque(maxlen=512) for name in
-                  ("connectMs", "firstDmlMs", "contextCommitMs", "contextRollbackMs")}
+                  ("contextEntryMs", "contextBodyMs", "contextExitAndCloseMs")}
         for context in transaction_context_counts
+    }
+    transaction_timing_totals = {
+        context: {name: {"samples": 0, "totalMs": 0.0} for name in metrics}
+        for context, metrics in transaction_timing_samples.items()
     }
     analytics_delta_timing_samples = {
         context: deque(maxlen=512) for context in transaction_context_counts
     }
     callback_sample_local = threading.local()
     analytics_sample_local = threading.local()
-
     def record_transaction_timing(context, metric, elapsed_ms):
         with transaction_timing_lock:
             transaction_timing_samples[context][metric].append(elapsed_ms)
+            totals = transaction_timing_totals[context][metric]
+            totals["samples"] += 1
+            totals["totalMs"] += elapsed_ms
 
     def transaction_timing_snapshot():
         with transaction_timing_lock:
             copied = {
                 context: (transaction_context_counts[context],
                           {name: list(values) for name, values in metrics.items()},
+                          {name: dict(values) for name, values in transaction_timing_totals[context].items()},
                           list(analytics_delta_timing_samples[context]))
                 for context, metrics in transaction_timing_samples.items()
             }
         return {
             context: {"sampledRuntimeDbContexts": sampled_count,
-                      **{name: stats(values) for name, values in metrics.items()},
+                      **{name: timing_stats(
+                          values, totals[name]["samples"], totals[name]["totalMs"])
+                         for name, values in metrics.items()},
                       "deltaAnalyticsMs": stats(analytics_values)}
-            for context, (sampled_count, metrics, analytics_values) in copied.items()
+            for context, (sampled_count, metrics, totals, analytics_values) in copied.items()
         }
 
     original_runtime_db = runtime.db
@@ -672,26 +743,18 @@ def main():
             transaction_sample_local.calls = calls_by_context
         calls_by_context[context] = calls_by_context.get(context, 0) + 1
         sampled = calls_by_context[context] % transaction_sample_every == 0
-        if not sampled:
-            with original_runtime_db() as db:
-                yield db
-            return
-        with transaction_timing_lock:
-            transaction_context_counts[context] += 1
+        if sampled:
+            with transaction_timing_lock:
+                transaction_context_counts[context] += 1
 
-        def record(metric, elapsed_ms):
-            record_transaction_timing(context, metric, elapsed_ms)
-
-        connect_started = time.perf_counter_ns()
-        try:
-            db = sqlite3.connect(runtime.db_path, timeout=15, factory=SampledSQLiteConnection)
-        finally:
-            record("connectMs", (time.perf_counter_ns() - connect_started) / 1_000_000)
-        db.row_factory = sqlite3.Row
-        db._benchmark_record = record
-        db._benchmark_first_dml_seen = False
-        with measured_sqlite_context_exit(db, record) as sampled_db:
-            yield sampled_db
+            def record(metric, elapsed_ms):
+                record_transaction_timing(context, metric, elapsed_ms)
+        else:
+            record = None
+        # Sampling changes only recording. Every entry, yielded connection,
+        # exception path and exit still belongs to the bound original Runtime.db.
+        with measured_runtime_db_context(original_runtime_db, sampled, record) as db:
+            yield db
 
     runtime.db = measured_runtime_db
 
@@ -735,6 +798,7 @@ def main():
     scheduled_by_phase = {name: 0 for name in progress_phase_turns}
     progress_phase_started = [None]
     progress_started = [None]
+    progress_cpu_started = [None]
     progress_stop = threading.Event()
     progress_thread = None
     final_witness_offered_at = {}
@@ -893,6 +957,7 @@ def main():
             appservers.append(appserver)
     fake_processes = list(FakeAppProcess.instances)
     cleanup_finished = False
+    idle_connection = [None]
     def cleanup_fixture():
         nonlocal cleanup_finished
         if cleanup_finished:
@@ -906,6 +971,11 @@ def main():
         server.shutdown()
         server.server_close()
         thread.join(5)
+        if idle_connection[0] is not None:
+            if idle_connection[0].in_transaction:
+                raise RuntimeError("idle SQLite diagnostic unexpectedly owns a transaction at teardown")
+            idle_connection[0].close()
+            idle_connection[0] = None
     atexit.register(cleanup_fixture)
     # Create one production Runtime record as a shape template, then seed the
     # other synthetic identities with Runtime.put. This is fixture setup, not
@@ -946,10 +1016,23 @@ def main():
                 runtime.put(db, "agents", agent)
                 workers.append(agent)
     seeded_agents_by_thread.update((record["threadId"], record) for record in [template, *leads, *workers])
+    if idle_connection_diagnostic:
+        idle_connection[0] = open_idle_connection(runtime.db_path)
 
     print(json.dumps({"kind": "ready", "origin": f"http://127.0.0.1:{server.server_port}",
                       "sourceRevision": os.environ.get("BENCH_SOURCE_REVISION", "unknown"),
-                      "state": str(state), "teams": team_count,
+                      "sqliteSynchronousMode": sqlite_synchronous,
+                      "durabilityProfile": ("production-default FULL" if sqlite_synchronous == "FULL"
+                                            else "DIAGNOSTIC ONLY: NORMAL weakens durability; not acceptance evidence"),
+                      "databaseFilesystemType": database_filesystem_type(state),
+                      "databasePathFieldRecorded": False,
+                      "idleSQLiteConnectionDiagnostic": {
+                          "enabled": idle_connection_diagnostic,
+                          "openedAfterSeedBeforeWorkload": idle_connection[0] is not None,
+                          "preWorkloadPrimingRead": "sqlite_master",
+                          "queriesDuringWorkload": False,
+                          "transactionDuringWorkload": False},
+                      "teams": team_count,
                       "workersPerTeam": workers_per_team,
                       "witnesses": [{"agentId": team[0]["id"]}
                                     for team in [workers[i:i + workers_per_team] for i in range(0, len(workers), workers_per_team)]]}), flush=True)
@@ -1007,8 +1090,12 @@ def main():
             producer_state["queueWaitMaxMs"] = max(producer_queue_wait_ms, default=0.0)
             producer_state["queueAgeSamples"] = len(producer_queue_age_ms)
         elapsed = (time.monotonic() - progress_started[0]) if progress_started[0] else 0
+        cpu_elapsed = ((time.process_time() - progress_cpu_started[0])
+                       if progress_cpu_started[0] is not None else 0)
         snapshot = {
             "kind": "progress", "reason": reason, "elapsedSeconds": round(elapsed, 3),
+            "processCpuSeconds": round(cpu_elapsed, 6),
+            "processCpuToElapsedRatio": cpu_elapsed / elapsed if elapsed > 0 else None,
             "phase": phase,
             **turn_progress,
             "producer": producer_state,
@@ -1020,7 +1107,7 @@ def main():
             "runtimeDatabaseTiming": {
                 "samplingEveryRuntimeDbContextsPerContext": transaction_sample_every,
                 "deltaAnalyticsSampling": "every 32nd delta callback per dispatcher thread",
-                "scope": "Runtime.db only; sampled first DML and native context exit; context exit includes commit/checkpoint/lock wait",
+                "scope": "Runtime.db only; all contexts delegate to the bound original; sampled entry, yielded body, and combined original exit/close",
                 "byContext": transaction_timing_snapshot(),
             },
             "dispatchedIdentities": dispatched_count,
@@ -1029,6 +1116,7 @@ def main():
                                  "unfinished": appserver.callbacks.unfinished_tasks}
                                 for index, appserver in enumerate(appservers)],
             "runtimeLock": runtime_lock.progress_snapshot(),
+            "runtimeLockDistribution": runtime_lock.snapshot(),
             "startLock": start_lock.progress_snapshot(),
             "snapshotDeferredByLock": dict(snapshot_lock_failures),
         }
@@ -1062,6 +1150,7 @@ def main():
             if not 1 <= rounds <= 8:
                 raise ValueError("rounds must be in 1..8")
             progress_started[0] = time.monotonic()
+            progress_cpu_started[0] = time.process_time()
             progress_phase[0] = "starting"
             progress_stop.clear()
             progress_thread = threading.Thread(target=periodic_progress,
@@ -1364,8 +1453,21 @@ def main():
                 progress_thread.join(timeout=1)
             progress_phase[0] = "complete"
             emit_progress("run-complete")
+            report_elapsed = time.monotonic_ns() / 1e9 - total_started / 1e9
+            report_cpu = time.process_time() - progress_cpu_started[0]
             report = {"teams": team_count, "workersPerTeam": workers_per_team,
                       "syntheticActiveTurns": len(workers) + len(leads), "rounds": rounds,
+                      "sqliteSynchronousMode": sqlite_synchronous,
+                      "durabilityProfile": ("production-default FULL" if sqlite_synchronous == "FULL"
+                                            else "DIAGNOSTIC ONLY: NORMAL weakens durability; not acceptance evidence"),
+                      "databaseFilesystemType": database_filesystem_type(state),
+                      "databasePathFieldRecorded": False,
+                      "idleSQLiteConnectionDiagnostic": {
+                          "enabled": idle_connection_diagnostic,
+                          "openedAfterSeedBeforeWorkload": idle_connection[0] is not None,
+                          "preWorkloadPrimingRead": "sqlite_master",
+                          "queriesDuringWorkload": False,
+                          "transactionDuringWorkload": False},
                       "steadySeconds": steady_seconds,
                       "phaseTurnCounts": turn_counts,
                       "burstDrainMs": burst_drain_ms,
@@ -1449,7 +1551,7 @@ def main():
                       "runtimeDatabaseTiming": {
                           "samplingEveryRuntimeDbContextsPerContext": transaction_sample_every,
                           "deltaAnalyticsSampling": "every 32nd delta callback per dispatcher thread",
-                          "scope": "Runtime.db only; sampled first DML and native context exit; context exit includes commit/checkpoint/lock wait",
+                          "scope": "Runtime.db only; all contexts delegate to the bound original; sampled entry, yielded body, and combined original exit/close",
                           "byContext": transaction_timing_snapshot(),
                       },
                       "streamCoalescing": {
@@ -1470,10 +1572,12 @@ def main():
                       "analytics": {"notificationRows": analytics_rows,
                                     "payloadBytes": analytics_payload_bytes},
                       "cpuProcessSeconds": time.process_time(),
+                      "cpuProcessSecondsSinceRunStart": report_cpu,
+                      "cpuToElapsedRatioSinceRunStart": report_cpu / report_elapsed if report_elapsed > 0 else None,
                       "peakRss": {"value": usage.ru_maxrss,
                                   "unit": "KiB" if sys.platform != "darwin" else "bytes",
                                   "source": "resource.getrusage(RUSAGE_SELF).ru_maxrss"},
-                      "elapsedSeconds": time.monotonic_ns() / 1e9 - total_started / 1e9}
+                      "elapsedSeconds": report_elapsed}
             print(json.dumps({"kind": "result", "report": report}), flush=True)
         elif command.get("action") == "shutdown":
             break

@@ -3,21 +3,94 @@ import importlib.util
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 path = Path(__file__).with_name("server.py")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 spec = importlib.util.spec_from_file_location("runtime_load_server", path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
 class RuntimeLoadHelpersTests(unittest.TestCase):
+    def test_runtime_fixture_sets_synchronous_mode_on_each_connection(self):
+        from codex_runtime import Runtime
+
+        class FixtureRuntime(module.BenchmarkRuntimeMixin, Runtime):
+            def schedule(self):
+                return
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = object.__new__(FixtureRuntime)
+            runtime.db_path = Path(directory) / "production-runtime.sqlite3"
+            for mode, expected in (("FULL", 2), ("NORMAL", 1)):
+                with self.subTest(mode=mode), mock.patch.dict(
+                        "os.environ", {"BENCH_SQLITE_SYNCHRONOUS": mode}):
+                    for _ in range(2):
+                        with runtime.db() as db:
+                            self.assertEqual(
+                                db.execute("PRAGMA synchronous").fetchone()[0], expected)
+
+    def test_diagnostic_synchronous_rejects_unsupported_modes(self):
+        for mode in ("OFF", "EXTRA", "2"):
+            with self.subTest(mode=mode), mock.patch.dict(
+                    "os.environ", {"BENCH_SQLITE_SYNCHRONOUS": mode}):
+                with self.assertRaisesRegex(ValueError, "must be FULL or NORMAL"):
+                    module.diagnostic_synchronous_mode()
+
+    def test_idle_connection_diagnostic_is_opt_in_and_validated(self):
+        for setting, expected in (("0", False), ("1", True)):
+            with self.subTest(setting=setting), mock.patch.dict(
+                    "os.environ", {"BENCH_SQLITE_IDLE_CONNECTION": setting}):
+                self.assertEqual(module.idle_connection_diagnostic_enabled(), expected)
+        with mock.patch.dict("os.environ", {"BENCH_SQLITE_IDLE_CONNECTION": "true"}):
+            with self.assertRaisesRegex(ValueError, "must be 0 or 1"):
+                module.idle_connection_diagnostic_enabled()
+
+    def test_idle_connection_read_primes_wal_then_stays_idle_until_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "idle.sqlite3"
+            setup = sqlite3.connect(path)
+            self.assertEqual(setup.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower(), "wal")
+            setup.execute("CREATE TABLE sample(value INTEGER)")
+            setup.commit()
+            setup.close()
+
+            connection = module.open_idle_connection(path)
+            try:
+                self.assertFalse(connection.in_transaction)
+                writer = sqlite3.connect(path)
+                try:
+                    writer.execute("INSERT INTO sample VALUES (1)")
+                    writer.commit()
+                finally:
+                    writer.close()
+                self.assertFalse(connection.in_transaction)
+                self.assertTrue(Path(f"{path}-wal").exists())
+            finally:
+                connection.close()
+            self.assertFalse(Path(f"{path}-wal").exists())
+
     def test_nearest_rank_latency_statistics(self):
         self.assertEqual(module.stats([4, 1, 3, 2]),
                          {"samples": 4, "p50": 2, "p95": 4, "p99": 4, "max": 4})
+
+    def test_timing_statistics_include_sample_count_sum_and_mean(self):
+        self.assertEqual(module.timing_stats([1.0, 3.0]),
+                         {"samples": 2, "p50": 1.0, "p95": 3.0, "p99": 3.0,
+                          "max": 3.0, "percentileWindowSamples": 2,
+                          "totalMs": 4.0, "meanMs": 2.0})
+
+    def test_timing_statistics_keep_cumulative_totals_separate_from_percentile_window(self):
+        self.assertEqual(module.timing_stats([2.0, 3.0], 4, 10.0),
+                         {"samples": 4, "p50": 2.0, "p95": 3.0, "p99": 3.0,
+                          "max": 3.0, "percentileWindowSamples": 2,
+                          "totalMs": 10.0, "meanMs": 2.5})
 
     def test_empty_latency_series_is_explicit(self):
         self.assertEqual(module.stats([]),
@@ -273,39 +346,139 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertEqual(result, ["producer"])
 
-    def test_sampled_sqlite_connection_records_only_first_dml(self):
-        samples = []
-        db = sqlite3.connect(":memory:", factory=module.SampledSQLiteConnection)
-        db._benchmark_record = lambda metric, elapsed: samples.append((metric, elapsed))
-        db._benchmark_first_dml_seen = False
-        db.execute("CREATE TABLE sample(value INTEGER)")
-        db.execute("INSERT INTO sample VALUES (1)")
-        db.execute("INSERT INTO sample VALUES (2)")
-        self.assertEqual([name for name, _ in samples], ["firstDmlMs"])
-        self.assertGreaterEqual(samples[0][1], 0)
-        db.close()
+    def test_measured_runtime_db_context_delegates_fake_sampled_unsampled_errors_and_nesting(self):
+        lifecycle = []
+        records = []
 
-    def test_measured_sqlite_context_exit_preserves_commit_and_rollback(self):
+        class FakeContext:
+            def __init__(self, identity, suppress=False):
+                self.identity = identity
+                self.suppress = suppress
+
+            def __enter__(self):
+                lifecycle.append(("enter", self.identity))
+                return self.identity
+
+            def __exit__(self, error_type, error, traceback):
+                lifecycle.append(("exit", self.identity, error_type, error))
+                return self.suppress
+
+        contexts = []
+
+        def original_runtime_db():
+            context = FakeContext(len(contexts))
+            contexts.append(context)
+            return context
+
+        with module.measured_runtime_db_context(
+                original_runtime_db, True,
+                lambda metric, elapsed: records.append((metric, elapsed))) as outer:
+            self.assertEqual(outer, 0)
+            with module.measured_runtime_db_context(
+                    original_runtime_db, False,
+                    lambda *_: self.fail("unsampled context must not record timings")) as inner:
+                self.assertEqual(inner, 1)
+
+        self.assertEqual([item[0] for item in lifecycle], ["enter", "enter", "exit", "exit"])
+        self.assertEqual([item[1] for item in lifecycle], [0, 1, 1, 0])
+        self.assertEqual([metric for metric, _ in records],
+                         ["contextEntryMs", "contextBodyMs", "contextExitAndCloseMs"])
+        self.assertTrue(all(elapsed >= 0 for _, elapsed in records))
+
+        marker = ValueError("original error")
+        with self.assertRaisesRegex(ValueError, "original error"):
+            with module.measured_runtime_db_context(
+                    original_runtime_db, True,
+                    lambda metric, elapsed: records.append((metric, elapsed))):
+                raise marker
+        self.assertIs(lifecycle[-1][2], ValueError)
+        self.assertIs(lifecycle[-1][3], marker)
+
+        unsampled_error_records = []
+        with self.assertRaises(ValueError) as caught:
+            with module.measured_runtime_db_context(
+                    original_runtime_db, False,
+                    lambda metric, elapsed: unsampled_error_records.append((metric, elapsed))):
+                raise marker
+        self.assertIs(caught.exception, marker)
+        self.assertEqual(unsampled_error_records, [])
+        self.assertIs(lifecycle[-1][3], marker)
+
+        contexts.append(FakeContext("suppress", suppress=True))
+        suppressing_factory = lambda: contexts[-1]
+        with module.measured_runtime_db_context(suppressing_factory, True, lambda *_: None):
+            raise RuntimeError("suppressed by original context")
+        self.assertEqual(lifecycle[-1][1], "suppress")
+        self.assertIs(lifecycle[-1][2], RuntimeError)
+
+    def test_measured_runtime_db_context_uses_real_runtime_commit_rollback_and_close(self):
+        from codex_runtime import Runtime
+
+        class FixtureRuntime(module.BenchmarkRuntimeMixin, Runtime):
+            pass
+
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "timing.sqlite3"
-            commits = []
-            db = sqlite3.connect(path)
-            with module.measured_sqlite_context_exit(
-                    db, lambda metric, elapsed: commits.append((metric, elapsed))) as connection:
-                connection.execute("CREATE TABLE sample(value INTEGER)")
-                connection.execute("INSERT INTO sample VALUES (7)")
-            self.assertEqual(commits[0][0], "contextCommitMs")
+            runtime = object.__new__(FixtureRuntime)
+            runtime.db_path = Path(directory) / "production-runtime.sqlite3"
+            records = []
+            original_runtime_db = runtime.db
 
-            rollbacks = []
-            db = sqlite3.connect(path)
+            # Sampled use yields the real production connection and records only
+            # context boundaries; it does not wrap or replace SQLite methods.
+            with mock.patch.dict("os.environ", {"BENCH_SQLITE_SYNCHRONOUS": "FULL"}):
+                with module.measured_runtime_db_context(
+                        original_runtime_db, True,
+                        lambda metric, elapsed: records.append((metric, elapsed))) as connection:
+                    self.assertIs(type(connection), sqlite3.Connection)
+                    yielded_connection = connection
+                    connection.execute("CREATE TABLE sample(value INTEGER)")
+                    connection.execute("INSERT INTO sample VALUES (7)")
+            self.assertIs(connection, yielded_connection)
+            self.assertEqual([metric for metric, _ in records],
+                             ["contextEntryMs", "contextBodyMs", "contextExitAndCloseMs"])
+            self.assertTrue(all(elapsed >= 0 for _, elapsed in records))
+            with self.assertRaises(sqlite3.ProgrammingError):
+                yielded_connection.execute("SELECT 1")
+
+            # Unsampled nesting still enters each original Runtime.db manager;
+            # inner commit is visible to the enclosing connection.
+            with mock.patch.dict("os.environ", {"BENCH_SQLITE_SYNCHRONOUS": "FULL"}):
+                with module.measured_runtime_db_context(
+                        original_runtime_db, True,
+                        lambda metric, elapsed: records.append((metric, elapsed))) as outer:
+                    outer.execute("SELECT value FROM sample").fetchall()
+                    with module.measured_runtime_db_context(
+                            original_runtime_db, False,
+                            lambda *_: self.fail("unsampled context must not record timings")) as inner:
+                        inner_connection = inner
+                        inner.execute("INSERT INTO sample VALUES (9)")
+                    self.assertEqual(
+                        [tuple(row) for row in outer.execute(
+                            "SELECT value FROM sample ORDER BY value").fetchall()],
+                        [(7,), (9,)])
+            with self.assertRaises(sqlite3.ProgrammingError):
+                inner_connection.execute("SELECT 1")
+
+            # The original Runtime.db manager owns rollback and re-raises the
+            # same body error; the instrumentation does not replay the write.
+            failed_connection = None
             with self.assertRaisesRegex(ValueError, "rollback fixture"):
-                with module.measured_sqlite_context_exit(
-                        db, lambda metric, elapsed: rollbacks.append((metric, elapsed))) as connection:
+                with module.measured_runtime_db_context(
+                        original_runtime_db, True,
+                        lambda metric, elapsed: records.append((metric, elapsed))) as connection:
+                    failed_connection = connection
                     connection.execute("INSERT INTO sample VALUES (8)")
                     raise ValueError("rollback fixture")
-            self.assertEqual(rollbacks[0][0], "contextRollbackMs")
-            with sqlite3.connect(path) as verification:
-                self.assertEqual(verification.execute("SELECT value FROM sample").fetchall(), [(7,)])
+            rollback_records = records[-3:]
+            self.assertEqual([metric for metric, _ in rollback_records],
+                             ["contextEntryMs", "contextBodyMs", "contextExitAndCloseMs"])
+            with self.assertRaises(sqlite3.ProgrammingError):
+                failed_connection.execute("SELECT 1")
+            with runtime.db() as verification:
+                self.assertEqual(
+                    [tuple(row) for row in verification.execute(
+                        "SELECT value FROM sample ORDER BY value").fetchall()],
+                    [(7,), (9,)])
 
 
 if __name__ == "__main__":

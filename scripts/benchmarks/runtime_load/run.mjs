@@ -178,6 +178,10 @@ const fixture = spawn(
       BENCH_WORKERS_PER_TEAM: String(workersPerTeam),
       BENCH_STEADY_SECONDS: String(steadySeconds),
       BENCH_PRODUCER_POOL_SIZE: String(producerPoolSize),
+      // Browser acceptance always uses production-default durability. NORMAL
+      // is available only to the direct, runtime-only fixture diagnostic.
+      BENCH_SQLITE_SYNCHRONOUS: "FULL",
+      BENCH_SQLITE_IDLE_CONNECTION: "0",
       BENCH_SOURCE_REVISION: execFileSync(
         "git",
         ["-C", sourceRoot, "rev-parse", "HEAD"],
@@ -1148,6 +1152,9 @@ try {
     schemaVersion: 1,
     benchmark: "runtime_load",
     sourceRevision: ready.sourceRevision,
+    sqliteSynchronousMode: result.sqliteSynchronousMode,
+    databaseFilesystemType: result.databaseFilesystemType,
+    databasePathFieldRecorded: false,
     productionSourceDirty,
     backendSourceSha256,
     harnessSourceSha256,
