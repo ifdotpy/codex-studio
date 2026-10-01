@@ -13,6 +13,7 @@ import {
 } from "../../types";
 import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
+import TokenRate from "../TokenRate";
 import type { ChatIndicator } from "../chatStatusModel";
 import { WorkerDiskLabel } from "../WorktreeDisk";
 
@@ -157,6 +158,7 @@ export default function WorkerCard({
                 {shortModel(agent.model)}
                 {agent.fastMode ? " · Fast" : ""}
               </span>
+              <TokenRate agent={agent} variant="worker" />
             </span>
             <WorkerDiskLabel agent={agent} disk={disk} />
             {Boolean(agent.error) && (

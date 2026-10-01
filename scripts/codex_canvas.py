@@ -984,6 +984,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
             self.end_headers()
             previous = None
             observed_generation = None
+            rate_previous = object()
             try:
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
@@ -1010,6 +1011,13 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
                         self.wfile.write(b": heartbeat\n\n")
+                    if shared_stream and canvas.runtime:
+                        from codex_token_rate import token_rates
+                        rates = token_rates(canvas.runtime).workspace_snapshot()
+                        if rates != rate_previous:
+                            payload = {**rates, 'protocol': 2, 'workspaceId': current['workspaceId']}
+                            self.wfile.write(("event: token-rates\ndata: " + json.dumps(payload) + "\n\n").encode())
+                            rate_previous = rates
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)

@@ -403,3 +403,9 @@
 .account-limit-recovery p {
   margin: 6px 0 0;
 }
+
+@media (max-width: 600px) {
+  .usage-footer .session-cost-summary {
+    flex: 1 1 calc(100% - 12ch - 8px);
+  }
+}

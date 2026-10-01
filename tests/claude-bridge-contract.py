@@ -32,6 +32,7 @@ export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
  if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
  let abort=new AbortController();
+ let outputTotal=0;
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
@@ -117,6 +118,15 @@ export function query({prompt,options}){
     yield {type:'assistant',uuid:'22222222-2222-4222-8222-222222222222',message:{id:'split-message',content:[{type:'text',text:'Second text block.'}],stop_reason:null}};
     yield {type:'assistant',uuid:'22222222-2222-4222-8222-222222222222',message:{id:'split-message',content:[{type:'text',text:'Second text block.'}],stop_reason:null}};
     yield {type:'result',subtype:'success',usage:{input_tokens:10,output_tokens:2},result:'First text block. Second text block.'};
+    continue;
+   }
+   if(text==='rate-usage'){
+    yield {type:'stream_event',event:{type:'message_start',message:{id:'rate-1'}}};
+    yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'Rate answer'}}};
+    for(const output of [6,6,8])yield {type:'assistant',message:{id:'rate-1',usage:{input_tokens:1000,output_tokens:output},content:[{type:'text',text:'Rate answer'}]}};
+    yield {type:'assistant',message:{id:'rate-2',usage:{input_tokens:2000,output_tokens:12},content:[{type:'text',text:'Second answer'}]}};
+    outputTotal+=20;
+    yield {type:'result',subtype:'success',usage:{input_tokens:3000,output_tokens:outputTotal},result:'Second answer'};
     continue;
    }
    if(text==='split-stream'){
@@ -214,6 +224,21 @@ class Bridge(unittest.TestCase):
         while True:
             row = self.read(); self.notifications.append(row)
             if row.get('method') == 'turn/completed': return row['params']['turn']
+
+    def test_rate_uses_assistant_output_and_subtracts_persistent_query_total(self):
+        for index in range(2):
+            self.notifications = []
+            turn = self.turn('rate-usage', 'rate-' + str(index))
+            self.completed()
+            samples = [row['params'] for row in self.notifications
+                       if row.get('params', {}).get('tokenRateUsage')]
+            self.assertEqual([sample['tokenRateUsage']['outputTokens'] for sample in samples], [6, 6, 8, 12])
+            final = [row['params'] for row in self.notifications
+                     if row.get('method') == 'thread/tokenUsage/updated'][-1]
+            self.assertEqual(final['turnOutputTokens'], 20)
+            self.assertTrue(all(sample['turnId'] == turn['turn']['id'] for sample in samples + [final]))
+            self.assertTrue(all(sample['threadId'] == self.thread for sample in samples + [final]))
+            self.assertFalse(any(row.get('method', '').startswith('studio/tokenRate') for row in self.notifications))
 
     def test_model_list_carries_the_resolved_model_of_each_alias(self):
         rows = {row['model']: row for row in self.call('model/list', {})['data']}

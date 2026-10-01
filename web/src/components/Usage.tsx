@@ -11,6 +11,7 @@ import { limitRecovery } from "../limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 export { limitRecovery } from "../limitRecovery";
 import "./Usage.css";
+import TokenRate from "./TokenRate";
 const Analytics = lazy(() => import("./Analytics"));
 
 export type UsageAccount = {
@@ -456,6 +457,7 @@ export default function Usage({
           sessionCost.unknownModels.length > 0 &&
           ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}
       </div>
+      <TokenRate agent={agent} />
       <Popover
         opened={contextOpen}
         onChange={setContextOpen}

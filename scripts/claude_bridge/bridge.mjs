@@ -361,15 +361,20 @@ async function content(input) {
   }
   return result;
 }
-function turnEvent(s, turn, method, item) {
-  emit(method, { threadId: s.id, turnId: turn?.id, item });
+function turnEvent(s, turn, method, item, tokenRateUsage) {
+  emit(method, {
+    threadId: s.id,
+    turnId: turn?.id,
+    item,
+    ...(tokenRateUsage ? { tokenRateUsage } : {}),
+  });
 }
-function finishItem(s, turn, item) {
+function finishItem(s, turn, item, tokenRateUsage) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
-  turnEvent(s, turn, "item/completed", item);
+  turnEvent(s, turn, "item/completed", item, tokenRateUsage);
 }
 function notice(s, turn, text, id = randomUUID()) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
@@ -447,8 +452,15 @@ async function finishTurn(s, active, result, error) {
         ),
       ) || s.contextWindow;
     s.contextWindow = window;
+    const output = result?.usage?.output_tokens;
+    const turnOutputTokens =
+      Number.isFinite(output) && output >= 0
+        ? Math.max(0, output - active.reportedOutput)
+        : undefined;
+    if (turnOutputTokens !== undefined) active.reportedOutput = output;
     emit("thread/tokenUsage/updated", {
       threadId: s.id,
+      ...(turnOutputTokens !== undefined ? { turnOutputTokens } : {}),
       turnId: turn.id,
       model: active.lastModel,
       responseId: active.lastMessageId,
@@ -842,6 +854,11 @@ async function startSession(s, active, p) {
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
         active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
+        const output = m.message.usage?.output_tokens;
+        const tokenRateUsage =
+          m.message.id && Number.isFinite(output) && output >= 0
+            ? { responseId: m.message.id, outputTokens: output }
+            : undefined;
         const mergeBlocks = (kind, field) => {
           const state = assistantBlockState(active, m.message.id, kind);
           for (const [index, block] of m.message.content.entries()) {
@@ -859,29 +876,39 @@ async function startSession(s, active, p) {
         };
         const text = mergeBlocks("text", "text");
         if (text)
-          finishItem(s, turn, {
-            id: m.message.id,
-            nativeId: m.uuid,
-            type: "agentMessage",
-            text,
-            phase: "commentary",
-          });
+          finishItem(
+            s,
+            turn,
+            {
+              id: m.message.id,
+              nativeId: m.uuid,
+              type: "agentMessage",
+              text,
+              phase: "commentary",
+            },
+            tokenRateUsage,
+          );
         const thinking = mergeBlocks("thinking", "thinking");
         if (thinking)
-          finishItem(s, turn, {
-            id: m.message.id + ":thinking",
-            nativeId: m.uuid,
-            type: "agentMessage",
-            text: thinking,
-            phase: "commentary",
-          });
+          finishItem(
+            s,
+            turn,
+            {
+              id: m.message.id + ":thinking",
+              nativeId: m.uuid,
+              type: "agentMessage",
+              text: thinking,
+              phase: "commentary",
+            },
+            tokenRateUsage,
+          );
         for (const b of m.message.content.filter(
           (b) => b.type === "tool_use",
         )) {
           const item = nativeItem(b, s.cwd);
           active.tools.set(b.id, item);
           turn.items.push(item);
-          turnEvent(s, turn, "item/started", item);
+          turnEvent(s, turn, "item/started", item, tokenRateUsage);
           if (b.name === "TodoWrite")
             emit("turn/plan/updated", {
               threadId: s.id,
@@ -962,6 +989,7 @@ function newActive(turn) {
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
     reportedUsage: 0,
+    reportedOutput: 0,
     idleSince: null,
     lastUsage: null,
   };

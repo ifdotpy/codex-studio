@@ -9,6 +9,10 @@ import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
 
 import { onResume } from "./resume";
 import {
+  clearWorkspaceTokenRates,
+  receiveWorkspaceTokenRates,
+} from "../tokenRate";
+import {
   cacheTranscript,
   cacheTranscriptValue,
   peekTranscript,
@@ -472,6 +476,7 @@ export function watchSyncInvalidations(
       broadcast({ kind: "heartbeat", generations: lastGenerations });
     };
     const closeSource = () => {
+      if (source) clearWorkspaceTokenRates();
       source?.close();
       source = undefined;
     };
@@ -493,6 +498,23 @@ export function watchSyncInvalidations(
         // The elected lock holder already polls the compact generation row.
         return;
       }
+      source.addEventListener("token-rates", (event) => {
+        try {
+          const message = JSON.parse((event as MessageEvent).data);
+          if (
+            message.protocol === 2 &&
+            message.workspaceId === workspaceId &&
+            receiveWorkspaceTokenRates(message)
+          )
+            broadcast({ ...message, kind: "token-rates" });
+        } catch {
+          // Malformed telemetry cannot invalidate sync projections.
+        }
+      });
+      source.onerror = () => {
+        clearWorkspaceTokenRates();
+        broadcast({ kind: "token-rates", rates: {}, teams: {} });
+      };
       source.onopen = () => {
         if (openedStream) {
           notify();
@@ -602,6 +624,10 @@ export function watchSyncInvalidations(
       }
       lastHeartbeatAt = Date.now();
       stopFallbackPolling();
+      if (message.kind === "token-rates") {
+        receiveWorkspaceTokenRates(message);
+        return;
+      }
       if (message.kind === "heartbeat") {
         if (message.generations) applyGenerationState(message);
         return;
@@ -639,6 +665,7 @@ export function watchSyncInvalidations(
         watchdogTimer = setInterval(() => {
           if (stopped || isOwner || !available()) return;
           if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs) {
+            clearWorkspaceTokenRates();
             startFallbackPolling();
             startAsOwner();
           }
@@ -651,6 +678,7 @@ export function watchSyncInvalidations(
     };
     stopInvalidations = () => {
       stopped = true;
+      clearWorkspaceTokenRates();
       releaseStreamLease();
       clearTimeout(flushTimer);
       stopFallbackPolling();
