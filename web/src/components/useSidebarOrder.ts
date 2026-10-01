@@ -50,12 +50,17 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
   };
   const dropBindings = (
     key: string,
-    accepts: (source: Drag) => boolean,
+    accepts: (source: Drag, event: DragEvent<HTMLElement>) => boolean,
     dropped: (source: Drag) => void,
+    fallback: ReturnType<typeof bindings> | Record<string, never> = {},
   ) => ({
+    ...fallback,
     "data-folder-drop": destination === key ? "true" : undefined,
     onDragOver: (event: DragEvent<HTMLElement>) => {
-      if (!drag.current || !accepts(drag.current)) return;
+      if (!drag.current || !accepts(drag.current, event)) {
+        fallback.onDragOver?.(event);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       event.dataTransfer.dropEffect = "move";
@@ -65,9 +70,13 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
     onDragLeave: (event: DragEvent<HTMLElement>) => {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null))
         setDestination(null);
+      fallback.onDragLeave?.(event);
     },
     onDrop: (event: DragEvent<HTMLElement>) => {
-      if (!drag.current || !accepts(drag.current)) return;
+      if (!drag.current || !accepts(drag.current, event)) {
+        fallback.onDrop?.(event);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const source = drag.current;

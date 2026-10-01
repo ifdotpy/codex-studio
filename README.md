@@ -413,3 +413,33 @@ npm --prefix desktop test
 Browser checks use the installed Chrome, or `CHROME_BIN`. Desktop checks use hidden
 Electron windows. Native protocol fixtures can run without paid model requests.
 Read each test before running a check that uses the live Codex service.
+
+Inside a project, drag teams, folders, and loose chats to set their order.
+Drop near a row edge to change the order. Alt + Up or Down also works.
+Project order and item order stay saved in this browser.
+Select **Compact project** from the project menu to show peer team chats,
+pinned chats, active chats, unread chats, and chats active in the last 24 hours.
+The rule uses the chat's last update time. **Show all N** restores all chats.
+The compact setting stays saved per project. Search includes hidden chats.
+
+Drop a peer team chat in the center of another lead chat to make it a subagent.
+The confirmation names both chats and lists the effects. Both agent trees must
+be idle. Active turns, queued input, permission requests, commands, monitors,
+workspace operations, account transfers, and shared exchanges block the move.
+Unresolved tool requests also block the move.
+The chat keeps its native thread, history, account, model, execution settings,
+and directory. Its workers keep their parent links and use the destination root.
+The complete source task board moves, with its owners, dependencies, and results.
+Plans and annotations keep their chat identities. Requests for the user move to
+the destination lead. The destination's plan and worker defaults stay in use.
+The destination's concurrency, agent limit, and token limit apply to the moved tree.
+The converted chat pauses. Its watches pause and require an explicit resume.
+Worker watches and saved command and monitor records keep their agent identities.
+Progress files keep their paths and contents. The next turn receives the new role.
+
+The source leaves its peer team. A team with fewer than two members dissolves.
+Saved peer rooms remain available to the user. Former peers lose agent access.
+The old broadcast becomes a private room for the original tree and keeps its
+messages. New broadcasts use the destination's broadcast room.
+The action saves one receipt with the exact request body. A retry with the same
+request ID returns that receipt. A different body with that ID is refused.
