@@ -54,7 +54,9 @@ def _pages(server, method, params):
     cursor, seen = None, set()
     while True:
         request = {**params, **({'cursor': cursor} if cursor is not None else {})}
-        page = server.call(method, request, timeout=30)
+        # A history page can rebuild a large inherited native transcript.
+        # Transfers run outside the HTTP request, so allow that read to finish.
+        page = server.call(method, request, timeout=120)
         if not isinstance(page, dict) or not isinstance(page.get('data'), list):
             raise ValueError('Native history returned an invalid page: ' + method)
         next_cursor = page.get('nextCursor')
