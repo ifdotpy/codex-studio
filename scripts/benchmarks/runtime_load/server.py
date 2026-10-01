@@ -9,8 +9,10 @@ import queue
 import resource
 import copy
 import atexit
+import faulthandler
 import hashlib
 import math
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -229,6 +231,10 @@ class MeasuredRLock:
         self._samples_lock = threading.Lock()
         self._wait = defaultdict(lambda: deque(maxlen=self.SAMPLE_LIMIT))
         self._held = defaultdict(lambda: deque(maxlen=self.SAMPLE_LIMIT))
+        self._wait_latest = defaultdict(float)
+        self._held_latest = defaultdict(float)
+        self._wait_max = defaultdict(float)
+        self._held_max = defaultdict(float)
 
     @staticmethod
     def _context():
@@ -237,6 +243,10 @@ class MeasuredRLock:
     def _record(self, target, context, elapsed):
         with self._samples_lock:
             target[context].append(elapsed)
+            latest = self._wait_latest if target is self._wait else self._held_latest
+            maximum = self._wait_max if target is self._wait else self._held_max
+            latest[context] = elapsed
+            maximum[context] = max(maximum[context], elapsed)
 
     def acquire(self, *args, **kwargs):
         depth = getattr(self._local, "depth", 0)
@@ -304,6 +314,17 @@ class MeasuredRLock:
                 "heldMsByContext": {key: stats(values) for key, values in held.items()},
                 "sampleLimitPerContext": self.SAMPLE_LIMIT}
 
+    def progress_snapshot(self):
+        with self._samples_lock:
+            return {
+                "waitByContext": {key: {"samples": len(values), "latestMs": self._wait_latest[key],
+                                        "maxMs": self._wait_max[key]}
+                                  for key, values in self._wait.items()},
+                "heldByContext": {key: {"samples": len(values), "latestMs": self._held_latest[key],
+                                        "maxMs": self._held_max[key]}
+                                  for key, values in self._held.items()},
+            }
+
 
 def main():
     from codex_canvas import Canvas, make_server
@@ -331,6 +352,13 @@ def main():
     runtime_lock = MeasuredRLock(runtime.lock)
     runtime.lock = runtime_lock
     runtime.ui_condition = threading.Condition(runtime_lock)
+    faulthandler.enable(file=sys.stderr)
+
+    def dump_thread_stacks(_signum, _frame):
+        print("BENCH_DIAGNOSTIC_STACK_DUMP signal=SIGUSR1", file=sys.stderr, flush=True)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+
+    signal.signal(signal.SIGUSR1, dump_thread_stacks)
     canvas = Canvas(root=state)
     canvas.runtime = runtime
     if FRONTEND_DIST:
@@ -414,6 +442,13 @@ def main():
     callback_samples = 0
     callback_count = 0
     callback_done = threading.Condition()
+    progress_lock = threading.Lock()
+    progress_phase = ["ready"]
+    progress_phase_turns = {name: 0 for name in ("warmup", "steady", "burst", "drain")}
+    progress_phase_started = [None]
+    progress_started = [None]
+    progress_stop = threading.Event()
+    progress_thread = None
     final_witness_offered_at = {}
     delta_identities = {}
     account_count = max(1, int(os.environ.get("BENCH_ACCOUNT_COUNT", "2")))
@@ -586,6 +621,41 @@ def main():
         if errors:
             raise RuntimeError(errors[0])
 
+    def emit_progress(reason):
+        with progress_lock:
+            phase = progress_phase[0]
+            phase_turns = dict(progress_phase_turns)
+            offered = dict(category_offered)
+        with callback_done:
+            callbacks = {"samples": callback_samples, "invocations": callback_count}
+        with lock:
+            dispatched_count = len(dispatched)
+            dispatched_categories = dict(category_dispatched)
+        elapsed = (time.monotonic() - progress_started[0]) if progress_started[0] else 0
+        phase_elapsed = ((time.monotonic() - progress_phase_started[0])
+                         if progress_phase_started[0] and phase in progress_phase_turns else None)
+        snapshot = {
+            "kind": "progress", "reason": reason, "elapsedSeconds": round(elapsed, 3),
+            "phase": phase, "phaseTurnsOffered": phase_turns,
+            "currentPhaseElapsedSeconds": round(phase_elapsed, 3) if phase_elapsed is not None else None,
+            "currentPhaseAchievedOfferedTurnsPerSecond": (
+                round(phase_turns[phase] / phase_elapsed, 3)
+                if phase_elapsed and phase_elapsed > 0 else None),
+            "offeredByCategory": offered, "completedCallbackSamples": callbacks["samples"],
+            "callbackInvocations": callbacks["invocations"],
+            "dispatchedIdentities": dispatched_count,
+            "dispatchedByCategory": dispatched_categories,
+            "callbackQueues": [{"transport": index, "depth": appserver.callbacks.qsize(),
+                                 "unfinished": appserver.callbacks.unfinished_tasks}
+                                for index, appserver in enumerate(appservers)],
+            "runtimeLock": runtime_lock.progress_snapshot(),
+        }
+        print(json.dumps(snapshot, separators=(",", ":")), flush=True)
+
+    def periodic_progress():
+        while not progress_stop.wait(5):
+            emit_progress("interval")
+
     def acknowledge_chat_event(event_id, recipient):
         operation = {"agent": recipient["id"], "epoch": recipient["epoch"],
                      "accountKey": recipient["accountKey"], "connectionId": None,
@@ -609,6 +679,13 @@ def main():
             rounds = int(command.get("rounds", 1))
             if not 1 <= rounds <= 8:
                 raise ValueError("rounds must be in 1..8")
+            progress_started[0] = time.monotonic()
+            progress_phase[0] = "starting"
+            progress_stop.clear()
+            progress_thread = threading.Thread(target=periodic_progress,
+                                               name="runtime-load-progress", daemon=True)
+            progress_thread.start()
+            emit_progress("run-start")
             total_started = time.monotonic_ns()
             event_rows_before = read_accounting_snapshot(
                 runtime.db, "runtime_events.count.before",
@@ -633,7 +710,8 @@ def main():
                 if key in emitted_keys:
                     raise RuntimeError(f"duplicate offered identity: {key}")
                 emitted_keys.add(key)
-                category_offered[kind] = category_offered.get(kind, 0) + 1
+                with progress_lock:
+                    category_offered[kind] = category_offered.get(kind, 0) + 1
                 payload_bytes_by_category[kind] = payload_bytes_by_category.get(kind, 0) + len(json.dumps(payload).encode("utf-8"))
                 if kind == "assistantDelta":
                     register_delta_identity(delta_identities, payload["params"], (key, kind))
@@ -653,6 +731,10 @@ def main():
             phase_effective_rate = {}
             for phase, scale in (("warmup", 2), ("steady", 1), ("burst", 4), ("drain", 1)):
                 current_phase[0] = phase
+                with progress_lock:
+                    progress_phase[0] = phase
+                    progress_phase_started[0] = time.monotonic()
+                emit_progress("phase-start")
                 phase_count = turn_counts[phase]
                 phase_started = time.monotonic_ns() + 100_000_000
                 for i in range(phase_count):
@@ -665,6 +747,8 @@ def main():
                     actual_offer_ns = time.monotonic_ns()
                     turn_offered_ns[phase].append(actual_offer_ns)
                     turn_lateness_ms[phase].append((actual_offer_ns - due) / 1_000_000)
+                    with progress_lock:
+                        progress_phase_turns[phase] += 1
                     turn_id = f"bench-turn-{phase}-{local_round}-{agent['id']}"
                     item_id = f"bench-item-{phase}-{local_round}-{agent['id']}"
                     marker = witness_marker(agent["id"], phase, local_round)
@@ -713,6 +797,7 @@ def main():
                     len(offered_times) / (phase_elapsed[phase])
                     if offered_times and phase_elapsed[phase] > 0
                     else None)
+                emit_progress("phase-complete")
                 if phase == "burst":
                     wait_callbacks(sum(category_offered.values()), 30)
                     for appserver in appservers:
@@ -783,6 +868,11 @@ def main():
                 for item in runtime.transcript(agent["id"])["items"]:
                     transcript_counts[item.get("role", "unknown")] = transcript_counts.get(item.get("role", "unknown"), 0) + 1
             usage = resource.getrusage(resource.RUSAGE_SELF)
+            progress_stop.set()
+            if progress_thread:
+                progress_thread.join(timeout=1)
+            progress_phase[0] = "complete"
+            emit_progress("run-complete")
             report = {"teams": team_count, "workersPerTeam": workers_per_team,
                       "syntheticActiveTurns": len(workers) + len(leads), "rounds": rounds,
                       "steadySeconds": steady_seconds,

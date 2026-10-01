@@ -179,6 +179,7 @@ const fixture = spawn(
 );
 let childOut = "",
   childErr = "",
+  fixtureProgress = [],
   browserLog = "",
   browserExit = null,
   previousTmpdir,
@@ -214,6 +215,11 @@ fixture.stdout.on("data", (chunk) => {
 });
 const start = Date.now();
 let deadlineExpired = false;
+const diagnosticTimers = [60_000, 180_000].map((delay) =>
+  setTimeout(() => {
+    if (fixture.exitCode === null) fixture.kill("SIGUSR1");
+  }, delay),
+);
 const hardDeadline = setTimeout(() => {
   deadlineExpired = true;
   fixture.kill("SIGTERM");
@@ -231,6 +237,10 @@ const waitLine = async (predicate, label, timeout = 20_000) => {
         value = JSON.parse(line);
       } catch {
         throw new Error(`Fixture emitted invalid JSON: ${line}`);
+      }
+      if (value.kind === "progress") {
+        if (fixtureProgress.length < 512) fixtureProgress.push(value);
+        continue;
       }
       if (predicate(value)) return value;
     }
@@ -1136,6 +1146,7 @@ try {
       "application hook execution (lifecycle notifications and analytics are synthetic protocol events)",
     ],
     runtime: result,
+    fixtureProgress,
     browser: browserReport,
     acceptance: {
       tabInitializationDeadlineMs,
@@ -1219,6 +1230,16 @@ try {
     console.error(
       `${deadlineExpired ? `Benchmark exceeded its ${deadlineMs}ms hard deadline.\n` : ""}${error.stack || error}\nFixture stderr:\n${childErr}`,
     );
+    for (const line of childOut.split("\n")) {
+      if (!line) continue;
+      try {
+        const value = JSON.parse(line);
+        if (value.kind === "progress" && fixtureProgress.length < 512)
+          fixtureProgress.push(value);
+      } catch {
+        // Keep partial or non-JSON stdout in fixtureOutputTail below.
+      }
+    }
     try {
       await mkdir(dirname(outputPath), { recursive: true });
       await writeFile(
@@ -1274,6 +1295,9 @@ try {
                   queue: result.queue,
                 }
               : null,
+            fixtureProgress,
+            fixtureOutputTail: childOut.slice(-20_000),
+            fixtureStderrTail: childErr.slice(-30_000),
             browserProcessResources: browserResourcePeak,
             browserLogTail: browserLog.slice(-30000),
             browserExit,
@@ -1299,6 +1323,7 @@ try {
   }
 } finally {
   clearTimeout(hardDeadline);
+  for (const timer of diagnosticTimers) clearTimeout(timer);
   clearInterval(browserResourceTimer);
   for (const session of cdpSessions) await session.detach().catch(() => {});
   for (const page of pages) await page.close().catch(() => {});

@@ -222,6 +222,10 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         metrics = lock.snapshot()
         self.assertGreater(metrics["waitMsByContext"][thread.name]["samples"], 0)
         self.assertGreater(metrics["heldMsByContext"][thread.name]["samples"], 0)
+        progress = lock.progress_snapshot()
+        self.assertGreater(progress["waitByContext"][thread.name]["samples"], 0)
+        self.assertGreaterEqual(progress["waitByContext"][thread.name]["maxMs"],
+                                progress["waitByContext"][thread.name]["latestMs"])
 
 
 if __name__ == "__main__":
