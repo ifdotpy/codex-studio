@@ -316,6 +316,9 @@ try {
       return original.call(this, candidate, value);
     };
   }, failedLegacyJournalKey);
+  // Keep React's error observation on the active headless page while the old
+  // tab generates the storage event; Chromium throttles RAF in background tabs.
+  await page.bringToFront();
   await legacyTab.evaluate(
     ({ workspaceId, session, text }) => {
       const key = `codex-drafts:${workspaceId}`;
@@ -332,6 +335,39 @@ try {
       window.draft?.drafts[session] === text &&
       !!window.draft.error,
     { session: lateSession, text: retryWithoutEvent },
+    // The original page is backgrounded by the old-tab fixture; RAF polling
+    // can otherwise miss the visible error until after the 3s retry fires.
+    { polling: 25, timeout: 10_000 },
+  );
+  await page.waitForFunction(
+    () => window.legacyJournalWriteAttempts >= 2,
+    null,
+    { polling: 50, timeout: 10_000 },
+  );
+  const failedJournalAttempts = await page.evaluate(
+    () => window.legacyJournalWriteAttempts,
+  );
+  assert.ok(
+    failedJournalAttempts >= 2,
+    "The injected storage failure remains held through multiple retries",
+  );
+  assert.equal(
+    await page.evaluate(() => window.allowLegacyJournalRetry),
+    false,
+    "Retries remain blocked until the test releases storage",
+  );
+  assert.equal(
+    await page.evaluate(
+      ({ workspaceId, session }) =>
+        JSON.parse(
+          localStorage.getItem(
+            `codex-chat-draft:${workspaceId}:${encodeURIComponent(session)}`,
+          ),
+        ).legacyBaselineHash,
+      { workspaceId, session: lateSession },
+    ),
+    checkpointBeforeFailure,
+    "Repeated journal failures leave the checkpoint unchanged",
   );
   await page.evaluate(() => {
     if (!window.draft?.error)
@@ -344,29 +380,62 @@ try {
     checkpointBeforeFailure,
     "Failed journal persistence does not advance the legacy checkpoint",
   );
-  await page.waitForFunction(
-    () => window.legacyJournalWriteAttempts >= 2,
-    null,
-    { timeout: 10_000 },
+  const retryCheckpoint = await page.evaluate(
+    async ({ session, text }) =>
+      (await import("/src/sync/draftStorage.ts")).legacyBaselineHash(
+        session,
+        text,
+      ),
+    { session: lateSession, text: retryWithoutEvent },
   );
-  await page.waitForFunction(
-    async ({ device, session, text }) => {
-      if (window.legacyStorageEvents !== 1) return false;
-      const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      const rows = (await db.drafts.find().exec()).filter((document) =>
-        document.id.endsWith(`:${session}`),
-      );
-      if (rows.length !== 1) return false;
-      const saved = rows[0];
-      const payload = JSON.parse(saved.payload);
-      return (
-        saved.id === `${device}:${session}` &&
-        payload.id === saved.id &&
-        payload.session === session &&
-        payload.text === text
-      );
-    },
-    { device: existingDevice, session: lateSession, text: retryWithoutEvent },
+  const retryDeadline = Date.now() + 15_000;
+  let retryState;
+  let retryConverged = false;
+  while (Date.now() < retryDeadline) {
+    retryState = await page.evaluate(
+      async ({ workspaceId, session }) => {
+        const { db } = await (
+          await import("/src/sync/client.ts")
+        ).syncDatabase();
+        const local = JSON.parse(
+          localStorage.getItem(
+            `codex-chat-draft:${workspaceId}:${encodeURIComponent(session)}`,
+          ),
+        );
+        const rows = (await db.drafts.find().exec())
+          .filter((document) => document.id.endsWith(`:${session}`))
+          .map((document) => ({
+            id: document.id,
+            payload: JSON.parse(document.payload),
+          }));
+        return {
+          checkpoint: local?.legacyBaselineHash,
+          events: window.legacyStorageEvents,
+          attempts: window.legacyJournalWriteAttempts,
+          rows,
+        };
+      },
+      { workspaceId, session: lateSession },
+    );
+    const [row] = retryState.rows;
+    if (
+      retryState.events === 1 &&
+      retryState.attempts > failedJournalAttempts &&
+      retryState.checkpoint === retryCheckpoint &&
+      retryState.rows.length === 1 &&
+      row.id === `${existingDevice}:${lateSession}` &&
+      row.payload.id === row.id &&
+      row.payload.session === lateSession &&
+      row.payload.text === retryWithoutEvent
+    ) {
+      retryConverged = true;
+      break;
+    }
+    await page.waitForTimeout(50);
+  }
+  assert.ok(
+    retryConverged,
+    `The released journal retry converges without another event or reload: ${JSON.stringify(retryState)}`,
   );
   assert.equal(
     await page.evaluate(() => window.legacyStorageEvents),
@@ -374,10 +443,11 @@ try {
     "The journal retry succeeds without another old-tab event or reload",
   );
   assert.ok(
-    await page.evaluate(() => window.legacyJournalWriteAttempts >= 2),
-    "The bounded retry writes the failed legacy journal again",
+    (await page.evaluate(() => window.legacyJournalWriteAttempts)) >
+      failedJournalAttempts,
+    "A post-release retry writes the failed legacy journal again",
   );
-  assert.notEqual(
+  assert.equal(
     await page.evaluate(
       ({ workspaceId, session }) =>
         JSON.parse(
@@ -387,7 +457,7 @@ try {
         ).legacyBaselineHash,
       { workspaceId, session: lateSession },
     ),
-    checkpointBeforeFailure,
+    retryCheckpoint,
     "The checkpoint advances after the retry persists the journal",
   );
   const emptySession = "old-tab-empty-chat";
