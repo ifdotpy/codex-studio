@@ -261,22 +261,58 @@ def main():
     server = make_server(canvas)
     http_latencies = {}
     http_errors = []
+    http_diag_lock = threading.Lock()
+    http_active_routes = {}
+    http_request_counts = {}
+    http_response_statuses = {}
     handler = server.RequestHandlerClass
     original_do_get = handler.do_GET
+    original_send_response = handler.send_response
+
+    def measured_send_response(self, code, message=None):
+        from urllib.parse import urlsplit
+        route = urlsplit(self.path).path
+        with http_diag_lock:
+            key = f"{route} {code}"
+            http_response_statuses[key] = http_response_statuses.get(key, 0) + 1
+        return original_send_response(self, code, message)
+
     def measured_do_get(self):
         from urllib.parse import urlsplit
         route = urlsplit(self.path).path
         started = time.monotonic()
+        with http_diag_lock:
+            http_request_counts[route] = http_request_counts.get(route, 0) + 1
+            http_active_routes[route] = http_active_routes.get(route, 0) + 1
         try:
+            if route == "/__bench/diagnostics":
+                with http_diag_lock:
+                    snapshot = {
+                        "activeRoutes": dict(http_active_routes),
+                        "requestCounts": dict(http_request_counts),
+                        "responseStatuses": dict(http_response_statuses),
+                    }
+                body = json.dumps(snapshot).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             return original_do_get(self)
         except BaseException as exc:
             with lock:
                 http_errors.append({"route": route, "error": f"{type(exc).__name__}: {exc}"})
             raise
         finally:
+            with http_diag_lock:
+                http_active_routes[route] -= 1
+                if http_active_routes[route] == 0:
+                    del http_active_routes[route]
             with lock:
                 http_latencies.setdefault(route, []).append((time.monotonic() - started) * 1000)
     handler.do_GET = measured_do_get
+    handler.send_response = measured_send_response
     thread = threading.Thread(target=server.serve_forever, name="runtime-load-http", daemon=True)
     thread.start()
     queue_limit = AppServer.CALLBACK_QUEUE_LIMIT

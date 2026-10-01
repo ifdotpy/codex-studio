@@ -28,6 +28,7 @@ const harnessSourceSha256 = createHash("sha256")
   .digest("hex");
 const args = process.argv.slice(2);
 const check = args.includes("--check");
+const diagnoseOriginPool = args.includes("--diagnose-origin-pool");
 const evidenceRoot = join(
   process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"),
   "evidence",
@@ -156,8 +157,11 @@ let childOut = "",
   browserResourceTimer,
   browserResourcePeak = { processCount: 0, rssKiB: 0, cpuPercent: 0 },
   contexts = [],
-  pages = [];
+  pages = [],
+  cdpSessions = [],
+  networkTraces = [];
 let phase = "fixture-startup";
+let diagnosticOnlyResult = false;
 let pageErrors = [];
 let requestFailures = [];
 let consoleErrors = [];
@@ -414,6 +418,61 @@ try {
       }
     });
     pages.push(page);
+    if (diagnoseOriginPool) {
+      const cdp = await context.newCDPSession(page);
+      cdpSessions.push(cdp);
+      await cdp.send("Network.enable");
+      const trace = { tab: index + 1, active: {}, events: [] };
+      networkTraces.push(trace);
+      const record = (event) => {
+        if (trace.events.length < 5000) trace.events.push(event);
+      };
+      cdp.on("Network.requestWillBeSent", (event) => {
+        trace.active[event.requestId] = {
+          url: event.request.url,
+          type: event.type,
+          startedAtEpochMs: Date.now(),
+        };
+        record({
+          kind: "request",
+          requestId: event.requestId,
+          url: event.request.url,
+          type: event.type,
+          atEpochMs: Date.now(),
+        });
+      });
+      cdp.on("Network.responseReceived", (event) => {
+        const active = trace.active[event.requestId];
+        if (active) {
+          active.status = event.response.status;
+          active.responseAtEpochMs = Date.now();
+        }
+        record({
+          kind: "response",
+          requestId: event.requestId,
+          url: event.response.url,
+          type: event.type,
+          status: event.response.status,
+          atEpochMs: Date.now(),
+        });
+      });
+      cdp.on("Network.loadingFinished", (event) => {
+        const active = trace.active[event.requestId];
+        if (active?.type === "EventSource")
+          active.finishedAtEpochMs = Date.now();
+        delete trace.active[event.requestId];
+      });
+      cdp.on("Network.loadingFailed", (event) => {
+        record({
+          kind: "loadingFailed",
+          requestId: event.requestId,
+          error: event.errorText,
+          canceled: event.canceled,
+          atEpochMs: Date.now(),
+        });
+        delete trace.active[event.requestId];
+      });
+    }
     const witness = ready.witnesses[index];
     assert(witness, `missing representative worker for tab ${index + 1}`);
     await page.addInitScript(
@@ -424,6 +483,62 @@ try {
         ),
       { stateDir: stateData.stateDir, id: witness.agentId },
     );
+    if (diagnoseOriginPool && index === 5) {
+      const navigation = page
+        .goto(ready.origin, { waitUntil: "domcontentloaded", timeout: 20_000 })
+        .then(
+          () => ({ completed: true }),
+          (error) => ({ completed: false, error: error.message }),
+        );
+      const firstWait = await Promise.race([
+        navigation,
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+      ]);
+      const readServerDiagnostics = async () =>
+        fetch(`${ready.origin}/__bench/diagnostics`)
+          .then((response) => response.json())
+          .catch((error) => ({ error: error.message }));
+      const serverBefore = await readServerDiagnostics();
+      const activeSourcesBefore = networkTraces.flatMap((trace) =>
+        Object.entries(trace.active)
+          .filter(([, request]) => request.type === "EventSource")
+          .map(([requestId, request]) => ({
+            tab: trace.tab,
+            requestId,
+            ...request,
+          })),
+      );
+      let releasedByClosingFirstPage = null;
+      if (firstWait === null) {
+        await pages[0].close();
+        releasedByClosingFirstPage = await Promise.race([
+          navigation,
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ completed: false, timeout: true }),
+              8000,
+            ),
+          ),
+        ]);
+      }
+      const serverAfter = await readServerDiagnostics();
+      const evidence = {
+        triggerTab: index + 1,
+        initialNavigation: firstWait,
+        serverBefore,
+        activeSourcesBefore,
+        outstandingRequestsByTab: networkTraces.map((trace) => ({
+          tab: trace.tab,
+          outstanding: Object.values(trace.active),
+          events: trace.events,
+        })),
+        releasedByClosingFirstPage,
+        serverAfter,
+      };
+      const diagnostic = new Error("origin-pool diagnostic completed");
+      diagnostic.benchmarkDiagnostic = evidence;
+      throw diagnostic;
+    }
     await page.goto(ready.origin, {
       waitUntil: "domcontentloaded",
       timeout: check ? 25_000 : 60_000,
@@ -804,10 +919,8 @@ try {
   }
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
-  console.error(
-    `${deadlineExpired ? `Benchmark exceeded its ${deadlineMs}ms hard deadline.\n` : ""}${error.stack || error}\nFixture stderr:\n${childErr}`,
-  );
-  try {
+  if (error?.benchmarkDiagnostic) {
+    diagnosticOnlyResult = true;
     await mkdir(dirname(outputPath), { recursive: true });
     await writeFile(
       outputPath,
@@ -815,62 +928,99 @@ try {
         {
           schemaVersion: 1,
           benchmark: "runtime_load",
-          status: "failed",
-          phase,
+          status: "diagnostic",
+          diagnostic: "origin-connection-pool-release-probe",
           sourceRevision: ready?.sourceRevision || null,
-          productionSourceDirty,
           backendSourceSha256,
           harnessSourceSha256,
-          sourceRoot,
           frontend: {
             dist: frontendDist,
             sourceRevision: frontendSourceRevision,
             artifactSha256: frontendArtifactSha256,
           },
-          error: String(error?.message || error),
-          pageErrors,
-          requestFailures,
-          consoleErrors,
-          expectedApiUnavailable,
-          runtimeSummary: result
-            ? {
-                teams: result.teams,
-                offered: result.offered,
-                dispatched: result.dispatched,
-                transcriptItemsByRole: result.transcriptItemsByRole,
-                notificationCoverage: result.notificationCoverage,
-                workerStates: result.workerStates,
-                notificationSamples: result.notificationSamples,
-                httpServerErrors: result.httpServerErrors,
-                exactlyOnce: result.exactlyOnce,
-                latencyMs: result.latencyMs,
-              }
-            : null,
+          evidence: error.benchmarkDiagnostic,
           browserProcessResources: browserResourcePeak,
-          browserLogTail: browserLog.slice(-30000),
-          browserExit,
           browserDiagnostics: processLimits(),
           hostMemory: memoryInfo(),
           elapsedMs: Date.now() - start,
-          runtimePlatform: {
-            node: process.version,
-            os: process.platform,
-            arch: process.arch,
-          },
           cleanup: "pending",
         },
         null,
         2,
       ) + "\n",
     );
-    console.error(`Failure evidence saved to ${outputPath}`);
-  } catch (writeError) {
-    console.error(`Could not save failure evidence: ${writeError}`);
+    console.log(`Origin-pool diagnostic evidence saved to ${outputPath}`);
+    process.exitCode = 0;
+  } else {
+    console.error(
+      `${deadlineExpired ? `Benchmark exceeded its ${deadlineMs}ms hard deadline.\n` : ""}${error.stack || error}\nFixture stderr:\n${childErr}`,
+    );
+    try {
+      await mkdir(dirname(outputPath), { recursive: true });
+      await writeFile(
+        outputPath,
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            benchmark: "runtime_load",
+            status: "failed",
+            phase,
+            sourceRevision: ready?.sourceRevision || null,
+            productionSourceDirty,
+            backendSourceSha256,
+            harnessSourceSha256,
+            sourceRoot,
+            frontend: {
+              dist: frontendDist,
+              sourceRevision: frontendSourceRevision,
+              artifactSha256: frontendArtifactSha256,
+            },
+            error: String(error?.message || error),
+            pageErrors,
+            requestFailures,
+            consoleErrors,
+            expectedApiUnavailable,
+            runtimeSummary: result
+              ? {
+                  teams: result.teams,
+                  offered: result.offered,
+                  dispatched: result.dispatched,
+                  transcriptItemsByRole: result.transcriptItemsByRole,
+                  notificationCoverage: result.notificationCoverage,
+                  workerStates: result.workerStates,
+                  notificationSamples: result.notificationSamples,
+                  httpServerErrors: result.httpServerErrors,
+                  exactlyOnce: result.exactlyOnce,
+                  latencyMs: result.latencyMs,
+                }
+              : null,
+            browserProcessResources: browserResourcePeak,
+            browserLogTail: browserLog.slice(-30000),
+            browserExit,
+            browserDiagnostics: processLimits(),
+            hostMemory: memoryInfo(),
+            elapsedMs: Date.now() - start,
+            runtimePlatform: {
+              node: process.version,
+              os: process.platform,
+              arch: process.arch,
+            },
+            cleanup: "pending",
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+      console.error(`Failure evidence saved to ${outputPath}`);
+    } catch (writeError) {
+      console.error(`Could not save failure evidence: ${writeError}`);
+    }
+    process.exitCode = 1;
   }
-  process.exitCode = 1;
 } finally {
   clearTimeout(hardDeadline);
   clearInterval(browserResourceTimer);
+  for (const session of cdpSessions) await session.detach().catch(() => {});
   for (const page of pages) await page.close().catch(() => {});
   for (const context of contexts) await context.close().catch(() => {});
   await browser?.close().catch(() => {});
@@ -894,7 +1044,7 @@ try {
   await rm(state, { recursive: true, force: true });
   if (previousTmpdir === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = previousTmpdir;
-  if (process.exitCode) {
+  if (process.exitCode || diagnosticOnlyResult) {
     try {
       const failed = JSON.parse(await readFile(outputPath, "utf8"));
       failed.cleanup = {

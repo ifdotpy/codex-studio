@@ -49,6 +49,8 @@ Reports default to `$XDG_STATE_HOME/evidence/latency-components` or `~/.local/st
 
 Each representative tab tracks a phase-specific witness that appears only in the completed assistant item, not its streaming deltas. `finalOfferToFirstDOMAppearanceMs` measures elapsed time from offering that final item until the browser first observes the marker under `#messages`.
 
+If a tab stalls before the workload starts, run `--diagnose-origin-pool` with the same source and frontend options. This diagnostic opens the real app in six tabs, captures Chromium Network-domain requests and active server routes, closes only its first benchmark-owned page, and records whether the pending sixth navigation then completes. It exits before offering synthetic turns and writes diagnostic-only evidence, not a load result.
+
 ## Reading results
 
 `offered` and `dispatched` describe callback identities admitted and consumed by production `AppServer.callbacks`. Eight assistant fragments may merge into a single callback; their identities are preserved in the production fragment sample list and counted individually. A passing run has equal unique identities, a drained callback queue, every chat and child-result event acknowledged by its original ID, no pending synthetic Runtime events, and one rendered witness per team tab.
