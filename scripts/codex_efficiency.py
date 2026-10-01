@@ -21,6 +21,21 @@ def digest(value):
     return hashlib.sha256(packed(value).encode()).hexdigest()[:24]
 
 
+def finished_worktree_ids(db, root_id):
+    """Find the lead's finished workers without copying every agent record."""
+    return [row[0] for row in db.execute(
+        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+        "AND id!=? AND json_extract(record,'$.worktreeReady') IS NOT NULL "
+        "AND json_extract(record,'$.worktreeReady') NOT IN (0,'') "
+        "AND (json_extract(record,'$.deletedAt') IS NULL "
+        "OR json_extract(record,'$.deletedAt') IN (0,'')) "
+        "AND (json_extract(record,'$.status') IN ('completed','failed','interrupted') "
+        "OR (json_extract(record,'$.status')='paused' "
+        "AND (json_extract(record,'$.autoWake') IS NULL "
+        "OR json_extract(record,'$.autoWake') IN (0,'')))) ORDER BY id",
+        (root_id, root_id))]
+
+
 def model_text_bytes(value):
     # Match the generic tool projection, including JSON escaping inside text.
     return len(packed([{'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]).encode())
@@ -557,10 +572,7 @@ class EfficiencyMixin:
             blocks.append('[Complaints still requiring a response] ' + ', '.join(c['id'] for c in unchanged)
                           + '. The full text was delivered earlier. Read orchestration_context topic=complaints if needed.')
         if actor.get('isLead'):
-            from codex_agent_management import _finished
-            waiting = sorted(a['id'] for a in self.records(db, 'agents')
-                             if a['rootId'] == actor['id'] and a['id'] != actor['id']
-                             and not a.get('deletedAt') and a.get('worktreeReady') and _finished(a))
+            waiting = finished_worktree_ids(db, actor['id'])
             if len(waiting) >= 3:
                 versions['worktreeReminder'] = digest(waiting)
                 delivered = db.execute(

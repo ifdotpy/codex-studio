@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_agent_management import manage_agent, _missing_transferred_history
-from codex_efficiency import EfficiencyMixin
+from codex_agent_management import manage_agent, _missing_transferred_history, _finished
+from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids
 from codex_tool_requests import RequestMixin
 
 class Store(EfficiencyMixin, RequestMixin):
@@ -432,6 +432,45 @@ class RuntimeRouteContract(unittest.TestCase):
                 actor['compactions']=1
                 rt.enqueue(db,actor,'user','Continue','reminder-compacted')
                 self.assertNotIn('archive_finished',rt.model_turn_context(db,actor,'reminder-compacted'))
+        finally:case.tearDown()
+
+    def test_reminder_query_matches_full_scan_for_worker_states(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('runtime_fixture',Path(__file__).with_name('runtime-contract.py'))
+        f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
+        case=f.RuntimeContract();case.setUp()
+        try:
+            rt=case.runtime;lead=case.lead()
+            states=[('completed',False,False,True,False),
+                    ('failed',False,False,True,False),
+                    ('interrupted',False,False,True,False),
+                    ('paused',False,False,True,False),
+                    ('completed',False,False,True,True),
+                    ('paused',True,False,True,False),
+                    ('running',True,False,True,False),
+                    ('completed',False,True,True,False),
+                    ('completed',False,False,False,False)]
+            workers=[rt.create({'name':f'Worker {i}','prompt':'Review','role':'reviewer'},
+                               lead['id'],defer=True) for i in range(len(states))]
+            with rt.lock,rt.db() as db:
+                for worker,(status,auto_wake,deleted,ready,archived) in zip(workers,states):
+                    a=rt.agent(worker['id'],db)
+                    a.update(status=status,autoWake=auto_wake,worktreeReady=ready,archived=archived)
+                    if deleted:
+                        a['deletedAt']=1
+                    rt.put(db,'agents',a)
+                old=sorted(a['id'] for a in rt.records(db,'agents')
+                           if a['rootId']==lead['id'] and a['id']!=lead['id']
+                           and not a.get('deletedAt') and a.get('worktreeReady') and _finished(a))
+                self.assertEqual(finished_worktree_ids(db,lead['id']),old)
+                self.assertEqual(len(old),5)
+                actor=rt.agent(lead['id'],db)
+                rt.enqueue(db,actor,'user','Continue','reminder-mixed')
+                text=rt.model_turn_context(db,actor,'reminder-mixed')
+                self.assertIn(f'Studio: {len(old)} finished workers keep worktrees.',text)
+                meta=json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?',
+                                           ('reminder-mixed',)).fetchone()[0])
+                self.assertEqual(meta['contextManifest']['versions']['worktreeReminder'],digest(old))
         finally:case.tearDown()
 
 if __name__=='__main__':unittest.main()
