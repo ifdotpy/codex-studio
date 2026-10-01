@@ -64,6 +64,25 @@ class SyncStoreTests(unittest.TestCase):
                 db.close()
         return connect
 
+    def interrupt_before_repair_commit(self, statements):
+        @contextlib.contextmanager
+        def connect():
+            db = sqlite3.connect(self.path, timeout=5)
+            def trace(sql):
+                normalized = " ".join(sql.split())
+                if normalized.upper().startswith(("CREATE TRIGGER", "DROP TRIGGER", "UPDATE SYNC_SCOPE_GENERATION")):
+                    statements.append((normalized, db.in_transaction))
+            db.set_trace_callback(trace)
+            try:
+                with db:
+                    yield db
+                    if any(sql.upper().startswith("UPDATE SYNC_SCOPE_GENERATION")
+                           for sql, _in_transaction in statements):
+                        raise RuntimeError("simulated interruption before sync repair commit")
+            finally:
+                db.close()
+        return connect
+
     @staticmethod
     def trigger_ddl(statements):
         return [sql.strip() for sql in statements
@@ -247,6 +266,55 @@ class SyncStoreTests(unittest.TestCase):
         after = restarted.generations()
         self.assertGreater(after["state"], before["state"])
         self.assertGreater(after["transcripts"], before["transcripts"])
+
+    def test_startup_trigger_repair_and_scope_bump_roll_back_together(self):
+        before = self.store.generations()
+        with self.connect() as db:
+            db.execute("CREATE TABLE runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            db.execute("INSERT INTO runtime_native_notices VALUES ('offline-notice','{}')")
+        statements = []
+
+        with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+            SyncStore(self.interrupt_before_repair_commit(statements), lambda: {}, lambda _agent: {})
+
+        self.assertTrue(any(sql.startswith("CREATE TRIGGER \"sync_scope_state_runtime_native_notices_") and in_tx
+                            for sql, in_tx in statements), statements)
+        self.assertTrue(any(sql.startswith("UPDATE sync_scope_generation") and in_tx
+                            for sql, in_tx in statements), statements)
+        with self.connect() as db:
+            state = db.execute("SELECT value FROM sync_scope_generation WHERE scope='state'").fetchone()[0]
+            trigger = db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                                 "AND name='sync_scope_state_runtime_native_notices_INSERT'").fetchone()
+        self.assertEqual(state, before["state"])
+        self.assertIsNone(trigger)
+
+        recovered = SyncStore(self.connect, lambda: {}, lambda _agent: {})
+        self.assertGreater(recovered.generations()["state"], before["state"])
+
+    def test_runtime_refresh_trigger_repair_and_scope_bump_roll_back_together(self):
+        before = self.store.generations()
+        with self.connect() as db:
+            db.execute("CREATE TABLE runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            db.execute("INSERT INTO runtime_native_notices VALUES ('late-notice','{}')")
+        statements = []
+        self.store.connect = self.interrupt_before_repair_commit(statements)
+
+        with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+            self.store.generations()
+
+        self.assertTrue(any(sql.startswith("CREATE TRIGGER \"sync_scope_state_runtime_native_notices_") and in_tx
+                            for sql, in_tx in statements), statements)
+        self.assertTrue(any(sql.startswith("UPDATE sync_scope_generation") and in_tx
+                            for sql, in_tx in statements), statements)
+        with self.connect() as db:
+            state = db.execute("SELECT value FROM sync_scope_generation WHERE scope='state'").fetchone()[0]
+            trigger = db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                                 "AND name='sync_scope_state_runtime_native_notices_INSERT'").fetchone()
+        self.assertEqual(state, before["state"])
+        self.assertIsNone(trigger)
+
+        self.store.connect = self.connect
+        self.assertGreater(self.store.generations()["state"], before["state"])
 
     def test_search_pending_is_index_only(self):
         with self.connect() as db:

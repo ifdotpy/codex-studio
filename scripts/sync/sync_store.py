@@ -49,6 +49,10 @@ class SyncStore:
             ''')
             if not db.execute('SELECT id FROM sync_identity').fetchone():
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
+            # sqlite3 does not start a transaction for DDL by default. Keep
+            # trigger repair and the corresponding generation bump atomic.
+            db.commit()
+            db.execute('BEGIN IMMEDIATE')
             tables = [r[1] for r in db.execute("PRAGMA table_list")
                       if r[0] == "main" and r[2] == "table"]
             for scope in self._reconcile_triggers(db, tables):
@@ -62,6 +66,9 @@ class SyncStore:
             if version == self._schema_version:
                 return
             with self._migration_lock:
+                # Serialize schema repair with other SQLite writers and make
+                # its trigger DDL and scope invalidation one commit.
+                db.execute('BEGIN IMMEDIATE')
                 version = db.execute('PRAGMA schema_version').fetchone()[0]
                 if version == self._schema_version:
                     return
