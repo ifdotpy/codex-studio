@@ -335,6 +335,30 @@ class AccountStore:
                     self.data["accounts"][key].pop("deleted", None)
                     self._save()
                 return key
+            # The discovered default Claude account predates explicit profile
+            # registration and uses the stable key ``claude-local``. Reuse that
+            # native identity when Add targets the same default config, including
+            # after it was tombstoned; otherwise Add would leave the deleted row
+            # hidden and create a second account for the same credentials.
+            local = self.data["accounts"].get("claude-local")
+            if local and local.get("provider") == "claude":
+                local_options = profile_options(local.get("claudeOptions"))
+                same_paths = all(
+                    local_options.get(field, "") == options.get(field, "")
+                    for field in ("binaryPath", "configDir")
+                )
+                same_login = (
+                    not local.get("accountId")
+                    or local.get("accountId") == metadata.get("accountId")
+                )
+                if same_paths and same_login:
+                    local["claudeOptions"] = options
+                    local.update(metadata)
+                    if label is not None:
+                        local["label"] = label.strip()
+                    local.pop("deleted", None)
+                    self._save()
+                    return "claude-local"
             self.data["accounts"][key] = {
                 "id": key, "provider": "claude", "claudeOptions": options,
                 "home": options.get("configDir") or os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),

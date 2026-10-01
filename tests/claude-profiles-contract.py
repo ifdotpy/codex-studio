@@ -78,6 +78,27 @@ class Profiles(unittest.TestCase):
         with patch.object(c, 'auth_metadata', return_value={**AUTH, 'accountId': 'claude:other'}):
             self.assertEqual(store.get(key)['status'], 'changed')
 
+    def test_explicit_add_restores_discovered_claude_local_identity(self):
+        store = AccountStore(self.root / 'state')
+        home = self.root / 'home'
+        with patch.object(Path, 'home', return_value=home), \
+             patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            store.discover()
+            row = store.data['accounts']['claude-local']
+            row['deleted'] = True
+            store._save()
+            self.assertNotIn('claude-local', [a['id'] for a in store.list()])
+
+            key = store.register_claude({}, 'Personal Claude')
+
+        self.assertEqual(key, 'claude-local')
+        visible = [a['id'] for a in store.list()]
+        self.assertIn('claude-local', visible)
+        self.assertEqual(visible.count('claude-local'), 1)
+        self.assertFalse(any(key.startswith('claude-profile-') for key in visible))
+        self.assertEqual(store.get(key)['label'], 'Personal Claude')
+
     def test_existing_default_profile_accepts_full_row(self):
         self.assertEqual(c.profile_options({'provider': 'claude', 'id': 'claude-local', **AUTH}),
                          {'customModels': [], 'launchArgs': ''})

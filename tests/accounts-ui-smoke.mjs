@@ -412,10 +412,19 @@ try {
     exact: true,
   });
   const openSettings = async () => {
-    if (!(await settings.isVisible()))
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
+    if (!(await settings.isVisible())) {
+      const direct = page.getByRole("button", {
+        name: "Chat settings",
+        exact: true,
+      });
+      if (await direct.isVisible()) await direct.click();
+      else {
+        await page.getByRole("button", { name: "Chat actions" }).click();
+        await page
+          .getByRole("menuitem", { name: "Chat settings", exact: true })
+          .click();
+      }
+    }
     await picker.waitFor();
   };
   const closeSettings = async () => {
