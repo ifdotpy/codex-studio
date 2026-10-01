@@ -974,6 +974,8 @@ def main():
             offered = dict(category_offered)
         with producer_metrics_lock:
             scheduled_phases = dict(scheduled_by_phase)
+        phase_elapsed = ((time.monotonic() - progress_phase_started[0])
+                         if progress_phase_started[0] and phase in progress_phase_turns else None)
         turn_progress = phase_progress_turn_counts(
             phase, phase_elapsed, scheduled_phases,
             {name: turn_start_offer_ns[name] for name in phase_names}, phase_turns)
@@ -1005,8 +1007,6 @@ def main():
             producer_state["queueWaitMaxMs"] = max(producer_queue_wait_ms, default=0.0)
             producer_state["queueAgeSamples"] = len(producer_queue_age_ms)
         elapsed = (time.monotonic() - progress_started[0]) if progress_started[0] else 0
-        phase_elapsed = ((time.monotonic() - progress_phase_started[0])
-                         if progress_phase_started[0] and phase in progress_phase_turns else None)
         snapshot = {
             "kind": "progress", "reason": reason, "elapsedSeconds": round(elapsed, 3),
             "phase": phase,
