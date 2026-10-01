@@ -12,7 +12,9 @@ The setting is available on desktop and mobile. Existing chats keep their accoun
 Use the account menu in Settings to select any available account for an empty
 chat. This choice affects that chat only. For an existing chat, select another
 account to transfer its team with the saved context.
-The global default in **Manage accounts** applies to projects without a saved choice.
+The global default applies to projects without a saved choice. Open
+**Studio settings → Accounts** to manage accounts without opening a chat.
+The chat menu's **Manage accounts** opens the same manager.
 
 The application finds native profiles in `~/.codex`, `~/Projects/*/.codex-profile`,
 `~/Projects/*/.codex`, `~/.codex/profiles/*`, and `~/.codex-profiles/*`.
@@ -83,6 +85,18 @@ ID does not start another login. An existing native account appears only once.
 
 Checks: `tests/account-login-contract.py`, `tests/runtime-accounts-contract.py`,
 and `tests/accounts-ui-smoke.mjs`. These checks use isolated fixtures.
+
+## Delete an account
+
+Select **Delete account** in the manager to remove an account from saved accounts
+and new chat choices. Native credentials, saved history, and existing chat
+identities remain intact; active work is not stopped. Discovery does not add a
+deleted account back automatically. Explicitly adding it again restores it.
+
+Deleting the application default requires another connected account, which
+becomes the default. Projects that selected the deleted account need another
+account before creating new chats. **Disconnect account** remains a separate,
+reversible action that keeps the account visible in the manager.
 
 ## Multiple project accounts
 

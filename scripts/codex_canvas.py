@@ -615,10 +615,13 @@ def make_server(canvas, port=0, public_origin=None):
                                     for key in runtime.rate_limits_by_account
                                 }
                                 connection_ids = dict(runtime.connection_ids)
+                                version_monitor = getattr(runtime, "provider_version_monitor", None)
+                                provider_warnings = version_monitor.status()["warnings"] if version_monitor else []
                                 volatile = json.dumps({
                                     "rateLimits": rate_limits,
                                     "rateLimitsByAccount": rate_limits_by_account,
                                     "connectionIds": connection_ids,
+                                    "providerWarnings": provider_warnings,
                                 }, sort_keys=True, separators=(",", ":"))
                             finally:
                                 runtime.lock.release()
@@ -806,6 +809,7 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(session_cost_reader[0].snapshot(agent_id))
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
+                    from codex_provider_versions import status as provider_version_status
                     from codex_browser import diagnostics as browser_diagnostics
                     browser_account = parse_qs(path.query).get("account_key", ["default"])[0]
                     return self.send(
@@ -815,6 +819,7 @@ def make_server(canvas, port=0, public_origin=None):
                             "mobileProtocol": 1,
                             "backendBuild": BACKEND_BUILD,
                             "nativeRuntime": native_runtime_status(canvas.runtime),
+                            "providerVersions": provider_version_status(canvas.runtime),
                             "browser": browser_diagnostics(canvas.runtime, browser_account),
                             "liveUpdate": (canvas.runtime.live_updates.status()
                                            if getattr(canvas.runtime, "live_updates", None) else None),

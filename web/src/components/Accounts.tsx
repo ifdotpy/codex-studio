@@ -23,10 +23,14 @@ import { readBuckets, formatPercent } from "./Usage";
 
 const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
 
-function storedDeleteRequest(accountKey: string) {
+function deleteRequestsStorageKey(scope?: string) {
+  return `${DELETE_REQUESTS_KEY}:${scope || "default"}`;
+}
+
+function storedDeleteRequest(scope: string | undefined, accountKey: string) {
   try {
     const requests = JSON.parse(
-      localStorage.getItem(DELETE_REQUESTS_KEY) || "{}",
+      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
     );
     return typeof requests[accountKey] === "string"
       ? (requests[accountKey] as string)
@@ -36,10 +40,14 @@ function storedDeleteRequest(accountKey: string) {
   }
 }
 
-function saveDeleteRequest(accountKey: string, requestId: string | null) {
+function saveDeleteRequest(
+  scope: string | undefined,
+  accountKey: string,
+  requestId: string | null,
+) {
   try {
     const current = JSON.parse(
-      localStorage.getItem(DELETE_REQUESTS_KEY) || "{}",
+      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
     );
     const requests =
       current && typeof current === "object" && !Array.isArray(current)
@@ -47,7 +55,10 @@ function saveDeleteRequest(accountKey: string, requestId: string | null) {
         : {};
     if (requestId) requests[accountKey] = requestId;
     else delete requests[accountKey];
-    localStorage.setItem(DELETE_REQUESTS_KEY, JSON.stringify(requests));
+    localStorage.setItem(
+      deleteRequestsStorageKey(scope),
+      JSON.stringify(requests),
+    );
   } catch {
     // The live dialog still retains its exact request identity when storage is unavailable.
   }
@@ -716,9 +727,9 @@ export default function Accounts({
                       disabled={!!pending}
                       onClick={() => {
                         const requestId =
-                          storedDeleteRequest(account.id) ||
+                          storedDeleteRequest(state.scope, account.id) ||
                           crypto.randomUUID();
-                        saveDeleteRequest(account.id, requestId);
+                        saveDeleteRequest(state.scope, account.id, requestId);
                         setDeleteRequestId(requestId);
                         setDeleteChoice(account);
                       }}
@@ -912,7 +923,8 @@ export default function Accounts({
                   request_id: deleteRequestId,
                 }),
               );
-              if (deleteChoice) saveDeleteRequest(deleteChoice.id, null);
+              if (deleteChoice)
+                saveDeleteRequest(state.scope, deleteChoice.id, null);
               setDeleteChoice(null);
               setDeleteRequestId("");
             })

@@ -38,8 +38,10 @@ const accounts = [
     status: "ready",
   },
 ];
+const archivedAccounts = [];
 let defaultAccountKey = "default";
 const logins = [];
+const claudeLogins = new Map();
 const makeLead = (id, name, accountKey, empty) => ({
   id,
   rootId: id,
@@ -204,7 +206,7 @@ const server = createServer(async (req, res) => {
         receipt.resolvedAccountKey = receipt.accountKey;
       }
     }
-    return json({ accounts, defaultAccountKey, logins });
+    return json({ accounts, archivedAccounts, defaultAccountKey, logins });
   }
   if (url.pathname === "/api/agents/account") {
     const agent = agents.find((a) => a.id === body.id);
@@ -345,6 +347,19 @@ const server = createServer(async (req, res) => {
     res.statusCode = 400;
     return json({ error: "Unsupported fixture Claude action" });
   }
+  if (url.pathname === "/api/accounts/claude/login") {
+    if (req.method === "POST") {
+      const receipt = {
+        requestId: body.request_id,
+        accountKey: body.account_key,
+        status: "pending",
+        verificationUrl: "https://claude.ai/oauth/authorize",
+      };
+      claudeLogins.set(receipt.requestId, receipt);
+      return json(receipt);
+    }
+    return json(claudeLogins.get(url.searchParams.get("request_id")) || {});
+  }
   if (url.pathname === "/api/claude/profiles") {
     const account = body.account_key
       ? accounts.find((account) => account.id === body.account_key)
@@ -412,10 +427,19 @@ try {
     exact: true,
   });
   const openSettings = async () => {
-    if (!(await settings.isVisible()))
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
+    if (!(await settings.isVisible())) {
+      const direct = page.getByRole("button", {
+        name: "Chat settings",
+        exact: true,
+      });
+      if (await direct.isVisible()) await direct.click();
+      else {
+        await page.getByRole("button", { name: "Chat actions" }).click();
+        await page
+          .getByRole("menuitem", { name: "Chat settings", exact: true })
+          .click();
+      }
+    }
     await picker.waitFor();
   };
   const closeSettings = async () => {
@@ -1201,6 +1225,52 @@ try {
     "codex",
   );
 
+  const claudeIndex = accounts.findIndex((account) => account.id === "claude");
+  const [archivedClaude] = accounts.splice(claudeIndex, 1);
+  archivedAccounts.push({
+    ...archivedClaude,
+    status: "signedOut",
+    deleted: true,
+  });
+  await page.reload();
+  await page.locator(`[data-chat="${claude.id}"]`).click();
+  await page
+    .getByRole("button", { name: "Sign in to Claude", exact: true })
+    .waitFor();
+  await openSettings();
+  await picker.click();
+  assert.equal(
+    await page
+      .getByRole("menuitem")
+      .filter({ hasText: "claude@example.com" })
+      .count(),
+    0,
+    "deleted identities stay out of new account choices",
+  );
+  await picker.click();
+  await closeSettings();
+  await page
+    .getByRole("button", { name: "Sign in to Claude", exact: true })
+    .click();
+  const archivedSignIn = page.getByRole("dialog", {
+    name: "Sign in to Claude",
+    exact: true,
+  });
+  await archivedSignIn
+    .getByText("Use your Claude subscription for", { exact: false })
+    .waitFor();
+  await archivedSignIn
+    .getByRole("button", { name: "Start sign-in", exact: true })
+    .click();
+  await archivedSignIn
+    .getByRole("link", { name: "Open Claude sign-in", exact: true })
+    .waitFor();
+  assert.equal(
+    [...claudeLogins.values()].at(-1).accountKey,
+    "claude",
+    "archived chat sign-in retains its native identity",
+  );
+
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -1228,6 +1298,7 @@ try {
         "Claude session settings and native commands",
         "Claude rollback error and exact retry receipt",
         "Codex and Claude transfers with exact confirmation retry",
+        "archived Claude chat sign-in with active choices filtered",
       ],
       evidence,
     }),

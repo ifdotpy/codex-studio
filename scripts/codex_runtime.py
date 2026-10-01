@@ -311,6 +311,7 @@ class AppServer:
     def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
         import queue
         self.notification, self.request, self.died = notification, request, died
+        self.provider = provider
         self.lock = threading.RLock()
         self.write_lock = threading.RLock()
         self.pending = {}
@@ -1215,7 +1216,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "daybreakEnabled": enabled, "cyberAccessProgram": program,
                 **({"accountKey": account} if account is not None else {})}
 
-    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
+    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False, _accepted_provider_operation=False):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         if parent and "yolo_mode" in data:
@@ -1292,7 +1293,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 assert_delegation(root)
             account_key = catalog_account
             account = self.accounts.get(account_key)
-            if account.get("deleted"):
+            if account.get("deleted") and not _accepted_provider_operation:
                 raise ValueError("This account was deleted. Select another account for new chats")
             if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
@@ -2419,6 +2420,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def dispatch(self):
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
+        from codex_provider_versions import tick as provider_version_tick
+        provider_version_tick(self)
         self.analytics_history_ensure_running()
         self.retry_monitor_results()
         from codex_session_names import session_names
@@ -4747,6 +4750,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def snapshot(self, *, include_work=True, _db=None):
         from codex_peer_teams import snapshot as peer_snapshot
+        from codex_provider_versions import monitor as provider_version_monitor
         with (self.db() if _db is None else nullcontext(_db)) as db:
             db.execute("PRAGMA query_only=ON")
             # Connection IDs are protected by start_lock, which connect() may
@@ -4755,10 +4759,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if not self.start_lock.acquire(blocking=False):
                 raise SnapshotDeferred("Runtime snapshot is temporarily unavailable; retry shortly.")
             try:
-                with self.lock:
+                if not self.lock.acquire(blocking=False):
+                    raise SnapshotDeferred("Runtime snapshot is temporarily unavailable; retry shortly.")
+                try:
                     # Anchor SQLite's WAL read view and copy every mutable field
-                    # under the same lock boundary. Lock order matches connect
-                    # and Canvas.state_signature: start_lock, then Runtime.lock.
+                    # under the same lock boundary. Neither acquisition may wait:
+                    # send() can own Runtime.lock before entering connect().
                     db.execute("BEGIN")
                     db.execute("SELECT id FROM runtime_agents LIMIT 1").fetchall()
                     connection_ids = dict(self.connection_ids)
@@ -4770,6 +4776,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         for key in self.rate_limits_by_account
                     }
                     connected = bool(set(self.servers) - self.offline_accounts) and not self.closed
+                    provider_warnings = provider_version_monitor(self).status()["warnings"]
+                finally:
+                    self.lock.release()
             finally:
                 self.start_lock.release()
             # account_notices only needs a record reader and connection identities.
@@ -4842,7 +4851,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if r["agent"] in {a["id"] for a in agents}
                 ],
                 "rateLimits": rate_limits,
-                "nativeNotices": account_notices(notice_view, db),
+                "nativeNotices": account_notices(notice_view, db) + provider_warnings,
                 "rateLimitsByAccount": rate_limits_by_account,
                 "events": events,
                 "connected": connected,

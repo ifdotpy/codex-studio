@@ -469,9 +469,9 @@ export default function App() {
     true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
-  const selectedAccount = accounts.data.accounts.find(
-    (a) => a.id === accountKey,
-  );
+  const selectedAccount =
+    accounts.data.accounts.find((a) => a.id === accountKey) ||
+    accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
   const accountId = selectedAccount?.accountId;
   const cachedLimits = accountLimits(
     limitsByAccount[accountKey],
@@ -1654,12 +1654,20 @@ export default function App() {
           />
         )}
         {claudeLoginKey &&
-          accounts.data.accounts.some((item) => item.id === claudeLoginKey) && (
+          (accounts.data.accounts.some((item) => item.id === claudeLoginKey) ||
+            accounts.data.archivedAccounts?.some(
+              (item) => item.id === claudeLoginKey,
+            )) && (
             <ClaudeSignIn
               key={claudeLoginKey}
-              account={accounts.data.accounts.find(
-                (item) => item.id === claudeLoginKey,
-              )!}
+              account={
+                accounts.data.accounts.find(
+                  (item) => item.id === claudeLoginKey,
+                ) ||
+                accounts.data.archivedAccounts!.find(
+                  (item) => item.id === claudeLoginKey,
+                )!
+              }
               scope={data.stateDir}
               onClose={() => setClaudeLoginKey("")}
               onReady={accounts.refresh}

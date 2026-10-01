@@ -154,6 +154,33 @@ class MobileStateContract(unittest.TestCase):
         self.assertEqual(snapshot["rateLimitsByAccount"]["secondary"],
                          self.runtime.rate_limits_by_account["secondary"])
 
+    def test_snapshot_does_not_hold_start_lock_waiting_for_runtime_lock(self):
+        finished = threading.Event()
+        outcomes = []
+
+        def snapshot():
+            try:
+                self.runtime.snapshot()
+                outcomes.append("unexpected success")
+            except codex_runtime.SnapshotDeferred:
+                outcomes.append("deferred")
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=snapshot, daemon=True)
+        with self.runtime.lock:
+            worker.start()
+            completed_while_locked = finished.wait(1)
+            # A sender holding Runtime.lock must still be able to enter connect.
+            start_available = self.runtime.start_lock.acquire(blocking=False)
+            if start_available:
+                self.runtime.start_lock.release()
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(completed_while_locked)
+        self.assertTrue(start_available)
+        self.assertEqual(outcomes, ["deferred"])
+
 
 class MobileStateHttpContract(unittest.TestCase):
     lead = fixture.WorkspaceContract.lead
@@ -316,6 +343,30 @@ class MobileStateHttpContract(unittest.TestCase):
             self.runtime.start_lock.release()
         self.assertIn("state", state["generations"])
         self.assertLess(elapsed, 1.0)
+
+    def test_provider_warning_changes_refresh_cached_state_without_database_writes(self):
+        from codex_provider_versions import ProviderVersionMonitor
+        monitor = self.runtime.provider_version_monitor = ProviderVersionMonitor()
+        initial = self.get("/api/sync/pull?scope=state:chat")
+        checkpoint = initial["checkpoint"]["seq"]
+        with self.runtime.db() as db:
+            broad_before = db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()[0]
+        with self.runtime.lock, monitor.lock:
+            monitor.providers = [{
+                "id": "provider-version:default", "accountKey": "default",
+                "provider": "codex", "status": "outdated", "runningVersion": "0.1.0",
+                "baseline": "0.153.4", "message": "Synthetic old version", "at": 1,
+            }]
+        updated = self.get(f"/api/sync/pull?scope=state:chat&after={checkpoint}")
+        payload = json.loads(updated["documents"][0]["payload"])
+        self.assertEqual(payload["runtime"]["nativeNotices"][0]["message"], "Synthetic old version")
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()[0], broad_before)
+        checkpoint = updated["checkpoint"]["seq"]
+        with self.runtime.lock, monitor.lock:
+            monitor.providers = []
+        cleared = self.get(f"/api/sync/pull?scope=state:chat&after={checkpoint}")
+        self.assertEqual(json.loads(cleared["documents"][0]["payload"])["runtime"]["nativeNotices"], [])
 
     def test_checkpoint_and_workspace_survive_adapter_reload(self):
         lead = self.lead()

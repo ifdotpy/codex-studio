@@ -309,6 +309,18 @@ try {
     .click();
   await deletion.getByRole("alert").waitFor();
   assert.equal(deleteCalls, 1, "failed deletion remains visible and retryable");
+  const [deleteStorageKey, deleteStorageValue] = await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((item) =>
+      item.startsWith("codex-studio-account-delete-requests-v1:"),
+    );
+    return [key, key ? localStorage.getItem(key) : null];
+  });
+  assert.equal(
+    deleteStorageKey,
+    `codex-studio-account-delete-requests-v1:${evidence}`,
+    "delete receipts are scoped to the current state directory",
+  );
+  assert.equal(JSON.parse(deleteStorageValue).default, deleteRequestId);
   await page.keyboard.press("Escape");
   await deletion.waitFor({ state: "hidden" });
   assert.ok(
