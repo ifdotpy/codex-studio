@@ -26,32 +26,46 @@ function estimateJsonBytes(value) {
 }
 
 function diff(before, after, location = [], changes = []) {
-  if (before === after) return changes;
+  if (before === after) return 0;
   if (before == null || after == null || typeof before !== "object" || typeof after !== "object") {
     changes.push({ op: "set", path: location, value: after });
-    return changes;
+    return estimateJsonBytes(after) - estimateJsonBytes(before);
   }
   if (Array.isArray(before) && Array.isArray(after)) {
     const shared = Math.min(before.length, after.length);
-    for (let i = 0; i < shared; i++) diff(before[i], after[i], [...location, i], changes);
-    if (after.length > before.length)
-      changes.push({ op: "append", path: location, value: after.slice(before.length) });
-    else if (after.length < before.length)
+    if (after.length < before.length) {
       changes.push({ op: "set", path: location, value: after });
-    return changes;
+      return estimateJsonBytes(after) - estimateJsonBytes(before);
+    }
+    let delta = 0;
+    for (let i = 0; i < shared; i++) delta += diff(before[i], after[i], [...location, i], changes);
+    if (after.length > before.length) {
+      changes.push({ op: "append", path: location, value: after.slice(before.length) });
+      delta += after.slice(before.length).reduce((sum, value) => sum + estimateJsonBytes(value), 0);
+      delta += after.length - before.length - (before.length === 0 ? 1 : 0);
+    }
+    return delta;
   }
   if (before && after && typeof before === "object" && typeof after === "object" &&
       !Array.isArray(before) && !Array.isArray(after)) {
-    for (const key of Object.keys(before))
-      if (!(key in after)) changes.push({ op: "delete", path: [...location, key] });
-    for (const [key, value] of Object.entries(after)) {
-      if (!(key in before)) changes.push({ op: "set", path: [...location, key], value });
-      else diff(before[key], value, [...location, key], changes);
+    const oldKeys = Object.keys(before).filter((key) => before[key] !== undefined);
+    const newKeys = Object.keys(after).filter((key) => after[key] !== undefined);
+    let delta = Math.max(0, newKeys.length - 1) - Math.max(0, oldKeys.length - 1);
+    for (const key of oldKeys) {
+      if (!(key in after) || after[key] === undefined) {
+        changes.push({ op: "delete", path: [...location, key] });
+        delta -= Buffer.byteLength(JSON.stringify(key)) + 1 + estimateJsonBytes(before[key]);
+      } else delta += diff(before[key], after[key], [...location, key], changes);
     }
-    return changes;
+    for (const key of newKeys) {
+      if (key in before && before[key] !== undefined) continue;
+      changes.push({ op: "set", path: [...location, key], value: after[key] });
+      delta += Buffer.byteLength(JSON.stringify(key)) + 1 + estimateJsonBytes(after[key]);
+    }
+    return delta;
   }
   changes.push({ op: "set", path: location, value: after });
-  return changes;
+  return estimateJsonBytes(after) - estimateJsonBytes(before);
 }
 
 function apply(session, changes) {
@@ -81,6 +95,10 @@ export function createSessionStore(root, options = {}) {
   const entries = new Map();
   const writes = new Map();
   const loads = new Map();
+  const evicted = new Map();
+  const finalizer = new FinalizationRegistry(({ id, ref }) => {
+    if (evicted.get(id) === ref) evicted.delete(id);
+  });
   let clock = 0;
   let retainedBytes = 0;
 
@@ -120,8 +138,40 @@ export function createSessionStore(root, options = {}) {
     base.journalBytes = validLogBytes;
     return base;
   };
-  // Count the session plus its persisted shadow without allocating a full JSON string.
-  const measure = (entry) => estimateJsonBytes(entry.session) + estimateJsonBytes(entry.shadow);
+  // Measure both retained objects only when the cache adopts or creates an entry.
+  const measure = (entry) => {
+    entry.sessionBytes = estimateJsonBytes(entry.session);
+    entry.shadowBytes = estimateJsonBytes(entry.shadow);
+    entry.bytes = entry.sessionBytes + entry.shadowBytes;
+  };
+  const rememberEvicted = (id, session) => {
+    const ref = new WeakRef(session);
+    evicted.set(id, ref);
+    finalizer.unregister(session);
+    finalizer.register(session, { id, ref }, session);
+  };
+  const adopt = (id, session, saved) => {
+    const entry = {
+      session,
+      shadow: saved.session,
+      sequence: saved.sequence,
+      records: saved.records || 0,
+      journalBytes: saved.journalBytes || 0,
+      used: ++clock,
+      syncSessionBytesOnWrite: true,
+    };
+    measure(entry);
+    sessions.set(id, session);
+    entries.set(id, entry);
+    retainedBytes += entry.bytes;
+    const ref = evicted.get(id);
+    if (ref?.deref() === session) {
+      evicted.delete(id);
+      finalizer.unregister(session);
+    }
+    enforceLimit();
+    return session;
+  };
   const enforceLimit = () => {
     while (retainedBytes > maxCacheBytes) {
       let candidate;
@@ -131,26 +181,27 @@ export function createSessionStore(root, options = {}) {
       }
       if (!candidate) break;
       const [id, entry] = candidate;
+      rememberEvicted(id, entry.session);
       sessions.delete(id);
       entries.delete(id);
       retainedBytes -= entry.bytes;
     }
   };
-  const remember = (session, sequence = 0, records = 0, journalBytes = 0) => {
+  const remember = (session, sequence = 0, records = 0, journalBytes = 0, shadow = copy(session), syncSessionBytesOnWrite = false) => {
     const id = session.id;
     sessions.set(id, session);
     const previous = entries.get(id);
     if (previous) retainedBytes -= previous.bytes;
     const entry = {
       session,
-      shadow: previous?.shadow || copy(session),
+      shadow: previous?.shadow || shadow,
       sequence: previous?.sequence ?? sequence,
       records: previous?.records ?? records,
       journalBytes: previous?.journalBytes ?? journalBytes,
       used: ++clock,
-      bytes: 0,
+      syncSessionBytesOnWrite,
     };
-    entry.bytes = measure(entry);
+    measure(entry);
     entries.set(id, entry);
     retainedBytes += entry.bytes;
     enforceLimit();
@@ -164,60 +215,93 @@ export function createSessionStore(root, options = {}) {
   const persistNow = async (session) => {
     await ready;
     const id = session.id;
-    const entry = entries.get(id);
+    if (loads.has(id) && await loads.get(id) !== session)
+      throw new Error("Claude session identity conflict during load");
+    const cached = sessions.get(id);
+    if (cached && cached !== session)
+      throw new Error("Claude session object is not the cached identity");
+    const remembered = evicted.get(id)?.deref();
+    if (remembered && remembered !== session && !cached)
+      throw new Error("Claude session object conflicts with a live evicted identity");
+    let entry = entries.get(id);
     if (!entry) {
-      let sequence = 0;
-      try { sequence = (await readAll(id)).sequence; }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
-      await atomicSnapshot(id, session, sequence);
-      await fs.writeFile(logFor(id), "", { mode: 0o600 });
-      remember(session, sequence, 0, 0);
-      return;
+      let saved;
+      try { saved = await readAll(id); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        const initial = copy(session);
+        await atomicSnapshot(id, initial, 0);
+        await fs.writeFile(logFor(id), "", { mode: 0o600 });
+        remember(session, 0, 0, 0, initial, true);
+        return;
+      }
+      entry = {
+        session,
+        shadow: saved.session,
+        sequence: saved.sequence,
+        records: saved.records || 0,
+        journalBytes: saved.journalBytes || 0,
+        used: ++clock,
+        syncSessionBytesOnWrite: true,
+      };
+      measure(entry);
+      sessions.set(id, session);
+      entries.set(id, entry);
+      retainedBytes += entry.bytes;
+      const ref = evicted.get(id);
+      if (ref?.deref() === session) {
+        evicted.delete(id);
+        finalizer.unregister(session);
+      }
+      enforceLimit();
     }
-    const changes = diff(entry.shadow, session);
+    if (entry.session !== session)
+      throw new Error("Claude session object is not the cached identity");
+    const changes = [];
+    const deltaBytes = diff(entry.shadow, session, [], changes);
     if (!changes.length) return;
     const sequence = entry.sequence + 1;
     const record = JSON.stringify({ sequence, changes }) + "\n";
     await fs.appendFile(logFor(id), record, { mode: 0o600 });
-    entry.shadow = copy(session);
+    entry.shadow = apply(entry.shadow, copy(changes));
     entry.sequence = sequence;
     entry.records++;
     entry.journalBytes += Buffer.byteLength(record);
     entry.used = ++clock;
+    entry.shadowBytes += deltaBytes;
+    if (entry.syncSessionBytesOnWrite) {
+      entry.sessionBytes = entry.shadowBytes;
+      entry.syncSessionBytesOnWrite = false;
+    } else entry.sessionBytes += deltaBytes;
     retainedBytes -= entry.bytes;
-    entry.bytes = measure(entry);
+    entry.bytes = Math.max(0, entry.sessionBytes + entry.shadowBytes);
     retainedBytes += entry.bytes;
     enforceLimit();
     if (entry.records >= compactRecords || entry.journalBytes >= compactBytes) {
-      await atomicSnapshot(id, session, entry.sequence);
+      await atomicSnapshot(id, entry.shadow, entry.sequence);
       await fs.writeFile(logFor(id), "", { mode: 0o600 });
       entry.records = 0;
       entry.journalBytes = 0;
     }
   };
 
-  async function load(id) {
+  async function load(id, reused = null) {
     const saved = await readAll(id);
-    for (const turn of saved.session.turns)
-      if (turn.status === "inProgress") {
-        turn.status = "interrupted";
-        turn.error = { message: "Claude connection ended. Review the saved transcript before continuing." };
-      }
-    const entry = {
-      session: saved.session,
-      shadow: copy(saved.session),
-      sequence: saved.sequence,
-      records: saved.records,
-      journalBytes: saved.journalBytes,
-      used: ++clock,
-      bytes: 0,
-    };
-    entry.bytes = measure(entry);
-    sessions.set(id, saved.session);
-    entries.set(id, entry);
-    retainedBytes += entry.bytes;
-    enforceLimit();
-    return saved.session;
+    const shadow = copy(saved.session);
+    const session = reused || saved.session;
+    if (!reused) {
+      for (const turn of session.turns)
+        if (turn.status === "inProgress") {
+          turn.status = "interrupted";
+          turn.error = { message: "Claude connection ended. Review the saved transcript before continuing." };
+        }
+    }
+    const cached = sessions.get(id);
+    if (cached) {
+      if (cached !== session) throw new Error("Claude session identity conflict during load");
+      return cached;
+    }
+    return adopt(id, session, { ...saved, session: shadow });
   }
   async function get(id) {
     if (sessions.has(id)) {
@@ -226,7 +310,10 @@ export function createSessionStore(root, options = {}) {
       return sessions.get(id);
     }
     if (!loads.has(id)) {
-      const pending = load(id);
+      const weak = evicted.get(id);
+      const reused = weak?.deref() || null;
+      if (weak && !reused) evicted.delete(id);
+      const pending = load(id, reused);
       loads.set(id, pending);
       pending.then(
         () => { if (loads.get(id) === pending) loads.delete(id); },
@@ -255,7 +342,10 @@ export function createSessionStore(root, options = {}) {
     if (options.isPinned?.(id) || writes.has(id)) return false;
     sessions.delete(id);
     const entry = entries.get(id);
-    if (entry) retainedBytes -= entry.bytes;
+    if (entry) {
+      rememberEvicted(id, entry.session);
+      retainedBytes -= entry.bytes;
+    }
     entries.delete(id);
     return true;
   }

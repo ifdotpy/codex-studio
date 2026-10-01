@@ -31,6 +31,32 @@ await temporary(async (root) => {
 });
 
 await temporary(async (root) => {
+  const store = createSessionStore(root);
+  const original = makeSession();
+  store.sessions.set(id, original);
+  await store.persist(original);
+  const heldByHandler = await store.get(id);
+  await store.evict(id);
+  const loading = store.get(id);
+  heldByHandler.turns[0].items.push({ id: "during-load", text: "written by the held object" });
+  const saving = store.persist(heldByHandler);
+  const reloaded = await loading;
+  await saving;
+  assert.strictEqual(reloaded, heldByHandler, "weak reference reuses an object held across an await");
+  heldByHandler.turns[0].items.push({ id: "after-race", text: "current state" });
+  await store.persist(heldByHandler);
+  assert.equal(store.stats().retainedBytes, Buffer.byteLength(JSON.stringify(heldByHandler)) * 2,
+    "incremental cache bytes track the live session and shadow");
+  assert.deepEqual((await createSessionStore(root).readAll(id)).session, heldByHandler,
+    "persist does not journal a stale copy over concurrent state");
+  await assert.rejects(
+    store.persist(structuredClone(heldByHandler)),
+    /not the cached identity/,
+    "a different object with the same session id cannot replace a live cached object",
+  );
+});
+
+await temporary(async (root) => {
   const store = createSessionStore(root, { compactRecords: 3, compactBytes: 1024 * 1024 });
   const original = makeSession();
   original.turns[0].items.push({ id: "prior-history", result: { content: "h".repeat(4096) } });
@@ -85,35 +111,56 @@ await temporary(async (root) => {
   assert.equal(store.stats().retainedBytes, 0);
 });
 
-// Report reproducible storage and retained-cache costs for a large synthetic history.
+// Report append cost, CPU time, and resident memory for both review sizes.
 await temporary(async (root) => {
-  const store = createSessionStore(root, { compactRecords: 10000, compactBytes: 64 * 1024 * 1024 });
-  const large = makeSession();
-  large.turns[0].items.push({ id: "history", type: "toolResult", result: { content: "h".repeat(256 * 1024) } });
-  store.sessions.set(id, large);
-  await store.persist(large);
-  let appended = 0;
-  for (let frame = 0; frame < 20; frame++) {
-    large.turns[0].items.push({ id: `frame-${frame}`, type: "agentMessage", text: `frame ${frame}` });
-    const journal = path.join(root, "sessions", id + ".jsonl");
-    const before = frame === 0 ? 0 : (await fs.stat(journal)).size;
+  for (const scenario of [
+    { name: "263KB", historyBytes: 256 * 1024, frames: 20 },
+    { name: "5MB", historyBytes: 5 * 1024 * 1024, frames: 200 },
+  ]) {
+    global.gc?.();
+    const rssBefore = process.memoryUsage().rss;
+    const scenarioRoot = path.join(root, scenario.name);
+    const store = createSessionStore(scenarioRoot, { compactRecords: 10000, compactBytes: 64 * 1024 * 1024 });
+    let large = makeSession();
+    large.turns[0].items.push({ id: "history", type: "toolResult", result: { content: "h".repeat(scenario.historyBytes) } });
+    store.sessions.set(id, large);
     await store.persist(large);
-    const after = (await fs.stat(journal)).size;
-    appended += after - before;
+    const initialSessionBytes = Buffer.byteLength(JSON.stringify(large));
+    const journal = path.join(scenarioRoot, "sessions", id + ".jsonl");
+    let appendedBytes = 0, legacyBytes = 0, frameMs = 0;
+    let peakRss = process.memoryUsage().rss;
+    for (let frame = 0; frame < scenario.frames; frame++) {
+      large.turns[0].items.push({ id: `frame-${frame}`, type: "agentMessage", text: `frame ${frame}` });
+      const before = frame === 0 ? 0 : (await fs.stat(journal)).size;
+      const started = performance.now();
+      await store.persist(large);
+      frameMs += performance.now() - started;
+      const after = (await fs.stat(journal)).size;
+      appendedBytes += after - before;
+      legacyBytes += Buffer.byteLength(JSON.stringify(large));
+      peakRss = Math.max(peakRss, process.memoryUsage().rss);
+    }
+    const rssBeforeEviction = process.memoryUsage().rss;
+    const retainedCacheBeforeEviction = store.stats().retainedBytes;
+    await store.evict(id);
+    large = null;
+    global.gc?.();
+    const rssAfterEviction = process.memoryUsage().rss;
+    assert.equal(store.stats().retainedBytes, 0);
+    console.log(JSON.stringify({
+      syntheticHistoryBytes: scenario.historyBytes,
+      initialSessionJsonBytes: initialSessionBytes,
+      frames: scenario.frames,
+      appendBytes: appendedBytes,
+      appendBytesPerFrame: Math.round(appendedBytes / scenario.frames),
+      legacyRewriteBytes: legacyBytes,
+      cpuMsPerFrame: Number((frameMs / scenario.frames).toFixed(3)),
+      rssBeforeSession: rssBefore,
+      rssPeak: peakRss,
+      rssBeforeEviction,
+      rssAfterEviction,
+      retainedCacheBytesBeforeEviction: retainedCacheBeforeEviction,
+      retainedCacheBytesAfterEviction: store.stats().retainedBytes,
+    }));
   }
-  const legacyBytesPerFrame = Buffer.byteLength(JSON.stringify(large));
-  const beforeEviction = store.stats().retainedBytes;
-  await store.evict(id);
-  const afterEviction = store.stats().retainedBytes;
-  console.log(JSON.stringify({
-    syntheticHistoryBytes: Buffer.byteLength(JSON.stringify(large)),
-    frames: 20,
-    appendBytes: appended,
-    appendBytesPerFrame: Math.round(appended / 20),
-    legacyBytesPerFrame,
-    legacyBytesForFrames: legacyBytesPerFrame * 20,
-    retainedCacheBytesBeforeEviction: beforeEviction,
-    retainedCacheBytesAfterEviction: afterEviction,
-  }));
-  assert.equal(afterEviction, 0);
 });
