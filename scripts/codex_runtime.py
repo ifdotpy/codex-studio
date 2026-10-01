@@ -713,8 +713,13 @@ class AppServer:
                 and message.get("_studioSupervisorSequence") is not None):
             # Each journal event needs its own durable receipt. Older consumers
             # merged deltas but acknowledged only the first sequence.
-            if self.supervisor_event_applied:
-                self.proc.ack_applied_deltas(self.supervisor_event_applied)
+            try:
+                if self.supervisor_event_applied:
+                    self.proc.ack_applied_deltas(self.supervisor_event_applied)
+                self.coalesce_supervisor_deltas(message)
+            except Exception as error:
+                # Preserve the original entry if receipt preparation is unavailable.
+                self.protocol_error(error)
             return True
         if isinstance(message, dict) and "_studioSlot" in message:
             with self.callback_lock:
@@ -733,6 +738,48 @@ class AppServer:
                     slots.pop(slot["key"])
             return True
         return False
+
+    def coalesce_supervisor_deltas(self, message):
+        """Commit adjacent unread text fragments with all their journal receipts."""
+        params = message.get("params")
+        first = message.get("_studioSupervisorSequence")
+        if (message.get("method") != "item/agentMessage/delta" or "id" in message
+                or not isinstance(params, dict) or not isinstance(params.get("delta"), str)
+                or not self.supervisor_commit or not self.supervisor_event_applied
+                or self.supervisor_event_applied(first)):
+            return
+        identity = {k: v for k, v in params.items() if k != "delta"}
+        samples, sequences = [params], [first]
+        size = len(params["delta"])
+        with self.callback_lock:
+            # Validate the batch before removing entries. The producer uses the
+            # same callback lock; this dispatcher is the only consumer.
+            with self.callbacks.mutex:
+                for callback, following in self.callbacks.queue:
+                    if len(samples) >= 128 or size >= 65536:
+                        break
+                    next_params = following.get("params") if isinstance(following, dict) else None
+                    next_sequence = following.get("_studioSupervisorSequence") if isinstance(following, dict) else None
+                    if (callback != self.notification or not isinstance(following, dict)
+                            or "id" in following or following.get("method") != message["method"]
+                            or not isinstance(next_params, dict) or not isinstance(next_params.get("delta"), str)
+                            or type(next_sequence) is not int or next_sequence <= sequences[-1]
+                            or {k: v for k, v in next_params.items() if k != "delta"} != identity):
+                        break
+                    samples.append(next_params)
+                    sequences.append(next_sequence)
+                    size += len(next_params["delta"])
+            if len(samples) == 1:
+                return
+            joined = {**params, "delta": "".join(p["delta"] for p in samples)}
+            self.proc.register_event_batch(sequences)
+            for _ in samples[1:]:
+                self.callbacks.get_nowait()
+                # The first entry remains unfinished until the whole batch commits.
+                self.callbacks.task_done()
+            message["params"] = joined
+            message["_studioNotificationSamples"] = samples
+            message["_studioSupervisorSequence"] = sequences[-1]
 
     def enqueue(self, callback, message):
         import queue

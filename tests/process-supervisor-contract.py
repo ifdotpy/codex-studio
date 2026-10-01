@@ -17,7 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "desktop"))
-from codex_runtime import AppServer, ResponseTimeout
+from codex_runtime import AppServer, ResponseTimeout, Runtime
 from codex_process_supervisor import finish_fallback, process_start_time, status
 import codex_process_supervisor as process_supervisor
 import recover_backend
@@ -187,6 +187,21 @@ class ProcessSupervisorContract(unittest.TestCase):
 
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
+        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
+        self.addCleanup(runtime.close)
+        agent = runtime.create({'name': 'Burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with runtime.lock, runtime.db() as db:
+            agent = runtime.agent(agent['id'], db)
+            agent.update(threadId='thread', turnId='burst-turn', status='running', inFlight=True, autoWake=False)
+            runtime.put(db, 'agents', agent)
+        def notification(message):
+            if message.get('method') == 'item/agentMessage/delta':
+                runtime.notification(message)
+            self.delivered.append(message)
+        server.notification = notification
+        server.supervisor_commit = lambda message, sequence: runtime.commit_supervisor_event(
+            server.proc.handle, message, sequence, 'default', None)
+        server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied(server.proc.handle, sequence)
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
         self.assertTrue(started.wait(3))
@@ -197,8 +212,61 @@ class ProcessSupervisorContract(unittest.TestCase):
         wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
         fragments = [m['params']['delta'] for m in self.delivered
                      if m.get('method') == 'item/agentMessage/delta']
-        self.assertEqual(fragments, list('abcdef'))
+        self.assertEqual(fragments, ['abcdef'])
+        batch = next(m for m in self.delivered if m.get('method') == 'item/agentMessage/delta')
+        self.assertEqual(len(batch['_studioNotificationSamples']), 6)
         self.assertFalse(server.proc.ack_pending)
+        item = next(i for i in runtime.transcript(agent['id'])['items'] if i['id'].endswith(':burst-item'))
+        self.assertEqual(item['text'], 'abcdef')
+        self.assertTrue(runtime.supervisor_event_applied(server.proc.handle, batch['_studioSupervisorSequence']))
+        def counts():
+            with runtime.db() as db:
+                return db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE agent=? AND method=?',
+                                  (agent['id'], 'item/agentMessage/delta')).fetchone()[0]
+        wait_for(lambda: counts() == 6)
+
+    def test_delta_batch_does_not_repeat_a_durable_prefix(self):
+        server = self.server()
+        applied = {'sequence': 0}
+        server.supervisor_commit = lambda message, sequence: applied.update(sequence=sequence)
+        server.supervisor_event_applied = lambda sequence: sequence <= applied['sequence']
+        gate, started = threading.Event(), threading.Event()
+        server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
+        self.assertTrue(started.wait(3))
+        submitted = server.submit('burst', {'itemId': 'partial'})
+        server.wait(submitted, timeout=3)
+        wait_for(lambda: server.callbacks.qsize() >= 7)
+        with server.callbacks.mutex:
+            deltas = [m for callback, m in server.callbacks.queue
+                      if isinstance(m, dict) and m.get('method') == 'item/agentMessage/delta']
+            applied['sequence'] = deltas[2]['_studioSupervisorSequence']
+        gate.set()
+        wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
+        self.assertEqual([m['params']['delta'] for m in self.delivered
+                          if m.get('method') == 'item/agentMessage/delta'], ['def'])
+
+    def test_failed_delta_batch_commit_keeps_every_journal_event(self):
+        server = self.server()
+        server.supervisor_event_applied = lambda sequence: False
+        def fail_commit(message, sequence):
+            raise RuntimeError('fixture durable commit failed')
+        server.supervisor_commit = fail_commit
+        gate, started = threading.Event(), threading.Event()
+        server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
+        self.assertTrue(started.wait(3))
+        native_pid = int(self.pid_file.read_text())
+        submitted = server.submit('burst', {'itemId': 'failed-batch'})
+        server.wait(submitted, timeout=3)
+        wait_for(lambda: server.callbacks.qsize() >= 7)
+        gate.set()
+        wait_for(lambda: server.transport_error)
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            rows = db.execute('SELECT payload FROM events WHERE handle=? ORDER BY sequence',
+                              (server.proc.handle,)).fetchall()
+        fragments = [json.loads(row[0])['params']['delta'] for row in rows
+                     if json.loads(row[0]).get('method') == 'item/agentMessage/delta']
+        self.assertEqual(fragments, list('abcdef'))
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
 
     def test_legacy_delta_gaps_require_durable_proof_and_preserve_requests(self):
         server = self.server()

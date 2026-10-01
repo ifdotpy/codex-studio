@@ -750,6 +750,8 @@ class ProcessProxy:
                 return
             if type(sequence) is not int or sequence > self.read_cursor:
                 raise RuntimeError("Cannot ACK a supervisor event that has not been read")
+            batch = self.__dict__.get("_event_batches", {}).get(sequence, ())
+            self.ack_pending.update(batch)
             self.ack_pending.add(sequence)
             contiguous = self.cursor
             while contiguous + 1 in self.ack_pending:
@@ -759,6 +761,17 @@ class ProcessProxy:
                 for acknowledged in range(self.cursor + 1, contiguous + 1):
                     self.ack_pending.discard(acknowledged)
                 self.cursor = contiguous
+                for last in tuple(self.__dict__.get("_event_batches", {})):
+                    if last <= contiguous:
+                        self._event_batches.pop(last)
+
+    def register_event_batch(self, sequences):
+        with self.__dict__.setdefault("_ack_lock", threading.RLock()):
+            if (len(sequences) < 2 or len(sequences) > 128
+                    or any(type(s) is not int or s <= self.cursor or s > self.read_cursor for s in sequences)
+                    or any(a >= b for a, b in zip(sequences, sequences[1:]))):
+                raise RuntimeError("Invalid supervisor event batch")
+            self.__dict__.setdefault("_event_batches", {})[sequences[-1]] = tuple(sequences)
 
     def ack_applied_deltas(self, applied):
         """Repair only read delta gaps covered by the runtime's durable cursor."""
