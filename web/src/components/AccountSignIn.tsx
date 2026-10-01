@@ -3,7 +3,7 @@ import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
-import type { useAccounts } from "./Accounts";
+import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard";
 
 export interface LoginReceipt {
@@ -16,6 +16,8 @@ export interface LoginReceipt {
   userCode?: string;
   error?: unknown;
   createdAt?: number;
+  reauthAccountKey?: string;
+  email?: string;
 }
 const active = (status?: string) =>
   ["starting", "pending", "uncertain"].includes(status || "");
@@ -23,11 +25,13 @@ const active = (status?: string) =>
 export default function AccountSignIn({
   state,
   opened,
+  targetAccount,
 }: {
   state: ReturnType<typeof useAccounts>;
   opened: boolean;
+  targetAccount?: Account;
 }) {
-  const storageKey = `account-sign-in:${state.scope || "local"}`;
+  const storageKey = `account-sign-in:${state.scope || "local"}${targetAccount ? `:${targetAccount.id}` : ""}`;
   const [requestId, setRequestId] = useState(() =>
     saved<string>(storageKey, ""),
   );
@@ -35,7 +39,7 @@ export default function AccountSignIn({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const lock = useRef(false);
-  const receipts = state.data.logins || [];
+  const receipts = (state.data.logins || []).filter((r) => r.reauthAccountKey === targetAccount?.id);
   const receipt =
     receipts.find((r) => r.requestId === requestId) ||
     [...receipts].reverse().find((r) => active(r.status));
@@ -88,11 +92,12 @@ export default function AccountSignIn({
   const start = () =>
     run("start", async () => {
       // Keep the identity when the HTTP reply is lost, including across reloads.
-      const id = !receipt && requestId ? requestId : crypto.randomUUID();
+      const id = receipt?.status === "uncertain" ? receipt.requestId :
+        !receipt && requestId ? requestId : crypto.randomUUID();
       remember(id);
       const result = await api<LoginReceipt>(
         "/api/accounts/login",
-        { request_id: id },
+        { request_id: id, ...(targetAccount ? { account_key: targetAccount.id } : {}) },
         { timeoutMs: 30000 },
       );
       store({ ...result, requestId: id });
@@ -127,11 +132,11 @@ export default function AccountSignIn({
   }
   const connected = ["ready", "duplicate"].includes(receipt?.status || "");
   return (
-    <section className="account-add" aria-label="Add an account">
+    <section className="account-add" aria-label={targetAccount ? "Restore account sign-in" : "Add an account"}>
       <div className="account-add-heading">
         <div>
-          <strong>Add an account</strong>
-          <p>Run another team with its own login and limits.</p>
+          <strong>{targetAccount ? "Sign in again" : "Add an account"}</strong>
+          <p>{targetAccount ? `Use ${targetAccount.email || targetAccount.label}. Your chats keep this account.` : "Run another team with its own login and limits."}</p>
         </div>
         <Button
           leftSection={<Plus size={15} />}
@@ -141,7 +146,7 @@ export default function AccountSignIn({
           }
           onClick={() => void start()}
         >
-          Sign in to another account
+          {targetAccount ? "Start sign-in" : "Sign in to another account"}
         </Button>
       </div>
       {receipt && (
@@ -151,6 +156,8 @@ export default function AccountSignIn({
               <Check size={16} />{" "}
               {account?.disconnected
                 ? "This account is saved but disconnected. Reconnect it in Accounts to use it for new chats."
+                : targetAccount
+                  ? "Sign-in restored. Send a new instruction to continue."
                 : receipt.status === "duplicate"
                   ? "This account is already connected."
                   : "Account connected."}{" "}
@@ -167,7 +174,7 @@ export default function AccountSignIn({
               {receipt.userCode && url ? (
                 <>
                   <strong>Complete sign-in in your browser</strong>
-                  <p>Use the new account, then enter this code.</p>
+                  <p>{targetAccount ? `Use ${targetAccount.email || targetAccount.label}, then enter this code.` : "Use the new account, then enter this code."}</p>
                   <div className="account-login-code">
                     <code>{receipt.userCode}</code>
                     <Button

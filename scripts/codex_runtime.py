@@ -1392,12 +1392,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         raise ValueError(f"{label} agent ID {supplied!r}. Use at least 8 characters. Candidate full IDs: "
                          + (', '.join(candidates) if candidates else 'none'))
 
-    def connect(self, account_key="default"):
+    def connect(self, account_key="default", *, for_login=False):
         account = self.accounts.get(account_key)
         provider = account.get("provider", "codex")
         if provider == "claude" and account.get("status") != "ready":
             raise ValueError(account.get("error") or "Sign in with claude auth login first")
-        home = self.accounts.home(account_key) if self.factory is AppServer and provider != "claude" else None
+        home = self.accounts.home(account_key, for_login=for_login) if self.factory is AppServer and provider != "claude" else None
         selected = None
         while True:
             with self.start_lock:

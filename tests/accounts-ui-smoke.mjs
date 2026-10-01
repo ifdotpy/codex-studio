@@ -213,6 +213,7 @@ const server = createServer(async (req, res) => {
     if (url.pathname.endsWith("/discover")) discoverCount++;
     for (const receipt of logins) {
       if (
+        (!receipt.reauthAccountKey || receipt.nativeCompleted) &&
         accounts.find((a) => a.id === receipt.accountKey)?.status === "ready"
       ) {
         receipt.status = "ready";
@@ -260,11 +261,12 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/accounts/login") {
     const previous = logins.find((r) => r.requestId === body.request_id);
     if (previous) return json(previous);
-    const id = `signed-in-${logins.length}`;
-    accounts.push({ id, email: null, label: "New account", status: "pending" });
+    const id = body.account_key || `signed-in-${logins.length}`;
+    if (!body.account_key) accounts.push({ id, email: null, label: "New account", status: "pending" });
     const receipt = {
       requestId: body.request_id,
       accountKey: id,
+      ...(body.account_key ? {reauthAccountKey: id} : {}),
       loginId: id,
       verificationUrl: "https://auth.openai.com/codex/device",
       userCode: "ABCD-1234",
@@ -276,7 +278,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/api/accounts/login/cancel") {
     const receipt = logins.find((r) => r.requestId === body.request_id);
     receipt.status = "cancelled";
-    accounts.splice(
+    if (!receipt.reauthAccountKey) accounts.splice(
       accounts.findIndex((a) => a.id === receipt.accountKey),
       1,
     );
@@ -440,7 +442,57 @@ try {
       );
     agents.push(benchAgent);
   }
+  if (process.env.REAUTH_ONLY) {
+    accounts[0].accountId = 'saved-default';
+    accounts.push({id:'claude',email:'claude@example.com',label:'Claude',provider:'claude',status:'ready',accountId:'native-claude'});
+    agents[0].accountKey = 'claude';
+    agents[0].provider = 'claude';
+    agents.push({...makeLead('auth-worker','Failed worker','default',false),isLead:false,parentId:'started',rootId:'started',status:'failed',error:{message:'Your refresh token was revoked. Please log out and sign in again.',codexErrorInfo:'unauthorized'}});
+  }
   await page.goto(`http://127.0.0.1:${server.address().port}`);
+  if (process.env.REAUTH_ONLY) {
+    await page.getByRole('button',{name:'Started conversation',exact:true}).click();
+    await page.getByRole('button',{name:'Sign in to Codex',exact:true}).click();
+    let login = page.getByRole('dialog',{name:'Sign in to personal@example.com',exact:true});
+    await page.route('**/api/accounts/login', async route=>{await route.fetch();await route.abort();}, {times:1});
+    await login.getByRole('button',{name:'Start sign-in',exact:true}).click();
+    await login.getByRole('alert').waitFor();
+    const id = logins[0].requestId;
+    assert.equal(logins[0].reauthAccountKey,'default','A Claude lead must restore its Codex worker account');
+    await login.getByRole('button',{name:'Start sign-in',exact:true}).click();
+    await login.getByText('ABCD-1234',{exact:true}).waitFor();
+    assert.equal(logins.length,1,'A lost reply must reuse the same sign-in');
+    assert.equal(bodies.filter(r=>r.path==='/api/accounts/login').at(-1).body.request_id,id);
+    await page.reload();
+    await page.getByRole('button',{name:'Sign in to Codex',exact:true}).click();
+    login = page.getByRole('dialog',{name:'Sign in to personal@example.com',exact:true});
+    await login.getByText('ABCD-1234',{exact:true}).waitFor();
+    assert.equal(logins.length,1);
+    assert.equal(await login.getByText('Sign-in restored. Send a new instruction to continue.').count(),0,'Cached ready credentials do not confirm sign-in');
+    logins[0].nativeCompleted=true;
+    await login.getByRole('button',{name:'Check status',exact:true}).click();
+    await login.getByText('Sign-in restored. Send a new instruction to continue.',{exact:false}).waitFor();
+    assert.equal(accounts.filter(a=>a.id==='default').length,1);
+    assert.equal(agents.find(a=>a.id==='auth-worker').accountKey,'default');
+    assert.equal(bodies.filter(r=>/send|input|resume|turn/.test(r.path)).length,0,'Sign-in must not send a task');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:'Chat settings',exact:true}).click();
+    await page.getByRole('dialog',{name:'Chat settings',exact:true}).locator('.account-picker').first().click();
+    await page.getByRole('menuitem',{name:/Manage accounts/}).click();
+    await page.getByRole('dialog',{name:'Accounts',exact:true}).locator('[data-account=default]').getByRole('button',{name:'Sign in again',exact:true}).click();
+    await page.getByRole('dialog',{name:'Sign in to personal@example.com',exact:true}).getByText('Sign-in restored. Send a new instruction to continue.',{exact:false}).waitFor();
+    assert.equal(logins.length,1,'Accounts opens the same sign-in receipt');
+    await page.setViewportSize({width:390,height:844});
+    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+    await page.screenshot({path:join(evidence,'codex-sign-in-mobile.png')});
+    assert.deepEqual(errors,[]);
+    await browser.close();
+    await new Promise(resolve=>server.close(resolve));
+    console.log('PASS Codex worker sign-in from Claude lead, exact retry, reload, native confirmation, no task replay, mobile');
+    console.log(`REAUTH evidence=${evidence}`);
+    process.exit(0);
+  }
+
   if (process.env.SETTINGS_BENCHMARK) {
     const benchAgent = agents.find((agent) => agent.id === "claude-chat");
     await page

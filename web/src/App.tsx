@@ -81,7 +81,8 @@ import { ExecutionSettings } from "./components/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
-import ClaudeSignInNotice from "./components/ClaudeSignInNotice";
+import AccountSignInNotice from "./components/AccountSignInNotice";
+import CodexSignIn from "./components/CodexSignIn";
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import RadioChat from "./components/RadioChat";
@@ -156,6 +157,7 @@ export default function App() {
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
+  const [codexLoginKey, setCodexLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
@@ -1615,11 +1617,18 @@ export default function App() {
               onReady={accounts.refresh}
             />
           )}
-        <ClaudeSignInNotice
-          account={selectedAccount}
-          errors={[agent?.error, agent?.nativeStatus?.error, error]}
-          onSignIn={setClaudeLoginKey}
-        />
+        {codexLoginKey && accounts.data.accounts.some((item) => item.id === codexLoginKey) && (
+          <CodexSignIn account={accounts.data.accounts.find((item) => item.id === codexLoginKey)!}
+            state={accounts} onClose={() => setCodexLoginKey("")} />
+        )}
+        {accounts.data.accounts.filter((account) => account.id === accountKey || agents.some((item) =>
+          item.rootId === lead?.id && !item.deletedAt && (item.accountKey || "default") === account.id && item.status === "failed",
+        )).map((account) => (
+          <AccountSignInNotice key={account.id} account={account}
+            errors={agents.filter((item) => (item.id === agent?.id || item.rootId === lead?.id) &&
+              (item.accountKey || "default") === account.id).flatMap((item) => [item.error, item.nativeStatus?.error])}
+            onSignIn={account.provider === "claude" ? setClaudeLoginKey : setCodexLoginKey} />
+        ))}
         {error && (
           <div id="error" role="alert">
             {error}

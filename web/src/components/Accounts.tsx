@@ -2,6 +2,7 @@ import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
 import ClaudeSignIn from "./ClaudeSignIn";
+import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { accountLimits } from "../accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
@@ -359,6 +360,7 @@ export default function Accounts({
   const [home, setHome] = useState("");
   const [adding, setAdding] = useState(false);
   const [claudeLogin, setClaudeLogin] = useState<Account | null>(null);
+  const [codexLogin, setCodexLogin] = useState<Account | null>(null);
   const [transferChoice, setTransferChoice] = useState<{
     target: Account;
     sourceProvider: string;
@@ -371,7 +373,7 @@ export default function Accounts({
   );
   const actionLock = useRef(false);
   const childModalOpen =
-    opened || !!transferChoice || !!disconnectChoice || !!claudeLogin;
+    opened || !!transferChoice || !!disconnectChoice || !!claudeLogin || !!codexLogin;
   useEffect(() => {
     onModalOpenChange?.(childModalOpen);
     return () => onModalOpenChange?.(false);
@@ -418,6 +420,7 @@ export default function Accounts({
   }, [opened, state.refresh]);
   return (
     <>
+      {codexLogin && <CodexSignIn account={codexLogin} state={state} onClose={() => setCodexLogin(null)} />}
       {claudeLogin && (
         <ClaudeSignIn
           key={claudeLogin.id}
@@ -672,6 +675,11 @@ export default function Accounts({
                         onSaved={state.setData}
                       />
                     </>
+                  )}
+                  {account.provider !== "claude" && account.accountId && (
+                    <Button variant="subtle" size="compact-xs" onClick={() => setCodexLogin(account)}>
+                      Sign in again
+                    </Button>
                   )}
                   {state.data.supportsDisconnect && (
                     <Button

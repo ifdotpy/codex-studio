@@ -90,6 +90,13 @@ then paste the confirmation code in Studio. Use the displayed account email.
 Studio checks the account identity before it reports success. It does not resend
 failed chat messages.
 
+For an expired Codex session, select **Sign in to Codex** in the chat notice
+or **Sign in again** in Accounts. The notice also identifies failed workers
+on a different account from their lead. Use the displayed account email.
+Studio uses the same profile and waits for native sign-in completion. A saved
+token alone does not confirm success. Existing chats and worker assignments
+keep their account. Sign-in does not resend tasks or restart active agents.
+
 Codex model settings include a separate **Daybreak** switch. Studio checks the
 selected account's native model grants before it enables the mode. A change
 during an active turn applies to the next turn. Subagent defaults have their

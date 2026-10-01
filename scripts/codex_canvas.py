@@ -1129,7 +1129,7 @@ def make_server(canvas, port=0, public_origin=None):
                         runtime.accounts.reconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login":
-                        return self.send(runtime.accounts.start_login(runtime, body.get("request_id")))
+                        return self.send(runtime.accounts.start_login(runtime, body.get("request_id"), body.get("account_key")))
                     if self.path == "/api/claude/profiles":
                         from codex_claude_controls import profile
                         return self.send(profile(runtime, body))
