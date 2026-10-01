@@ -151,6 +151,48 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(self.runtime.agent(self.key), before)
         self.read_calls_only()
 
+    def test_queued_restart_wait_reads_saved_turn_after_new_reservation_clears_it(self):
+        for scope in ('local', 'native'):
+            with self.subTest(scope=scope):
+                self.a = self.update(turnId='lost-turn', lastCompletedTurn=None,
+                    lastCompletedTurnStatus=None)
+                self.queued_restart_wait()
+                saved_turn = self.a['turnId']
+                self.a = self.update(turnId=None,
+                    contextRepairWait={**self.a['contextRepairWait'], 'scope': scope})
+                attempt = dict(self.a['startAttempt'])
+                self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'reconciled')
+                actor = self.runtime.agent(self.key)
+                self.assertEqual(actor['lastCompletedTurn'], saved_turn)
+                self.assertEqual(actor['restartRecovery']['stage'], 'finished')
+                self.assertEqual(actor['startAttempt'], attempt)
+                with self.runtime.db() as db:
+                    self.assertEqual(tuple(db.execute(
+                        "SELECT status,turn_id FROM runtime_events WHERE id='queued-input'").fetchone()),
+                        ('pending', None))
+                self.read_calls_only()
+
+    def test_cleared_turn_wait_records_the_exact_saved_active_turn(self):
+        from codex_context_repair import claim_context_wait
+        self.queued_restart_wait()
+        saved_turn = self.a['turnId']
+        self.update(turnId=None)
+        self.server.native['status']['type'] = 'active'
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        with self.runtime.lock, self.runtime.db() as db:
+            actor = self.runtime.agent(self.key, db)
+            self.assertEqual(actor['connectionCheck']['turnId'], saved_turn)
+            self.assertTrue(claim_context_wait(self.runtime, db, actor)['waiting'])
+            self.assertEqual(actor['error'],
+                'The native session was active at the last check. Your message remains queued.')
+        self.read_calls_only()
+
+    def test_cleared_turn_wait_without_saved_turn_is_not_recovered(self):
+        self.queued_restart_wait()
+        self.update(turnId=None, restartRecovery={**self.a['restartRecovery'], 'turnId': None})
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        self.assertEqual(self.server.calls, [])
+
     def test_queued_restart_wait_rejects_stale_scope_and_preserves_pause(self):
         self.queued_restart_wait()
         original = self.a

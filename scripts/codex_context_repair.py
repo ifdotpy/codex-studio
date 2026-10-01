@@ -375,7 +375,9 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     if restart_same and restart.get('stage') in {'pending', 'held'}:
         checked = a.get('connectionCheck') or {}
         if (checked.get('nativeState') == 'active'
-                and all(checked.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId', 'turnId'))):
+                and all(checked.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId'))
+                and restart.get('turnId') and checked.get('turnId') == restart['turnId']
+                and a.get('turnId') in (None, restart['turnId'])):
             raise _waiting('The native session was active at the last check. Your message remains queued.')
         raise _waiting('Context repair waits for the existing native recovery receipt')
     attempt = a.get('startAttempt') or {}

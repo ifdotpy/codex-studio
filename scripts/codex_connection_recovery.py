@@ -53,10 +53,11 @@ def queued_restart_eligible(agent):
                 and not agent.get('inFlight') and not agent.get('deletedAt')
                 and not agent.get('nativeFailureHold') and not native_thread_block(agent)
                 and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
-                and agent.get('threadId') and agent.get('turnId')
+                and agent.get('threadId') and marker.get('turnId')
+                and agent.get('turnId') in (None, marker['turnId'])
                 and isinstance(agent.get('error'), str) and agent['error'] in errors
                 and wait.get('error') == agent['error']
-                and wait.get('scope') == 'local' and wait.get('source') == source
+                and wait.get('scope') in {'local', 'native'} and wait.get('source') == source
                 and attempt.get('id') and attempt.get('submitted') is False
                 and attempt.get('epoch') == agent.get('epoch')
                 and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
@@ -65,7 +66,7 @@ def queued_restart_eligible(agent):
                 and not attempt.get('activeAtReservation')
                 and not attempt.get('turnId') and not attempt.get('observedTurnId')
                 and marker.get('stage') == 'pending' and marker.get('autoWake')
-                and all(marker.get(k) == agent.get(k) for k in ('epoch', 'accountKey', 'threadId', 'turnId'))
+                and all(marker.get(k) == agent.get(k) for k in ('epoch', 'accountKey', 'threadId'))
                 and (agent.get('contextRepair') or {}).get('phase') not in {'preparing', 'submitted', 'unknown', 'ready'})
 
 
@@ -93,7 +94,9 @@ def recover(runtime, key, *, automatic=False):
         if thread.get('status', {}).get('type') not in {'idle', 'notLoaded'}:
             return record_check(runtime, expected, connection, server, thread.get('status', {}).get('type'))
         from codex_turn_recovery import read_native_turn
-        turn = read_native_turn(server, agent['threadId'], agent['turnId'])
+        recovery_turn = (agent['restartRecovery']['turnId'] if queued_restart_eligible(agent)
+                         else agent['turnId'])
+        turn = read_native_turn(server, agent['threadId'], recovery_turn)
         thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
         if thread.get('id') != agent['threadId']:
             raise ValueError('Native thread identity changed')
@@ -122,7 +125,7 @@ def restore_queued_restart(runtime, expected, connection, server, turn):
         if not current(runtime, db, expected, connection, server):
             return {'status': 'superseded'}
         agent = runtime.agent(expected['id'], db)
-        if (not queued_restart_eligible(agent) or turn.get('id') != agent.get('turnId')
+        if (not queued_restart_eligible(agent) or turn.get('id') != agent['restartRecovery']['turnId']
                 or turn.get('status') not in {'completed', 'failed', 'interrupted'}
                 or runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected')):
             return {'status': 'unconfirmed'}
@@ -204,6 +207,8 @@ def record_check(runtime, expected, connection, server, native_state):
         # unknown turn, its original error, and all delivery permissions intact.
         agent['connectionCheck'] = {field: expected[field] for field in
                                     ('epoch', 'accountKey', 'threadId', 'turnId')}
+        if queued_restart_eligible(agent):
+            agent['connectionCheck']['turnId'] = agent['restartRecovery']['turnId']
         agent['connectionCheck'].update(at=time.time(), previousError=expected['error'],
                                          nativeState=native_state)
         runtime.put(db, 'agents', agent)
