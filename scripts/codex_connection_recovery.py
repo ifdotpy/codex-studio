@@ -45,7 +45,8 @@ def queued_restart_eligible(agent):
     wait = agent.get('contextRepairWait') or {}
     attempt = agent.get('startAttempt') or {}
     marker = agent.get('restartRecovery') or {}
-    error = 'Context repair waits for the existing native recovery receipt'
+    errors = {'Context repair waits for the existing native recovery receipt',
+              'The native session was active at the last check. Your message remains queued.'}
     source = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
     source['attemptId'] = attempt.get('id')
     return bool(agent.get('status') == 'queued' and agent.get('autoWake')
@@ -53,7 +54,8 @@ def queued_restart_eligible(agent):
                 and not agent.get('nativeFailureHold') and not native_thread_block(agent)
                 and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
                 and agent.get('threadId') and agent.get('turnId')
-                and agent.get('error') == error and wait.get('error') == error
+                and isinstance(agent.get('error'), str) and agent['error'] in errors
+                and wait.get('error') == agent['error']
                 and wait.get('scope') == 'local' and wait.get('source') == source
                 and attempt.get('id') and attempt.get('submitted') is False
                 and attempt.get('epoch') == agent.get('epoch')

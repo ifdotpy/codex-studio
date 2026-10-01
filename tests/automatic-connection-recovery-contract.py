@@ -133,11 +133,16 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
 
     def test_queued_restart_wait_retains_unknown_input_and_active_turn(self):
+        from codex_context_repair import claim_context_wait
         self.queued_restart_wait()
         self.server.native['status']['type'] = 'active'
         result = recover(self.runtime, self.key, automatic=True)
         self.assertEqual(result['status'], 'unconfirmed')
         self.assertEqual(self.runtime.agent(self.key)['startAttempt'], self.a['startAttempt'])
+        with self.runtime.lock, self.runtime.db() as db:
+            actor = self.runtime.agent(self.key, db)
+            self.assertTrue(claim_context_wait(self.runtime, db, actor)['waiting'])
+            self.assertEqual(actor['error'], 'The native session was active at the last check. Your message remains queued.')
         self.server.native['status']['type'] = 'idle'
         with self.runtime.db() as db:
             db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='queued-input'")
