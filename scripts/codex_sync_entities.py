@@ -148,10 +148,11 @@ def ensure_tables(db):
     """)
     if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key=?",
                       (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone():
-        db.execute("""INSERT INTO sync_entity_meta(key,value)
-            SELECT ?,CAST(COUNT(*) AS TEXT) FROM sync_entities
-            WHERE deleted=1 AND collection NOT LIKE 'transcript:%'""",
-            (ENTITY_TOMBSTONE_COUNT_KEY,))
+        # executescript commits by itself. A plain execute() would leave this
+        # connection holding an open write transaction that blocks other writers.
+        db.executescript(f"""INSERT OR IGNORE INTO sync_entity_meta(key,value)
+            SELECT '{ENTITY_TOMBSTONE_COUNT_KEY}',CAST(COUNT(*) AS TEXT) FROM sync_entities
+            WHERE deleted=1 AND collection NOT LIKE 'transcript:%';""")
     # This index is built once by SQLite at startup and supports the bounded
     # newest-event pull. IF NOT EXISTS avoids rebuilding it on every start.
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
