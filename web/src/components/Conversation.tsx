@@ -30,7 +30,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { api, errorText, save, saved } from "../api";
+import { api, errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
@@ -1278,7 +1278,9 @@ export default function Conversation(p: {
                       top: toolsMenuPosition.top,
                       width: toolsMenuPosition.width,
                     }
-                  : undefined
+                  : compactHeaderTools
+                    ? { visibility: "hidden" }
+                    : undefined
               }
             >
               {!p.room && p.id && (

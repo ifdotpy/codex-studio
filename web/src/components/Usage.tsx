@@ -266,7 +266,11 @@ export default function Usage({
       setSessionCostState((previous) =>
         previous.scope === costScope
           ? { ...previous, updating: true }
-          : { scope: costScope, value: peekSessionCost(stateDir, rootId), updating: true },
+          : {
+              scope: costScope,
+              value: peekSessionCost(stateDir, rootId),
+              updating: true,
+            },
       );
       try {
         const value = await api<Json>(
@@ -277,7 +281,10 @@ export default function Usage({
         if (!active) return;
         if (value.pricingState === "loading") {
           setSessionCostState((previous) => {
-            const cached = previous.scope === costScope ? previous.value : peekSessionCost(stateDir, rootId);
+            const cached =
+              previous.scope === costScope
+                ? previous.value
+                : peekSessionCost(stateDir, rootId);
             return {
               scope: costScope,
               value: cached || value,
@@ -298,7 +305,10 @@ export default function Usage({
         if (active)
           setSessionCostState((previous) => ({
             scope: costScope,
-            value: previous.scope === costScope ? previous.value : peekSessionCost(stateDir, rootId),
+            value:
+              previous.scope === costScope
+                ? previous.value
+                : peekSessionCost(stateDir, rootId),
             updating: false,
           }));
       } finally {
@@ -404,7 +414,9 @@ export default function Usage({
           .filter(Boolean)
           .join("\n")}
       >
-        {sessionCostUpdating && <span className="session-cost-updating">Updating · </span>}
+        {sessionCostUpdating && (
+          <span className="session-cost-updating">Updating · </span>
+        )}
         {sessionCost?.pricingState === "loading"
           ? "Loading prices"
           : sessionCost

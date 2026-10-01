@@ -155,6 +155,10 @@
 }
 
 @media (max-width: 760px) {
+  #conversation #composer #message {
+    font-size: max(16px, var(--studio-main-font-size));
+  }
+
   .workspace {
     --studio-content-width-ratio: 1;
   }

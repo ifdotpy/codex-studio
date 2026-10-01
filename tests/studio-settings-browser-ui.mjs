@@ -76,6 +76,13 @@ try {
       '.agent-panel[aria-label="Agent progress"][data-fit="yes"] .agent-panel-current.progress-markdown',
     )
     .waitFor();
+  const settleLayout = async () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
   const captureBaselineGeometry = async () =>
     page.evaluate(() => {
       const rect = (selector) => {
@@ -93,21 +100,28 @@ try {
         composer: rect("#conversation #composer"),
       };
     });
+  await settleLayout();
   console.log(
     "baseline-1440x960",
     JSON.stringify(await captureBaselineGeometry()),
   );
+  await page.screenshot({ path: join(evidence, "baseline-1440x960.png") });
   await page.setViewportSize({ width: 1280, height: 800 });
+  await settleLayout();
   console.log(
     "baseline-1280x800",
     JSON.stringify(await captureBaselineGeometry()),
   );
+  await page.screenshot({ path: join(evidence, "baseline-1280x800.png") });
   await page.setViewportSize({ width: 390, height: 844 });
+  await settleLayout();
   console.log(
     "baseline-390x844",
     JSON.stringify(await captureBaselineGeometry()),
   );
+  await page.screenshot({ path: join(evidence, "baseline-390x844.png") });
   await page.setViewportSize({ width: 1440, height: 960 });
+  await settleLayout();
 
   const openStudioSettings = async () => {
     await page
@@ -189,7 +203,11 @@ try {
   await settings
     .getByLabel("Studio font family", { exact: true })
     .selectOption("georgia");
-  for (const selector of [".chat-row .row-copy strong", "#messages .prose"]) {
+  for (const selector of [
+    ".chat-row .row-copy strong",
+    "#messages .prose",
+    "#message",
+  ]) {
     assert.match(
       await page
         .locator(selector)
@@ -226,6 +244,10 @@ try {
   await page.waitForFunction(
     () => document.documentElement.dataset.mantineColorScheme === "dark",
   );
+  await settleLayout();
+  await page.screenshot({
+    path: join(evidence, "settings-max-font-1440x960.png"),
+  });
 
   const shortcut = settings.getByLabel("Toggle sidebar shortcut", {
     exact: true,
@@ -348,6 +370,7 @@ try {
   assert.equal(await composer.inputValue(), draft);
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await settleLayout();
   const mobileSettings = await openStudioSettings();
   await page.keyboard.press("Escape");
   await mobileSettings.waitFor({ state: "hidden" });
@@ -385,6 +408,7 @@ try {
   assert.equal(await composer.inputValue(), draft);
 
   await page.setViewportSize({ width: 1440, height: 960 });
+  await settleLayout();
   const reopen = await openStudioSettings();
   await page.keyboard.press("Escape");
   await reopen.waitFor({ state: "hidden" });

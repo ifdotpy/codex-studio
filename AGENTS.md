@@ -22,3 +22,14 @@ live model request or a real reset-credit redemption.
 
 Commit named files. Preserve unrelated work and build outputs. Do not publish the
 repository or change its license without explicit authorization.
+
+## Code checks
+
+The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
+`npm ci`. Activate the required pre-commit hook once per clone with
+`git config --local core.hooksPath .githooks`. The hook checks staged JavaScript,
+TypeScript, CSS, HTML, Markdown, YAML, and JSON from the Git index, including
+files outside `web/`; it must not rewrite the index or working files. Run
+`npm run test:pre-commit` to verify the hook's staged-content behavior.
+Use `npm run lint:all` and `npm run format:check:all` for whole-repository audits;
+append explicit paths after `--` when checking selected files.

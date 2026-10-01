@@ -1,5 +1,14 @@
 # Codex Studio
 
+## Change Contract
+
+The repository pre-commit hook checks staged JavaScript, TypeScript, CSS, HTML,
+Markdown, YAML, and JSON. It reads the Git index, leaves staged and unstaged
+files untouched, and requires locally installed tools. Oxlint and Oxfmt
+configuration belongs to [`.oxlintrc.json`](.oxlintrc.json) and
+[`.oxfmtrc.json`](.oxfmtrc.json); `npm run test:pre-commit` exercises the hook
+against staged-content fixtures.
+
 A desktop workspace for one lead agent and many workers. The application uses
 Codex app-server for model sessions, tools, and permissions. It adds durable
 orchestration, agent messages, command monitors, and user replies.
@@ -49,6 +58,8 @@ The desktop package currently targets macOS on Apple silicon.
 From this repository:
 
 ```sh
+npm ci
+git config --local core.hooksPath .githooks
 python3 scripts/install-cli.py
 npm --prefix web ci
 npm --prefix web run build
@@ -56,6 +67,12 @@ npm --prefix desktop ci
 (cd scripts/claude_bridge && npm --prefix . ci --ignore-scripts --omit=optional)
 npm --prefix desktop start
 ```
+
+The root `npm ci` installs Oxlint and Oxfmt. Set `core.hooksPath` once per clone
+to activate the mandatory staged-content checks. The hook does not download
+dependencies; install them before committing.
+For full-repository audits, run `npm run lint:all` and
+`npm run format:check:all`. Append paths after `--` to check selected files.
 
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
@@ -229,13 +246,13 @@ start voice again after their current work finishes.
 
 ## Source and contracts
 
-| Path | Contents |
-|---|---|
-| `web/` | React, TypeScript, Mantine, Vite |
-| `desktop/` | Electron host, native bridge, package tools |
+| Path                            | Contents                                                 |
+| ------------------------------- | -------------------------------------------------------- |
+| `web/`                          | React, TypeScript, Mantine, Vite                         |
+| `desktop/`                      | Electron host, native bridge, package tools              |
 | [`scripts/`](scripts/README.md) | Python server, command tools, and component-local checks |
-| `prompts/` | Runtime worker instructions |
-| `tests/` | Backend, protocol, browser, and process contracts |
+| `prompts/`                      | Runtime worker instructions                              |
+| `tests/`                        | Backend, protocol, browser, and process contracts        |
 
 - [Orchestration](ORCHESTRATION.md): managed agents, messages, monitors, and state.
 - [Command guide](CLI.md): waves, steering, and CLI usage.
@@ -308,6 +325,9 @@ The sidebar and Team panel can collapse at any window width.
 Prompt history, context usage, and account limits are in the chat header.
 When space is limited or text is enlarged, open **Conversation tools** to access
 them. Agent progress stays visible above the composer.
+On narrow screens, **Chat actions** also opens Chat settings and Team. The agent
+mode switch is inside Chat settings on mobile. Mobile input text stays at least
+16px; larger selected text sizes apply normally.
 **Chat actions** contains agent tasks, your tasks, changes, plan, rules, search, and background tasks.
 **Search chats** searches full history. **Filter projects and chats** filters the sidebar list.
 The search control above the transcript searches the current chat.
