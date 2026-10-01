@@ -15,9 +15,10 @@ const phase =
   process.argv.find((arg) => arg.startsWith("--phase="))?.split("=")[1] ||
   "after";
 const verify = phase === "after";
+// Screenshots and geometry stay outside the repository.
 const evidence = join(
-  repo,
-  "docs/verification/2026-10-01-mobile-usability",
+  process.env.STUDIO_EVIDENCE_DIR ||
+    join(tmpdir(), "studio-mobile-usability-evidence"),
   phase,
 );
 await mkdir(evidence, { recursive: true });
