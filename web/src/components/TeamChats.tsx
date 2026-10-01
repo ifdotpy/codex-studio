@@ -7,7 +7,7 @@ import {
   TextInput,
   UnstyledButton,
 } from "@mantine/core";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import { save, saved } from "../api";
 import { useMessages } from "../hooks";
@@ -130,7 +130,18 @@ export default function TeamChats({
         (b.lastMessage?.created || b.updated) -
         (a.lastMessage?.created || a.updated),
     );
-  const { items, loaded, before, older, notice, reload } = useMessages(
+  const {
+    items,
+    loaded,
+    before,
+    after,
+    older,
+    newer,
+    setPageAnchor,
+    showLatest,
+    notice,
+    reload,
+  } = useMessages(
     !showYou && room ? room.id : null,
     "room",
     false,
@@ -156,20 +167,6 @@ export default function TeamChats({
     useConversationScroll(`${scope}:messages:${selected}`, loaded);
   const follow = useFollowState(subscribeFollow, getFollow);
   const events = [
-    ...(showYou ? [] : items).map((message) => ({
-      id: `message:${message.id}`,
-      created: message.created || 0,
-      content: (
-        <article className="team-message" data-message={message.id}>
-          <div className="chat-message-author">
-            <AgentAvatar id={message.sender || "agent"} size={24} />
-            <strong>{message.senderName || "Agent"}</strong>
-          </div>
-          <StreamingText text={message.text || ""} agentId={message.sender} />
-          <MessageDate at={message.created} />
-        </article>
-      ),
-    })),
     ...(showYou ? data.runtime.requests : [])
       .filter((request) => request.status === "pending" || !request.status)
       .map((request) => ({
@@ -205,6 +202,90 @@ export default function TeamChats({
       ),
     })),
   ].sort((a, b) => a.created - b.created);
+  const heights = useRef(new Map<string, number>());
+  const [virtualRange, setVirtualRange] = useState({
+    start: 0,
+    end: 40,
+    top: 0,
+    bottom: 0,
+  });
+  useLayoutEffect(() => {
+    const root = scroll.current;
+    if (!root || showYou) return;
+    const update = () => {
+      const estimate = (message: (typeof items)[number]) =>
+        heights.current.get(message.id) ||
+        Math.max(112, Math.ceil((message.text?.length || 0) / 78) * 23 + 82);
+      const offsets = new Array(items.length + 1);
+      offsets[0] = 0;
+      for (let index = 0; index < items.length; index++)
+        offsets[index + 1] = offsets[index] + estimate(items[index]);
+      const top = root.scrollTop;
+      const bottom = top + root.clientHeight;
+      let start = 0;
+      while (start < items.length && offsets[start + 1] < top) start++;
+      let end = start;
+      while (end < items.length && offsets[end] < bottom) end++;
+      start = Math.max(0, start - 8);
+      end = Math.min(items.length, Math.max(start + 1, end + 8));
+      const next = {
+        start,
+        end,
+        top: offsets[start],
+        bottom: offsets.at(-1)! - offsets[end],
+      };
+      setVirtualRange((old) =>
+        old.start === next.start &&
+        old.end === next.end &&
+        old.top === next.top &&
+        old.bottom === next.bottom
+          ? old
+          : next,
+      );
+    };
+    update();
+    root.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const node = entry.target as HTMLElement;
+        if (node === root) {
+          changed = true;
+          continue;
+        }
+        const id = node.dataset.roomRow;
+        if (!id) continue;
+        const size = Math.ceil(entry.contentRect.height);
+        if (size && heights.current.get(id) !== size) {
+          heights.current.set(id, size);
+          changed = true;
+        }
+      }
+      if (changed) update();
+    });
+    observer.observe(root);
+    root
+      .querySelectorAll<HTMLElement>("[data-room-row]")
+      .forEach((row) => observer.observe(row));
+    return () => {
+      observer.disconnect();
+      root.removeEventListener("scroll", update);
+    };
+  }, [items, showYou, loaded, virtualRange.start, virtualRange.end]);
+  const handleScroll = () => {
+    onScroll();
+    if (showYou) return;
+    const root = scroll.current;
+    if (!root) return;
+    const bounds = root.getBoundingClientRect();
+    const anchor = Array.from(
+      root.querySelectorAll<HTMLElement>("[data-message]"),
+    ).find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > bounds.top && rect.top < bounds.bottom;
+    });
+    setPageAnchor(anchor?.dataset.message || null);
+  };
   useEffect(() => {
     if ((!showYou && !loaded) || !focusItemId) return;
     const target = content.current?.querySelector(
@@ -327,8 +408,9 @@ export default function TeamChats({
         </header>
         <div
           className="unified-message-scroll"
+          data-room-retained={!showYou ? items.length : undefined}
           ref={scroll}
-          onScroll={onScroll}
+          onScroll={handleScroll}
         >
           <div ref={content}>
             {!showYou && before != null && (
@@ -343,6 +425,18 @@ export default function TeamChats({
                 Earlier messages
               </Button>
             )}
+            {!showYou && after != null && (
+              <Button
+                variant="subtle"
+                size="xs"
+                onClick={() => {
+                  setFollow(false);
+                  void newer().catch((error) => notify(String(error)));
+                }}
+              >
+                Later messages
+              </Button>
+            )}
             {!showYou && !loaded && <Loader size="sm" />}
             {!showYou && notice && (
               <p role="alert">
@@ -352,21 +446,58 @@ export default function TeamChats({
                 </Button>
               </p>
             )}
-            {events.map((event) => (
-              <div key={event.id} data-feed-item={event.id}>
-                {event.content}
-              </div>
-            ))}
-            {(showYou || loaded) && !events.length && (
-              <p className="team-chat-empty">No messages yet.</p>
+            {showYou ? (
+              events.map((event) => (
+                <div key={event.id} data-feed-item={event.id}>
+                  {event.content}
+                </div>
+              ))
+            ) : (
+              <>
+                <div aria-hidden="true" style={{ height: virtualRange.top }} />
+                {items
+                  .slice(virtualRange.start, virtualRange.end)
+                  .map((message) => (
+                    <div key={message.id} data-room-row={message.id}>
+                      <article
+                        className="team-message"
+                        data-message={message.id}
+                      >
+                        <div className="chat-message-author">
+                          <AgentAvatar
+                            id={message.sender || "agent"}
+                            size={24}
+                          />
+                          <strong>{message.senderName || "Agent"}</strong>
+                        </div>
+                        <StreamingText
+                          text={message.text || ""}
+                          agentId={message.sender}
+                        />
+                        <MessageDate at={message.created} />
+                      </article>
+                    </div>
+                  ))}
+                <div
+                  aria-hidden="true"
+                  style={{ height: virtualRange.bottom }}
+                />
+              </>
             )}
+            {(showYou || loaded) &&
+              !(showYou ? events.length : items.length) && (
+                <p className="team-chat-empty">No messages yet.</p>
+              )}
           </div>
         </div>
         {!follow && (
           <Button
             className="team-latest"
             size="compact-xs"
-            onClick={() => setFollow(true)}
+            onClick={() => {
+              showLatest();
+              setFollow(true);
+            }}
           >
             Latest messages
           </Button>
