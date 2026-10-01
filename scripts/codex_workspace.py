@@ -1074,11 +1074,6 @@ class WorkspaceMixin:
                         a["workspaceOperation"] = None
                         self.put(db, "agents", a)
                 return prior
-            current_account = self.accounts.get(a.get("accountKey", "default"))
-            if current_account.get("deleted"):
-                raise ValueError("This account was deleted. Select another account before creating a branch")
-            if current_account.get("disconnected"):
-                raise ValueError("Reconnect this account before creating a branch")
             operation = self._workspace_operation(db, operation_id)
             resume_local = False
             retry_failed = False
@@ -1092,20 +1087,27 @@ class WorkspaceMixin:
                     resume_local = True
                 elif operation.get("phase") == "failed":
                     retry_failed = True
-                    operation.update(
-                        phase="provider_pending",
-                        provider=None,
-                        result=None,
-                        error=None,
-                        updated=time.time(),
-                    )
-                    self._put_workspace_operation(db, operation)
-                    a["workspaceOperation"] = "branch"
-                    self.put(db, "agents", a)
                 elif operation.get("phase") in self.WORKSPACE_OPERATION_ACTIVE:
                     raise ValueError(
                         "Workspace recovery is required before retrying this operation"
                     )
+            if not resume_local:
+                current_account = self.accounts.get(a.get("accountKey", "default"))
+                if current_account.get("deleted"):
+                    raise ValueError("This account was deleted. Select another account before creating a branch")
+                if current_account.get("disconnected"):
+                    raise ValueError("Reconnect this account before creating a branch")
+            if retry_failed:
+                operation.update(
+                    phase="provider_pending",
+                    provider=None,
+                    result=None,
+                    error=None,
+                    updated=time.time(),
+                )
+                self._put_workspace_operation(db, operation)
+                a["workspaceOperation"] = "branch"
+                self.put(db, "agents", a)
             from codex_transcript_history import resolve_item
             row = resolve_item(db, key, data.get("message_id"))
             item = json.loads(row["record"])
@@ -1137,6 +1139,7 @@ class WorkspaceMixin:
                 self.put(db, "agents", a)
             lead_id = operation["leadId"]
         # A branch starts a new team, without the source team's exception.
+        provider_ready = resume_local
         try:
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
@@ -1203,6 +1206,7 @@ class WorkspaceMixin:
                 except Exception as error:
                     self._require_workspace_recovery(operation_id, key, error)
                     raise
+                provider_ready = True
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
             self.checked_actor_in_own_db(key)
@@ -1218,6 +1222,7 @@ class WorkspaceMixin:
                 defer=True,
                 draft=True,
                 _validate_only=True,
+                _accepted_provider_operation=provider_ready,
             )
             with self.lock, self.db() as db:
                 self._assert_workspace_source(operation, self.agent(key, db))
