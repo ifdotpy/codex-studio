@@ -9,6 +9,7 @@ import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
 import { onResume } from "./resume";
 import {
   cacheTranscript,
+  clearTranscript,
   peekTranscript,
   subscribeTranscript,
 } from "./transcriptCache";
@@ -170,21 +171,35 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
         : scope;
   invalidations.set(resync, generationScope);
   if (!stopInvalidations) {
+    const fallbackPollMs = 3000;
+    const heartbeatMs = 1000;
+    const coordinatorTimeoutMs = 3500;
+    let stopped = false;
     let source: EventSource | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let channel: BroadcastChannel | undefined;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let watchdogTimer: ReturnType<typeof setInterval> | undefined;
     let lastGenerations: Record<string, number> | undefined;
     let lastWorkspaceId: string | undefined;
     let pendingScopes = new Set<string>();
     let pendingFullRefresh = false;
     let openedStream = false;
+    let workspaceId: string | undefined;
+    let isOwner = false;
+    let lastHeartbeatAt = 0;
+    let ownerLockPending = false;
+    let releaseOwnerLock: (() => void) | undefined;
     const available = () => !document.hidden && navigator.onLine !== false;
     const notify = (changed?: Set<string>) => {
       if (!available()) return;
-      if (changed) for (const scope of changed) pendingScopes.add(scope);
+      if (changed)
+        for (const changedScope of changed) pendingScopes.add(changedScope);
       else pendingFullRefresh = true;
-      if (timer !== undefined) return;
-      timer = setTimeout(() => {
-        timer = undefined;
+      if (flushTimer !== undefined) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined;
         const fullRefresh = pendingFullRefresh;
         const scopes = pendingScopes;
         pendingFullRefresh = false;
@@ -197,7 +212,8 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
     const applyGenerations = (current: Record<string, number>) => {
       const changed = new Set(
         Object.keys(current).filter(
-          (scope) => lastGenerations?.[scope] !== current[scope],
+          (changedScope) =>
+            lastGenerations?.[changedScope] !== current[changedScope],
         ),
       );
       lastGenerations = current;
@@ -216,20 +232,22 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
         generations &&
         Object.keys(generations).sort().join(",") === expected.join(",") &&
         expected.every(
-          (scope) =>
-            Number.isSafeInteger(generations[scope]) && generations[scope] >= 0,
+          (changedScope) =>
+            Number.isSafeInteger(generations[changedScope]) &&
+            generations[changedScope] >= 0,
         );
-      if (!valid) {
+      if (!valid || (workspaceId && value.workspaceId !== workspaceId)) {
         lastGenerations = undefined;
         lastWorkspaceId = undefined;
         notify();
-        return;
+        return false;
       }
       if (
         (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
         (lastGenerations &&
           expected.some(
-            (scope) => generations[scope] < lastGenerations![scope],
+            (changedScope) =>
+              generations[changedScope] < lastGenerations![changedScope],
           ))
       ) {
         lastGenerations = undefined;
@@ -237,18 +255,76 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
       }
       lastWorkspaceId = value.workspaceId;
       applyGenerations(generations!);
+      return true;
     };
-    const close = () => {
+    const broadcast = (message: Record<string, unknown>) => {
+      try {
+        channel?.postMessage({ protocol: 2, ...message, workspaceId });
+      } catch {
+        // A closed channel is treated as a lost coordinator; polling recovers it.
+        releaseStreamLease();
+        startFallbackPolling();
+      }
+    };
+    const stopFallbackPolling = () => {
+      if (pollTimer !== undefined) clearInterval(pollTimer);
+      pollTimer = undefined;
+    };
+    const pollGenerations = () => {
+      if (!available()) return;
+      void api<{
+        protocol: number;
+        workspaceId: string;
+        generations: Record<string, number>;
+      }>("/api/sync/generations")
+        .then((value) => {
+          if (stopped) return;
+          const accepted = applyGenerationState(value);
+          if (isOwner)
+            broadcast(
+              accepted
+                ? { kind: "generations", ...value }
+                : { kind: "invalidate" },
+            );
+        })
+        .catch(() => {});
+    };
+    const startFallbackPolling = () => {
+      if (pollTimer !== undefined || stopped) return;
+      pollGenerations();
+      pollTimer = setInterval(pollGenerations, fallbackPollMs);
+    };
+    const publishHeartbeat = () => {
+      if (!isOwner || stopped || !available()) return;
+      broadcast({ kind: "heartbeat", generations: lastGenerations });
+    };
+    const closeSource = () => {
       source?.close();
       source = undefined;
-      clearTimeout(timer);
-      timer = undefined;
+    };
+    const releaseStreamLease = () => {
+      isOwner = false;
+      closeSource();
+      const release = releaseOwnerLock;
+      releaseOwnerLock = undefined;
+      release?.();
+      if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+      stopFallbackPolling();
     };
     const connect = () => {
-      if (!available() || source) return;
-      source = new EventSource("/api/sync/stream?protocol=2");
+      if (!available() || !isOwner || source) return;
+      try {
+        source = new EventSource("/api/sync/stream?protocol=2");
+      } catch {
+        // The elected lock holder already polls the compact generation row.
+        return;
+      }
       source.onopen = () => {
-        if (openedStream) notify();
+        if (openedStream) {
+          notify();
+          broadcast({ kind: "invalidate" });
+        }
         openedStream = true;
       };
       source.onmessage = (event) => {
@@ -259,7 +335,12 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
             message.generations &&
             typeof message.generations === "object"
           ) {
-            applyGenerationState(message);
+            const accepted = applyGenerationState(message);
+            broadcast(
+              accepted
+                ? { kind: "generations", ...message }
+                : { kind: "invalidate" },
+            );
             return;
           }
         } catch {
@@ -268,39 +349,149 @@ export function watchSyncInvalidations(scope: string, resync: () => void) {
         lastGenerations = undefined;
         lastWorkspaceId = undefined;
         notify();
+        broadcast({ kind: "invalidate" });
       };
     };
-    const suspend = () => {
-      if (!available()) close();
+    const resume = () => {
+      if (available() && isOwner) {
+        // A socket can remain OPEN after mobile suspension but never deliver again.
+        closeSource();
+        connect();
+        notify();
+        broadcast({ kind: "invalidate" });
+      } else if (available()) {
+        notify();
+        if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs)
+          startFallbackPolling();
+        if (channel) startAsOwner();
+      } else closeSource();
     };
-    const stopResume = onResume(() => {
-      // A socket can remain OPEN after mobile suspension but never deliver again.
-      close();
-      connect();
-      notify();
-    });
+    const stopResume = onResume(resume);
+    const suspend = () => {
+      if (!available()) {
+        if (document.hidden && isOwner) releaseStreamLease();
+        else closeSource();
+      }
+    };
     window.addEventListener("offline", suspend);
     document.addEventListener("visibilitychange", suspend);
-    // Reconcile the compact generation row as a bounded fallback. This does
-    // not pull a projection unless its own generation changed.
-    const fallback = setInterval(() => {
-      if (!available()) return;
-      void api<{
-        protocol: number;
-        workspaceId: string;
-        generations: Record<string, number>;
-      }>("/api/sync/generations")
-        .then(applyGenerationState)
-        .catch(() => {});
-    }, 3000);
-    connect();
+    const startAsOwner = () => {
+      if (stopped || isOwner || ownerLockPending) return;
+      const locks = navigator.locks;
+      if (!locks || !workspaceId) {
+        startFallbackPolling();
+        return;
+      }
+      ownerLockPending = true;
+      void locks
+        .request(
+          `codex-sync-stream:${location.origin}:${workspaceId}`,
+          { mode: "exclusive", ifAvailable: true },
+          async (lock) => {
+            ownerLockPending = false;
+            if (stopped || !lock || !available()) {
+              if (!stopped) startFallbackPolling();
+              return;
+            }
+            isOwner = true;
+            stopFallbackPolling();
+            publishHeartbeat();
+            heartbeatTimer = setInterval(publishHeartbeat, heartbeatMs);
+            pollGenerations();
+            pollTimer = setInterval(pollGenerations, fallbackPollMs);
+            connect();
+            await new Promise<void>((resolve) => {
+              releaseOwnerLock = resolve;
+            });
+            releaseOwnerLock = undefined;
+            isOwner = false;
+            closeSource();
+            if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+            heartbeatTimer = undefined;
+          },
+        )
+        .catch(() => {
+          ownerLockPending = false;
+          startFallbackPolling();
+        });
+    };
+    const receive = (event: MessageEvent) => {
+      if (stopped) return;
+      const message = event.data;
+      if (
+        !message ||
+        message.workspaceId !== workspaceId ||
+        message.protocol !== 2 ||
+        typeof message.kind !== "string"
+      ) {
+        notify();
+        return;
+      }
+      lastHeartbeatAt = Date.now();
+      stopFallbackPolling();
+      if (message.kind === "heartbeat") {
+        if (message.generations) applyGenerationState(message);
+        return;
+      }
+      if (message.kind === "invalidate") {
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+        return;
+      }
+      if (message.kind === "generations") applyGenerationState(message);
+      else notify();
+    };
+    const initialize = async () => {
+      try {
+        const identity = await syncDatabase();
+        if (stopped) return;
+        workspaceId = identity.workspaceId;
+        if (typeof BroadcastChannel === "undefined") {
+          startFallbackPolling();
+          return;
+        }
+        try {
+          channel = new BroadcastChannel(
+            `codex-sync-${location.origin}-${workspaceId}`,
+          );
+          channel.onmessage = receive;
+        } catch {
+          channel = undefined;
+          startFallbackPolling();
+          return;
+        }
+        watchdogTimer = setInterval(() => {
+          if (stopped || isOwner || !available()) return;
+          if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs) {
+            startFallbackPolling();
+            startAsOwner();
+          }
+        }, heartbeatMs);
+        startAsOwner();
+      } catch {
+        // Cached clients remain useful offline; bounded polling retries discovery.
+        startFallbackPolling();
+      }
+    };
     stopInvalidations = () => {
-      close();
-      clearInterval(fallback);
+      stopped = true;
+      releaseStreamLease();
+      clearTimeout(flushTimer);
+      stopFallbackPolling();
+      if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
+      if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
       stopResume();
       window.removeEventListener("offline", suspend);
       document.removeEventListener("visibilitychange", suspend);
+      if (channel) {
+        channel.onmessage = null;
+        channel.close();
+        channel = undefined;
+      }
     };
+    notify();
+    void initialize();
   }
   return () => {
     invalidations.delete(resync);
@@ -523,12 +714,34 @@ async function acquireProjection(
 
 export async function watchProjection(
   scope: string,
-  accept: (payload: any | null) => void,
+  accept: (payload: any | null | undefined) => void,
   fail: (e: unknown) => void,
 ) {
   const { db, workspaceId, state, release } = await acquireProjection(scope);
   state.listeners.add(fail);
   const id = scope.startsWith("transcript:") ? scope.slice(11) : null;
+  let emptyProjectionConfirmed = false;
+  if (id) {
+    let pullSucceeded = false;
+    try {
+      await state.refresh();
+      pullSucceeded = true;
+    } catch {
+      // Preserve the cached transcript when the device is offline or the read fails.
+    }
+    const [current] = await db.projections.storageInstance.findDocumentsById(
+      [scope],
+      true,
+    );
+    if (current) cacheTranscript(workspaceId, id, current);
+    else if (pullSucceeded) {
+      // A successful empty projection is authoritative. Do not let a prior
+      // in-memory transcript hide the first-open HTTP unavailable response.
+      clearTranscript(workspaceId, id);
+      emptyProjectionConfirmed = true;
+      accept(undefined);
+    }
+  }
   const stopCache = id
     ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
     : () => {};
@@ -538,7 +751,8 @@ export async function watchProjection(
       return;
     }
     if (doc) cacheTranscript(workspaceId, id, doc);
-    else if (!peekTranscript(workspaceId, id)) accept(null);
+    else if (!emptyProjectionConfirmed && !peekTranscript(workspaceId, id))
+      accept(null);
   });
   return () => {
     subscription.unsubscribe();

@@ -121,19 +121,35 @@ The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
 
-Managed conversations use `/api/transcript/stream`, a server-sent event stream.
-The server sends a snapshot on connection and changed records after that.
-It waits on a condition while idle and sends a heartbeat every 15 seconds.
-Fast notifications are coalesced with an 80 ms delay between frames.
+Managed conversations use the workspace sync projection. One tab holds the
+exclusive browser lock and owns `/api/sync/stream?protocol=2`, then shares its
+scoped generation notices with other tabs in the same browser profile. Each tab
+still pulls only the projection it uses. The browser lock prevents duplicate
+streams even if RxDB reports duplicate leaders.
+A bounded `/api/sync/generations` poll recovers when coordination or the lock is
+unavailable. Managed transcript views use `transcript:<id>` pulls;
+the legacy `/api/transcript/stream` route remains available to older clients.
 These UI updates do not call the model.
 
 The client shows bounded cached history when a managed chat is reopened.
-Fresh events replace it. A delayed initial stream falls back to HTTP after 200 ms.
+Fresh scoped pulls replace it. If no local projection is available after 200 ms,
+the client makes one transcript read to show the missing or unavailable result.
 Cached history never supplies the current agent status.
 
-The client reconnects with a fresh snapshot. It uses the transcript GET endpoint
-as a fallback during connection loss. Agent rooms and the team list retain their
+The lock-owning tab reconnects after network or page resume and forces a refresh so
+peers do not rely on notices missed while asleep. If coordination cannot be
+established, each tab polls the compact generation row every three seconds; this
+does not fetch transcript bodies unless that transcript's generation changed.
+A tab that becomes hidden releases the stream lock so a visible peer can take
+over; other tabs use bounded polling while the owner changes.
+Cached transcript pages remain available offline and historical paging keeps
+using the transcript page endpoint. Agent rooms and the team list retain their
 existing refresh intervals.
+
+In plain terms, eight tabs do not each phone the server. One tab listens for
+updates and tells the other seven which small piece changed. The other tabs then
+ask for only that piece. If the tabs cannot pass those notes, they check a tiny
+change counter on a timer instead.
 
 Assistant text and incomplete code appear as they arrive. Complete sentences use
 a short fade. Earlier text nodes stay mounted as new text arrives.

@@ -140,6 +140,9 @@ try {
     generationPolls >= 1,
     "The scoped generation fallback was not used",
   );
+  // Let the initial full generation baseline finish its debounced callback
+  // before measuring that a drafts-only revision leaves state untouched.
+  await new Promise((resolve) => setTimeout(resolve, 150));
   const pullsBeforeDraftOnlyChange = statePulls;
   const pollsBeforeDraftOnlyChange = generationPolls;
   draftGeneration++;
@@ -249,14 +252,36 @@ try {
   });
   assert.deepEqual(errors, []);
   const debouncePage = await browser.newPage();
+  await debouncePage.route("**/sync-check", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><title>Sync contract</title>",
+    }),
+  );
+  await debouncePage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ json: { workspaceId: "c".repeat(32) } }),
+  );
+  await debouncePage.route("**/api/sync/generations", (route) =>
+    route.fulfill({
+      json: {
+        protocol: 2,
+        workspaceId: "c".repeat(32),
+        generations: { drafts: 0, state: 1, transcripts: 0 },
+      },
+    }),
+  );
   await debouncePage.goto(origin + "/sync-check");
   const scopedCallbacks = await debouncePage.evaluate(async () => {
-    const streams = [];
+    window.fakeStreams = [];
+    window.fakeStreamReady = new Promise((resolve) => {
+      window.resolveFakeStream = resolve;
+    });
     class FakeEventSource {
       onmessage;
       onopen;
       constructor() {
-        streams.push(this);
+        window.fakeStreams.push(this);
+        window.resolveFakeStream();
       }
       close() {}
       emit(generations, workspaceId = "b".repeat(32)) {
@@ -275,23 +300,30 @@ try {
     watchSyncInvalidations("state", () => counts.state++);
     watchSyncInvalidations("transcripts", () => counts.transcripts++);
     const base = { drafts: 0, state: 1, transcripts: 0 };
-    streams[0].onopen?.();
-    streams[0].emit(base);
+    await window.fakeStreamReady;
+    window.fakeStreams[0].onopen?.();
+    window.fakeStreams[0].emit(base, "c".repeat(32));
     await new Promise((resolve) => setTimeout(resolve, 80));
     counts.state = 0;
     counts.transcripts = 0;
-    streams[0].emit({ ...base, state: 2 });
-    streams[0].emit({ ...base, state: 2, transcripts: 1 });
+    window.fakeStreams[0].emit({ ...base, state: 2 }, "c".repeat(32));
+    window.fakeStreams[0].emit(
+      { ...base, state: 2, transcripts: 1 },
+      "c".repeat(32),
+    );
     await new Promise((resolve) => setTimeout(resolve, 80));
     const rapid = { ...counts };
     counts.state = 0;
     counts.transcripts = 0;
-    streams[0].emit({ ...base, state: 2, transcripts: 1 }, "c".repeat(32));
+    window.fakeStreams[0].emit(
+      { ...base, state: 2, transcripts: 1 },
+      "d".repeat(32),
+    );
     await new Promise((resolve) => setTimeout(resolve, 80));
     const workspaceReset = { ...counts };
     counts.state = 0;
     counts.transcripts = 0;
-    streams[0].onopen?.();
+    window.fakeStreams[0].onopen?.();
     await new Promise((resolve) => setTimeout(resolve, 80));
     const streamReconnect = { ...counts };
     counts.state = 0;
@@ -303,7 +335,7 @@ try {
       workspaceReset,
       streamReconnect,
       resumeReconnect: { ...counts },
-      streams: streams.length,
+      streams: window.fakeStreams.length,
     };
   });
   assert.deepEqual(
@@ -436,7 +468,10 @@ try {
     generationBeforeRetry,
     "The generation remains unchanged across the automatic retry",
   );
-  assert.equal(retryGenerationReads, 2);
+  assert.ok(
+    retryGenerationReads >= 2,
+    "An attached read retry does not depend on generation polling",
+  );
   assert.deepEqual(
     retryMutationMethods,
     [],
@@ -452,6 +487,70 @@ try {
   );
   await retryPage.evaluate(() => window.stopRetry());
   await retryPage.close();
+
+  const emptyTranscriptPage = await browser.newPage();
+  await emptyTranscriptPage.route("**/sync-check", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
+  );
+  await emptyTranscriptPage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ json: { workspaceId: "f".repeat(32) } }),
+  );
+  await emptyTranscriptPage.route("**/api/sync/stream*", (route) =>
+    route.fulfill({
+      contentType: "text/event-stream",
+      body: "retry: 3600000\\n\\n",
+    }),
+  );
+  await emptyTranscriptPage.route("**/api/sync/generations", (route) =>
+    route.fulfill({
+      json: {
+        protocol: 2,
+        workspaceId: "f".repeat(32),
+        generations: { drafts: 0, state: 0, transcripts: 0 },
+      },
+    }),
+  );
+  await emptyTranscriptPage.route("**/api/sync/pull?**", (route) =>
+    route.fulfill({
+      json: {
+        workspaceId: "f".repeat(32),
+        documents: [],
+        checkpoint: { seq: 0 },
+      },
+    }),
+  );
+  await emptyTranscriptPage.goto(origin + "/sync-check");
+  await emptyTranscriptPage.evaluate(async () => {
+    const cache = await import("/src/sync/transcriptCache.ts");
+    const workspace = "f".repeat(32);
+    cache.cacheTranscript(workspace, "deleted", {
+      id: "transcript:deleted",
+      seq: 9,
+      payload: JSON.stringify({ items: [{ id: "stale" }] }),
+    });
+    window.emptyTranscriptValues = [];
+    const client = await import("/src/sync/client.ts");
+    window.stopEmptyTranscript = await client.watchProjection(
+      "transcript:deleted",
+      (value) => window.emptyTranscriptValues.push(value),
+      () => {},
+    );
+  });
+  await emptyTranscriptPage.waitForFunction(() =>
+    window.emptyTranscriptValues.includes(undefined),
+  );
+  assert.equal(
+    await emptyTranscriptPage.evaluate(async () =>
+      (await import("/src/sync/transcriptCache.ts")).peekTranscript(
+        "f".repeat(32),
+        "deleted",
+      ),
+    ),
+    undefined,
+    "A successful empty transcript pull clears stale memory-only history",
+  );
+  await emptyTranscriptPage.evaluate(() => window.stopEmptyTranscript());
+  await emptyTranscriptPage.close();
 
   const persistentPage = await browser.newPage();
   await persistentPage.route("**/sync-check", (route) =>

@@ -18,6 +18,14 @@ export function peekTranscript(workspaceId: string, id: string) {
   return entry?.value;
 }
 
+/** Drop a memory-only transcript when a successful pull confirms no local row. */
+export function clearTranscript(workspaceId: string, id: string) {
+  const key = keyOf(workspaceId, id);
+  const previous = entries.get(key);
+  if (previous) size -= previous.size;
+  entries.delete(key);
+}
+
 export function subscribeTranscript(
   workspaceId: string,
   id: string,

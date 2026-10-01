@@ -346,6 +346,11 @@ export function useMessages(
   };
   const revision = useRef(0);
   const syncActive = useRef<string | null>(null);
+  const initialProjection = useRef({
+    scope,
+    ready: false,
+    getStarted: false,
+  });
   const active = useRef(scope),
     expanded = useRef(false);
   active.current = scope;
@@ -555,6 +560,8 @@ export function useMessages(
     pageAttempt.current++;
     pageBusy.current = false;
     setPageLoading(false);
+    if (initialProjection.current.scope !== scope)
+      initialProjection.current = { scope, ready: false, getStarted: false };
     syncActive.current = null;
     setLiveAgent(null);
     setConnection("");
@@ -564,6 +571,7 @@ export function useMessages(
     if (seed) {
       syncActive.current = scope;
       setSyncId(scope);
+      if (seed.payload === null) initialProjection.current.ready = true;
       accept(
         seed.payload || {
           items: [],
@@ -592,70 +600,26 @@ export function useMessages(
         clearTimeout(timer);
       };
     }
-    let records = new Map<string, Message>();
-    let source: EventSource;
-    const fallback = () => {
-      clearTimeout(timer);
-      if (!stopped) void poll();
-    };
-    // Do not leave a newly opened chat blank for seconds when SSE is delayed.
-    timer = setTimeout(fallback, 200);
-    const connect = () => {
-      if (stopped) return;
-      source?.close();
-      source = new EventSource(
-        `/api/transcript/stream?id=${encodeURIComponent(id)}`,
-      );
-      source.onmessage = (event) => {
-        if (stopped || active.current !== scope || syncActive.current === scope)
-          return;
-        try {
-          const d = JSON.parse(event.data);
-          if (d.replace) records = new Map();
-          for (const item of d.items) records.set(item.id, item);
-          records = new Map(
-            d.order.map((key: string) => [key, records.get(key)]),
-          );
-          clearTimeout(timer);
-          streamLive = true;
-          setConnection("live");
-          accept({ ...d, items: [...records.values()] });
-        } catch {
-          streamLive = false;
-          setConnection("reconnecting");
-          fallback();
-        }
-      };
-      source.onerror = () => {
-        if (stopped) return;
-        streamLive = false;
-        setConnection("reconnecting");
-        fallback();
-      };
-      source.addEventListener("unavailable", (event) => {
-        source.close();
-        stopped = true;
-        clearTimeout(timer);
-        setLoadedId(scope);
-        setConnection("unavailable");
-        setNotice(JSON.parse((event as MessageEvent).data).error);
-      });
-    };
-    const offline = () => {
-      source.close();
-      streamLive = false;
-      setConnection("reconnecting");
-      fallback();
-    };
-    connect();
-    window.addEventListener("offline", offline);
-    const stopResume = onResume(connect);
+    // The workspace shared stream invalidates this persisted transcript scope.
+    // Keep a single first-open read for missing/empty projections; later changes
+    // come through the scoped RxDB pull and the existing in-memory cache.
+    timer = setTimeout(() => {
+      const initial = initialProjection.current;
+      if (
+        !stopped &&
+        initial.scope === scope &&
+        !initial.ready &&
+        !initial.getStarted
+      ) {
+        initial.getStarted = true;
+        syncActive.current = null;
+        setSyncId(null);
+        void load(() => !stopped);
+      }
+    }, 200);
     return () => {
       stopped = true;
       clearTimeout(timer);
-      source.close();
-      window.removeEventListener("offline", offline);
-      stopResume();
     };
   }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
   useEffect(() => {
@@ -665,7 +629,21 @@ export function useMessages(
       `transcript:${id}`,
       (next) => {
         if (active.current !== scope) return;
+        if (next === undefined) {
+          initialProjection.current.ready = true;
+          initialProjection.current.getStarted = true;
+          seen = true;
+          syncActive.current = null;
+          setSyncId(null);
+          history.current.delete(scope);
+          setItems([]);
+          setLoadedId(null);
+          setNotice("");
+          void load();
+          return;
+        }
         if (next) {
+          initialProjection.current.ready = true;
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);
@@ -688,6 +666,7 @@ export function useMessages(
     if (!id || !managed || kind !== "agent" || !syncWorkspaceId) return;
     return subscribeTranscript(syncWorkspaceId, id, (entry) => {
       if (active.current !== scope) return;
+      if (entry.payload === null) initialProjection.current.ready = true;
       syncActive.current = scope;
       setSyncId(scope);
       accept(
