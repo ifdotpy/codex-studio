@@ -121,6 +121,13 @@ that no turns, commands, queues, approvals, or unresolved requests remain.
 Active work continues on its existing process. Accounts shows versions, pending
 updates, and rejection reasons. Studio does not download or install Codex packages.
 
+Studio also compares Codex and Claude CLI versions with its
+[tested reference versions](scripts/codex_provider_versions.py). Older versions
+produce an advisory in Accounts and the chat's **Warnings** dialog: features may
+work poorly or fail, but you can continue at your own risk. These references are
+not a latest-release check. Version age alone does not block use; native protocol
+and safety checks still apply.
+
 Studio reads Codex model metadata through a short-lived process of the same
 approved executable. The reader uses the selected account's native credentials
 and starts no model tasks. Model grants remain cached for five minutes.
@@ -320,8 +327,9 @@ Workers ask their lead to contact the user. Workers cannot send spoken responses
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
 
-**Studio settings** is available without opening a chat. Its Accounts, Appearance,
-and Hotkeys tabs group the application default account, per-browser appearance,
+**Studio settings** is available without opening a chat. Its Accounts tab opens
+the same account manager as the chat menu: add accounts, view saved accounts,
+remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
 Author icons are hidden by default. Chat settings continues to select the account
 for the current conversation and manage its project, model, and permissions.

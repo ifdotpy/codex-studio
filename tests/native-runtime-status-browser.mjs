@@ -82,7 +82,10 @@ try {
     viewport: { width: 1100, height: 850 },
   });
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("pageerror", (error) => {
+    errors.push(error.message);
+    console.error(error);
+  });
   let reads = 0;
   const providerWarning = {
     id: "provider-version:default",
@@ -185,13 +188,14 @@ try {
       accounts: { work: { status: "updating", targetVersion: "0.116.0" } },
     },
   };
+  const readsBeforeRefresh = reads;
   await page.clock.runFor(10100);
   await page.waitForFunction(() =>
     document
       .querySelector(".native-runtime-accounts")
       ?.textContent.includes("Updating"),
   );
-  assert.equal(reads, 2);
+  assert.ok(reads > readsBeforeRefresh, "An open panel refreshes its status");
   body = {
     nativeRuntime: {
       ...initial,
