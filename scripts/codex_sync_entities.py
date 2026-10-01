@@ -9,7 +9,7 @@ AGENT_FIELDS = frozenset("""
     isLead role sharedRoomId model provider effort fastMode accountKey cwd worktree created updated
     turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
     launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported
-    workerDefaults reviewDefaults pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
+    workerDefaults reviewDefaults parkedEvent pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
     daybreakEnabled accountTransfer
     overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
     autoWake voiceState nativeError retryAt hasUnread hasQuestion hasApproval
