@@ -58,15 +58,17 @@ This continuation behavior belongs to the managed runtime.
 Codex agents use `orchestration_review` for native code review. Supply a stable
 `request_id`. Omit `target` to review uncommitted changes. Other targets use
 `type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
-`type: "custom"` with `instructions`. The reviewer uses your model unless you
-pass `model` (for example `gpt-6-astra`) and optional `effort`.
+`type: "custom"` with `instructions`. Pass `model` (for example `gpt-6-astra`)
+and optional `effort` to override the team review default. Without that default,
+the reviewer uses the caller's model and effort. A different model without
+`effort` uses its native default. The result reports both selected values.
 A Claude agent cannot run native review. To get a review on another model, use
 `orchestration_spawn` with `role: "reviewer"` and `model: "gpt-6-astra"`.
 Studio creates a separate reviewer with read-only access to `cwd`. `cwd`
 defaults to the caller's folder; a relative path starts there, and a shell `cd`
 does not change it. `cwd` must be inside a git repository, or the call fails
-before a reviewer exists. The native `ReviewTask` uses configured `review_model`, or the
-caller's model when that setting is absent. The caller continues its current
+before a reviewer exists. Studio sets `review_model` on the reviewer thread,
+so the account's `review_model` does not override this choice. The caller continues its current
 turn. Findings arrive as a child result; the reviewer chat retains the complete
 output. Use `orchestration_request` to recover the receipt after a lost reply.
 Use `orchestration_interrupt` with the returned reviewer ID to stop the review.

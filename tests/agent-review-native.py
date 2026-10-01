@@ -28,13 +28,15 @@ MARKER = 'STUDIO_NATIVE_REVIEW_FINDING'
 
 
 class ReviewProvider(f.Provider):
-    def __init__(self, project):
+    def __init__(self, project, requested_model=None, requested_effort=None):
         super().__init__()
         self.RequestHandlerClass = ReviewHandler
         self.project = project
         self.parent_requests = 0
         self.review_requests = []
         self.parent_waiting = threading.Event()
+        self.requested_model = requested_model
+        self.requested_effort = requested_effort
 
 
 class ReviewHandler(f.ResponsesHandler):
@@ -55,11 +57,15 @@ class ReviewHandler(f.ResponsesHandler):
             parent_number = self.server.parent_requests
             review_number = len(self.server.review_requests)
         if not review and parent_number == 1:
+            arguments = {'target': {'type': 'custom', 'instructions':
+                'NATIVE_REVIEW_TARGET: review sample.py without changing files.'}}
+            if self.server.requested_model:
+                arguments['model'] = self.server.requested_model
+            if self.server.requested_effort:
+                arguments['effort'] = self.server.requested_effort
             item = {'id': 'fc_review', 'type': 'function_call',
                     'call_id': 'native_review_tool_call', 'status': 'completed',
-                    'name': 'orchestration_review', 'arguments': json.dumps({
-                        'target': {'type': 'custom', 'instructions':
-                            'NATIVE_REVIEW_TARGET: review sample.py without changing files.'}})}
+                    'name': 'orchestration_review', 'arguments': json.dumps(arguments)}
         elif review and review_number == 1:
             item = {'id': 'fc_write', 'type': 'function_call',
                     'call_id': 'native_review_denied_write', 'status': 'completed',
@@ -130,7 +136,7 @@ class ReviewRuntime(Runtime):
 
 
 class AgentReviewNative(unittest.TestCase):
-    def exercise(self, configured_review_model):
+    def exercise(self, configured_review_model, requested_model=None, requested_effort=None):
         with tempfile.TemporaryDirectory(prefix='studio-agent-review-native-') as directory:
             root = Path(directory)
             home, project = root / 'codex-home', root / 'project'
@@ -141,7 +147,7 @@ class AgentReviewNative(unittest.TestCase):
             sample.write_text('answer = 41\n')
             initial_files = {str(p.relative_to(project)): p.read_bytes()
                              for p in project.rglob('*') if p.is_file()}
-            provider = ReviewProvider(project)
+            provider = ReviewProvider(project, requested_model, requested_effort)
             threading.Thread(target=provider.serve_forever, daemon=True).start()
             endpoint = f'http://127.0.0.1:{provider.server_port}'
             review_setting = f'review_model = "{configured_review_model}"\n' if configured_review_model else ''
@@ -190,6 +196,11 @@ stream_max_retries = 0
                 with patch.dict(os.environ, environment), patch.object(AppServer, 'submit', submit), \
                         patch.object(AppServer, 'wait', wait):
                     runtime = ReviewRuntime(root / 'state')
+                    from codex_native_runtime import manager
+                    updates = manager(runtime)
+                    updates.maybe_check()
+                    self.assertTrue(updates.ready.wait(45), 'Native compatibility check did not finish')
+                    self.assertIsNotNone(updates.selected(), updates.status())
                     lead = runtime.create({'name': 'Review tool native parent', 'prompt':
                         'Call the native review tool, then wait.', 'cwd': str(project),
                         'model': MODEL, 'concurrency': 2, 'maxAgents': 2})
@@ -204,7 +215,8 @@ stream_max_retries = 0
                     self.assertTrue(provider.parent_waiting.wait(15), 'Parent did not resume after its tool call')
                     parent_before = runtime.agent(lead['id'])
                     self.assertEqual(parent_before['status'], 'running')
-                    self.assertEqual(child['model'], MODEL)
+                    expected_model = requested_model or MODEL
+                    self.assertEqual(child['model'], expected_model)
                     runtime.dispatch()
 
                     def completed_child():
@@ -232,9 +244,16 @@ stream_max_retries = 0
                     settings = next(p for m, p in calls if m == 'thread/settings/update'
                                     and p.get('threadId') == child['threadId'])
                     self.assertEqual(settings['sandboxPolicy']['type'], 'readOnly')
-                    self.assertEqual(settings['model'], MODEL)
+                    self.assertEqual(settings['model'], expected_model)
+                    prepared = runtime.new_thread_params(child)
+                    self.assertEqual(prepared['config']['review_model'], expected_model)
+                    if requested_effort:
+                        self.assertEqual(prepared['config']['model_reasoning_effort'], requested_effort)
                     self.assertEqual(len(provider.review_requests), 2)
-                    self.assertEqual({r['model'] for r in provider.review_requests}, {configured_review_model or MODEL})
+                    self.assertEqual({r['model'] for r in provider.review_requests}, {expected_model})
+                    if requested_effort:
+                        self.assertEqual({r.get('reasoning', {}).get('effort') for r in provider.review_requests},
+                                         {requested_effort})
                     self.assertIn('reviewer', json.dumps(provider.review_requests[0]).lower())
                     with runtime.db() as db:
                         items = [json.loads(row[0]) for row in db.execute(
@@ -257,7 +276,7 @@ stream_max_retries = 0
                     provider.release.set()
                     f.until(lambda: runtime.agent(lead['id']).get('lastCompletedTurn'), 'parent completes after release')
                     self.assertFalse(provider.unexpected, provider.unexpected)
-                    print(json.dumps({'reviewModel': configured_review_model or MODEL,
+                    print(json.dumps({'reviewModel': expected_model,
                                       'nativeReviewCalls': len(review_calls), 'parentEvents': len(parent_events),
                                       'completionBeforeAcceptance': True, 'parentUninterrupted': True,
                                       'sandbox': 'readOnly', 'writeDenied': True, 'cloudCalls': 0}))
@@ -271,8 +290,11 @@ stream_max_retries = 0
     def test_actor_model_and_early_native_completion(self):
         self.exercise(None)
 
-    def test_configured_review_model(self):
+    def test_account_review_model_is_overridden(self):
         self.exercise(REVIEW_MODEL)
+
+    def test_requested_model_and_effort_override_account(self):
+        self.exercise(MODEL, REVIEW_MODEL, 'low')
 
 
 if __name__ == '__main__':

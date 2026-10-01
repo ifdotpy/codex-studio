@@ -104,6 +104,11 @@ own switch. Account transfers preserve the mode only when the destination
 supports it; a provider change clears it. Native `review/start` cannot select
 Daybreak, so use a review task in the chat when this mode is required.
 
+Subagent defaults also has a review model and reasoning setting. A native review
+uses the call's model and effort first, then the team review default, then the
+caller's model and effort. Studio sets the reviewer thread's `review_model`, so
+an account `review_model` does not override the selected model.
+
 Studio checks installed Codex executables every minute, including `CODEX_BIN`,
 PATH, and the copy bundled with ChatGPT. It checks the protocol schema and runs
 an isolated native smoke test without account credentials or model requests.

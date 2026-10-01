@@ -1715,6 +1715,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 **root.get("workerDefaults", {})}
 
     @staticmethod
+    def review_defaults(root):
+        return {"model": None, "effort": None, **root.get("reviewDefaults", {})}
+
+    def validate_review_defaults(self, value, catalog):
+        if (not isinstance(value, dict) or set(value) != {"model", "effort"}
+                or value["model"] is not None and
+                (not isinstance(value["model"], str) or not value["model"].strip())
+                or value["effort"] is not None and
+                (not isinstance(value["effort"], str) or not value["effort"].strip())):
+            raise ValueError("review_defaults needs model and effort, each a name or null")
+        if value["model"] is None:
+            if value["effort"] is not None:
+                raise ValueError("Select a review model before setting its effort")
+            return {"model": None, "effort": None}
+        if not value["model"].startswith("gpt-"):
+            raise ValueError("Native review needs a Codex model")
+        self.validate_execution(catalog, value["model"], value["effort"], False)
+        return {"model": value["model"], "effort": value["effort"]}
+
+    @staticmethod
     def validate_execution(catalog, model, effort, fast_mode, *, fallback_effort=False):
         if not isinstance(model, str) or not model.strip():
             raise ValueError("Select an available model")
@@ -1919,6 +1939,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             }
             if is_lead:
                 a["workerDefaults"] = defaults
+                a["reviewDefaults"] = {"model": None, "effort": None}
                 a.update(agentMode="multi", agentModeRevision=0, agentModeSupported=True)
             if catalog is not None:
                 a["nativeEffort"] = native_effort
@@ -2172,7 +2193,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if pending and not pending["future"].done() and set(data).intersection(
                     execution_fields | {"cwd", "yolo_mode"}):
                 raise ValueError("Wait for thread preparation before changing execution settings")
-        defaults_only = set(data) <= {"id", "worker_defaults", "expected_account_key"} and "worker_defaults" in data
+        defaults_only = set(data) <= {"id", "worker_defaults", "review_defaults", "expected_account_key"} and bool(
+            {"worker_defaults", "review_defaults"}.intersection(data))
         with self.lock, self.db() as db:
             target = self.agent(key, db)
             if expected_account is not None and target.get("accountKey", "default") != expected_account:
@@ -2181,12 +2203,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Only a lead can change these settings; a subagent can change only its execution settings")
             if not defaults_only and (target.get("inFlight") or target["status"] in {"running", "starting", "approval"}):
                 raise ValueError("Wait for this turn to end before changing execution settings")
-        needs_catalog = bool(execution_fields.intersection(data) or "worker_defaults" in data)
+        needs_catalog = bool(execution_fields.intersection(data) or "worker_defaults" in data or "review_defaults" in data)
         catalog = self.catalog(target.get("accountKey", "default")) if needs_catalog and not defaults_only else None
         worker_catalog = None
         if "worker_defaults" in data:
             from codex_worker_accounts import settings_catalog
             worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"])
+        review_catalog = None
+        if "review_defaults" in data:
+            from codex_worker_accounts import settings_catalog
+            defaults = data.get("worker_defaults") or {"account_key": self.worker_defaults(target).get("accountKey")}
+            review_catalog = settings_catalog(self, target.get("accountKey", "default"), defaults)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
@@ -2234,6 +2261,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["executionSettingsAccountKey"] = a.get("accountKey", "default")
             if "worker_defaults" in data:
                 a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
+            if "review_defaults" in data:
+                a["reviewDefaults"] = self.validate_review_defaults(data["review_defaults"], review_catalog)
             if "cwd" in data:
                 if a.get("threadId"):
                     raise ValueError(
@@ -2486,6 +2515,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         native_effort = a.get("nativeEffort", a.get("effort"))
         if native_effort is not None:
             params["config"]["model_reasoning_effort"] = native_effort
+        if a.get("nativeReview"):
+            params["config"]["review_model"] = a["model"]
         if a.get("needsTitle"):
             params[
                 "developerInstructions"
