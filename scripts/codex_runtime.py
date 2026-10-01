@@ -3228,8 +3228,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
-            for sample in samples or [p]:
-                self.analytics_safe(db, self.analytics_event, a, method, sample)
+            if method == "item/agentMessage/delta" and samples and len(samples) > 1:
+                self.analytics_delta_batch_safe(db, a, samples)
+            else:
+                for sample in samples or [p]:
+                    self.analytics_safe(db, self.analytics_event, a, method, sample)
             self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return

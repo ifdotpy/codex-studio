@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -660,8 +661,11 @@ class RuntimeContract(unittest.TestCase):
                 return tuple(db.execute('SELECT coalesce(sum(count),0),coalesce(sum(bytes),0) FROM analytics_notifications WHERE agent=? AND method=?', (a['id'], method)).fetchone())
         before = counters()
         count = self.runtime.agent(a['id'])['events']
-        self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
-                                   '_studioNotificationSamples': samples})
+        with patch.object(self.runtime, 'analytics_delta_batch_safe',
+                          wraps=self.runtime.analytics_delta_batch_safe) as aggregate:
+            self.runtime.notification({'method': method, 'params': {**samples[0], 'delta': ''.join(p['delta'] for p in samples)},
+                                       '_studioNotificationSamples': samples})
+        aggregate.assert_called_once()
         after = counters()
         self.assertEqual(after[0] - before[0], len(samples))
         self.assertEqual(after[1] - before[1], sum(len(encoded(p).encode('utf-8')) for p in samples))
