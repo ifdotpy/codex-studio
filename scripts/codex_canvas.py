@@ -708,6 +708,72 @@ def make_server(canvas, port=0, public_origin=None):
             self.end_headers()
             self.wfile.write(data)
 
+        def send_monitor_log(self, download):
+            path = download["path"]
+            try:
+                descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                stream = os.fdopen(descriptor, "rb")
+                size = os.fstat(stream.fileno()).st_size
+            except FileNotFoundError:
+                stream = None
+                content = download.get("fallback") or b""
+                size = len(content)
+            start, end, status = 0, size, 200
+            value = self.headers.get("Range")
+            if value:
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+                if not match or (not match.group(1) and not match.group(2)):
+                    if stream:
+                        stream.close()
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if match.group(1):
+                    start = int(match.group(1))
+                    end = min(size, int(match.group(2)) + 1) if match.group(2) else size
+                else:
+                    suffix = int(match.group(2))
+                    start, end = max(0, size - suffix), size
+                if start >= size or end <= start:
+                    if stream:
+                        stream.close()
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = 206
+            length = end - start
+            self.send_response(status)
+            self.send_header("Content-Type", download.get("mime", "text/plain"))
+            self.send_header("Content-Length", str(length))
+            name = re.sub(r"[^A-Za-z0-9._-]", "_", download["name"])
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Log-Truncated", "true" if download.get("truncated") else "false")
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
+            self.end_headers()
+            try:
+                if stream:
+                    stream.seek(start)
+                    remaining = length
+                    while remaining:
+                        chunk = stream.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                else:
+                    self.wfile.write(content[start:end])
+            finally:
+                if stream:
+                    stream.close()
+
         def trusted(self, write=False):
             origin = remote.request_origin(self.headers, self.client_address[0], self.server.server_port)
             if origin is None:
@@ -979,7 +1045,7 @@ def make_server(canvas, port=0, public_origin=None):
                     if path.path == "/api/rules":
                         return self.send(runtime.rules(), etag=True)
                     if path.path == "/api/monitor/log":
-                        return self.send(runtime.monitor_log(q.get("id")))
+                        return self.send_monitor_log(runtime.monitor_log(q.get("id")))
                     if path.path == "/api/file-info":
                         return self.send(runtime.file_info(agent, q.get("path"), q.get("asset")))
                     if path.path == "/api/file":
@@ -1178,11 +1244,11 @@ def make_server(canvas, port=0, public_origin=None):
                     if self.path == "/api/branch":
                         return self.send(runtime.branch_conversation(agent, body))
                     if self.path == "/api/checkpoint":
-                        return self.send(
+                        return self.send(runtime.checkpoint_summary(
                             runtime.checkpoint_capture(
                                 agent, body.get("label", "Checkpoint")
                             )
-                        )
+                        ))
                     if self.path == "/api/checkpoint/preview":
                         return self.send(
                             runtime.checkpoint_preview(agent, body.get("checkpoint"))

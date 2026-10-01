@@ -29,7 +29,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { api, apiDownload, errorText } from "../api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../types";
 import { useWorkspaceTaskFeed } from "./useWorkspaceTaskFeed";
@@ -824,16 +824,10 @@ async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
   try {
     let blob: Blob, name: string;
     if (task.kind === "monitor") {
-      const result = await api<{
-        name: string;
-        mime: string;
-        base64: string;
-        truncated?: boolean;
-      }>("/api/monitor/log?id=" + encodeURIComponent(task.id));
-      blob = new Blob(
-        [Uint8Array.from(atob(result.base64), (c) => c.charCodeAt(0))],
-        { type: result.mime || "text/plain" },
+      const result = await apiDownload(
+        "/api/monitor/log?id=" + encodeURIComponent(task.id),
       );
+      blob = result.blob;
       name = result.name;
       if (result.truncated)
         notify("The download contains the retained part of the log.");

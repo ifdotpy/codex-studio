@@ -498,7 +498,9 @@ class WorkspaceContract(unittest.TestCase):
         self.assertTrue(any(row["text"] == "Before concurrent write" for row in before["inbox"]))
         self.assertEqual(before["checkpoints"], [])
         after = self.runtime.workspace_snapshot(lead["id"])
-        self.assertEqual(after["checkpoints"][0]["items"], ["later-item"])
+        self.assertEqual(after["checkpoints"][0]["id"], "later")
+        self.assertNotIn("items", after["checkpoints"][0])
+        self.assertNotIn("historyDelta", after["checkpoints"][0])
         self.assertFalse(any(row["kind"] == "agent" for row in after["inbox"]))
 
     def test_reported_changes_are_per_agent_and_restore_the_full_saved_diff(self):

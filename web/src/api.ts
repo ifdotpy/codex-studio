@@ -135,6 +135,39 @@ export async function api<T = any>(
     if (controller) deadlines.delete(controller);
   }
 }
+
+export async function apiDownload(path: string): Promise<{
+  blob: Blob;
+  name: string;
+  truncated: boolean;
+}> {
+  const response = await fetch(path, {
+    headers: {
+      "X-Canvas-Token": token,
+      ...(workspace ? { "X-Canvas-Workspace": workspace } : {}),
+    },
+  });
+  if (!response.ok) {
+    let details: any;
+    try {
+      details = await response.json();
+    } catch {
+      details = `Request failed (${response.status})`;
+    }
+    throw new ApiError(
+      details?.error || details?.message || details,
+      response.status,
+      details,
+    );
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const name = disposition.match(/filename="([^"]+)"/)?.[1] || "download.log";
+  return {
+    blob: await response.blob(),
+    name,
+    truncated: response.headers.get("X-Log-Truncated") === "true",
+  };
+}
 // Only reads and operations with a durable request identity use this deadline.
 export const syncApi = <T = any>(
   path: string,
