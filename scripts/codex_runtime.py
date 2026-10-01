@@ -742,6 +742,75 @@ class AppServer:
             self.reader.join(timeout=1)
 
 
+class _RuntimeWalKeeper:
+    """Keep a primed, idle SQLite connection alive until Runtime shutdown.
+
+    The dedicated thread owns the connection for its full lifetime. Its one
+    consumed schema read joins the WAL without leaving a read transaction open.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._ready = threading.Event()
+        self._release = threading.Event()
+        self._closed = threading.Event()
+        self._close_lock = threading.Lock()
+        self._startup_error = None
+        self._close_error = None
+        self._idle = False
+        self._thread = threading.Thread(
+            target=self._hold, name="runtime-sqlite-wal-keeper", daemon=True)
+        self._thread.start()
+        self._ready.wait()
+        if self._startup_error is not None:
+            self._thread.join()
+            raise RuntimeError("Could not initialize the runtime SQLite WAL keeper") from self._startup_error
+
+    @property
+    def idle(self):
+        return self._idle and not self._closed.is_set()
+
+    def _hold(self):
+        connection = None
+        try:
+            connection = sqlite3.connect(self.path, timeout=15)
+            cursor = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")
+            cursor.fetchall()
+            cursor.close()
+            if connection.in_transaction:
+                raise RuntimeError("Runtime SQLite WAL keeper retained a read transaction")
+        except BaseException as error:
+            self._startup_error = error
+            if connection is not None:
+                try:
+                    connection.close()
+                except BaseException as close_error:
+                    self._close_error = close_error
+            self._ready.set()
+            self._closed.set()
+            return
+        self._idle = True
+        self._ready.set()
+        self._release.wait()
+        try:
+            connection.close()
+        except BaseException as error:
+            self._close_error = error
+        finally:
+            self._idle = False
+            self._closed.set()
+
+    def close(self):
+        if threading.current_thread() is self._thread:
+            raise RuntimeError("The runtime SQLite WAL keeper cannot join its owner thread")
+        with self._close_lock:
+            self._release.set()
+            self._thread.join()
+            if self._close_error is not None:
+                raise RuntimeError("Could not close the runtime SQLite WAL keeper") from self._close_error
+
+
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         self.started_at = time.time()
@@ -758,6 +827,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
+        self._wal_keeper = None
+        self._shutdown_writers_drained = False
         self.server = None
         self.servers = {}
         self.connection_ids = {}
@@ -897,10 +968,82 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for warning in self.monitor_recovery_warnings:
             print("Monitor recovery: " + json.dumps(warning), file=sys.stderr)
         os.chmod(self.db_path, 0o600)
+        try:
+            self._wal_keeper = _RuntimeWalKeeper(self.db_path)
+        except BaseException as error:
+            self._cleanup_failed_initialization(error)
+            raise
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
-        self.scheduler.start()
-        if server_factory is AppServer:
-            self.analytics_history_start()
+        try:
+            self.scheduler.start()
+            if server_factory is AppServer:
+                self.analytics_history_start()
+        except BaseException as error:
+            self._cleanup_failed_initialization(error)
+            raise
+
+    def _cleanup_failed_initialization(self, original_error):
+        errors = []
+        self.closed = True
+        self.changed.set()
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is not None and scheduler.ident is not None and scheduler.is_alive():
+            try:
+                scheduler.join()
+            except BaseException as error:
+                errors.append(error)
+        history_thread = getattr(self, "analytics_history_thread", None)
+        if history_thread is not None and history_thread is not threading.current_thread():
+            try:
+                history_thread.join()
+            except BaseException as error:
+                errors.append(error)
+            if history_thread.is_alive():
+                original_error.add_note(
+                    "Runtime initialization cleanup could not drain analytics history; "
+                    "the keeper and runtime lease are retained")
+                return
+        keeper = self._wal_keeper
+        if keeper is not None:
+            try:
+                keeper.close()
+            except BaseException as error:
+                errors.append(error)
+            self._wal_keeper = None
+        for executor_name in ("pool", "tool_pool", "coordination_pool", "recovery_pool"):
+            executor = getattr(self, executor_name, None)
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except BaseException as error:
+                    errors.append(error)
+        if not self.lease.closed:
+            try:
+                fcntl.flock(self.lease, fcntl.LOCK_UN)
+            except BaseException as error:
+                errors.append(error)
+            try:
+                self.lease.close()
+            except BaseException as error:
+                errors.append(error)
+        for error in errors:
+            original_error.add_note(f"Runtime initialization cleanup failed: {error}")
+
+    def _close_wal_keeper(self):
+        with self.lock:
+            keeper = self._wal_keeper
+        if keeper is not None:
+            keeper.close()
+            with self.lock:
+                if self._wal_keeper is keeper:
+                    self._wal_keeper = None
+
+    def _release_lease(self):
+        with self.lock:
+            if self.lease.closed:
+                return
+            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            self.lease.close()
 
     def voice(self):
         with self.lock:
@@ -5237,13 +5380,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def close(self):
         with self.lock:
             if self.closed:
-                return
-            from codex_restart_recovery import capture as capture_restart
-            with self.db() as db:
-                for agent in self.records(db, "agents"):
-                    capture_restart(agent)
-                    self.put(db, "agents", agent)
-            self.closed = True
+                if not self._shutdown_writers_drained:
+                    return
+                retry_finalization = True
+            else:
+                retry_finalization = False
+                from codex_restart_recovery import capture as capture_restart
+                with self.db() as db:
+                    for agent in self.records(db, "agents"):
+                        capture_restart(agent)
+                        self.put(db, "agents", agent)
+                self.closed = True
+        if retry_finalization:
+            self._close_wal_keeper()
+            self._release_lease()
+            return
         with self.ui_condition:
             self.ui_condition.notify_all()
         self.changed.set()
@@ -5278,5 +5429,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A final import batch can still need self.lock and the database.
             # Retain the runtime lease until that writer has stopped.
             history_thread.join()
-        fcntl.flock(self.lease, fcntl.LOCK_UN)
-        self.lease.close()
+        with self.lock:
+            self._shutdown_writers_drained = True
+        # This is the last SQLite connection close; let its WAL cleanup finish
+        # before releasing the runtime lease to another process.
+        self._close_wal_keeper()
+        self._release_lease()
