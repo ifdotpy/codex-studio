@@ -184,6 +184,7 @@ export default function Conversation(p: {
     before,
     older,
     newer,
+    setPageAnchor,
     after,
     historical,
     pageLoading,
@@ -259,6 +260,7 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     remember,
+    getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
@@ -1208,6 +1210,7 @@ export default function Conversation(p: {
               before
                 ? () => {
                     setFollow(false);
+                    setPageAnchor(getAnchorId());
                     void older().catch((e) => p.notify(errorText(e)));
                   }
                 : undefined
@@ -1220,7 +1223,14 @@ export default function Conversation(p: {
           />
         )}
       </div>
-      <div id="messages" ref={scroll} onScroll={onScroll}>
+      <div
+        id="messages"
+        ref={scroll}
+        onScroll={() => {
+          onScroll();
+          if (!getFollow()) setPageAnchor(getAnchorId());
+        }}
+      >
         <div ref={content} className="message-content">
           {notice && <p className="notice">{notice}</p>}
           {historical && (

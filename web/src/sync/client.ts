@@ -4,6 +4,7 @@ import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
 import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
+import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
 import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
 
 import { onResume } from "./resume";
@@ -638,54 +639,40 @@ export async function watchProjection(
     ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
     : () => {};
   const subscription = scope === "state"
-    ? db.projections.find().$.subscribe((documents: any[]) => {
-        const ready = documents.some((document) => {
-          const row = document.toJSON ? document.toJSON() : document;
-          return row.id === "state:entities:ready" && row.payload === "ready" && !row._deleted;
-        });
-        if (!ready) return;
-        const entities = new Map<string, Map<string, any>>();
-        for (const document of documents) {
-          const row = document.toJSON ? document.toJSON() : document;
-          if (!row.id.startsWith("entity:") || row._deleted) continue;
-          try {
-            const value = JSON.parse(row.payload);
-            if (typeof value.collection !== "string" || typeof value.id !== "string")
-              continue;
-            const collection = entities.get(value.collection) || new Map();
-            collection.set(value.id, value.value);
-            entities.set(value.collection, collection);
-          } catch {
-            continue;
-          }
-        }
-        const list = (name: string) => [...(entities.get(name)?.values() || [])];
-        const agents = list("agent");
-        const chats = list("chat");
-        const runtime: Record<string, any> = {
-          agents,
-          rooms: list("room"),
-          tasks: list("task"),
-          monitors: list("monitor"),
-          complaints: list("complaint"),
-          requests: list("request"),
-          rules: list("rule"),
-          projects: list("project"),
-          peerTeams: list("peerTeam"),
-          events: list("event"),
-          work: list("work"),
+    ? (() => {
+        const projection = emptyEntityProjection();
+        let ready = false;
+        let entitiesLoaded = false;
+        let latestRows: any[] = [];
+        const publishCurrent = () => {
+          if (!ready || !entitiesLoaded) return;
+          const next = applyEntityRows(projection, latestRows, true);
+          if (next) accept(next);
         };
-        Object.assign(runtime, entities.get("workspace")?.get("current") || {});
-        accept({
-          token: "",
-          stateDir: entities.get("workspace")?.get("current")?.stateDir || "",
-          threads: agents,
-          chats,
-          nodes: [...agents, ...chats],
-          edges: list("edge"),
-          runtime,
-        });
-      })
+        const publish = (documents: any[]) => {
+          entitiesLoaded = true;
+          latestRows = documents.map((document) =>
+            document.toJSON ? document.toJSON() : document,
+          );
+          publishCurrent();
+        };
+        const entities = db.projections
+          .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+          .$.subscribe(publish);
+        const marker = db.projections
+          .findOne("state:entities:ready")
+          .$.subscribe((document: any) => {
+            const row = document?.toJSON ? document.toJSON() : document;
+            ready = row?.payload === "ready" && !row?._deleted;
+            publishCurrent();
+          });
+        return {
+          unsubscribe() {
+            entities.unsubscribe();
+            marker.unsubscribe();
+          },
+        };
+      })()
     : db.projections.findOne(scope).$.subscribe((doc: any) => {
     if (!id) {
       accept(doc ? JSON.parse(doc.payload) : null);
