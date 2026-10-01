@@ -6,7 +6,9 @@ import threading
 import time
 import uuid
 import zlib
+from contextlib import contextmanager
 from codex_startup_memory import mark as startup_memory_mark
+from codex_sqlite import scope as sqlite_scope
 
 SCOPE_STRIPES = 64
 # Windows pull state together after each RESYNC. Without a write in between,
@@ -28,7 +30,7 @@ class SyncStore:
         # delay transcript pulls. A fixed stripe count bounds memory.
         self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
         self.snapshots = {}
-        with self.connect() as db:
+        with self.connection("SyncStore.initialize") as db:
             from codex_sync_entities import ensure_tables
             ensure_tables(db)
             db.executescript('''
@@ -44,13 +46,20 @@ class SyncStore:
             if not db.execute('SELECT id FROM sync_identity').fetchone():
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
 
+    @contextmanager
+    def connection(self, site="SyncStore"):
+        """Guard the provider connection at every SyncStore handoff."""
+        with self.connect() as db:
+            with sqlite_scope(db, site):
+                yield db
+
     def __del__(self):
         reader = getattr(self, '_version_reader', None)
         if reader is not None:
             reader.close()
 
     def identity(self):
-        with self.connect() as db:
+        with self.connection("SyncStore.identity") as db:
             return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                     **({'chatState': True} if self.chat_snapshot else {})}
 
@@ -63,7 +72,7 @@ class SyncStore:
 
     def entity_sequence(self):
         from codex_sync_entities import max_seq
-        with self.connect() as db:
+        with self.connection("SyncStore.entity_sequence") as db:
             return max_seq(db)
 
     def _schedule_entity_pruning(self):
@@ -77,7 +86,7 @@ class SyncStore:
                                                  prune_entity_tombstones)
                 while True:
                     try:
-                        with self.connect() as db:
+                        with self.connection("SyncStore.prune_entities") as db:
                             deleted = prune_entity_tombstones(db)
                             remaining = int(db.execute(
                                 "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_count'"
@@ -99,7 +108,7 @@ class SyncStore:
         threading.Thread(target=prune, name='entity-tombstone-pruner', daemon=True).start()
 
     def draft_sequence(self):
-        with self.connect() as db:
+        with self.connection("SyncStore.draft_sequence") as db:
             return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]
 
     def _ensure_versions(self):
@@ -111,7 +120,7 @@ class SyncStore:
         with lock:
             if getattr(self, '_versions_ready', False):
                 return
-            with self.connect() as db:
+            with self.connection("SyncStore.ensure_versions") as db:
                 db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
                     seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
                     hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)''')
@@ -147,7 +156,13 @@ class SyncStore:
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
             return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 
-        with self.connect() as db:
+        # Hashing arbitrarily many transcript items is CPU work. Complete it
+        # before BEGIN IMMEDIATE so other writers do not wait for serialization.
+        item_hashes = {key: digest(item) for key, item in items_by_id.items()} if not deleted else {}
+        order_hash = digest(order) if not deleted else None
+        metadata_hash = digest(metadata) if not deleted else digest({})
+
+        with self.connection("SyncStore.transcript_pull") as db:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute('SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?',
                               (collection,)).fetchall()
@@ -174,16 +189,16 @@ class SyncStore:
                 for key, row in tuple(current.items()):
                     if key.startswith('item:') or key == TRANSCRIPT_ORDER_ID:
                         put(key, row[2], True)
-                put(TRANSCRIPT_META_ID, digest({}), True)
+                put(TRANSCRIPT_META_ID, metadata_hash, True)
             else:
                 live_keys = {'item:' + key for key in items_by_id}
-                for entity_id, item in items_by_id.items():
-                    put('item:' + entity_id, digest(item), False)
+                for entity_id, value_hash in item_hashes.items():
+                    put('item:' + entity_id, value_hash, False)
                 for key, row in tuple(current.items()):
                     if key.startswith('item:') and key not in live_keys and not row[3]:
                         put(key, row[2], True)
-                put(TRANSCRIPT_ORDER_ID, digest(order), False)
-                put(TRANSCRIPT_META_ID, digest(metadata), False)
+                put(TRANSCRIPT_ORDER_ID, order_hash, False)
+                put(TRANSCRIPT_META_ID, metadata_hash, False)
 
             # Tombstones are retained for a bounded replay window. The floor
             # marks cursors that must receive a complete replacement.
@@ -271,7 +286,7 @@ class SyncStore:
                 from codex_sync_entities import (entity_tombstone_floor, max_seq,
                                                  seed, sync_task_window,
                                                  sync_event_window, sync_monitor_window)
-                with self.connect() as db:
+                with self.connection("SyncStore.pull") as db:
                     db.execute('BEGIN IMMEDIATE')
                     startup_memory_mark("first-renderer-sync-pull")
                     seed(db, self.chat_snapshot or self.snapshot)
@@ -319,7 +334,7 @@ class SyncStore:
                 raise ValueError('Invalid sync scope')
             if scope.startswith('transcript:'):
                 return self.transcript_pull(scope, after, payload, deleted)
-            with self.connect() as db:
+            with self.connection("SyncStore.pull") as db:
                 if scope == 'drafts':
                     rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
                                       (scope, after, limit)).fetchall()
@@ -375,7 +390,7 @@ class SyncStore:
         if not isinstance(rows, list) or len(rows) > 100:
             raise ValueError('Invalid draft batch')
         conflicts = []
-        with self.scope_lock('drafts'), self.connect() as db:
+        with self.scope_lock('drafts'), self.connection("SyncStore.draft_write") as db:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:
                 if not isinstance(row, dict) or not isinstance(row.get('newDocumentState'), dict):

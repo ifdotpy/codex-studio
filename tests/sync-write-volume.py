@@ -10,6 +10,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_sync import SyncStore
+from codex_sqlite import connect as instrumented_connect, diagnostics as sqlite_diagnostics
 
 PAGE = 4096
 COUNT = 60
@@ -28,7 +29,7 @@ def measure(name, action, setup=lambda db: None):
             anchor.commit()
             @contextlib.contextmanager
             def connect():
-                db = sqlite3.connect(path)
+                db = instrumented_connect(path, site=name)
                 db.execute('PRAGMA wal_autocheckpoint=0')
                 try:
                     with db:
@@ -45,8 +46,11 @@ def measure(name, action, setup=lambda db: None):
                 action(connect, store, tick[0])
             wal = os.stat(str(path) + '-wal').st_size - start
             checkpoint = anchor.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+            stat_site = ('SyncStore.transcript_pull' if name == 'transcript_entity_refresh' else name)
+            transaction_site = sqlite_diagnostics().get('transaction', {}).get('sites', {}).get(stat_site, {})
             return {'source': name, 'operations': COUNT, 'walBytesPerMinuteAt60Ops': wal,
-                    'checkpointBytesAtEnd': checkpoint[1] * PAGE}
+                    'checkpointBytesAtEnd': checkpoint[1] * PAGE,
+                    'transactionMetrics': transaction_site}
         finally:
             anchor.close()
 
@@ -112,6 +116,12 @@ def trigger(connect, store, index):
                    ('a', str(index)))
 
 
+def transcript(connect, store, index):
+    store.transcript_pull('transcript', 0,
+                          {'items': [{'id': str(item), 'text': 'x' * 2048}
+                                     for item in range(250)], 'tick': index}, False)
+
+
 def schema(sql):
     return lambda db: db.executescript(sql)
 
@@ -129,6 +139,7 @@ if __name__ == '__main__':
         measure('search_fts_growing_stream', growing_search, schema('CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body)')),
         measure('item_without_trigger', trigger, schema('CREATE TABLE runtime_items(id TEXT PRIMARY KEY,record TEXT)')),
         measure('item_with_trigger', trigger, schema('CREATE TABLE runtime_items(id TEXT PRIMARY KEY,record TEXT); CREATE TRIGGER watch AFTER UPDATE ON runtime_items BEGIN UPDATE sync_generation SET value=value+1 WHERE id=1; END; CREATE TRIGGER watch_insert AFTER INSERT ON runtime_items BEGIN UPDATE sync_generation SET value=value+1 WHERE id=1; END;')),
+        measure('transcript_entity_refresh', transcript),
     ]
     by = {r['source']: r for r in results}
     assert by['sync_version_plus_agent_change']['walBytesPerMinuteAt60Ops'] < by['sync_payload_replace']['walBytesPerMinuteAt60Ops'] / 20

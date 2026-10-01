@@ -40,6 +40,7 @@ from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
 from codex_startup_memory import mark as startup_memory_mark
+from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
@@ -1117,10 +1118,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
         if db is None:
-            db = sqlite3.connect(self.db_path, timeout=15)
+            db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
             db.row_factory = sqlite3.Row
             if reusable:
                 local.connection = db
+        sqlite_assert_clean(db, "Runtime.db reuse")
         # Re-register on every context entry. A live code patch can add the
         # entity triggers while this thread retains a connection opened by the
         # old implementation; registering only when opening a connection
@@ -1139,7 +1141,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
         pending[db] = []
         try:
-            with db:
+            with sqlite_scope(db, "Runtime.db"):
                 yield db
             if getattr(local, "agent_cache_dirty", False):
                 local.agent_cache_dirty = False

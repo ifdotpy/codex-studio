@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 from codex_backend_identity import BACKEND_BUILD
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
 from codex_startup_memory import mark as startup_memory_mark
+from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -132,15 +133,17 @@ class Canvas:
     @contextmanager
     def connect(self):
         db = (sqlite3.connect(self.db.absolute().as_uri() + '?mode=ro', uri=True, timeout=10)
-              if self.read_only else sqlite3.connect(self.db, timeout=10))
+              if self.read_only else sqlite_connect(self.db, timeout=10, site="Canvas.connect"))
         db.row_factory = sqlite3.Row
-        from codex_sync_entities import register_functions, ensure_tables
-        register_functions(db)
-        if not self.read_only and not db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
-            ensure_tables(db)
         try:
-            with db:
+            sqlite_assert_clean(db, "Canvas.connect reuse")
+            from codex_sync_entities import register_functions, ensure_tables
+            register_functions(db)
+            if not self.read_only and not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+                ensure_tables(db)
+            sqlite_assert_clean(db, "Canvas.connect setup")
+            with sqlite_scope(db, "Canvas.connect"):
                 yield db
         finally:
             db.close()

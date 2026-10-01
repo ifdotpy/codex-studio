@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from codex_native_sweep import _loaded
+from codex_sqlite import diagnostics as sqlite_diagnostics
 
 
 def _kind(command):
@@ -180,4 +181,5 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "hostResources": host_resources(), "resourceAttribution": attribution,
             "nativeAccounts": dict(sorted(native_accounts.items())),
             "studioLoadedThreads": studio_loaded, "queues": queues,
-            "runtimeLockSamples": sampled}
+            "runtimeLockSamples": sampled,
+            "sqliteContention": sqlite_diagnostics()}
