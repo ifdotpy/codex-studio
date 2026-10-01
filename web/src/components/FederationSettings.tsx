@@ -25,7 +25,8 @@ export function FederationSettings({
   const [shareStatus, setShareStatus] = useState(false);
   const [busy, setBusy] = useState(false);
   const team = useMemo(
-    () => agents.filter((agent) => agent.id === leadId || agent.rootId === leadId),
+    () =>
+      agents.filter((agent) => agent.id === leadId || agent.rootId === leadId),
     [agents, leadId],
   );
   useEffect(() => setLocalMembers([leadId]), [leadId]);
@@ -34,7 +35,8 @@ export function FederationSettings({
     setBusy(true);
     try {
       const result = await api<any>("/api/federation", body);
-      if (result && Array.isArray(result.peers)) setState(result as FederationSnapshot);
+      if (result && Array.isArray(result.peers))
+        setState(result as FederationSnapshot);
       await refresh();
       return result as FederationSnapshot;
     } catch (error) {
@@ -54,7 +56,9 @@ export function FederationSettings({
   if (!active) return null;
   const toggleMember = (id: string, checked: boolean) =>
     setLocalMembers((current) =>
-      checked ? [...new Set([...current, id])] : current.filter((item) => item !== id),
+      checked
+        ? [...new Set([...current, id])]
+        : current.filter((item) => item !== id),
     );
   const pair = async () => {
     try {
@@ -67,7 +71,10 @@ export function FederationSettings({
   };
 
   return (
-    <section className="settings-group federation-settings" aria-label="Peer federation">
+    <section
+      className="settings-group federation-settings"
+      aria-label="Peer federation"
+    >
       <h2>Peer federation</h2>
       <p>
         Share approved rooms with another Studio server. Both users must enable
@@ -77,11 +84,17 @@ export function FederationSettings({
         label="Enable federation traffic on this server"
         checked={state?.enabled === true}
         disabled={busy || !state}
-        onChange={(event) => void run({ action: "set_enabled", enabled: event.currentTarget.checked })}
+        onChange={(event) =>
+          void run({
+            action: "set_enabled",
+            enabled: event.currentTarget.checked,
+          })
+        }
       />
       {state?.identity && (
         <p className="federation-identity">
-          Server identity: {state.identity.label} · key {state.identity.fingerprint}
+          Server identity: {state.identity.label} · key{" "}
+          {state.identity.fingerprint}
         </p>
       )}
       <TextInput
@@ -101,10 +114,22 @@ export function FederationSettings({
         variant="light"
         disabled={busy || !state?.enabled}
         onClick={async () => {
-          const result = await run({ action: "create_invite", label: serverLabel,
-            expected_user: expectedUser || undefined });
-          if (result && "invitation" in (result as unknown as Record<string, unknown>))
-            setInviteText(JSON.stringify((result as unknown as { invitation: unknown }).invitation, null, 2));
+          const result = await run({
+            action: "create_invite",
+            label: serverLabel,
+            expected_user: expectedUser || undefined,
+          });
+          if (
+            result &&
+            "invitation" in (result as unknown as Record<string, unknown>)
+          )
+            setInviteText(
+              JSON.stringify(
+                (result as unknown as { invitation: unknown }).invitation,
+                null,
+                2,
+              ),
+            );
         }}
       >
         Create pairing invitation
@@ -118,7 +143,10 @@ export function FederationSettings({
         autosize
         maxRows={12}
       />
-      <Button disabled={busy || !state?.enabled || !inviteText.trim()} onClick={() => void pair()}>
+      <Button
+        disabled={busy || !state?.enabled || !inviteText.trim()}
+        onClick={() => void pair()}
+      >
         Approve invitation and request pairing
       </Button>
       {state?.peers.map((peer) => (
@@ -126,25 +154,39 @@ export function FederationSettings({
           <strong>{peer.label}</strong>
           <span>{peer.status === "approved" ? "Paired" : peer.status}</span>
           {peer.whoisStatus === "missing" && (
-            <p role="alert">Tailscale could not verify this user. Continue only if you recognize and accept this peer.</p>
+            <p role="alert">
+              Tailscale could not verify this user. Continue only if you
+              recognize and accept this peer.
+            </p>
           )}
           {peer.lastError && <p role="status">{peer.lastError}</p>}
           {peer.status !== "approved" && peer.status !== "revoked" && (
             <Button
               size="xs"
               disabled={busy}
-              onClick={() => void run({
-                action: "approve_peer",
-                state_id: peer.stateId,
-                accept_missing_whois: peer.whoisStatus === "missing",
-              })}
+              onClick={() =>
+                void run({
+                  action: "approve_peer",
+                  state_id: peer.stateId,
+                  accept_missing_whois: peer.whoisStatus === "missing",
+                })
+              }
             >
-              {peer.whoisStatus === "missing" ? "Accept missing identity and pair" : "Approve pairing"}
+              {peer.whoisStatus === "missing"
+                ? "Accept missing identity and pair"
+                : "Approve pairing"}
             </Button>
           )}
           {peer.status !== "revoked" && (
-            <Button size="xs" color="red" variant="subtle" disabled={busy}
-              onClick={() => void run({ action: "revoke_peer", state_id: peer.stateId })}>
+            <Button
+              size="xs"
+              color="red"
+              variant="subtle"
+              disabled={busy}
+              onClick={() =>
+                void run({ action: "revoke_peer", state_id: peer.stateId })
+              }
+            >
               Revoke
             </Button>
           )}
@@ -153,54 +195,113 @@ export function FederationSettings({
       {state?.peers.some((peer) => peer.status === "approved") && (
         <div className="federation-room-create">
           <h3>Create a shared room</h3>
-          <p>By default, only the local lead display name is shared. Extra names and status require opt-in.</p>
+          <p>
+            By default, only the local lead display name is shared. Extra names
+            and status require opt-in.
+          </p>
           {team.map((agent) => (
             <Checkbox
               key={agent.id}
               label={agent.isLead ? `${agent.name} (lead)` : agent.name}
               checked={localMembers.includes(agent.id)}
               disabled={busy || (agent.id !== leadId && !shareNames)}
-              onChange={(event) => toggleMember(agent.id, event.currentTarget.checked)}
+              onChange={(event) =>
+                toggleMember(agent.id, event.currentTarget.checked)
+              }
             />
           ))}
-          <Checkbox label="Share names of selected agents" checked={shareNames}
-            onChange={(event) => setShareNames(event.currentTarget.checked)} />
-          <Checkbox label="Share selected agents’ current status" checked={shareStatus}
-            onChange={(event) => setShareStatus(event.currentTarget.checked)} />
-          {state.peers.filter((peer) => peer.status === "approved").map((peer) => (
-            <Button key={peer.stateId} variant="light" disabled={busy || !state.enabled || !localMembers.includes(leadId)}
-              onClick={() => void run({ action: "create_room", peer_id: peer.stateId,
-                local_members: localMembers, share_names: shareNames, share_status: shareStatus })}>
-              Invite {peer.label} to a room
-            </Button>
-          ))}
+          <Checkbox
+            label="Share names of selected agents"
+            checked={shareNames}
+            onChange={(event) => setShareNames(event.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Share selected agents’ current status"
+            checked={shareStatus}
+            onChange={(event) => setShareStatus(event.currentTarget.checked)}
+          />
+          {state.peers
+            .filter((peer) => peer.status === "approved")
+            .map((peer) => (
+              <Button
+                key={peer.stateId}
+                variant="light"
+                disabled={
+                  busy || !state.enabled || !localMembers.includes(leadId)
+                }
+                onClick={() =>
+                  void run({
+                    action: "create_room",
+                    peer_id: peer.stateId,
+                    local_members: localMembers,
+                    share_names: shareNames,
+                    share_status: shareStatus,
+                  })
+                }
+              >
+                Invite {peer.label} to a room
+              </Button>
+            ))}
         </div>
       )}
       {state?.rooms.map((room) => (
         <div className="federation-room" key={room.id}>
           <strong>{room.peerLabel}</strong>
-          <span>{room.status === "approved" ? "Shared room" : "Room approval pending"}</span>
+          <span>
+            {room.status === "approved"
+              ? "Shared room"
+              : "Room approval pending"}
+          </span>
           {room.status === "pending" && room.localMembers.length === 0 && (
             <>
-              <p>Approve access for the local lead. Select extra members only when needed.</p>
+              <p>
+                Approve access for the local lead. Select extra members only
+                when needed.
+              </p>
               {team.map((agent) => (
-                <Checkbox key={`${room.id}:${agent.id}`} label={agent.isLead ? `${agent.name} (lead)` : agent.name}
-                  checked={localMembers.includes(agent.id)} disabled={busy || (agent.id !== leadId && !shareNames)}
-                  onChange={(event) => toggleMember(agent.id, event.currentTarget.checked)} />
+                <Checkbox
+                  key={`${room.id}:${agent.id}`}
+                  label={agent.isLead ? `${agent.name} (lead)` : agent.name}
+                  checked={localMembers.includes(agent.id)}
+                  disabled={busy || (agent.id !== leadId && !shareNames)}
+                  onChange={(event) =>
+                    toggleMember(agent.id, event.currentTarget.checked)
+                  }
+                />
               ))}
-              <Checkbox label="Share names of selected agents" checked={shareNames}
-                onChange={(event) => setShareNames(event.currentTarget.checked)} />
-              <Checkbox label="Share selected agents’ current status" checked={shareStatus}
-                onChange={(event) => setShareStatus(event.currentTarget.checked)} />
-              <Button disabled={busy || !localMembers.includes(leadId)} onClick={() => void run({
-                action: "approve_room", room_id: room.id, local_members: localMembers,
-                share_names: shareNames, share_status: shareStatus,
-              })}>Approve room</Button>
+              <Checkbox
+                label="Share names of selected agents"
+                checked={shareNames}
+                onChange={(event) => setShareNames(event.currentTarget.checked)}
+              />
+              <Checkbox
+                label="Share selected agents’ current status"
+                checked={shareStatus}
+                onChange={(event) =>
+                  setShareStatus(event.currentTarget.checked)
+                }
+              />
+              <Button
+                disabled={busy || !localMembers.includes(leadId)}
+                onClick={() =>
+                  void run({
+                    action: "approve_room",
+                    room_id: room.id,
+                    local_members: localMembers,
+                    share_names: shareNames,
+                    share_status: shareStatus,
+                  })
+                }
+              >
+                Approve room
+              </Button>
             </>
           )}
         </div>
       ))}
-      {state && state.queued > 0 && <p role="status">{state.queued} message(s) waiting for delivery.</p>}
+      {state && state.queued > 0 && (
+        <p role="status">{state.queued} message(s) waiting for delivery.</p>
+      )}
     </section>
   );
 }

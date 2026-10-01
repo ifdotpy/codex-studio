@@ -210,7 +210,10 @@ function sourceFixture(run) {
   mkdirSync(path.join(root, "scripts"));
   writeFileSync(path.join(root, "scripts/codex-canvas"), "# entry point\n");
   writeFileSync(path.join(root, "scripts/runtime.py"), "VALUE = 1\n");
-  writeFileSync(path.join(root, "scripts/codex_federation_crypto.mjs"), "VALUE = 1\n");
+  writeFileSync(
+    path.join(root, "scripts/codex_federation_crypto.mjs"),
+    "VALUE = 1\n",
+  );
   try {
     return run(root);
   } finally {
@@ -264,7 +267,10 @@ test("the backend build matches the Python source identity", () => {
     assert.notEqual(backendBuild(root), initial);
     assert.equal(backendBuild(root), pythonBuild());
     const changedPythonBuild = backendBuild(root);
-    writeFileSync(path.join(root, "scripts/codex_federation_crypto.mjs"), "VALUE = 2\n");
+    writeFileSync(
+      path.join(root, "scripts/codex_federation_crypto.mjs"),
+      "VALUE = 2\n",
+    );
     assert.notEqual(backendBuild(root), changedPythonBuild);
     assert.equal(backendBuild(root), pythonBuild());
   });

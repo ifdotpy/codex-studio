@@ -68,10 +68,11 @@ export default function TeamChats({
       (room.kind === "federated"
         ? (room.localMembers || room.members).some((id) => members.has(id))
         : room.kind === "broadcast"
-        ? room.rootId === leadId
-        : room.members.length > 0 &&
-          (room.members.every((id) => members.has(id)) ||
-            (!!room.peerTeamId && room.members.some((id) => members.has(id))))),
+          ? room.rootId === leadId
+          : room.members.length > 0 &&
+            (room.members.every((id) => members.has(id)) ||
+              (!!room.peerTeamId &&
+                room.members.some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
     if (room.kind === "federated") return room.peerLabel || room.name;
@@ -414,7 +415,7 @@ export default function TeamChats({
                   ? "Team conversation"
                   : room?.kind === "federated"
                     ? `Remote room · ${room.peerLabel || "paired server"}`
-                  : "Conversation"}
+                    : "Conversation"}
             </span>
           </div>
         </header>

@@ -67,7 +67,12 @@ export interface Room {
   peerId?: string;
   peerLabel?: string;
   localMembers?: string[];
-  remoteMembers?: { id: string; name?: string; role?: string; status?: string }[];
+  remoteMembers?: {
+    id: string;
+    name?: string;
+    role?: string;
+    status?: string;
+  }[];
   updated: number;
   lastMessage?: { seq: number; text: string; sender: string; created: number };
 }
@@ -92,7 +97,12 @@ export interface FederationRoom {
   name: string;
   status: string;
   localMembers: string[];
-  remoteMembers: { id: string; name?: string; role?: string; status?: string }[];
+  remoteMembers: {
+    id: string;
+    name?: string;
+    role?: string;
+    status?: string;
+  }[];
   shareNames: boolean;
   shareStatus: boolean;
   created?: number;
@@ -102,7 +112,13 @@ export interface FederationSnapshot {
   enabled: boolean;
   identity: { stateId: string; label: string; fingerprint: string } | null;
   peers: FederationPeer[];
-  invites: { id: string; created: number; expires: number; status: string; expectedUser?: string }[];
+  invites: {
+    id: string;
+    created: number;
+    expires: number;
+    status: string;
+    expectedUser?: string;
+  }[];
   rooms: FederationRoom[];
   queued: number;
 }
