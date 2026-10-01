@@ -33,9 +33,11 @@ const server = await createServer({
         if (id !== entry) return;
         return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';
 import NativeRuntimeStatus from '/src/components/NativeRuntimeStatus.tsx';import Accounts from '/src/components/Accounts.tsx';import '/src/studio-theme.css';import '/src/appearance.css';
-const accounts=[{id:'default',label:'Personal',status:'ready'},{id:'work',label:'Work with a very long account label for narrow screens',status:'ready'}];
-function Fixture(){const [opened,setOpened]=useState(false);const [integrated,setIntegrated]=useState(false);window.setRuntimeOpen=setOpened;window.showAccounts=()=>setIntegrated(true);
-return <MantineProvider><main style={{maxWidth:600,padding:12}}>{integrated?<Accounts state={{data:{accounts,defaultAccountKey:'default'},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} accountKey='default' changeAccount={async()=>{}} onError={()=>{}}/>:<NativeRuntimeStatus opened={opened} accounts={accounts}/>}</main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+import ConversationWarnings from '/src/components/ConversationWarnings.tsx';
+const accounts=[{id:'default',label:'Personal',status:'ready'},{id:'work',label:'Work with a very long account label for narrow screens',status:'ready'},{id:'claude',label:'Claude profile',provider:'claude',status:'ready'}];
+const notices=[{id:'codex-warning',accountKey:'default',message:'Codex account version warning'},{id:'claude-warning',accountKey:'claude',message:'Claude account version warning'}];
+function Fixture(){const [opened,setOpened]=useState(false);const [integrated,setIntegrated]=useState(false);const [warningAccount,setWarningAccount]=useState('default');window.setRuntimeOpen=setOpened;window.setWarningAccount=setWarningAccount;window.showAccounts=()=>setIntegrated(true);
+return <MantineProvider><main style={{maxWidth:600,padding:12}}>{integrated?<Accounts state={{data:{accounts,defaultAccountKey:'default'},setData:()=>{},refresh:async()=>{},error:'',scope:'fixture'}} accountKey='default' changeAccount={async()=>{}} onError={()=>{}}/>:<NativeRuntimeStatus opened={opened} accounts={accounts}/>}<ConversationWarnings scope='version-warning' notices={notices} accountKey={warningAccount} messages={[]}/></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
       },
     },
   ],
@@ -91,9 +93,24 @@ try {
     message:
       "Codex CLI 0.153.3 is older than this repository's lowest recorded tested version (0.153.4). It may work poorly or fail. You can continue at your own risk.",
   };
+  const currentProviderStatus = {
+    id: "provider-version:default",
+    accountKey: "default",
+    provider: "codex",
+    status: "outdated",
+    runningVersion: "0.153.3",
+    installedVersion: "0.153.3",
+    configuredVersion: null,
+    baseline: "0.153.4",
+    message: providerWarning.message,
+  };
   let body = {
     nativeRuntime: initial,
-    providerVersions: { warnings: [providerWarning] },
+    providerVersions: {
+      checkedAt: 1790092579,
+      providers: [currentProviderStatus],
+      warnings: [providerWarning],
+    },
   };
   await page.route("**/api/**", (route) => {
     assert.equal(route.request().method(), "GET", "Status must stay read-only");
@@ -110,10 +127,20 @@ try {
   assert.equal(reads, 0, "Closed panel must not read diagnostics");
   await page.evaluate(() => window.setRuntimeOpen(true));
   const panel = page.getByRole("region", { name: "Codex runtime" });
+  const providerPanel = page.getByRole("region", { name: "Provider versions" });
   await panel.waitFor();
+  await providerPanel.waitFor();
   assert.match(await panel.innerText(), /0\.116\.0/);
-  assert.match(await panel.innerText(), /lowest recorded tested version/);
-  assert.match(await panel.innerText(), /continue at your own risk/);
+  assert.match(
+    await providerPanel.innerText(),
+    /lowest recorded tested version/,
+  );
+  assert.match(await providerPanel.innerText(), /continue at your own risk/);
+  assert.match(await providerPanel.innerText(), /Running: 0\.153\.3/);
+  assert.match(
+    await providerPanel.innerText(),
+    /Lowest repo-tested version: 0\.153\.4/,
+  );
   assert.match(await panel.innerText(), /1 account pending/);
   assert.match(await panel.innerText(), /Personal/);
   assert.match(await panel.innerText(), /Waiting for active turns to finish/);
@@ -131,6 +158,26 @@ try {
     "Do not show verbose source paths",
   );
   assert.equal(await panel.getByRole("button").count(), 0);
+
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  const warningsDialog = page.getByRole("dialog", {
+    name: "Warnings",
+    exact: true,
+  });
+  await warningsDialog.getByText("Codex account version warning").waitFor();
+  assert.equal(
+    await warningsDialog.getByText("Claude account version warning").count(),
+    0,
+  );
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.setWarningAccount("claude"));
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  await warningsDialog.getByText("Claude account version warning").waitFor();
+  assert.equal(
+    await warningsDialog.getByText("Codex account version warning").count(),
+    0,
+  );
+  await page.keyboard.press("Escape");
 
   body = {
     nativeRuntime: {
@@ -169,6 +216,7 @@ try {
       candidates: [],
       accounts: {},
     },
+    providerVersions: { checkedAt: 1790092590, providers: [] },
   };
   await page.clock.runFor(10100);
   await page.waitForFunction(() =>
@@ -178,9 +226,38 @@ try {
   );
   assert.equal(await panel.locator("time").count(), 0);
 
-  body = {};
+  const claudeOnly = {
+    id: "provider-version:claude",
+    accountKey: "claude",
+    provider: "claude",
+    status: "unknown",
+    runningVersion: null,
+    installedVersion: "Claude Code 2.1.277",
+    configuredVersion: "Claude Code 2.2.0",
+    baseline: "2.1.278",
+    message: "The exact version already running in Claude sessions is unknown.",
+  };
+  body = {
+    providerVersions: {
+      checkedAt: 1790092600,
+      providers: [claudeOnly],
+      warnings: [],
+    },
+  };
   await page.clock.runFor(10100);
   await panel.waitFor({ state: "detached" });
+  await providerPanel.waitFor();
+  assert.match(await providerPanel.innerText(), /Claude Code · Claude profile/);
+  assert.match(await providerPanel.innerText(), /Running: Unknown/);
+  assert.match(await providerPanel.innerText(), /Claude Code 2\.1\.277/);
+  assert.match(await providerPanel.innerText(), /Running version unknown/);
+  body = { providerVersions: { checkedAt: 1790092610, providers: [] } };
+  await page.clock.runFor(10100);
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".provider-version-status")
+      ?.textContent.includes("No connected provider CLIs were found"),
+  );
   await page.evaluate(() => window.setRuntimeOpen(false));
   const beforeClose = reads;
   await page.clock.runFor(30000);
@@ -226,6 +303,10 @@ try {
   );
   assert.equal(
     await panel.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    true,
+  );
+  assert.equal(
+    await providerPanel.evaluate((el) => el.scrollWidth <= el.clientWidth),
     true,
   );
 

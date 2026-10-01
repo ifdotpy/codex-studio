@@ -304,6 +304,7 @@ class AppServer:
     def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None):
         import queue
         self.notification, self.request, self.died = notification, request, died
+        self.provider = provider
         self.lock = threading.RLock()
         self.write_lock = threading.RLock()
         self.pending = {}
