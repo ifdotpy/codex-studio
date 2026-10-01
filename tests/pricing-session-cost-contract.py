@@ -116,6 +116,7 @@ class PricingSessionCostContract(unittest.TestCase):
           CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
           CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
           CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+          CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL);
         """)
         for agent in ("lead", "worker-claude", "worker-unknown"):
             db.execute("INSERT INTO analytics_agents VALUES (?,?)", (agent, json.dumps({"id": agent, "rootId": "lead"})))
@@ -276,13 +277,47 @@ class PricingSessionCostContract(unittest.TestCase):
         result = reader._compute("fresh", "fresh")
         self.assertEqual((result["rootId"], result["pricedSamples"]), ("fresh", 0))
 
-    def test_session_cost_cache_waits_30_seconds_and_keeps_at_most_16_roots(self):
+    def test_missing_model_inference_ignores_deduplicated_rows(self):
         db_path = self.root / "canvas.sqlite3"
         db = sqlite3.connect(db_path)
         db.executescript("""
           CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
           CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
           CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+        """)
+        db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
+        db.execute("INSERT INTO analytics_agents VALUES ('worker',?)", (json.dumps({"rootId": "lead"}),))
+        records = (
+            (1, "turn-1", {"agentId": "lead", "threadId": "native", "turnId": "turn-1",
+                            "responseId": "r1", "model": "gpt-6-luna", "delta": {"inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),
+            (2, "turn-1", {"agentId": "lead", "threadId": "native", "turnId": "turn-1",
+                            "model": "gpt-5.6-luna", "delta": {"inputTokens": 9000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),
+            (3, "turn-2", {"agentId": "lead", "threadId": "native", "turnId": "turn-2",
+                            "responseId": "r2", "delta": {"inputTokens": 2000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),
+            (4, "turn-3", {"agentId": "worker", "threadId": "native", "turnId": "turn-3",
+                            "responseId": "r3", "model": "gpt-5.6-luna", "delta": {"inputTokens": 3000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),
+        )
+        for seq, turn, record in records:
+            db.execute("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?)",
+                       (seq, record["agentId"], "lead", "native", turn, seq, json.dumps(record)))
+        db.commit()
+        db.close()
+        result = SessionCostReader(db_path, FixedPricing()).snapshot("lead")
+        self.assertEqual(result["pricedSamples"], 2)
+        self.assertEqual(result["unknownModels"], ["gpt-5.6-luna"])
+        self.assertEqual(result["totalUSD"], price_usage(catalog(), "openai", "gpt-6-luna", {
+            "inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0})[0] +
+            price_usage(catalog(), "openai", "gpt-6-luna", {
+            "inputTokens": 2000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0})[0])
+
+    def test_session_cost_cache_skips_unchanged_and_invalidates_root_changes(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+          CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL);
         """)
         db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
         db.commit()
@@ -294,21 +329,17 @@ class PricingSessionCostContract(unittest.TestCase):
         db.execute("INSERT INTO analytics_usage VALUES (1,'lead','lead','thread','turn',1,?)",
                    (json.dumps({"responseId": "new", "model": "gpt-6-luna", "delta": {
                        "inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),))
+        db.execute("INSERT INTO analytics_usage_roots VALUES ('lead',1)")
         db.commit()
         db.close()
         clock[0] += 29
-        cached = reader.snapshot("lead")
-        self.assertEqual(cached["cacheAgeSeconds"], 29)
-        self.assertEqual(cached["generation"], first["generation"])
-        self.assertIsNone(cached["totalUSD"])
-        clock[0] += 1
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(reader, "_compute", wraps=reader._compute) as compute:
                 stale = reader.snapshot("lead")
                 again = reader.snapshot("lead")
-                self.assertEqual(stale["cacheAgeSeconds"], 30)
+                self.assertEqual(stale["cacheAgeSeconds"], 29)
                 self.assertTrue(stale["refreshing"])
-                self.assertEqual(again["cacheAgeSeconds"], 30)
+                self.assertEqual(again["cacheAgeSeconds"], 29)
                 self.assertTrue(again["refreshing"])
                 worker.assert_called_once()
                 compute.assert_not_called()
@@ -316,16 +347,50 @@ class PricingSessionCostContract(unittest.TestCase):
         updated = reader.snapshot("lead")
         self.assertEqual(updated["pricedSamples"], 1)
         self.assertEqual(updated["cacheAgeSeconds"], 0)
+        clock[0] += 60
+        with patch("codex_session_costs.threading.Thread") as worker:
+            with patch.object(reader, "_compute", wraps=reader._compute) as compute:
+                unchanged = reader.snapshot("lead")
+                self.assertEqual(unchanged["cacheAgeSeconds"], 60)
+                self.assertFalse(unchanged["refreshing"])
+                worker.assert_not_called()
+                compute.assert_not_called()
+        db = sqlite3.connect(db_path)
+        db.execute("INSERT INTO analytics_usage VALUES (2,'other','other','thread','turn',2,?)",
+                   (json.dumps({"responseId": "other", "model": "gpt-6-luna", "delta": {
+                       "inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),))
+        db.execute("INSERT INTO analytics_usage_roots VALUES ('other',1)")
+        db.commit()
+        db.close()
+        with patch("codex_session_costs.threading.Thread") as worker:
+            with patch.object(reader, "_compute", wraps=reader._compute) as compute:
+                unchanged = reader.snapshot("lead")
+                self.assertFalse(unchanged["refreshing"])
+                worker.assert_not_called()
+                compute.assert_not_called()
+        db = sqlite3.connect(db_path)
+        corrected = {"responseId": "new", "model": "gpt-6-luna", "delta": {
+            "inputTokens": 2000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}
+        db.execute("UPDATE analytics_usage SET record=? WHERE seq=1", (json.dumps(corrected),))
+        db.execute("UPDATE analytics_usage_roots SET generation=2 WHERE root='lead'")
+        db.commit()
+        db.close()
+        with patch("codex_session_costs.threading.Thread") as worker:
+            changed = reader.snapshot("lead")
+            self.assertTrue(changed["refreshing"])
+            worker.assert_called_once()
+        reader._background_refresh("lead", "lead")
+        changed = reader.snapshot("lead")
+        self.assertEqual(changed["totalUSD"], updated["totalUSD"] * 2)
 
         restarted = SessionCostReader(db_path, FixedPricing(), state_root=self.root, clock=lambda: clock[0])
-        clock[0] += 31
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(restarted, "_compute", wraps=restarted._compute) as compute:
                 restored = restarted.snapshot("lead")
-                self.assertEqual(restored["totalUSD"], updated["totalUSD"])
-                self.assertEqual(restored["cacheAgeSeconds"], 31)
-                self.assertTrue(restored["refreshing"])
-                worker.assert_called_once()
+                self.assertEqual(restored["totalUSD"], changed["totalUSD"])
+                self.assertEqual(restored["cacheAgeSeconds"], 0)
+                self.assertFalse(restored["refreshing"])
+                worker.assert_not_called()
                 compute.assert_not_called()
         db = sqlite3.connect(db_path)
         for index in range(18):
@@ -336,6 +401,39 @@ class PricingSessionCostContract(unittest.TestCase):
         for index in range(18):
             reader.snapshot("root-" + str(index))
         self.assertLessEqual(len(reader.cache), 16)
+
+    def test_session_cost_pricing_change_invalidates_unchanged_usage(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+          CREATE TABLE analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        """)
+        db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
+        db.execute("INSERT INTO analytics_usage VALUES (1,'lead','lead','thread','turn',1,?)",
+                   (json.dumps({"responseId": "r", "model": "gpt-6-luna", "delta": {
+                       "inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}}),))
+        db.commit()
+        db.close()
+        class MutablePricing:
+            value = catalog()
+            def snapshot(self):
+                return self.value
+            def refresh_missing(self):
+                pass
+        pricing = MutablePricing()
+        reader = SessionCostReader(db_path, pricing, state_root=self.root)
+        initial = reader.snapshot("lead")
+        pricing.value["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]["input"] = 0.2
+        with patch("codex_session_costs.threading.Thread") as worker:
+            stale = reader.snapshot("lead")
+            self.assertTrue(stale["refreshing"])
+            worker.assert_called_once()
+        reader._background_refresh("lead", "lead")
+        refreshed = reader.snapshot("lead")
+        self.assertEqual(refreshed["totalUSD"], initial["totalUSD"] * 2)
 
     def test_session_cost_concurrent_cold_requests_share_one_compute(self):
         db_path = self.root / "canvas.sqlite3"
