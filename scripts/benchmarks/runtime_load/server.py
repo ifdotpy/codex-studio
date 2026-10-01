@@ -10,6 +10,7 @@ import resource
 import copy
 import atexit
 import faulthandler
+from contextlib import contextmanager
 import hashlib
 import math
 import signal
@@ -97,6 +98,21 @@ def stats(values):
             "max": max(values) if values else None}
 
 
+def phase_progress_turn_counts(phase, elapsed_seconds, scheduled, started_offers, completed):
+    """Keep due intents, protocol offers, and fully completed turns distinct."""
+    denominator = elapsed_seconds if elapsed_seconds and elapsed_seconds > 0 else None
+    offer_counts = {name: len(values) for name, values in started_offers.items()}
+    return {
+        "scheduledIntentsByPhase": dict(scheduled),
+        "phaseTurnsStartedOffered": offer_counts,
+        "phaseTurnsCompleted": dict(completed),
+        "currentPhaseAchievedOfferedTurnsPerSecond": (
+            offer_counts[phase] / denominator if denominator else None),
+        "currentPhaseAchievedCompletedTurnsPerSecond": (
+            completed[phase] / denominator if denominator else None),
+    }
+
+
 def invoke_with_duration(callback, record_duration):
     """Record elapsed callback time in a finally block without changing errors."""
     started = time.monotonic()
@@ -104,6 +120,55 @@ def invoke_with_duration(callback, record_duration):
         return callback()
     finally:
         record_duration((time.monotonic() - started) * 1000)
+
+
+class SampledSQLiteConnection(sqlite3.Connection):
+    """Measure first-DML elapsed time only on sampled benchmark connections."""
+    _DML = {"INSERT", "UPDATE", "DELETE", "REPLACE"}
+
+    def _run_statement(self, operation, sql):
+        recorder = getattr(self, "_benchmark_record", None)
+        first_dml = not getattr(self, "_benchmark_first_dml_seen", False)
+        keyword = sql.lstrip().split(None, 1)[0].upper() if isinstance(sql, str) and sql.strip() else ""
+        measure = recorder is not None and first_dml and keyword in self._DML
+        started = time.perf_counter_ns() if measure else None
+        try:
+            return operation()
+        finally:
+            if measure:
+                self._benchmark_first_dml_seen = True
+                recorder("firstDmlMs", (time.perf_counter_ns() - started) / 1_000_000)
+
+    def execute(self, sql, parameters=(), /):
+        return self._run_statement(lambda: super(SampledSQLiteConnection, self).execute(sql, parameters), sql)
+
+    def executemany(self, sql, seq_of_parameters, /):
+        return self._run_statement(
+            lambda: super(SampledSQLiteConnection, self).executemany(sql, seq_of_parameters), sql)
+
+
+@contextmanager
+def measured_sqlite_context_exit(db, record):
+    """Delegate commit/rollback to sqlite's native context exit and time it."""
+    try:
+        try:
+            yield db
+        except BaseException as error:
+            started = time.perf_counter_ns()
+            try:
+                suppressed = db.__exit__(type(error), error, error.__traceback__)
+            finally:
+                record("contextRollbackMs", (time.perf_counter_ns() - started) / 1_000_000)
+            if not suppressed:
+                raise
+        else:
+            started = time.perf_counter_ns()
+            try:
+                db.__exit__(None, None, None)
+            finally:
+                record("contextCommitMs", (time.perf_counter_ns() - started) / 1_000_000)
+    finally:
+        db.close()
 
 
 def delta_identity(params):
@@ -562,6 +627,89 @@ def main():
                               "productionMs": 0.0, "wrapperMs": 0.0,
                               "productionMaxMs": 0.0, "wrapperMaxMs": 0.0}
     callback_timing_by_method = {}
+    transaction_sample_every = 32
+    transaction_context_counts = {name: 0 for name in ("producer", "AppServer callback", "HTTP request", "other")}
+    transaction_sample_local = threading.local()
+    transaction_timing_lock = threading.Lock()
+    transaction_timing_samples = {
+        context: {name: deque(maxlen=512) for name in
+                  ("connectMs", "firstDmlMs", "contextCommitMs", "contextRollbackMs")}
+        for context in transaction_context_counts
+    }
+    analytics_delta_timing_samples = {
+        context: deque(maxlen=512) for context in transaction_context_counts
+    }
+    callback_sample_local = threading.local()
+    analytics_sample_local = threading.local()
+
+    def record_transaction_timing(context, metric, elapsed_ms):
+        with transaction_timing_lock:
+            transaction_timing_samples[context][metric].append(elapsed_ms)
+
+    def transaction_timing_snapshot():
+        with transaction_timing_lock:
+            copied = {
+                context: (transaction_context_counts[context],
+                          {name: list(values) for name, values in metrics.items()},
+                          list(analytics_delta_timing_samples[context]))
+                for context, metrics in transaction_timing_samples.items()
+            }
+        return {
+            context: {"sampledRuntimeDbContexts": sampled_count,
+                      **{name: stats(values) for name, values in metrics.items()},
+                      "deltaAnalyticsMs": stats(analytics_values)}
+            for context, (sampled_count, metrics, analytics_values) in copied.items()
+        }
+
+    original_runtime_db = runtime.db
+
+    @contextmanager
+    def measured_runtime_db():
+        context = MeasuredRLock._context()
+        calls_by_context = getattr(transaction_sample_local, "calls", None)
+        if calls_by_context is None:
+            calls_by_context = {}
+            transaction_sample_local.calls = calls_by_context
+        calls_by_context[context] = calls_by_context.get(context, 0) + 1
+        sampled = calls_by_context[context] % transaction_sample_every == 0
+        if not sampled:
+            with original_runtime_db() as db:
+                yield db
+            return
+        with transaction_timing_lock:
+            transaction_context_counts[context] += 1
+
+        def record(metric, elapsed_ms):
+            record_transaction_timing(context, metric, elapsed_ms)
+
+        connect_started = time.perf_counter_ns()
+        try:
+            db = sqlite3.connect(runtime.db_path, timeout=15, factory=SampledSQLiteConnection)
+        finally:
+            record("connectMs", (time.perf_counter_ns() - connect_started) / 1_000_000)
+        db.row_factory = sqlite3.Row
+        db._benchmark_record = record
+        db._benchmark_first_dml_seen = False
+        with measured_sqlite_context_exit(db, record) as sampled_db:
+            yield sampled_db
+
+    runtime.db = measured_runtime_db
+
+    original_analytics_event = runtime.analytics_event
+
+    def measured_analytics_event(*args, **kwargs):
+        if not getattr(analytics_sample_local, "enabled", False):
+            return original_analytics_event(*args, **kwargs)
+        started = time.perf_counter_ns()
+        try:
+            return original_analytics_event(*args, **kwargs)
+        finally:
+            context = getattr(analytics_sample_local, "context", "AppServer callback")
+            with transaction_timing_lock:
+                analytics_delta_timing_samples[context].append(
+                    (time.perf_counter_ns() - started) / 1_000_000)
+
+    runtime.analytics_event = measured_analytics_event
     producer_metrics_lock = threading.Lock()
     phase_names = ("warmup", "steady", "burst", "drain")
     turn_offer_lateness_ms = {name: [] for name in phase_names}
@@ -620,6 +768,14 @@ def main():
                 errors.append(f"notification account mismatch for {thread_id}: callback={account_key}, record={actual_account_key}")
         sample_state = len(notification_samples) < 20
         events_before = runtime.agent(matched_agent).get("events") if matched_agent and sample_state else None
+        if method == "item/agentMessage/delta":
+            callback_sample_local.delta_count = getattr(callback_sample_local, "delta_count", 0) + 1
+        previous_analytics_sample = getattr(analytics_sample_local, "enabled", False)
+        previous_analytics_context = getattr(analytics_sample_local, "context", None)
+        analytics_sample_local.enabled = (
+            method == "item/agentMessage/delta"
+            and callback_sample_local.delta_count % transaction_sample_every == 0)
+        analytics_sample_local.context = _lock_context.name
         production_duration_ms = None
         production_ended = None
         def record_production_duration(duration_ms):
@@ -668,6 +824,14 @@ def main():
                     pass
             else:
                 _lock_context.name = previous_lock_context
+            analytics_sample_local.enabled = previous_analytics_sample
+            if previous_analytics_context is None:
+                try:
+                    del analytics_sample_local.context
+                except AttributeError:
+                    pass
+            else:
+                analytics_sample_local.context = previous_analytics_context
             ended = time.monotonic()
             if type(received_at) in (int, float) and type(dispatched_at) in (int, float):
                 receive_to_callback_ms.append(max(0, dispatched_at - received_at) * 1000)
@@ -810,6 +974,9 @@ def main():
             offered = dict(category_offered)
         with producer_metrics_lock:
             scheduled_phases = dict(scheduled_by_phase)
+        turn_progress = phase_progress_turn_counts(
+            phase, phase_elapsed, scheduled_phases,
+            {name: turn_start_offer_ns[name] for name in phase_names}, phase_turns)
         with callback_done:
             callbacks = {"samples": callback_samples, "invocations": callback_count}
             callback_timings = dict(callback_timing_totals)
@@ -843,22 +1010,19 @@ def main():
         snapshot = {
             "kind": "progress", "reason": reason, "elapsedSeconds": round(elapsed, 3),
             "phase": phase,
-            "phaseTurnsCompleted": phase_turns,
-            "phaseTurnsStartedOffered": {
-                name: len(turn_start_offer_ns[name]) for name in phase_names},
-            "scheduledIntentsByPhase": scheduled_phases,
+            **turn_progress,
             "producer": producer_state,
             "currentPhaseElapsedSeconds": round(phase_elapsed, 3) if phase_elapsed is not None else None,
-            "currentPhaseAchievedCompletedTurnsPerSecond": (
-                round(phase_turns[phase] / phase_elapsed, 3)
-                if phase_elapsed and phase_elapsed > 0 else None),
-            "currentPhaseAchievedOfferedTurnsPerSecond": (
-                round(len(turn_start_offer_ns[phase]) / phase_elapsed, 3)
-                if phase_elapsed and phase_elapsed > 0 else None),
             "offeredByCategory": offered, "completedCallbackSamples": callbacks["samples"],
             "callbackInvocations": callbacks["invocations"],
             "callbackTimingTotalsMs": callback_timings,
             "callbackTimingByMethodMs": callback_methods,
+            "runtimeDatabaseTiming": {
+                "samplingEveryRuntimeDbContextsPerContext": transaction_sample_every,
+                "deltaAnalyticsSampling": "every 32nd delta callback per dispatcher thread",
+                "scope": "Runtime.db only; sampled first DML and native context exit; context exit includes commit/checkpoint/lock wait",
+                "byContext": transaction_timing_snapshot(),
+            },
             "dispatchedIdentities": dispatched_count,
             "dispatchedByCategory": dispatched_categories,
             "callbackQueues": [{"transport": index, "depth": appserver.callbacks.qsize(),
@@ -1282,6 +1446,12 @@ def main():
                       "callbackEventSampleCount": callback_samples,
                       "notificationCoverage": notification_coverage,
                       "callbackTimingByMethodMs": callback_timing_by_method,
+                      "runtimeDatabaseTiming": {
+                          "samplingEveryRuntimeDbContextsPerContext": transaction_sample_every,
+                          "deltaAnalyticsSampling": "every 32nd delta callback per dispatcher thread",
+                          "scope": "Runtime.db only; sampled first DML and native context exit; context exit includes commit/checkpoint/lock wait",
+                          "byContext": transaction_timing_snapshot(),
+                      },
                       "streamCoalescing": {
                           "offeredAssistantFragments": category_offered.get("assistantDelta", 0),
                           "productionCallbackInvocations": callback_invocations_by_method.get("item/agentMessage/delta", 0),

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import threading
+import tempfile
 import time
 import unittest
 
@@ -21,6 +22,20 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
     def test_empty_latency_series_is_explicit(self):
         self.assertEqual(module.stats([]),
                          {"samples": 0, "p50": None, "p95": None, "p99": None, "max": None})
+
+    def test_progress_keeps_intents_offers_and_completions_separate(self):
+        phase = "steady"
+        progress = module.phase_progress_turn_counts(
+            phase, 2.0,
+            {"warmup": 1, "steady": 3, "burst": 0, "drain": 0},
+            {"warmup": [1], "steady": [10, 20], "burst": [], "drain": []},
+            {"warmup": 1, "steady": 1, "burst": 0, "drain": 0},
+        )
+        self.assertEqual(progress["scheduledIntentsByPhase"][phase], 3)
+        self.assertEqual(progress["phaseTurnsStartedOffered"][phase], 2)
+        self.assertEqual(progress["phaseTurnsCompleted"][phase], 1)
+        self.assertEqual(progress["currentPhaseAchievedOfferedTurnsPerSecond"], 1)
+        self.assertEqual(progress["currentPhaseAchievedCompletedTurnsPerSecond"], .5)
 
     def test_callback_duration_is_recorded_when_production_callback_raises(self):
         durations = []
@@ -257,6 +272,40 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         thread.start()
         thread.join(timeout=1)
         self.assertEqual(result, ["producer"])
+
+    def test_sampled_sqlite_connection_records_only_first_dml(self):
+        samples = []
+        db = sqlite3.connect(":memory:", factory=module.SampledSQLiteConnection)
+        db._benchmark_record = lambda metric, elapsed: samples.append((metric, elapsed))
+        db._benchmark_first_dml_seen = False
+        db.execute("CREATE TABLE sample(value INTEGER)")
+        db.execute("INSERT INTO sample VALUES (1)")
+        db.execute("INSERT INTO sample VALUES (2)")
+        self.assertEqual([name for name, _ in samples], ["firstDmlMs"])
+        self.assertGreaterEqual(samples[0][1], 0)
+        db.close()
+
+    def test_measured_sqlite_context_exit_preserves_commit_and_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "timing.sqlite3"
+            commits = []
+            db = sqlite3.connect(path)
+            with module.measured_sqlite_context_exit(
+                    db, lambda metric, elapsed: commits.append((metric, elapsed))) as connection:
+                connection.execute("CREATE TABLE sample(value INTEGER)")
+                connection.execute("INSERT INTO sample VALUES (7)")
+            self.assertEqual(commits[0][0], "contextCommitMs")
+
+            rollbacks = []
+            db = sqlite3.connect(path)
+            with self.assertRaisesRegex(ValueError, "rollback fixture"):
+                with module.measured_sqlite_context_exit(
+                        db, lambda metric, elapsed: rollbacks.append((metric, elapsed))) as connection:
+                    connection.execute("INSERT INTO sample VALUES (8)")
+                    raise ValueError("rollback fixture")
+            self.assertEqual(rollbacks[0][0], "contextRollbackMs")
+            with sqlite3.connect(path) as verification:
+                self.assertEqual(verification.execute("SELECT value FROM sample").fetchall(), [(7,)])
 
 
 if __name__ == "__main__":

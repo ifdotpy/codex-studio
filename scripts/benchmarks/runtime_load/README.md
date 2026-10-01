@@ -31,6 +31,8 @@ The quick check uses a reduced fixture and one browser tab, and disables the sus
 
 `--producer-pool-size` is a diagnostic control for bounded producer concurrency. Size 1 preserves the serial producer. Each worker's next lifecycle turn waits until its previous durable messages and exact receipt callbacks complete. Across workers, active plus queued producer turns never exceed the selected size; the pool does not drop, coalesce, or retry messages. Reports distinguish scheduled intents, actual `turn/started` notification offers, and completed turns (both durable writes and their production receipt callbacks). The steady-rate gates apply to both notification offers and completed turns, so a growing producer backlog cannot count as throughput.
 
+Runtime database timing samples one in 32 `Runtime.db` contexts per producer or callback thread context. It reports connection time, first DML elapsed time, and native context-exit commit/rollback time; first DML includes statement and SQLite writer-lock wait, while successful context exit includes commit, checkpoint, sync, and any remaining wait. Delta analytics timing samples one in 32 delta callbacks per dispatcher thread. These measurements use bounded histograms and do not query SQLite for instrumentation. Context-exit timing covers the sampled `Runtime.db` path only, not explicit commits made elsewhere.
+
 Run the focused outcome-classification checks with `node --test scripts/benchmarks/runtime_load/test_http_outcomes.mjs`.
 
 ```sh
