@@ -28,6 +28,7 @@ import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
 import { createSessionStore } from "./session-store.mjs";
+import { claudeImage } from "./images.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
@@ -300,7 +301,6 @@ async function content(input) {
   for (const item of input || []) {
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
-      const bytes = await fs.readFile(item.path);
       const ext = path.extname(item.path).toLowerCase();
       const media_type = {
         ".png": "image/png",
@@ -310,9 +310,15 @@ async function content(input) {
         ".webp": "image/webp",
       }[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
+      // Large screenshots are scaled down; the API removes oversized images.
+      const image = await claudeImage(item.path, media_type);
       result.push({
         type: "image",
-        source: { type: "base64", media_type, data: bytes.toString("base64") },
+        source: {
+          type: "base64",
+          media_type: image.mediaType,
+          data: image.bytes.toString("base64"),
+        },
       });
     } else throw new Error("Unsupported Claude input: " + item.type);
   }
