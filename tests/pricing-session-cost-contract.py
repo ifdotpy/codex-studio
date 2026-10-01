@@ -142,7 +142,13 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertEqual(value["pricedSamples"], 3)
         self.assertIn("openai", value["breakdown"]["providers"])
         self.assertEqual(value["unknownModels"], ["gpt-5.6-luna"])
-        self.assertAlmostEqual(value["totalUSD"], (900 * .1 + 100 * .01 + 100 * .5 + 1000 * .1) / 1_000_000)
+        expected = 0.0
+        for usage in (
+            {"inputTokens": 1000, "cachedInputTokens": 100, "cacheWriteInputTokens": 0, "outputTokens": 100},
+            {"inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0},
+        ):
+            expected += price_usage(catalog(), "openai", "gpt-6-luna", usage)[0]
+        self.assertEqual(value["totalUSD"], expected)
         canvas = Canvas(self.root)
         canvas.runtime = types.SimpleNamespace(lock=threading.RLock())
         with patch("codex_pricing.PricingCatalog", return_value=FixedPricing()):
@@ -330,6 +336,43 @@ class PricingSessionCostContract(unittest.TestCase):
         for index in range(18):
             reader.snapshot("root-" + str(index))
         self.assertLessEqual(len(reader.cache), 16)
+
+    def test_session_cost_concurrent_cold_requests_share_one_compute(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+        """)
+        db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
+        db.commit()
+        db.close()
+        reader = SessionCostReader(db_path, FixedPricing())
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        original = reader._compute
+        def slow_compute(agent_id, root):
+            calls.append((agent_id, root))
+            entered.set()
+            self.assertTrue(release.wait(3))
+            return original(agent_id, root)
+        results = []
+        with patch.object(reader, "_compute", side_effect=slow_compute):
+            workers = [threading.Thread(target=lambda: results.append(reader.snapshot("lead")))
+                       for _ in range(8)]
+            for worker in workers:
+                worker.start()
+            self.assertTrue(entered.wait(3))
+            deadline = time.monotonic() + 3
+            while len(reader.inflight) != 1 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            release.set()
+            for worker in workers:
+                worker.join(3)
+        self.assertEqual(calls, [("lead", "lead")])
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(value["rootId"] == "lead" for value in results))
 
     def test_failed_catalog_refresh_keeps_last_good_copy(self):
         path = self.root / "model-pricing" / "models-dev-v1.json"

@@ -38,6 +38,7 @@ class SessionCostReader:
         self.file_cache = OrderedDict()
         self.refreshing = set()
         self.last_refresh_attempt = OrderedDict()
+        self.inflight = {}
         self.lock = threading.RLock()
 
     def _cache_path(self, root):
@@ -124,9 +125,7 @@ class SessionCostReader:
 
     def _background_refresh(self, agent_id, root):
         try:
-            result = self._compute(agent_id, root)
-            if result.get("pricingState") == "ready":
-                self._remember(root, result)
+            self._compute_shared(agent_id, root, refresh=True)
         except Exception:
             pass
         finally:
@@ -164,10 +163,39 @@ class SessionCostReader:
             with self.lock:
                 refreshing = started or root in self.refreshing
             return {**result, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
-        result = self._compute(agent_id, root)
-        if result.get("pricingState") == "ready":
-            self._remember(root, result)
+        result = self._compute_shared(agent_id, root)
         return {**result, "cacheAgeSeconds": 0, "refreshing": False}
+
+    def _compute_shared(self, agent_id, root, *, refresh=False):
+        with self.lock:
+            cached = self.cache.get(root)
+            if cached is not None and not refresh:
+                return cached[1]
+            pending = self.inflight.get(root)
+            if pending is None:
+                pending = {"event": threading.Event(), "result": None, "error": None}
+                self.inflight[root] = pending
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            pending["event"].wait()
+            if pending["error"] is not None:
+                raise pending["error"]
+            return pending["result"]
+        try:
+            result = self._compute(agent_id, root)
+            if result.get("pricingState") == "ready":
+                self._remember(root, result)
+            pending["result"] = result
+            return result
+        except BaseException as error:
+            pending["error"] = error
+            raise
+        finally:
+            with self.lock:
+                self.inflight.pop(root, None)
+                pending["event"].set()
 
     def _account(self, key):
         if self.accounts is None:
@@ -291,42 +319,87 @@ class SessionCostReader:
                         sessions.add((old_key, old_thread))
                 if current_profile or sessions:
                     claude_agents[member_id] = (current_key, current_profile, sessions)
-            try:
-                usage_rows = db.execute("SELECT agent,thread,turn,record FROM analytics_usage WHERE root=? ORDER BY at,seq", (root,)).fetchall()
-            except sqlite3.OperationalError:
-                usage_rows = []
-            turns = {(item["agent"], item["thread"], item["turn"])
-                     for item in usage_rows if (json.loads(item["record"]).get("responseId")
-                                                and item["agent"] not in claude_agents)}
-            records = []
-            for item in usage_rows:
-                if item["agent"] in claude_agents:
-                    continue
-                record = json.loads(item["record"])
-                if not record.get("responseId") and (item["agent"], item["thread"], item["turn"]) in turns:
-                    continue
-                records.append(record)
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
-            # Rollout imports can lack the model; the same turn or thread names it.
-            turn_models, thread_models = {}, {}
-            for record in records:
-                if isinstance(record.get("model"), str):
-                    turn_models[(record.get("agentId"), record.get("turnId"))] = record["model"]
-                    thread_models[(record.get("agentId"), record.get("threadId"))] = record["model"]
-            for record in records:
-                model = record.get("model")
-                if not isinstance(model, str):
-                    model = (turn_models.get((record.get("agentId"), record.get("turnId")))
-                             or thread_models.get((record.get("agentId"), record.get("threadId"))))
+            db.execute("PRAGMA temp_store=FILE")
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS session_cost_excluded (agent TEXT PRIMARY KEY)")
+            db.execute("DELETE FROM session_cost_excluded")
+            db.executemany("INSERT OR IGNORE INTO session_cost_excluded VALUES (?)",
+                           ((member_id,) for member_id in claude_agents))
+            try:
+                groups = db.execute("""
+                  WITH usage AS MATERIALIZED (
+                    SELECT seq, agent, thread, turn, at,
+                           json_extract(record,'$.agentId') AS record_agent,
+                           json_extract(record,'$.turnId') AS record_turn,
+                           json_extract(record,'$.threadId') AS record_thread,
+                           CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
+                           json_type(record,'$.model')='text' AS has_model,
+                           json_extract(record,'$.responseId') AS response_id,
+                           json_type(record,'$.responseId') AS response_type,
+                           (json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                            AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')) AS delta_valid,
+                           json_type(record,'$.delta.inputTokens') AS delta_input_type,
+                           json_type(record,'$.delta.outputTokens') AS delta_output_type,
+                           json_type(record,'$.delta.cachedInputTokens') AS delta_cached_type,
+                           json_type(record,'$.delta.cacheWriteInputTokens') AS delta_write_type,
+                           json_extract(record,'$.delta.inputTokens') AS delta_input,
+                           json_extract(record,'$.delta.outputTokens') AS delta_output,
+                           json_extract(record,'$.delta.cachedInputTokens') AS delta_cached,
+                           json_extract(record,'$.delta.cacheWriteInputTokens') AS delta_write,
+                           json_extract(record,'$.last.inputTokens') AS last_input,
+                           json_extract(record,'$.last.outputTokens') AS last_output,
+                           json_extract(record,'$.last.cachedInputTokens') AS last_cached,
+                           json_extract(record,'$.last.cacheWriteInputTokens') AS last_write,
+                           json_type(record,'$.last.inputTokens') AS last_input_type,
+                           json_type(record,'$.last.outputTokens') AS last_output_type,
+                           json_type(record,'$.last.cachedInputTokens') AS last_cached_type,
+                           json_type(record,'$.last.cacheWriteInputTokens') AS last_write_type
+                      FROM analytics_usage
+                     WHERE root=? AND NOT EXISTS
+                           (SELECT 1 FROM session_cost_excluded x WHERE x.agent=analytics_usage.agent)
+                  ), inferred AS MATERIALIZED (
+                    SELECT u.*,
+                           CASE WHEN has_model THEN model ELSE COALESCE(
+                             NULLIF((SELECT m.model FROM usage m
+                                      WHERE m.record_agent IS u.record_agent AND m.record_turn IS u.record_turn
+                                        AND m.has_model ORDER BY m.at DESC,m.seq DESC LIMIT 1),''),
+                             (SELECT m.model FROM usage m
+                               WHERE m.record_thread IS u.record_thread AND m.has_model
+                               ORDER BY m.at DESC,m.seq DESC LIMIT 1)) END AS resolved_model,
+                           CASE WHEN delta_valid AND delta_input_type IN ('integer','real') THEN delta_input
+                                WHEN NOT delta_valid AND last_input_type IN ('integer','real') THEN last_input END AS input_tokens,
+                           CASE WHEN delta_valid AND delta_output_type IN ('integer','real') THEN delta_output
+                                WHEN NOT delta_valid AND last_output_type IN ('integer','real') THEN last_output END AS output_tokens,
+                           CASE WHEN delta_valid AND delta_cached_type IN ('integer','real') THEN delta_cached
+                                WHEN NOT delta_valid AND last_cached_type IN ('integer','real') THEN last_cached END AS cached_tokens,
+                           CASE WHEN delta_valid AND delta_write_type IN ('integer','real') THEN delta_write
+                                WHEN NOT delta_valid AND last_write_type IN ('integer','real') THEN last_write END AS write_tokens
+                      FROM usage u
+                  )
+                  SELECT resolved_model,input_tokens,cached_tokens,write_tokens,output_tokens,COUNT(*)
+                    FROM inferred u
+                   WHERE (response_type NOT IN ('null','false')
+                          AND (response_type NOT IN ('integer','real') OR response_id<>0)
+                          AND (response_type<>'text' OR response_id<>'')) OR NOT EXISTS (
+                         SELECT 1 FROM usage r WHERE r.agent=u.agent AND r.thread IS u.thread AND r.turn IS u.turn
+                           AND r.response_type NOT IN ('null','false')
+                           AND (r.response_type NOT IN ('integer','real') OR r.response_id<>0)
+                           AND (r.response_type<>'text' OR r.response_id<>''))
+                   GROUP BY resolved_model,input_tokens,cached_tokens,write_tokens,output_tokens
+                """, (root,))
+            except sqlite3.OperationalError as error:
+                if "no such table: analytics_usage" not in str(error):
+                    raise
+                groups = ()
+            for model, input_tokens, cached_tokens, write_tokens, output_tokens, count in groups:
                 provider = provider_for(model)
                 if provider is None:
                     unpriced.add(str(model or "Unknown model"))
                     continue
-                usage = record.get("delta") or {}
-                if not all(isinstance(usage.get(field), (int, float)) for field in ("inputTokens", "outputTokens")):
-                    usage = record.get("last") or {}
+                usage = {"inputTokens": input_tokens, "cachedInputTokens": cached_tokens,
+                         "cacheWriteInputTokens": write_tokens, "outputTokens": output_tokens}
                 cost, status, tier = price_usage(catalog, provider, model, usage,
                                                  context_tokens=usage.get("inputTokens"))
                 if cost is None:
@@ -334,10 +407,10 @@ class SessionCostReader:
                     if status == "unpriced":
                         self.pricing.refresh_missing()
                     continue
-                priced_count += 1
-                cost_total += cost
-                model_totals[model] = model_totals.get(model, 0.0) + cost
-                provider_totals[provider] = provider_totals.get(provider, 0.0) + cost
+                priced_count += count
+                cost_total += cost * count
+                model_totals[model] = model_totals.get(model, 0.0) + cost * count
+                provider_totals[provider] = provider_totals.get(provider, 0.0) + cost * count
                 tier_used |= tier
             claude_messages = {}
             for _, (current_key, current_profile, sessions) in claude_agents.items():
@@ -368,11 +441,6 @@ class SessionCostReader:
                       "cacheAgeSeconds": 0,
                       "method": "API prices from models.dev; cached input rates are applied when reported." +
                                 (" Published context tier applied where request size matched its threshold." if tier_used else " Base rates used when request size was unavailable or below the published threshold.")}
-            with self.lock:
-                self.cache[root] = (self.clock(), result)
-                self.cache.move_to_end(root)
-                while len(self.cache) > self.CACHE_ROOTS:
-                    self.cache.popitem(last=False)
             return result
         finally:
             db.close()
