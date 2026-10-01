@@ -384,13 +384,13 @@ class EfficiencyContract(unittest.TestCase):
         self.assertIn('VISIBLE_FULL_RESULT_MARKER', record['text'])
         self.assertNotIn('outputRef', record['text'])
 
-    def test_monitor_failure_only_keeps_success_in_ui_and_wakes_for_failure(self):
+    def test_every_monitor_exit_wakes_with_errors_only_filter(self):
         lead = self.lead()
         for n, wake, code, error in [('ok', 'failure', 0, None), ('fail', 'failure', 7, None), ('unknown', 'failure', None, 'Lost response'), ('default', 'exit', 0, None)]:
             m = self.runtime.monitor(lead['id'], {'command': 'true', 'wake_on': wake}, key=n)
             self.runtime.finish_monitor(m['id'], code, error)
             events = [r for r in self.events(lead, 'monitor_exit') if json.loads(r['text'])['id'] == m['id']]
-            self.assertEqual(len(events), 0 if n == 'ok' else 1)
+            self.assertEqual(len(events), 1)
             with self.runtime.db() as db:
                 saved = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?', (m['id'],)).fetchone()[0])
             self.assertEqual(saved['exitCode'], code)

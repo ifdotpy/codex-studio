@@ -585,7 +585,7 @@ class EfficiencyMixin:
             elif topic == 'background':
                 from codex_progress import progress_context
                 value = {'workflow': progress_context(self.root, actor['id']),
-                         'monitor': 'Use orchestration_monitor for commands needing a result. wake_on=failure suppresses a successful exit notification; errors still wake you.',
+                         'monitor': 'Use orchestration_monitor for commands needing a result. Every command exit wakes you regardless of wake_on. Quiet monitors wake after 1800 seconds by default; set stall_timeout_seconds to 0 to disable stall wakes.',
                          'polling': 'Let a script write PROGRESS.md when its facts change. Do not poll unchanged status through model calls.'}
             elif topic == 'tools':
                 value = self.tool_definitions(actor)

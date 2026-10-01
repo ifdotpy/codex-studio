@@ -14,7 +14,7 @@ def rule_tools(tool, text):
     return [
         tool(
             "orchestration_watch",
-            "Manage durable file or event watches and scheduled commands. No model runs while waiting. A script exit other than zero does not wake you. A final JSON line with wakeAgent:false also suppresses a wake. Use bounded schedules, not model polling. A lead can enable low_workers to receive one alert when active subagents stay below minimumWorkers (default 8) for durationMinutes (default 30). Recovery to the threshold arms it again. Active means starting, running, or executing a command monitor; queued or idle workers without active commands do not count. Panel feeds do not count.",
+            "Manage durable file or event watches and scheduled commands. No model runs while waiting. File watches wake after no change for stall_timeout_seconds (default 1800; 0 disables stall wakes). Set liveness_command to run a sandboxed check at the stall point; its result is included in the wake. A normal script rule wakes only on exit code 0, unless its final JSON line has wakeAgent:false. Use bounded schedules, not model polling. A lead can enable low_workers to receive one alert when active subagents stay below minimumWorkers (default 8) for durationMinutes (default 30). Recovery to the threshold arms it again. Active means starting, running, or executing a command monitor; queued or idle workers without active commands do not count. Panel feeds do not count.",
             {
                 "action": {
                     "type": "string",
@@ -29,6 +29,10 @@ def rule_tools(tool, text):
                 "intervalSeconds": {"type": "integer", "minimum": 10},
                 "at": {"type": "number"},
                 "path": text,
+                "stallTimeoutSeconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+                "livenessCommand": text,
+                "stall_timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+                "liveness_command": text,
                 "event": {
                     "type": "string",
                     "enum": [
@@ -66,6 +70,10 @@ class RulesMixin:
             "CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)"
         )
         for r in self.records(db, "rules"):
+            if r.get("kind") == "file" and "fileActivityAt" not in r:
+                r.update(fileActivityAt=time.time(), fileGeneration=0, stallWakeGeneration=-1,
+                         stallTimeoutSeconds=1800, livenessCommand="")
+                self.put(db, "rules", r)
             if r.get("kind") == "low_workers":
                 # Offline time cannot prove a continuous shortage. Keep a sent alert latched.
                 r.update(lowSince=None, nextAt=time.time())
@@ -136,6 +144,11 @@ class RulesMixin:
                     if old["status"] == ("active" if action == "resume" else "paused") and old["epoch"] == a["epoch"]:
                         return old
                     old.update(lowSince=None, alerted=False)
+                if action == "resume" and old.get("kind") == "file":
+                    old["fileActivityAt"] = time.time()
+                    old["fingerprint"] = self.file_fingerprint(old["path"])
+                    old["fileGeneration"] = old.get("fileGeneration", 0) + 1
+                    old["stallWakeGeneration"] = old["fileGeneration"] - 1
                 old.update(
                     status="active" if action == "resume" else "paused",
                     epoch=a["epoch"],
@@ -168,6 +181,9 @@ class RulesMixin:
             interval = data.get("intervalSeconds", 60)
             if not isinstance(interval, int) or not 10 <= interval <= 31536000:
                 raise ValueError("Interval must be 10 seconds to one year")
+            stall_timeout = data.get("stallTimeoutSeconds", data.get("stall_timeout_seconds", 1800))
+            if type(stall_timeout) is not int or not 0 <= stall_timeout <= 31536000:
+                raise ValueError("stall_timeout_seconds must be 0 to 31536000")
             at = data.get("at", time.time() + interval)
             if (
                 not isinstance(at, (int, float))
@@ -192,6 +208,11 @@ class RulesMixin:
             command = text_field(
                 data.get("command", ""), "a command", 12000, empty=True
             )
+            liveness_command = text_field(data.get("livenessCommand", data.get("liveness_command", "")), "a liveness command", 12000, empty=True)
+            if liveness_command and kind != "file":
+                raise ValueError("liveness_command is only supported for file watches")
+            if stall_timeout and kind != "file":
+                stall_timeout = 0
             rule = {
                 "id": key,
                 "agent": a["id"],
@@ -205,6 +226,11 @@ class RulesMixin:
                 "path": path,
                 "event": event,
                 "command": command,
+                "stallTimeoutSeconds": stall_timeout,
+                "livenessCommand": liveness_command,
+                "fileActivityAt": old.get("fileActivityAt", time.time()) if old else time.time(),
+                "fileGeneration": old.get("fileGeneration", 0) if old else 0,
+                "stallWakeGeneration": old.get("stallWakeGeneration", -1) if old else -1,
                 "text": text_field(
                     data.get(
                         "text", "Check this event and continue the original task."
@@ -255,13 +281,42 @@ class RulesMixin:
                 if r["kind"] == "low_workers":
                     self.low_workers_tick(db, r, a, now)
                     continue
-                if r["kind"] == "event" or r["nextAt"] > now:
+                if r["kind"] == "event":
+                    continue
+                if (r["kind"] == "file" and r.get("stallTimeoutSeconds", 1800)
+                        and now - r.get("fileActivityAt", r.get("created", now)) >= r["stallTimeoutSeconds"]
+                        and r.get("fileGeneration", 0) > r.get("stallWakeGeneration", -1)):
+                    fingerprint = self.file_fingerprint(r["path"])
+                    if fingerprint != r.get("fingerprint"):
+                        r.update(fingerprint=fingerprint, fileActivityAt=now,
+                                 fileGeneration=r.get("fileGeneration", 0) + 1)
+                        self.put(db, "rules", r)
+                        continue
+                    generation = r.get("fileGeneration", 0)
+                    quiet = int(now - r.get("fileActivityAt", now))
+                    stall_text = json.dumps({"rule": r["id"], "name": r["name"],
+                        "message": "file unchanged", "path": r["path"], "quietSeconds": quiet})
+                    if r.get("livenessCommand"):
+                        r.update(inFlight=True, checks=r.get("checks", 0) + 1,
+                                 stallProbe=True, stallEventKey=f"rule-stall:{r['id']}:{generation}",
+                                 stallText=stall_text)
+                        launch.append(r.copy())
+                    else:
+                        self.enqueue_recovery_event(db, a, "rule_stall", stall_text,
+                            f"rule-stall:{r['id']}:{generation}")
+                        r["stallWakeGeneration"] = generation
+                    self.put(db, "rules", r)
+                    continue
+                if r["nextAt"] > now:
                     continue
                 r["nextAt"] = now + r["intervalSeconds"]
                 fire = True
                 if r["kind"] == "file":
                     fingerprint = self.file_fingerprint(r["path"])
                     fire = fingerprint != r.get("fingerprint")
+                    if fire:
+                        r["fileActivityAt"] = now
+                        r["fileGeneration"] = r.get("fileGeneration", 0) + 1
                     r["fingerprint"] = fingerprint
                 if fire:
                     r.update(inFlight=True, lastAt=now, checks=r.get("checks", 0) + 1)
@@ -342,18 +397,25 @@ class RulesMixin:
                     current["inFlight"] = False
                     self.put(db, "rules", current)
                     return
-            if r["command"]:
+            command = r.get("livenessCommand") if r.get("stallProbe") else r["command"]
+            if command:
                 a = self.prepare(a)
+                approved = self.monitor_auto_approved(a)
+                if r.get("stallProbe") and not approved:
+                    self.rule_finished(r["id"], None,
+                        "Liveness command not run because monitor approval is required.", "")
+                    return
                 self.monitor(
                     r["agent"],
                     {
-                        "command": r["command"],
+                        "command": command,
                         "timeout_ms": min(
                             86400000, max(1000, r["intervalSeconds"] * 1000)
                         ),
+                        "stall_timeout_seconds": 0,
                     },
                     "rule:" + r["id"] + ":" + str(r["checks"]),
-                    approved=self.monitor_auto_approved(a),
+                    approved=approved,
                     epoch=r["epoch"],
                     rule=r,
                 )
@@ -378,6 +440,24 @@ class RulesMixin:
             return
         r = json.loads(row[0])
         a = self.agent(r["agent"], db)
+        if r.get("stallProbe"):
+            generation = r.get("fileGeneration", 0)
+            payload = {"rule": r["id"], "name": r["name"], "message": "file unchanged",
+                       "path": r["path"], "quietSeconds": int(time.time() - r.get("fileActivityAt", time.time())),
+                       "livenessResult": output[-12000:], "livenessExitCode": code,
+                       "livenessError": error}
+            restart = a.get("restartRecovery") or {}
+            pending_recovery = (not a.get("autoWake") and a.get("status") != "paused"
+                and not a.get("deletedAt") and restart.get("stage") == "pending" and restart.get("autoWake")
+                and all(restart.get(field) == a.get(field) for field in ("epoch", "accountKey", "threadId")))
+            if (r["status"] == "active" and a["epoch"] == r["epoch"]
+                    and (a.get("autoWake") or pending_recovery) and not a.get("deletedAt")):
+                self.enqueue_recovery_event(db, a, "rule_stall", json.dumps(payload),
+                                             r.get("stallEventKey"))
+            r.update(inFlight=False, stallProbe=False, stallWakeGeneration=generation,
+                     lastStallFinished=time.time(), lastStallExitCode=code, lastStallError=error)
+            self.put(db, "rules", r)
+            return
         wake = code == 0 and not error
         try:
             payload = json.loads(output.strip().splitlines()[-1])

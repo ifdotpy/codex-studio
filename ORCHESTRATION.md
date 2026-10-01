@@ -750,11 +750,16 @@ Codex tools such as `exec_command` retain Codex's own output controls.
   thread replacement or observed compaction. Clearing a plan invalidates its older
   steps. Historical saved-plan text remains stored but is not part of model context.
   `orchestration_context` reads the current full context on demand.
-- `orchestration_monitor wake_on=failure` retains successful results in the UI and
-  suppresses their model notification. Failures still notify the owner. Use this
-  option only if success requires no further agent work. The default, `exit`, still
-  notifies on every exit. Record verified status in the per-agent `PROGRESS.md`
-  file with ordinary file tools. Its display updates without model turns.
+- `orchestration_monitor` wakes its owner for every command exit, including success,
+  failure, signal, and a lost process. `wake_on` cannot suppress an exit event.
+  A monitor wakes after no output for 30 minutes by default. Set
+  `stall_timeout_seconds` to change the limit or `0` to disable stall wakes.
+  Set `liveness_command` to run a sandboxed check at the stall point. The stall
+  event includes its result. File watches support `stallTimeoutSeconds` and
+  `livenessCommand` with the same defaults and behavior. One event is sent per
+  quiet period, and new output or a file change starts another period. Record
+  verified status in the per-agent `PROGRESS.md` file with ordinary file tools.
+  Its display updates without model turns.
 
 Existing native threads keep their original tool schemas. They can use new fields
 through `orchestration_send` with `agent_id="workspace"` and a JSON `text` value:
