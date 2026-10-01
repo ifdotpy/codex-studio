@@ -143,7 +143,7 @@ if os.environ.get('MESSAGES_UI_FIXTURE'):
     c.runtime.complaint(child['id'], {'action': 'submit', 'text': 'Please provide the review account.'}, 'messages-worker')
 if os.environ.get('BACKGROUND_UI_FIXTURE'):
     c.runtime.monitor(lead['id'], {'command': 'watch-fixture --deploy production'}, approved=False)
-server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0)
+server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0, unix_socket=True)
 # Test-only notification input drives the real runtime and HTTP stream.
 import json
 import threading
@@ -172,6 +172,13 @@ def fixture_events():
                 agent.update(status=params['status'], inFlight=active,
                              turnId='fixture-turn' if active else None)
                 c.runtime.put(db, 'agents', agent)
+        elif message.get('method') == 'fixture/sync-write':
+            params = message['params']
+            with c.runtime.lock, c.runtime.db() as db:
+                agent = c.runtime.agent(params['agent'], db)
+                agent['status'] = params['status']
+                c.runtime.put(db, 'agents', agent)
+            print(json.dumps({'id': message['id'], 'committedAt': __import__('time').time()}), flush=True)
         elif message.get('method') == 'fixture/task':
             with c.runtime.lock, c.runtime.db() as db:
                 c.runtime.put(db, 'tasks', message['params'])
@@ -192,6 +199,8 @@ def fixture_events():
             else:
                 c.runtime.notification(message, account_key, c.runtime.connection_ids.get(account_key))
 threading.Thread(target=fixture_events, daemon=True).start()
+threading.Thread(target=server.unix_server.serve_forever, kwargs={'poll_interval': 0.5},
+                 daemon=True, name='fixture-canvas-unix').start()
 print(server.server_port, flush=True)
 try:
     server.serve_forever()

@@ -187,6 +187,125 @@ async function pull(
 // A background PWA must not retain one HTTP connection per conversation.
 const invalidations = new Map<() => void, string>();
 let stopInvalidations: (() => void) | undefined;
+let changeStreamSupport: Promise<boolean> | undefined;
+const pushStreams = new Map<string, EventSource>();
+const pushScopes = new Map<string, Set<() => void>>();
+function supportsChangeStream() {
+  return (changeStreamSupport ??= api<{ protocolVersion: number; capabilities: string[] }>(
+    "/api/sync/protocol",
+  ).then((value) => value.protocolVersion === 1 && value.capabilities.includes("streamChanges")).catch(() => false));
+}
+function pushScope(scope: string) {
+  if (scope === "entities") return "state:entities:v1";
+  if (scope === "drafts" || scope.startsWith("transcript:")) return scope;
+  return undefined;
+}
+async function pushUrl(scope: string) {
+  let cursor = 0;
+  const { db } = await syncDatabase();
+  if (scope === "state:entities:v1" || scope.startsWith("transcript:")) {
+    const id = scope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
+    const [checkpoint] = await db.projections.storageInstance.findDocumentsById([id], true);
+    cursor = checkpoint?.seq ?? 0;
+  } else if (scope === "drafts") cursor = Number(saved("codex-sync-drafts-cursor", "0")) || 0;
+  return `/api/sync/stream?protocol=1&scope=${encodeURIComponent(scope)}&after=${cursor}`;
+}
+async function applyPush(scope: string, encoded: string) {
+  const change = JSON.parse(encoded);
+  if (change?.protocolVersion !== 1 || change.scope !== scope || !Array.isArray(change.documents) ||
+      !Number.isSafeInteger(change.cursor) || change.cursor < 0) return false;
+  const { db, workspaceId, verifyWorkspace } = await syncDatabase();
+  if (change.workspaceId !== workspaceId) return false;
+  await verifyWorkspace();
+  const rows = change.documents as SyncDocument[];
+  if (scope === "state:entities:v1") {
+    if (rows.some((row) => !row.id.startsWith("entity:"))) return false;
+    await persistProjectionBatch(db.projections, rows);
+    await persistProjection(db.projections, { id: "state:entities:checkpoint", payload: "{}", seq: change.cursor });
+  } else if (scope.startsWith("transcript:")) {
+    for (const row of rows) {
+      if (row.id !== scope) return false;
+      const [previous] = await db.projections.storageInstance.findDocumentsById([scope], true);
+      await persistTranscriptProjection(db.projections, scope, row, previous, workspaceId);
+    }
+  } else if (scope === "drafts") {
+    await persistProjectionBatch(db.drafts, rows);
+    save("codex-sync-drafts-cursor", String(change.cursor));
+  }
+  return true;
+}
+function attachPush(scope: string, callback: () => void) {
+  let callbacks = pushScopes.get(scope);
+  if (!callbacks) pushScopes.set(scope, (callbacks = new Set()));
+  callbacks.add(callback);
+  let lastFallbackAt = 0;
+  const connect = async () => {
+    if (!(await supportsChangeStream()) || document.hidden || navigator.onLine === false || pushStreams.has(scope)) return;
+    const source = new EventSource(await pushUrl(scope));
+    pushStreams.set(scope, source);
+    source.onopen = () => { lastFallbackAt = 0; };
+    source.addEventListener("changes", (raw) => {
+      void applyPush(scope, (raw as MessageEvent).data).then((accepted) => {
+        if (accepted) for (const listener of pushScopes.get(scope) || []) listener();
+        else {
+          source.close(); pushStreams.delete(scope);
+          for (const listener of pushScopes.get(scope) || []) listener();
+          setTimeout(connect, 250);
+        }
+      }).catch(() => { source.close(); pushStreams.delete(scope); for (const listener of pushScopes.get(scope) || []) listener(); setTimeout(connect, 250); });
+    });
+    for (const name of ["reset", "cursor-ahead"]) source.addEventListener(name, (raw) => {
+      source.close(); pushStreams.delete(scope);
+      void (async () => {
+        if (name === "cursor-ahead") {
+          try {
+            const terminal = JSON.parse((raw as MessageEvent).data);
+            if (Number.isSafeInteger(terminal.maxSeq) && terminal.maxSeq >= 0) {
+              if (scope === "state:entities:v1") {
+                const { db } = await syncDatabase();
+                await persistProjection(db.projections, { id: "state:entities:checkpoint", payload: "{}", seq: terminal.maxSeq });
+              } else if (scope === "drafts") save("codex-sync-drafts-cursor", String(terminal.maxSeq));
+              else if (scope.startsWith("transcript:")) {
+                const { db } = await syncDatabase();
+                await db.projections.findOne(scope).remove();
+              }
+            }
+          } catch { /* Pull callback below repairs an invalid cursor. */ }
+        }
+        for (const listener of pushScopes.get(scope) || []) listener();
+        setTimeout(connect, 1000);
+      })();
+    });
+    source.onerror = () => {
+      if (Date.now() - lastFallbackAt < 5000) return;
+      lastFallbackAt = Date.now();
+      for (const listener of pushScopes.get(scope) || []) listener();
+    };
+  };
+  const suspend = () => {
+    if (!document.hidden && navigator.onLine !== false) return;
+    pushStreams.get(scope)?.close();
+    pushStreams.delete(scope);
+  };
+  const resume = () => {
+    pushStreams.get(scope)?.close();
+    pushStreams.delete(scope);
+    void connect();
+  };
+  const stopResume = onResume(resume);
+  window.addEventListener("offline", suspend);
+  document.addEventListener("visibilitychange", suspend);
+  window.addEventListener("online", resume);
+  void connect();
+  return () => {
+    stopResume();
+    window.removeEventListener("offline", suspend);
+    document.removeEventListener("visibilitychange", suspend);
+    window.removeEventListener("online", resume);
+    callbacks?.delete(callback);
+    if (!callbacks?.size) { pushScopes.delete(scope); pushStreams.get(scope)?.close(); pushStreams.delete(scope); }
+  };
+}
 export function watchSyncInvalidations(
   resync: () => void,
   scope?: string,
@@ -210,7 +329,20 @@ export function watchSyncInvalidations(
       : scope.startsWith("transcript:")
         ? "transcripts"
         : scope;
-  invalidations.set(resync, generationScope);
+  const directScope = pushScope(scope);
+  let cancelled = false;
+  let detachPush: (() => void) | undefined;
+  if (directScope) {
+    void supportsChangeStream().then((supported) => {
+      if (cancelled) return;
+      if (supported) detachPush = attachPush(directScope, resync);
+      else {
+        invalidations.set(resync, generationScope);
+        ensureCoordinator();
+      }
+    });
+  } else invalidations.set(resync, generationScope);
+  const ensureCoordinator = () => {
   if (!stopInvalidations) {
     const fallbackPollMs = 3000;
     const heartbeatMs = 1000;
@@ -485,6 +617,8 @@ export function watchSyncInvalidations(
     };
     const initialize = async () => {
       try {
+        const pushSupported = await supportsChangeStream();
+        if (pushSupported && invalidations.size === 0) return;
         const identity = await syncDatabase();
         if (stopped) return;
         workspaceId = identity.workspaceId;
@@ -534,7 +668,11 @@ export function watchSyncInvalidations(
     notify();
     void initialize();
   }
+  };
+  if (!directScope) ensureCoordinator();
   return () => {
+    cancelled = true;
+    detachPush?.();
     invalidations.delete(resync);
     if (!invalidations.size) {
       stopInvalidations?.();

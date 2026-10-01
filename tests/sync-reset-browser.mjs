@@ -122,6 +122,10 @@ try {
         },
       });
     }
+    if (after === 1000)
+      return route.fulfill({
+        json: { workspaceId, documents: [], checkpoint: { seq: 1000 }, maxSeq: 1000 },
+      });
     throw new Error(`Unexpected entity cursor ${after}`);
   });
   await page.goto(

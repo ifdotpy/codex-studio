@@ -593,7 +593,7 @@ class Canvas:
             return self._message_receipt(row)
 
 
-def make_server(canvas, port=0, public_origin=None):
+def make_server(canvas, port=0, public_origin=None, unix_socket=False):
     from codex_remote import RemoteAccess
     remote = RemoteAccess(canvas.root, public_origin)
     token = secrets.token_urlsafe(32)
@@ -832,6 +832,8 @@ def make_server(canvas, port=0, public_origin=None):
                     stream.close()
 
         def trusted(self, write=False):
+            if getattr(self.server, "address_family", None) == socket.AF_UNIX:
+                return not write or secrets.compare_digest(self.headers.get("X-Canvas-Token", ""), token)
             origin = remote.request_origin(self.headers, self.client_address[0], self.server.server_port)
             if origin is None:
                 return False
@@ -901,6 +903,69 @@ def make_server(canvas, port=0, public_origin=None):
         def stream_sync(self):
             store = sync()
             query = parse_qs(urlparse(self.path).query)
+            if query.get("protocol") == ["1"] or self.headers.get("X-Codex-Sync-Protocol") == "1":
+                scope = query.get("scope", [""])[0]
+                raw_cursor = self.headers.get("Last-Event-ID") or query.get("after", ["0"])[0]
+                try:
+                    cursor = int(raw_cursor)
+                    if cursor < 0 or cursor > 9007199254740991:
+                        raise ValueError
+                    first = store.stream_batch(scope, cursor)
+                except ValueError:
+                    return self.send({"error": "Invalid sync scope or cursor"}, 400)
+                self.connection.settimeout(20)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-transform")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("X-Codex-Sync-Protocol", "1")
+                self.end_headers()
+                previous_heartbeat = time.monotonic()
+                observed_generation = None
+                try:
+                    while not (canvas.runtime and canvas.runtime.closed):
+                        if not self.trusted():
+                            break
+                        if scope == "state:entities:v1" or scope.startswith("transcript:"):
+                            current_generation = store.generation()
+                            if current_generation != observed_generation:
+                                store.pull(scope, cursor, 100, reset_support=True)
+                                observed_generation = store.generation()
+                        batch = first
+                        first = None
+                        if batch is None:
+                            batch = store.stream_batch(scope, cursor)
+                        kind = batch["kind"]
+                        if kind in ("reset", "cursor-ahead"):
+                            payload = {"protocolVersion": 1, "workspaceId": store.identity()["workspaceId"],
+                                       "scope": scope, **batch}
+                            event = "reset" if kind == "reset" else "cursor-ahead"
+                            self.wfile.write((f"event: {event}\ndata: " + json.dumps(payload) + "\n\n").encode())
+                            self.wfile.flush()
+                            break
+                        if kind == "changes":
+                            payload = {"protocolVersion": 1, "workspaceId": store.identity()["workspaceId"],
+                                       "scope": scope, "documents": batch["documents"], "cursor": batch["cursor"]}
+                            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                            if len(encoded.encode("utf-8")) > 1024 * 1024:
+                                reset = {"protocolVersion": 1, "workspaceId": store.identity()["workspaceId"],
+                                         "scope": scope, "kind": "reset", "reason": "event-too-large",
+                                         "floor": batch.get("floor", 0), "maxSeq": batch["maxSeq"]}
+                                self.wfile.write(("event: reset\ndata: " + json.dumps(reset) + "\n\n").encode())
+                                self.wfile.flush()
+                                break
+                            cursor = batch["cursor"]
+                            self.wfile.write((f"id: {cursor}\nevent: changes\ndata: {encoded}\n\n").encode())
+                            self.wfile.flush()
+                        elif time.monotonic() - previous_heartbeat >= 15:
+                            self.wfile.write(b": heartbeat\n\n")
+                            self.wfile.flush()
+                            previous_heartbeat = time.monotonic()
+                        time.sleep(0.25)
+                except (OSError, sqlite3.Error):
+                    pass
+                self.close_connection = True
+                return
             shared_stream = query.get("protocol") == ["2"]
             entity_stream = query.get("scope") == ["state:entities:v1"]
             draft_stream = query.get("scope") == ["drafts"]
@@ -918,10 +983,17 @@ def make_server(canvas, port=0, public_origin=None):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             previous = None
+            observed_generation = None
             try:
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
+                    if entity_stream or transcript_id is not None:
+                        current_generation = store.generation()
+                        if current_generation != observed_generation:
+                            scope = "state:entities:v1" if entity_stream else "transcript:" + transcript_id
+                            store.pull(scope, 0, 100, reset_support=True)
+                            observed_generation = store.generation()
                     current = (store.generation_state() if shared_stream else
                                store.entity_sequence() if entity_stream else
                                store.draft_sequence() if draft_stream else
@@ -955,6 +1027,14 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send({"token": token})
                 if path.path == "/api/sync/identity":
                     return self.send(sync().identity())
+                if path.path == "/api/sync/protocol":
+                    return self.send({"protocolVersion": 1, "supportedVersions": [1, 2],
+                                      "capabilities": ["pull", "stream", "streamChanges", "entityReset"] +
+                                                      (["unixSocket"] if (Path(canvas.root) / "canvas.sock").exists() else []),
+                                      "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
+                                      "pullEndpoint": "/api/sync/pull", "streamEndpoint": "/api/sync/stream",
+                                      "maxEntityPage": 500, "maxOtherPage": 100,
+                                      "maxStreamDocuments": 100, "maxStreamBytes": 1048576})
                 if path.path == "/api/sync/pull":
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
                     store = sync()
@@ -965,6 +1045,11 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/api/sync/generations":
                     return self.send(sync().generation_state())
                 if path.path == "/api/sync/stream":
+                    version = parse_qs(path.query).get("protocol", [None])[0]
+                    header_version = self.headers.get("X-Codex-Sync-Protocol")
+                    if version not in (None, "1", "2") or header_version not in (None, "1", "2"):
+                        return self.send({"error": "Unsupported sync protocol version",
+                                          "supportedVersions": [1, 2]}, 426)
                     return self.stream_sync()
                 if path.path == "/api/state":
                     return self.send({**snapshot(include_work=parse_qs(path.query).get("view") != ["chat"]),
@@ -1527,6 +1612,40 @@ def make_server(canvas, port=0, public_origin=None):
                 terminal_manager[0].close()
             super().server_close()
 
+    class LocalUnixServer(ThreadingHTTPServer):
+        address_family = socket.AF_UNIX
+        daemon_threads = True
+        allow_reuse_address = False
+
+        def server_bind(self):
+            socket_path = Path(self.server_address)
+            socket_path.parent.mkdir(parents=True, exist_ok=True)
+            if socket_path.exists():
+                if not socket_path.is_socket():
+                    raise OSError(f"Canvas socket path is occupied: {socket_path}")
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                probe.settimeout(0.2)
+                try:
+                    probe.connect(str(socket_path))
+                except ConnectionRefusedError:
+                    socket_path.unlink()
+                finally:
+                    probe.close()
+            super().server_bind()
+            os.chmod(socket_path, 0o600)
+            stat = socket_path.stat()
+            self.owned_socket_identity = (stat.st_dev, stat.st_ino)
+
+        def server_close(self):
+            ThreadingHTTPServer.server_close(self)
+            socket_path = Path(self.server_address)
+            try:
+                stat = socket_path.stat()
+                if (stat.st_dev, stat.st_ino) == getattr(self, "owned_socket_identity", None):
+                    socket_path.unlink()
+            except FileNotFoundError:
+                pass
+
     server = LocalServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     # Explicit patch points for an already-running server instance. A live
@@ -1535,6 +1654,18 @@ def make_server(canvas, port=0, public_origin=None):
     server.canvas = canvas
     server.sync_store = sync
     server.snapshot_state = snapshot
+    server.unix_server = None
+    if unix_socket:
+        try:
+            local_socket = LocalUnixServer(str(Path(canvas.root) / "canvas.sock"), Handler)
+        except Exception:
+            server.server_close()
+            raise
+        local_socket.daemon_threads = True
+        local_socket.canvas = canvas
+        local_socket.sync_store = sync
+        local_socket.snapshot_state = snapshot
+        server.unix_server = local_socket
     return server
 
 
@@ -1572,7 +1703,11 @@ def main():
         from codex_runtime import Runtime
         canvas = Canvas()
         # Bind first so a port collision cannot disturb an existing runtime.
-        server = make_server(canvas, args.port)
+        server = make_server(canvas, args.port, unix_socket=True)
+        if server.unix_server:
+            unix_thread = threading.Thread(target=server.unix_server.serve_forever,
+                                           kwargs={"poll_interval": 0.5}, daemon=True)
+            unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
         from codex_live_updates import start as start_updates
@@ -1587,6 +1722,9 @@ def main():
         if updates:
             updates.close()
         if server:
+            if server.unix_server:
+                server.unix_server.shutdown()
+                server.unix_server.server_close()
             server.server_close()
         if runtime:
             runtime.close()

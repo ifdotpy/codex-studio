@@ -143,6 +143,47 @@ class SyncStore:
         with self.connection("SyncStore.draft_sequence") as db:
             return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]
 
+    def stream_batch(self, scope, after, limit=100):
+        """Read one bounded durable stream batch; never retain per-client events."""
+        after = int(after)
+        limit = min(100, max(1, int(limit)))
+        if scope == 'state:entities:v1':
+            from codex_sync_entities import entity_tombstone_floor, max_seq
+            with self.connection("SyncStore.stream_entities") as db:
+                high, floor = max_seq(db), entity_tombstone_floor(db)
+                if after > high:
+                    return {'kind': 'cursor-ahead', 'cursor': after, 'maxSeq': high}
+                if after and after < floor:
+                    return {'kind': 'reset', 'floor': floor, 'maxSeq': high}
+                rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
+                    WHERE collection NOT LIKE 'transcript:%' AND seq>? AND seq<=?
+                    ORDER BY seq LIMIT ?''', (after, high, limit)).fetchall()
+                documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
+                              'seq': row[2], '_deleted': bool(row[4])} for row in rows]
+                cursor = documents[-1]['seq'] if len(documents) == limit else high
+                return {'kind': 'changes' if documents else 'idle', 'documents': documents,
+                        'cursor': cursor, 'maxSeq': high, 'floor': floor}
+        if scope == 'drafts':
+            with self.connection("SyncStore.stream_drafts") as db:
+                high = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]
+                if after > high:
+                    return {'kind': 'cursor-ahead', 'cursor': after, 'maxSeq': high}
+                rows = db.execute('''SELECT seq,id,payload,deleted FROM sync_documents
+                    WHERE scope='drafts' AND seq>? ORDER BY seq LIMIT ?''', (after, limit)).fetchall()
+                documents = [self.document(row) for row in rows]
+                cursor = documents[-1]['seq'] if len(documents) == limit else high
+                return {'kind': 'changes' if documents else 'idle', 'documents': documents,
+                        'cursor': cursor, 'maxSeq': high}
+        if scope.startswith('transcript:') and len(scope) < 300:
+            result = self.pull(scope, after, limit)
+            documents = result['documents']
+            cursor = result['checkpoint']['seq']
+            if after > cursor:
+                return {'kind': 'cursor-ahead', 'cursor': after, 'maxSeq': cursor}
+            return {'kind': 'changes' if documents else 'idle', 'documents': documents,
+                    'cursor': cursor, 'maxSeq': cursor}
+        raise ValueError('Invalid sync stream scope')
+
     def _ensure_versions(self):
         # Existing make_server closures retain their SyncStore across a live
         # patch, so all new state must be initialized on first use.

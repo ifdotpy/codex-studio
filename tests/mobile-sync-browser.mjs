@@ -140,10 +140,10 @@ try {
       window.values["history:lead"]?.revision === 1,
   );
   await until(
-    () => streams.size === 3,
-    `Each active sync scope opens a live stream, opened=${opened} scopes=${streamScopes.join(",")} pulls=${pulls.join(",")}`,
+    () => streams.size === 1,
+    `The shared sync coordinator opens one stream, opened=${opened} scopes=${streamScopes.join(",")} pulls=${pulls.join(",")}`,
   );
-  assert.equal(opened, 3, "Entity, legacy, and transcript scopes open streams");
+  assert.equal(opened, 1, "One shared stream serves entity, legacy, and transcript watchers");
   await delay(250);
   const beforeBurst = pulls.length;
   revision = 2;
@@ -200,7 +200,7 @@ try {
   );
   await page.waitForFunction(() => window.resumeCalls === 1);
   await until(
-    () => opened >= 6,
+    () => opened >= 2,
     `Resume opens replacement streams, opened=${opened} scopes=${streamScopes.join(",")}`,
   );
   assert.equal(
@@ -208,7 +208,7 @@ try {
     1,
     "One PWA return invokes each resume consumer once",
   );
-  assert.equal(opened, 6, "One PWA return recreates each live stream");
+  assert.equal(opened, 2, "One PWA return recreates the shared live stream");
 
   await page.evaluate(() => {
     Object.defineProperty(navigator, "onLine", {
@@ -222,7 +222,7 @@ try {
   await delay(120);
   assert.equal(
     opened,
-    6,
+    2,
     "History restore does not open a socket while offline",
   );
   await page.evaluate(() => {
@@ -232,8 +232,8 @@ try {
     });
     window.dispatchEvent(new Event("online"));
   });
-  await until(() => streams.size === 3, "Online recreates the streams");
-  assert.equal(opened, 9);
+  await until(() => streams.size === 1, "Online recreates the shared stream");
+  assert.equal(opened, 3);
   await page.evaluate(() => {
     for (const stop of window.stops) stop();
     window.stopResume();
