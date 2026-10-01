@@ -742,7 +742,8 @@ class WorkspaceMixin:
                     "SELECT record FROM runtime_checkpoints WHERE id=?", (parent_id,)
                 ).fetchone()
                 if parent_row:
-                    parent_boundary = json.loads(parent_row[0]).get("historyBoundary")
+                    from codex_payloads import resolve_record
+                    parent_boundary = resolve_record(self.root, json.loads(parent_row[0])).get("historyBoundary")
             boundary = db.execute(
                 "SELECT rowid,id FROM runtime_items WHERE agent=? "
                 "AND json_extract(record,'$.afterRestore') IS NULL "
@@ -778,8 +779,7 @@ class WorkspaceMixin:
             self.put(db, "agents", current)
             return record
 
-    @staticmethod
-    def _checkpoint_history_ids(db, checkpoint):
+    def _checkpoint_history_ids(self, db, checkpoint):
         ids = set()
         seen = set()
         current = checkpoint
@@ -808,7 +808,8 @@ class WorkspaceMixin:
             ).fetchone()
             if not row:
                 raise ValueError("Checkpoint history parent is missing")
-            current = json.loads(row[0])
+            from codex_payloads import resolve_record
+            current = resolve_record(self.root, json.loads(row[0]))
         return ids
 
     @staticmethod
@@ -829,7 +830,7 @@ class WorkspaceMixin:
         recovery_expected = None
         with self.lock, self.db() as db:
             row = db.execute(
-                "SELECT json_remove(record,'$.items','$.historyDelta') "
+                "SELECT json_remove(record,'$.items','$.historyDelta','$._payloadBlobs') "
                 "FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
             ).fetchone()
             if not row:
@@ -891,7 +892,8 @@ class WorkspaceMixin:
                 ).fetchone()
                 if not row:
                     raise ValueError("Unknown checkpoint")
-                checkpoint = json.loads(row[0])
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
                 completed = (existing, checkpoint, a)
             elif active:
                 matches = [op for op in active if op.get("id") == operation_id
@@ -908,7 +910,8 @@ class WorkspaceMixin:
                 ).fetchone()
                 if not row:
                     raise ValueError("Unknown checkpoint")
-                checkpoint = json.loads(row[0])
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
                 expected_tree = resume_operation.get("expectedTree")
                 if data.get("checkpoint_id") not in {None, checkpoint["id"]}:
                     raise ValueError("This restore request has different content")
@@ -922,7 +925,8 @@ class WorkspaceMixin:
                 ).fetchone()
                 if not row:
                     raise ValueError("Unknown checkpoint")
-                checkpoint = json.loads(row[0])
+                from codex_payloads import resolve_record
+                checkpoint = resolve_record(self.root, json.loads(row[0]))
                 if checkpoint.get("agent") != key:
                     raise ValueError("Checkpoint belongs to another agent")
                 expected_tree = data.get("expectedTree")
@@ -1644,8 +1648,7 @@ class WorkspaceMixin:
                 "monitors": [m for m in monitors if m["agent"] in ids],
             }
 
-    @staticmethod
-    def _workspace_records(db, table, ids, field):
+    def _workspace_records(self, db, table, ids, field):
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1653,7 +1656,8 @@ class WorkspaceMixin:
             clause = "id IN (" + placeholders + ")"
         else:
             clause = f"json_extract(record,'$.{field}') IN ({placeholders})"
-        field_sql = "json_remove(record,'$.items','$.historyDelta')" if table == "checkpoints" else "record"
+        field_sql = ("json_remove(record,'$.items','$.historyDelta','$._payloadBlobs')"
+                     if table == "checkpoints" else "record")
         return [json.loads(row[0]) for row in db.execute(
             f"SELECT {field_sql} FROM runtime_{table} WHERE {clause}", tuple(ids))]
 

@@ -1072,6 +1072,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("analytics-schema")
             self.setup_work(db)
             startup_memory_mark("work-setup")
+            from codex_payloads import ensure_payload_schema
+            ensure_payload_schema(db)
             self.setup_tool_requests(db)
             startup_memory_mark("tool-request-recovery")
             from codex_user_messages import migrate
@@ -1167,6 +1169,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.changed.set()
             raise
         finally:
+            from codex_payloads import release_db_writer_lock
+            release_db_writer_lock(db)
             if reusable:
                 local.depth = 0
             else:
@@ -1398,6 +1402,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return view
 
     def put(self, db, table, record, *, sync_rooms=True):
+        if table in {"checkpoints", "tool_requests"}:
+            from codex_payloads import externalize_record
+            record = externalize_record(self.root, db, table, record)
         previous = None
         if table == "agents":
             previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
@@ -4483,7 +4490,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                  for s, c in zip(planned, children)],
                      "delivery": "Results wake you automatically. Finish your turn while waiting."}
             result = stamp_tool_result({"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}, time.time())
-            db.execute("INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)", (key, json.dumps(result)))
+            from codex_payloads import externalize_result
+            stored_result = externalize_result(self.root, db, result)
+            db.execute("INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)", (key, json.dumps(stored_result)))
             if request:
                 self.finish_tool_request(key, result, outcome="applied", db=db)
             return value
@@ -4537,7 +4546,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("The caller connection changed before execution")
                 previous = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
                 if previous:
-                    result = json.loads(previous[0])
+                    from codex_payloads import resolve_result
+                    result = resolve_result(self.root, previous[0])
                 a = self.tool_request_actor(db, p.get("threadId"), account_key)
             if result is None and a and p.get("turnId") and p["turnId"] != a.get("turnId"):
                 raise ValueError("This tool call belongs to an earlier turn")
@@ -4664,15 +4674,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
+                    from codex_payloads import externalize_result, resolve_result
+                    stored_result = externalize_result(self.root, db, result)
                     db.execute(
                         "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
-                        (key, json.dumps(result)),
+                        (key, json.dumps(stored_result)),
                     )
-                    result = json.loads(
-                        db.execute(
-                            "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
-                        ).fetchone()[0]
-                    )
+                    result = resolve_result(self.root, db.execute(
+                        "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
+                    ).fetchone()[0])
         except Exception as error:
             if claimed and name == "orchestration_review" and not getattr(error, "review_child_created", False):
                 # A native reviewer has a deterministic ID. Failures before its
@@ -4695,15 +4705,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             )
             if claimed:
                 with self.lock, self.db() as db:
+                    from codex_payloads import externalize_result, resolve_result
+                    stored_result = externalize_result(self.root, db, result)
                     db.execute(
                         "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
-                        (key, json.dumps(result)),
+                        (key, json.dumps(stored_result)),
                     )
-                    saved = json.loads(
-                        db.execute(
-                            "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
-                        ).fetchone()[0]
-                    )
+                    saved = resolve_result(self.root, db.execute(
+                        "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
+                    ).fetchone()[0])
                     if not saved.get("success"):
                         result = saved
         if claimed:

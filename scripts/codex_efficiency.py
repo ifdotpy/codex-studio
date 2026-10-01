@@ -397,7 +397,8 @@ class EfficiencyMixin:
                 row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()
                 if row is None:
                     raise ValueError('Result is not available yet. Do not repeat the operation.')
-                result = json.loads(row[0])
+                from codex_payloads import resolve_result, state_root
+                result = resolve_result(state_root(self), row[0])
                 text = '\n'.join(c.get('text', '') for c in result.get('contentItems', []) if c.get('type') == 'inputText')
             offset = args.get('offset', 0)
             if type(offset) is not int or offset < 0 or offset > len(text):

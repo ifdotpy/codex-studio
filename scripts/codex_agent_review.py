@@ -166,7 +166,9 @@ def request(rt, actor, args, key):
             rt.put(db, 'agents', child)
             result = stamp_tool_result({'success': True, 'contentItems': [
                 {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
-            db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)', (key, json.dumps(result)))
+            from codex_payloads import externalize_result
+            db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)',
+                       (key, json.dumps(externalize_result(rt.root, db, result))))
             if receipt:
                 rt.finish_tool_request(key, result, outcome='applied', db=db)
             return value

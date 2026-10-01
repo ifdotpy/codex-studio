@@ -867,14 +867,15 @@ def _unresolved_tool_receipts(rt, a):
         current_scope = (a.get('accountKey', 'default'), a.get('threadId'))
         history_scopes = {(h.get('accountKey', 'default'), h.get('threadId')) for h in a.get('accountHistory', [])}
         for row in rows:
-            record = json.loads(row[0])
+            from codex_payloads import resolve_record, resolve_result, state_root
+            record = resolve_record(state_root(rt), json.loads(row[0]))
             # A terminal response ends execution even when its side effects remain
             # unknown. Preserve that outcome and its full response unchanged.
             if (record.get('stage') in {'completed', 'failed'} and record.get('finished') is not None
                     and isinstance(record.get('result'), dict) and type(record['result'].get('success')) is bool):
                 continue
             cached = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (record['id'],)).fetchone()
-            if cached and type(json.loads(cached[0]).get('success')) is bool:
+            if cached and type(resolve_result(state_root(rt), cached[0]).get('success')) is bool:
                 continue
             scope = (record.get('accountKey', 'default'), record.get('threadId'))
             if scope != current_scope:

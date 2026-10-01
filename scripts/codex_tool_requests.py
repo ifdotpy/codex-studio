@@ -166,10 +166,11 @@ class RequestMixin:
         # This setup runs once at server startup, before requests can execute.
         rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.stage') IN ('queued','running')").fetchall()
         for row in rows:
-            record = json.loads(row[0])
-            cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (record["id"],)).fetchone()
+            from codex_payloads import resolve_record, state_root
+            record = resolve_record(state_root(self), json.loads(row[0]))
+            cached = self.tool_result(db, record["id"])
             if cached:
-                self.finish_tool_request(record["id"], json.loads(cached[0]), db=db)
+                self.finish_tool_request(record["id"], cached, db=db)
                 continue
             record["updated"] = time.time()
             if record["stage"] == "queued":
@@ -197,7 +198,17 @@ class RequestMixin:
             with self.lock, self.db() as own:
                 return self.tool_request(key, own)
         row = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        from codex_payloads import resolve_record, state_root
+        return resolve_record(state_root(self), json.loads(row[0]))
+
+    def tool_result(self, db, key):
+        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+        if row is None:
+            return None
+        from codex_payloads import resolve_result, state_root
+        return resolve_result(state_root(self), row[0])
 
     def transcript_tool_result(self, db, actor, item):
         """Recover a missing native completion from the exact durable receipt."""
@@ -230,10 +241,9 @@ class RequestMixin:
             return
         receipt_id = aliases[0][0] if aliases else (
             _prefix(actor.get("accountKey", "default"), actor.get("threadId")) + payload["id"])
-        row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (receipt_id,)).fetchone()
-        if row is None:
+        result = self.tool_result(db, receipt_id)
+        if result is None:
             return
-        result = json.loads(row[0])
         if type(result.get("success")) is not bool:
             return
         # Tool completion does not prove that a mutation was applied. Preserve
@@ -293,9 +303,9 @@ class RequestMixin:
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
-                cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+                cached = self.tool_result(db, key)
                 if cached:
-                    record = self.finish_tool_request(key, json.loads(cached[0]), db=db)
+                    record = self.finish_tool_request(key, cached, db=db)
             aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id]
             if record.get("request_id"):
                 aliases.append(record["request_id"])
@@ -356,9 +366,10 @@ class RequestMixin:
         return record
 
     def _refresh_tool_request(self, db, record):
+        from codex_payloads import resolve_record, state_root
+        record = resolve_record(state_root(self), record)
         if record["outcome"] not in {"applied", "not_applied"}:
-            cached = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (record["id"],)).fetchone()
-            result = json.loads(cached[0]) if cached else record.get("result")
+            result = self.tool_result(db, record["id"]) or record.get("result")
             if isinstance(result, dict):
                 return self.finish_tool_request(record["id"], result, db=db)
         return record
@@ -368,7 +379,8 @@ class RequestMixin:
                           "AND json_extract(record,'$.outcome') NOT IN ('applied','not_applied')", (agent_id,)).fetchall()
         reconciled, unknown = [], []
         for row in rows:
-            before = json.loads(row[0])
+            from codex_payloads import resolve_record, state_root
+            before = resolve_record(state_root(self), json.loads(row[0]))
             after = self._refresh_tool_request(db, before)
             if (after.get("tool") == "orchestration_review"
                     and after.get("stage") == "failed"
