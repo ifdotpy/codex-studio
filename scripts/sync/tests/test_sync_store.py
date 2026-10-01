@@ -118,6 +118,8 @@ class SyncStoreTests(unittest.TestCase):
         statements = []
         self.store.connect = self.traced_connect(statements)
         with self.connect() as db:
+            db.execute('''CREATE TRIGGER app_owned_runtime_agents_insert
+                AFTER INSERT ON runtime_agents BEGIN SELECT 1; END''')
             db.execute("CREATE TABLE unrelated_late_table(id TEXT PRIMARY KEY)")
         statements.clear()
 
@@ -130,6 +132,11 @@ class SyncStoreTests(unittest.TestCase):
             {f'sync_watch_unrelated_late_table_{op}' for op in ("INSERT", "UPDATE", "DELETE")},
             {sql.split('"', 2)[1] for sql in ddl},
         )
+        with self.connect() as db:
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                "AND name='app_owned_runtime_agents_insert'"
+            ).fetchone())
 
     def test_changed_owned_trigger_body_is_migrated_alone(self):
         name = "sync_scope_state_runtime_agents_INSERT"
@@ -226,6 +233,20 @@ class SyncStoreTests(unittest.TestCase):
         self.assertGreater(current, first_generation)
         updated = store.pull("state", first["checkpoint"]["seq"])
         self.assertEqual(json.loads(updated["documents"][0]["payload"])["notices"], ["already-here"])
+
+    def test_startup_invalidates_populated_sources_added_while_stopped(self):
+        before = self.store.generations()
+        with self.connect() as db:
+            db.execute("CREATE TABLE runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            db.execute("INSERT INTO runtime_native_notices VALUES ('offline-notice','{}')")
+            db.execute("CREATE TABLE runtime_item_bodies(id TEXT PRIMARY KEY, body TEXT, version INTEGER)")
+            db.execute("INSERT INTO runtime_item_bodies VALUES ('offline-item','full text',1)")
+
+        restarted = SyncStore(self.connect, lambda: {}, lambda _agent: {})
+
+        after = restarted.generations()
+        self.assertGreater(after["state"], before["state"])
+        self.assertGreater(after["transcripts"], before["transcripts"])
 
     def test_search_pending_is_index_only(self):
         with self.connect() as db:

@@ -51,9 +51,9 @@ class SyncStore:
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
             tables = [r[1] for r in db.execute("PRAGMA table_list")
                       if r[0] == "main" and r[2] == "table"]
-            self._reconcile_triggers(db, tables)
+            for scope in self._reconcile_triggers(db, tables):
+                db.execute('UPDATE sync_scope_generation SET value=value+1 WHERE scope=?', (scope,))
             self._schema_version = db.execute('PRAGMA schema_version').fetchone()[0]
-            self._known_tables = set(tables)
         self._observed_state_signature = state_signature() if state_signature else None
 
     def _ensure_current_triggers(self):
@@ -67,25 +67,10 @@ class SyncStore:
                     return
                 tables = [r[1] for r in db.execute("PRAGMA table_list")
                           if r[0] == "main" and r[2] == "table"]
-                new_tables = set(tables) - self._known_tables
-                self._reconcile_triggers(db, tables)
-                # A table can be created and populated before this process next
-                # notices the schema change. Triggers protect future writes, so
-                # explicitly invalidate the corresponding cached view for rows
-                # that already existed when the table appeared.
-                changed_scopes = set()
-                for table in new_tables:
-                    if table not in STATE_TABLES and table not in TRANSCRIPT_TABLES:
-                        continue
-                    if db.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
-                        if table in STATE_TABLES or table == "runtime_items":
-                            changed_scopes.add("state")
-                        if table in TRANSCRIPT_TABLES:
-                            changed_scopes.add("transcripts")
+                changed_scopes = self._reconcile_triggers(db, tables)
                 for scope in changed_scopes:
                     db.execute('UPDATE sync_scope_generation SET value=value+1 WHERE scope=?', (scope,))
                 self._schema_version = db.execute('PRAGMA schema_version').fetchone()[0]
-                self._known_tables = set(tables)
 
     @staticmethod
     def _normalized_trigger_sql(sql):
@@ -98,6 +83,7 @@ class SyncStore:
         # is common during startup; rebuilding every scoped trigger for an
         # unrelated table would needlessly invalidate active SQLite statements.
         desired = {}
+        scope_trigger_names = {}
         for table in tables:
             if table.startswith(('sync_', 'sqlite_')) or not re.fullmatch(r'[a-zA-Z0-9_]+', table):
                 continue
@@ -111,6 +97,7 @@ class SyncStore:
                     name = f'sync_scope_{scope}_{table}_{op}'
                     desired[name] = f'''CREATE TRIGGER "{name}" AFTER {op} ON "{table}" BEGIN
                         UPDATE sync_scope_generation SET value=value+1 WHERE scope='{scope}'; END'''
+                    scope_trigger_names.setdefault((scope, table), set()).add(name)
         if "runtime_items" in tables:
             # The chat-state snapshot only reads item existence for empty-lead
             # eligibility. Stream deltas update the transcript, not that flag.
@@ -125,11 +112,26 @@ class SyncStore:
                 AFTER DELETE ON runtime_items
                 WHEN NOT EXISTS (SELECT 1 FROM runtime_items WHERE agent=OLD.agent)
                 BEGIN UPDATE sync_scope_generation SET value=value+1 WHERE scope='state'; END'''
+            scope_trigger_names.setdefault(("state", "runtime_items"), set()).update((
+                'sync_scope_state_runtime_items_first',
+                'sync_scope_state_runtime_items_last',
+            ))
 
         existing = dict(db.execute(
             "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND "
             "(name LIKE 'sync_watch_%' OR name LIKE 'sync_scope_%')"
         ).fetchall())
+        changed_definitions = {
+            name for name, sql in desired.items()
+            if (name not in existing or
+                cls._normalized_trigger_sql(existing[name]) != cls._normalized_trigger_sql(sql))
+        }
+        changed_scopes = set()
+        for (scope, table), names in scope_trigger_names.items():
+            if names.isdisjoint(changed_definitions):
+                continue
+            if db.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
+                changed_scopes.add(scope)
         owned_prefixes = ('sync_watch_', 'sync_scope_')
         for name in sorted(existing.keys() - desired.keys()):
             if name.startswith(owned_prefixes):
@@ -143,6 +145,7 @@ class SyncStore:
             if old_sql is not None:
                 db.execute(f'DROP TRIGGER "{name}"')
             db.execute(sql)
+        return changed_scopes
 
     def identity(self):
         with self.connect() as db:

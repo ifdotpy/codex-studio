@@ -60,7 +60,9 @@ Correct triggers stay in place; missing triggers are added, and changed or
 obsolete sync-owned definitions are replaced. A schema change in an unrelated
 table therefore does not rebuild the scoped trigger set. When it discovers a
 new source table, it also invalidates the affected scope if rows were committed
-before its triggers could be installed. Version 2 SSE carries the workspace
+before its triggers could be installed. Startup does the same when it repairs a
+missing or changed scoped trigger for a populated source, covering rows added
+while Studio was stopped. Version 2 SSE carries the workspace
 identity and generation map. A new client subscribes by projection scope; every stream
 connection first sends the complete map, which reconciles missed events after
 sleep or network loss. It also polls the compact map as a scoped fallback. Invalid
