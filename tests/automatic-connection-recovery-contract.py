@@ -21,6 +21,77 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         previous.update(autoWake=True, connectionId='lost-connection', at=time.time())
         self.a = self.update(disconnectRecovery=previous)
 
+    def unsent_transport_failure(self, error='AF_UNIX path too long'):
+        self.update(autoWake=True)
+        with self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, a, 'user', 'Original instruction', 'unsent-input')
+        self.a = self.update(status='failed', autoWake=True, inFlight=False, turnId=None,
+            error=error, startAttempt={'id': 'original-attempt', 'epoch': self.a['epoch'],
+                'accountKey': self.a.get('accountKey', 'default'), 'submitted': False,
+                'events': ['unsent-input'], 'activeAtReservation': False})
+
+    def test_reconnected_transport_restores_only_original_unsent_batch(self):
+        self.unsent_transport_failure()
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'input_restored')
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['status'], 'queued')
+        self.assertTrue(actor['autoWake'])
+        self.assertIsNone(actor['error'])
+        self.assertNotIn('startAttempt', actor)
+        self.assertEqual(actor['connectionRecovery']['attemptId'], 'original-attempt')
+        with self.runtime.db() as db:
+            events = db.execute('SELECT id,text,status FROM runtime_events WHERE agent=?', (self.key,)).fetchall()
+        self.assertEqual([tuple(row) for row in events], [('unsent-input', 'Original instruction', 'pending')])
+        self.assertEqual(self.server.calls, [])
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+
+    def test_unsent_recovery_retains_unknown_input_and_explicit_stops(self):
+        changes = [{'submitted': True}, {'observedTurnId': 'native-turn'}, {'epoch': -1}, {'accountKey': 'other'}]
+        for change in changes:
+            with self.subTest(change=change):
+                with self.runtime.db() as db:
+                    db.execute('DELETE FROM runtime_events')
+                self.unsent_transport_failure()
+                self.update(startAttempt={**self.a['startAttempt'], **change})
+                before = self.runtime.agent(self.key)
+                self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+                self.assertEqual(self.runtime.agent(self.key), before)
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_events')
+        self.unsent_transport_failure('[Errno 2] No such file or directory')
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='unsent-input'")
+        before = self.runtime.agent(self.key)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key), before)
+        self.update(autoWake=False, status='paused')
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+
+    def test_failed_reconnect_does_not_restore_unsent_input(self):
+        self.unsent_transport_failure()
+        before = self.runtime.agent(self.key)
+        with patch.object(self.runtime, 'connect', side_effect=FileNotFoundError('Missing supervisor')):
+            self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key), before)
+
+    def test_pause_during_reconnect_and_unrelated_failures_remain_stopped(self):
+        self.unsent_transport_failure()
+        server = self.server
+        def connect(*args):
+            self.update(status='paused', autoWake=False, epoch=self.a['epoch'] + 1)
+            return server
+        with patch.object(self.runtime, 'connect', side_effect=connect):
+            self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'paused')
+        for error in ('Authentication failed', {'message': 'Model failed'}):
+            with self.subTest(error=error):
+                self.update(status='failed', autoWake=True, error=error)
+                before = self.runtime.agent(self.key)
+                self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+                self.assertEqual(self.runtime.agent(self.key), before)
+
     def test_completed_turn_restores_only_known_pending_input(self):
         self.authorize()
         with self.runtime.db() as db:

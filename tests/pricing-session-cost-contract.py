@@ -109,6 +109,36 @@ class PricingSessionCostContract(unittest.TestCase):
             reader.snapshot()
             worker.assert_called_once()
 
+    def test_session_cost_preserves_legacy_views_during_analytics_copy(self):
+        db_path = self.root / "canvas.sqlite3"
+        for filename in ("canvas.sqlite3", "analytics.sqlite3"):
+            with sqlite3.connect(self.root / filename) as db:
+                db.executescript("""
+                  CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                  CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                  CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, id TEXT UNIQUE,
+                    agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+                """)
+                db.execute("INSERT INTO analytics_agents VALUES ('lead',?)",
+                           (json.dumps({"rootId": "lead"}),))
+                response = "legacy" if filename == "canvas.sqlite3" else "copied"
+                usage = {"responseId": response, "model": "gpt-6-luna",
+                         "delta": {"inputTokens": 1000, "cachedInputTokens": 0,
+                                   "cacheWriteInputTokens": 0, "outputTokens": 0}}
+                seq = 1 if response == "legacy" else 2
+                db.execute("INSERT INTO analytics_usage VALUES (?,?, 'lead','lead','thread',?,1,?)",
+                           (seq, response, response, json.dumps(usage)))
+        reader = SessionCostReader(db_path, FixedPricing())
+        value = reader.snapshot("lead")
+        self.assertEqual(value["pricedSamples"], 2)
+        self.assertAlmostEqual(value["totalUSD"], .0002)
+        db = reader._connect()
+        try:
+            self.assertEqual(db.execute("PRAGMA temp_store").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM analytics_usage").fetchone()[0], 2)
+        finally:
+            db.close()
+
     def test_session_cost_keeps_codex_analytics_dedup_and_unpriced_models(self):
         db_path = self.root / "canvas.sqlite3"
         db = sqlite3.connect(db_path)

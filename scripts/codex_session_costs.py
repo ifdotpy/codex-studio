@@ -52,6 +52,9 @@ class SessionCostReader:
         db = sqlite_connect(f"file:{path}?mode=ro", uri=True, timeout=3,
                             site="SessionCostReader.analytics")
         db.row_factory = sqlite3.Row
+        # Set storage before creating legacy views or opening a read snapshot.
+        # Changing it later either rejects the transaction or deletes the views.
+        db.execute("PRAGMA temp_store=FILE")
         if self._separate_analytics:
             db.execute("ATTACH DATABASE ? AS canvas", (self.db_path.absolute().as_uri() + "?mode=ro",))
             from codex_analytics_storage import install_legacy_read_views
@@ -416,7 +419,6 @@ class SessionCostReader:
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
-            db.execute("PRAGMA temp_store=FILE")
             db.execute("CREATE TEMP TABLE session_cost_excluded (agent TEXT PRIMARY KEY)")
             db.executemany("INSERT INTO session_cost_excluded VALUES (?)",
                            ((member_id,) for member_id in claude_agents))

@@ -13,8 +13,25 @@ IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error'
             'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery', 'restartRecovery')
 
 
+def preparation_eligible(agent):
+    attempt = agent.get('startAttempt') or {}
+    return bool(agent.get('status') == 'failed' and agent.get('autoWake')
+                and not agent.get('inFlight') and not agent.get('turnId')
+                and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
+                and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+                and not native_thread_block(agent)
+                and isinstance(agent.get('error'), str)
+                and agent['error'] in {'AF_UNIX path too long', '[Errno 2] No such file or directory'}
+                and attempt.get('id') and attempt.get('submitted') is False
+                and attempt.get('epoch') == agent.get('epoch')
+                and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+                and attempt.get('events') and not attempt.get('action')
+                and not attempt.get('activeAtReservation')
+                and not attempt.get('turnId') and not attempt.get('observedTurnId'))
+
+
 def eligible(agent):
-    return (agent.get('status') == 'interrupted' and not agent.get('inFlight')
+    return preparation_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and not agent.get('startAttempt')
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
             and not agent.get('deletedAt') and agent.get('threadId') and agent.get('turnId')
@@ -38,6 +55,8 @@ def recover(runtime, key, *, automatic=False):
         with runtime.lock, runtime.db() as db:
             if not current(runtime, db, expected, connection, server):
                 return {'status': 'superseded'}
+        if preparation_eligible(agent):
+            return restore_preparation(runtime, expected, connection, server)
         thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
         if thread.get('id') != agent['threadId']:
             raise ValueError('Native thread identity changed')
@@ -61,6 +80,33 @@ def recover(runtime, key, *, automatic=False):
         return result.result(timeout=10)
     except Exception as error:
         return {'status': 'unconfirmed', 'error': str(error)}
+
+
+def restore_preparation(runtime, expected, connection, server):
+    """Restore admitted input only after proving that none of it was submitted."""
+    with runtime.lock, runtime.db() as db:
+        if not current(runtime, db, expected, connection, server):
+            return {'status': 'superseded'}
+        agent = runtime.agent(expected['id'], db)
+        if runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected'):
+            return {'status': 'superseded'}
+        attempt = agent['startAttempt']
+        for event_id in attempt['events']:
+            row = db.execute('SELECT agent,epoch,status FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+            if not row or tuple(row) != (agent['id'], agent['epoch'], 'pending'):
+                return {'status': 'unconfirmed'}
+        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                      "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                      (agent['id'], agent['epoch'])).fetchone():
+            return {'status': 'unconfirmed'}
+        agent['connectionRecovery'] = {'source': 'transport_attach', 'at': time.time(),
+            'attemptId': attempt['id'], 'eventIds': list(attempt['events']),
+            'previousError': agent['error'], 'outcome': 'input_restored'}
+        agent.update(status='queued', error=None)
+        agent.pop('startAttempt')
+        runtime.put(db, 'agents', agent)
+    runtime.changed.set()
+    return {'status': 'input_restored', 'attemptId': attempt['id']}
 
 
 def current(runtime, db, expected, connection, server):
