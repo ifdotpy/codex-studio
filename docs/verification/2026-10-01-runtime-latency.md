@@ -113,8 +113,8 @@ was proposed. The user authorized this direction and local-main integration at
 11:19 UTC. TanStack Query remains a separate experiment. The new transport must
 preserve exact message identity and offline/reconnect behavior, avoid per-tab
 permanent streams, and pass the full 256-worker/eight-tab scenario. Its
-implementation and final load results remain pending. No live backend update
-is claimed.
+implementation is integrated as `d5b1618`; final load acceptance remains pending.
+No live backend update is claimed.
 
 ## Local-main integration checks
 
@@ -144,3 +144,58 @@ do not establish an application speedup. Evidence:
 `message-delivery-analytics-fixed.json` in the external latency evidence folder.
 The required 256-worker/eight-tab workload remains the acceptance gate for the
 shared-stream change.
+
+## Sustained workload and WAL lifetime findings
+
+The shared-stream implementation passed the exact-commit eight-tab Chromium
+check: one active SSE, scoped transcript invalidation, hidden-owner handoff,
+and owner-close recovery in 3531 ms. A browser Web Lock owns the stream;
+BroadcastChannel relays generations and unavailable coordination uses polling.
+Managed transcript views use scoped pulls instead of a per-tab transcript SSE.
+
+The first sustained 256-worker/eight-tab run on `d5b1618` initialized all tabs
+in 524–688 ms, then exceeded its 240-second workload deadline. It recorded
+264 unrecovered snapshot-deferral 503 responses. A subsequent diagnostic run
+also failed. Early instrumentation added database reads to every callback and
+unbounded per-thread metric categories; those results must not be treated as
+unmodified backend capacity. Later harness revisions remove those probes and
+separate scheduled intents, actual notification offers, and completed durable
+writes plus receipts. The acceptance target remains 160 configured turns/s,
+with at least 90% achieved offers and completions, exact event accounting,
+and the documented browser latency and drain limits.
+
+Read-only analysis and isolated reproduction also identified excessive trigger
+DDL on unrelated schema changes. The correction through `5d007c5` preserves
+matching triggers and atomically repairs changed triggers with scope-generation
+increments, including populated sources discovered at restart. Nineteen
+SyncStore tests and the HTTP contract passed after integration. This does not
+establish that DDL caused the sustained snapshot deferrals.
+
+A fixed-count runtime-only comparison used the same harness `66d6b35`, FULL
+SQLite durability, ext4, two transports, serial producer, and 256 workers.
+The baseline was `b0d9c3c`; the candidate was `049d88e`, which retains one
+WAL-registered idle connection while keeping existing per-operation commits.
+The harness's own keeper was disabled in both runs. Both completed all 1280
+turns (256 warmup, 512 steady, 256 burst, 256 drain), 2560 durable chat writes
+and their receipts, 23040 notification sample identities, and 3840 runtime
+event acknowledgements, with no pending work or errors.
+
+Elapsed time fell from 104.2 to 48.4 seconds. Steady completed-turn rate rose
+from 18.91/s to 35.02/s; this still fails the 144/s minimum capacity gate.
+Sampled callback connection-close mean fell from 1.566 to 0.088 ms, and p99
+from 36.73 to 0.254 ms. Commit/context-exit mean fell from 2.538 to 1.008 ms,
+and p99 from 45.53 to 3.87 ms. These are one paired runtime-only measurement,
+not browser acceptance or live model throughput. Evidence is saved externally
+at `runtime-load-fixedcounts-keeper-049d88e/comparison.json` with the raw logs.
+
+The final keeper candidate `737314a`, integrated as `6248ecf`, adds reviewed
+startup-failure cleanup to the measured implementation. Its connection is
+created, primed, and closed on a dedicated owner thread, with no retained read
+transaction. It closes after Runtime-managed writers drain and before lease
+release. Existing fail-closed partial shutdown and daemon HTTP-handler lifecycle
+limitations are unchanged. Production synchronous settings are unchanged;
+NORMAL-mode measurements were isolated diagnostics and are not acceptance.
+
+No live backend restart, user-database modification, or native model workload
+was performed. TanStack Query remains outside these changes. Further work is
+required to meet the full 256-worker/eight-tab acceptance target.
