@@ -15,6 +15,10 @@ and the affected integration contracts before delivery.
 - [Root README](../README.md#checks): backend and application checks.
 - [Live updates](../docs/live-updates.md): source publication and runtime verification.
 
+Set `CODEX_CANVAS_STARTUP_MEMORY=1` to log current RSS and peak RSS at startup
+stage checkpoints. Add `CODEX_CANVAS_STARTUP_TRACEMALLOC=1` to log the top Python
+allocation sites at those checkpoints.
+
 New component folders should have an explicit import path, a short README, and
 focused `tests/`. Add `benchmarks/` when there is a repeatable workload worth
 measuring. Import production functions directly; do not copy them into tests or

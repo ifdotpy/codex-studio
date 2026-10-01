@@ -15,6 +15,7 @@ import uuid
 from analytics.rollout_parser import rollout_actions
 from codex_analytics import event_payload_measurements, model_payload_measurements
 from codex_budget import budget_capture
+from codex_startup_memory import mark as startup_memory_mark
 
 
 MAX_LINE_BYTES = 64 * 1024 * 1024
@@ -202,6 +203,8 @@ class AnalyticsHistoryMixin:
                 while not self.closed:
                     try:
                         advanced = self.analytics_history_step()
+                        startup_memory_mark("analytics-import-first-step")
+                        startup_memory_mark("analytics-import-progress", once=False, interval_seconds=30)
                         if failures or not reported_healthy:
                             with self.lock, self.db() as db:
                                 row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()

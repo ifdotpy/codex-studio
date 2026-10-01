@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from codex_backend_identity import BACKEND_BUILD
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
+from codex_startup_memory import mark as startup_memory_mark
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -873,6 +874,7 @@ def make_server(canvas, port=0, public_origin=None):
 
         def do_GET(self):
             path = urlparse(self.path)
+            startup_memory_mark("first-renderer-request")
             if not self.trusted():
                 return self.send({"error": "Local origin required"}, 403)
             try:
