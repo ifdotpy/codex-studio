@@ -21,6 +21,18 @@ export default function ProjectAccount({
   const [keys, setKeys] = useState(
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
+  const activeAccounts = accounts.accounts;
+  const activeKeys = new Set(activeAccounts.map((account) => account.id));
+  const archivedMemberships = (accounts.archivedAccounts || []).filter(
+    (account) => keys.includes(account.id),
+  );
+  const selectableKeys = keys.filter((accountKey) => {
+    const account = activeAccounts.find((item) => item.id === accountKey);
+    return account?.status === "ready" && !account.disconnected;
+  });
+  const displayedKey = selectableKeys.includes(key)
+    ? key
+    : selectableKeys[0] || "";
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const lock = useRef(false);
@@ -56,11 +68,22 @@ export default function ProjectAccount({
         value={keys}
         onChange={(next) => {
           setKeys(next);
-          if (!next.includes(key)) setKey(next[0] || "");
+          if (!next.includes(key) || !activeKeys.has(key)) {
+            setKey(
+              next.find((accountKey) => {
+                const account = activeAccounts.find(
+                  (item) => item.id === accountKey,
+                );
+                return account?.status === "ready" && !account.disconnected;
+              }) ||
+                next[0] ||
+                "",
+            );
+          }
         }}
       >
         <div style={{ display: "grid", gap: 12, margin: "12px 0 20px" }}>
-          {accounts.accounts
+          {activeAccounts
             .filter(
               (account) => !account.disconnected || keys.includes(account.id),
             )
@@ -75,15 +98,23 @@ export default function ProjectAccount({
                 }
               />
             ))}
+          {archivedMemberships.map((account) => (
+            <Checkbox
+              key={account.id}
+              value={account.id}
+              label={`${account.email || account.label || account.id} (deleted, remove from project)`}
+              disabled={pending}
+            />
+          ))}
         </div>
       </Checkbox.Group>
       <p className="notice">Shown first in the chat account menu.</p>
       <NativeSelect
         label="Default account for new chats"
-        value={key}
+        value={displayedKey}
         disabled={pending}
         onChange={(event) => setKey(event.currentTarget.value)}
-        data={accounts.accounts
+        data={activeAccounts
           .filter((account) => keys.includes(account.id))
           .map((account) => ({
             value: account.id,
@@ -103,8 +134,9 @@ export default function ProjectAccount({
         disabled={
           !keys.length ||
           !key ||
-          !!accounts.accounts.find((account) => account.id === key)
-            ?.disconnected
+          (activeKeys.has(key) &&
+            !!activeAccounts.find((account) => account.id === key)
+              ?.disconnected)
         }
       >
         Save accounts

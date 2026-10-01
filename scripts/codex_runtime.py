@@ -1208,7 +1208,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "daybreakEnabled": enabled, "cyberAccessProgram": program,
                 **({"accountKey": account} if account is not None else {})}
 
-    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False):
+    def create(self, data, parent=None, defer=False, parent_epoch=None, draft=False, _catalog=None, _validate_only=False, _accepted_provider_operation=False):
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         if parent and "yolo_mode" in data:
@@ -1285,7 +1285,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 assert_delegation(root)
             account_key = catalog_account
             account = self.accounts.get(account_key)
-            if account.get("deleted"):
+            if account.get("deleted") and not _accepted_provider_operation:
                 raise ValueError("This account was deleted. Select another account for new chats")
             if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
