@@ -129,6 +129,7 @@ try {
   );
   const deliveries = [];
   let pageRequests = 0;
+  const pageRequestUrls = [];
   await page.route("**/api/transcript?*", async (r) => {
     const selected =
       new URL(r.request().url()).searchParams.get("id") === lead.id;
@@ -139,6 +140,7 @@ try {
   });
   await page.route("**/api/transcript/page?*", async (r) => {
     pageRequests++;
+    pageRequestUrls.push(r.request().url());
     const url = new URL(r.request().url());
     const cursor = url.searchParams.get("before");
     const end = Math.max(
@@ -200,20 +202,22 @@ try {
       0,
       "No commentary is hidden inside tools",
     );
-    await page.getByRole("button", { name: "Browse prompts" }).click();
-    const loadEarlier = page.getByRole("button", {
-      name: "Load earlier messages",
-    });
+    const loadEarlier = page.locator("#earlier-messages");
     while (await loadEarlier.count()) {
-      const response = page.waitForResponse((r) =>
-        r.url().includes("/api/transcript/page?"),
-      );
+      const response = page
+        .waitForResponse((r) => r.url().includes("/api/transcript/page?"))
+        .then((value) => ({ value }), (error) => ({ error }));
       await page.locator("#messages").evaluate((root) => {
         root.scrollTop = 0;
         root.dispatchEvent(new Event("scroll"));
       });
-      await loadEarlier.click();
-      await response;
+      await loadEarlier.click({ timeout: 5000 });
+      const result = await response;
+      if ("error" in result) {
+        throw Error(
+          `Earlier page request missing: count=${pageRequests}, button=${await loadEarlier.isVisible()}, disabled=${await loadEarlier.isDisabled()}, errors=${JSON.stringify(errors)}, urls=${JSON.stringify(pageRequestUrls)}. ${result.error}`,
+        );
+      }
     }
     assert.equal(
       pageRequests > 0,
