@@ -542,6 +542,8 @@ def main():
     callback_invocations_by_method = {}
     callback_samples = 0
     callback_count = 0
+    callback_timing_totals = {"productionMs": 0.0, "wrapperMs": 0.0,
+                              "productionMaxMs": 0.0, "wrapperMaxMs": 0.0}
     callback_done = threading.Condition()
     progress_lock = threading.Lock()
     progress_phase = ["ready"]
@@ -634,6 +636,15 @@ def main():
             with callback_done:
                 callback_count += 1
                 callback_samples += len(message.get("_studioNotificationSamples") or [params])
+                wrapper_ms = (ended - started) * 1000
+                callback_timing_totals["wrapperMs"] += wrapper_ms
+                callback_timing_totals["wrapperMaxMs"] = max(
+                    callback_timing_totals["wrapperMaxMs"], wrapper_ms)
+                if production_ended is not None:
+                    production_ms = (production_ended - production_started) * 1000
+                    callback_timing_totals["productionMs"] += production_ms
+                    callback_timing_totals["productionMaxMs"] = max(
+                        callback_timing_totals["productionMaxMs"], production_ms)
                 callback_done.notify_all()
 
     runtime.notification = measured_notification
@@ -734,6 +745,11 @@ def main():
             offered = dict(category_offered)
         with callback_done:
             callbacks = {"samples": callback_samples, "invocations": callback_count}
+            callback_timings = dict(callback_timing_totals)
+            callback_timings["meanProductionMs"] = (
+                callback_timings["productionMs"] / callback_count if callback_count else 0)
+            callback_timings["meanWrapperMs"] = (
+                callback_timings["wrapperMs"] / callback_count if callback_count else 0)
         with lock:
             dispatched_count = len(dispatched)
             dispatched_categories = dict(category_dispatched)
@@ -749,6 +765,7 @@ def main():
                 if phase_elapsed and phase_elapsed > 0 else None),
             "offeredByCategory": offered, "completedCallbackSamples": callbacks["samples"],
             "callbackInvocations": callbacks["invocations"],
+            "callbackTimingTotalsMs": callback_timings,
             "dispatchedIdentities": dispatched_count,
             "dispatchedByCategory": dispatched_categories,
             "callbackQueues": [{"transport": index, "depth": appserver.callbacks.qsize(),
