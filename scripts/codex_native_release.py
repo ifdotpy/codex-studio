@@ -22,7 +22,7 @@ def _idle_since(agent):
     return agent.get("created", time.time())
 
 
-def _local_blocker(rt, db, agent, busy_owners=None):
+def _local_blocker(rt, db, agent):
     from codex_workspace import active_task_records
 
     key = agent["id"]
@@ -38,26 +38,18 @@ def _local_blocker(rt, db, agent, busy_owners=None):
                   "(status='pending' AND epoch=?)) LIMIT 1",
                   (key, agent["epoch"])).fetchone():
         return "pending or unknown input"
-    if db.execute("SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=? "
-                  "AND json_extract(record,'$.status') IN ('running','starting','approval') LIMIT 1",
-                  (key,)).fetchone():
-        return "active command monitor"
     if active_task_records(db, ("running", "starting", "pending", "unknown"), agent=key):
-        return "active or unknown task"
+        return "active native task"
     if db.execute("SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
                   "AND json_extract(record,'$.status') IN ('pending','answering') LIMIT 1",
                   (key,)).fetchone():
         return "pending request"
-    # runtime_work has no owner index; a scan pass supplies all busy owners at once.
-    if (key in busy_owners if busy_owners is not None else db.execute(
-            "SELECT 1 FROM runtime_work WHERE json_extract(record,'$.owner')=? "
-            "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') LIMIT 1",
-            (key,)).fetchone()):
-        return "active assigned work"
+    # Assigned work and Studio command monitors survive native unsubscribe.
+    # Native tasks above can continue after their model turn ends.
     if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-                  "AND (json_extract(record,'$.stage') IN ('queued','running') "
-                  "OR json_extract(record,'$.outcome')='unknown') LIMIT 1", (key,)).fetchone():
-        return "active or unknown tool request"
+                  "AND json_extract(record,'$.stage') IN ('queued','running') LIMIT 1",
+                  (key,)).fetchone():
+        return "active tool request"
     return None
 
 
@@ -256,18 +248,13 @@ def tick(rt, now=None):
         keys = [loaded[(position + offset) % len(loaded)]
                 for offset in range(min(MAX_SCAN_PER_TICK, len(loaded)))]
         rt._native_release_cursor = position + len(keys)
-        busy_owners = None
         for key in keys:
             if key in pending:
                 continue
             agent = rt.agent(key, db)
             if (agent.get("provider", "codex") == "codex" and not agent.get("deletedAt")
                     and agent.get("threadId") and now - _idle_since(agent) >= IDLE_SECONDS):
-                if busy_owners is None:
-                    busy_owners = {row[0] for row in db.execute(
-                        "SELECT json_extract(record,'$.owner') FROM runtime_work "
-                        "WHERE json_extract(record,'$.status') NOT IN ('accepted','cancelled')")}
-                if _local_blocker(rt, db, agent, busy_owners):
+                if _local_blocker(rt, db, agent):
                     continue
                 candidates.append((_idle_since(agent), key))
         selected = resets[:MAX_PER_TICK]
