@@ -76,6 +76,15 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
             self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
         self.assertEqual(self.runtime.agent(self.key), before)
 
+    def test_verified_supervisor_attach_restores_the_unsent_batch(self):
+        self.unsent_transport_failure(
+            'Supervisor open failed: Supervisor handle exists with an incompatible or stopped child')
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'input_restored')
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['connectionRecovery']['eventIds'], ['unsent-input'])
+        self.assertEqual(actor['status'], 'queued')
+        self.assertEqual(self.server.calls, [])
+
     def test_pause_during_reconnect_and_unrelated_failures_remain_stopped(self):
         self.unsent_transport_failure()
         server = self.server

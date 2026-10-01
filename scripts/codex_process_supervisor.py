@@ -573,6 +573,81 @@ class _Input:
         self.process.detach()
 
 
+def process_launch_environment(pid):
+    """Read a verified child's launch environment without saving credentials."""
+    import sys
+    if sys.platform == 'darwin':
+        import ctypes
+        import struct
+        libc = ctypes.CDLL(None, use_errno=True)
+        mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2, PID
+        size = ctypes.c_size_t()
+        if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0):
+            raise OSError(ctypes.get_errno(), 'Cannot read native process launch')
+        if not 4 <= size.value <= 4 * 1024 * 1024:
+            raise ValueError('Native process launch data exceeds its limit')
+        buffer = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0):
+            raise OSError(ctypes.get_errno(), 'Cannot read native process launch')
+        raw = buffer.raw[:size.value]
+        argc = struct.unpack('i', raw[:4])[0]
+        if not 0 < argc <= 4096:
+            raise ValueError('Invalid native process argument count')
+        position = raw.index(b'\0', 4) + 1
+        while position < len(raw) and raw[position] == 0:
+            position += 1
+        for _ in range(argc):
+            position = raw.index(b'\0', position) + 1
+        raw = raw[position:]
+    elif sys.platform.startswith('linux'):
+        with (Path('/proc') / str(pid) / 'environ').open('rb') as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError('Native process launch data exceeds its limit')
+    else:
+        raise RuntimeError('Cannot verify a legacy native launch on this platform')
+    environment = {}
+    for entry in raw.split(b'\0'):
+        if not entry:
+            break  # macOS follows the environment with a separate Apple vector.
+        key, separator, value = entry.partition(b'=')
+        if not separator:
+            raise ValueError('Invalid native process environment')
+        environment[os.fsdecode(key)] = os.fsdecode(value)
+    return environment
+
+
+def native_launch_environment(root, handle, command, env, cwd):
+    """Backend ownership is transport metadata, not a native launch setting."""
+    clean = dict(env)
+    clean.pop('CODEX_AGENTS_BACKEND_ID', None)
+    path = Path(root) / 'supervisor.sqlite3'
+    db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True)
+    try:
+        saved = db.execute('SELECT h.signature,h.pid,c.pid,c.start_time FROM handles h '
+                           'LEFT JOIN child_identities c ON c.handle=h.id WHERE h.id=?',
+                           (handle,)).fetchone()
+    finally:
+        db.close()
+    if not saved or Supervisor.signature(command, clean, cwd) == saved[0]:
+        return clean
+    # Older supervisors hash the backend ID into the launch. Keep their exact
+    # accepted signature, but only for the same verified native configuration.
+    _, pid, identity_pid, started = saved
+    if not started or pid != identity_pid or process_start_time(pid) != started:
+        raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
+    original = process_launch_environment(pid)
+    if Supervisor.signature(command, original, cwd) != saved[0]:
+        # A macOS Python launcher can add this marker after a script's exec.
+        original.pop('__PYVENV_LAUNCHER__', None)
+    comparable = dict(original)
+    comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
+    if (comparable != clean or Supervisor.signature(command, original, cwd) != saved[0]
+            or process_start_time(pid) != started):
+        raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
+    return original
+
+
 class ProcessProxy:
     """Popen-shaped transport consumed by codex_runtime.AppServer."""
     def __init__(self, root, handle, command, env, cwd):
@@ -594,7 +669,13 @@ class ProcessProxy:
             self.reader.close()
             self.socket.close()
             raise RuntimeError("Supervisor attach failed: " + hello["error"])
-        opened = self.call("open", command=command, env=env, cwd=cwd)
+        try:
+            env = native_launch_environment(self.root, handle, command, env, cwd)
+            opened = self.call("open", command=command, env=env, cwd=cwd)
+        except Exception:
+            self.reader.close()
+            self.socket.close()
+            raise
         self.initialize_result = opened.get("initResult") if opened.get("resumed") else None
         self.cursor = opened["acknowledged"]
         self.read_cursor = self.cursor

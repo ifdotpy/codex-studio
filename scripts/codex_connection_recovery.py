@@ -21,7 +21,8 @@ def preparation_eligible(agent):
                 and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
                 and not native_thread_block(agent)
                 and isinstance(agent.get('error'), str)
-                and agent['error'] in {'AF_UNIX path too long', '[Errno 2] No such file or directory'}
+                and agent['error'] in {'AF_UNIX path too long', '[Errno 2] No such file or directory',
+                    'Supervisor open failed: Supervisor handle exists with an incompatible or stopped child'}
                 and attempt.get('id') and attempt.get('submitted') is False
                 and attempt.get('epoch') == agent.get('epoch')
                 and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')

@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "desktop"))
 from codex_runtime import AppServer, ResponseTimeout
 from codex_process_supervisor import finish_fallback, process_start_time, status
+import codex_process_supervisor as process_supervisor
 import recover_backend
 
 FAKE_NATIVE = r'''#!/usr/bin/env python3
@@ -165,6 +166,53 @@ class ProcessSupervisorContract(unittest.TestCase):
         time.sleep(.2)
         self.assertEqual(sum(m.get('params',{}).get('delta')=='retained-output' for m in self.delivered),1)
         with (self.root/'supervisor.sqlite3').open('rb') as f: self.assertTrue(f.read(16).startswith(b'SQLite format 3'))
+
+    def test_backend_identity_changes_reattach_the_same_native_process(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_launch_reattaches_without_restarting_or_resending(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        with patch.dict(os.environ, {'CODEX_HOME': str(self.root/'different-account')}):
+            with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+                self.server()
+        with patch.object(process_supervisor, 'process_start_time', return_value='different start'):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
+                self.server()
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'another-backend-' + str(uuid.uuid4())
+        wait_for(lambda: status(self.root))
+        second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
 
     def test_account_and_terminal_roots_share_the_state_supervisor(self):
         roots = [self.root/'account-servers'/'claude-local',
