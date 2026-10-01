@@ -10,13 +10,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { HttpOutcomeTracker } from "./http_outcomes.mjs";
 
 const harness = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(harness, "../../..");
 const harnessFiles = [
   "README.md",
+  "http_outcomes.mjs",
   "run.mjs",
   "server.py",
+  "test_http_outcomes.mjs",
   "test_runtime_load.py",
 ];
 const harnessSourceSha256 = createHash("sha256")
@@ -192,7 +195,8 @@ let diagnosticOnlyResult = false;
 let pageErrors = [];
 let requestFailures = [];
 let consoleErrors = [];
-let expectedApiUnavailable = [];
+const httpOutcomes = new HttpOutcomeTracker();
+let responseHandling = Promise.resolve();
 let tabInitializationMs = [];
 const tabInitializationDeadlineMs = 15_000;
 let steadyWitnessLatencyByTab = [];
@@ -444,22 +448,32 @@ try {
       if (!failure.includes("ERR_ABORTED"))
         pageErrors.push(`request failed ${record.url}: ${failure}`);
     });
-    page.on("response", async (response) => {
-      if (response.status() >= 400) {
-        const detail = await response.text().catch(() => "<body unavailable>");
-        const parsedUrl = new URL(response.url());
-        const path = parsedUrl.pathname;
-        const syntheticAccount = parsedUrl.searchParams
-          .get("account_key")
-          ?.startsWith("bench-");
-        const expectedUnavailable =
-          path === "/api/models" ||
-          path === "/api/costs" ||
-          (path === "/api/limits" && syntheticAccount);
-        const entry = `HTTP ${response.status()} ${response.url()}: ${detail.slice(0, 1000)}`;
-        if (expectedUnavailable) expectedApiUnavailable.push(entry);
-        else pageErrors.push(entry);
+    page.on("response", (response) => {
+      const status = response.status();
+      const atEpochMs = Date.now();
+      if (status < 400) {
+        responseHandling = responseHandling.then(() =>
+          httpOutcomes.record({
+            tab: index + 1,
+            status,
+            url: response.url(),
+            method: response.request().method(),
+            atEpochMs,
+          }),
+        );
+        return;
       }
+      responseHandling = responseHandling.then(async () => {
+        const detail = await response.text().catch(() => "<body unavailable>");
+        httpOutcomes.record({
+          tab: index + 1,
+          status,
+          url: response.url(),
+          method: response.request().method(),
+          detail,
+          atEpochMs,
+        });
+      });
     });
     pages.push(page);
     if (diagnoseOriginPool) {
@@ -706,8 +720,9 @@ try {
       await page
         .waitForFunction(
           (expected) => {
-            const text = document.querySelector("#messages")?.innerText || "";
-            return expected.every((marker) => text.includes(marker));
+            return expected.every(
+              (marker) => window.__bench.witnessFirstSeen[marker],
+            );
           },
           markers,
           { timeout: check ? 5000 : 15_000 },
@@ -732,7 +747,7 @@ try {
             .then((response) => response.json())
             .catch((cause) => ({ error: String(cause) }));
           throw new Error(
-            `tab ${index + 1} did not render all ${markers.length} steady final markers; selected=${JSON.stringify(details)}; transcript=${JSON.stringify(transcript.items?.slice(-5) || transcript)}; DOM=${(
+            `tab ${index + 1} did not observe all ${markers.length} steady final markers; selected=${JSON.stringify(details)}; transcript=${JSON.stringify(transcript.items?.slice(-5) || transcript)}; DOM=${(
               await page
                 .locator("body")
                 .innerText()
@@ -823,11 +838,11 @@ try {
           visibleTeams: (text.match(/Load \d\d\/\d\d/g) || []).length,
           displayedAssistantItems: (text.match(/synthetic answer/g) || [])
             .length,
-          renderedWitnessMarkers: expectedMarkers.filter((marker) =>
-            text.includes(marker),
+          renderedWitnessMarkers: expectedMarkers.filter(
+            (marker) => window.__bench.witnessFirstSeen[marker],
           ),
-          renderedAllSteadyWitnessMarkers: expectedMarkers.every((marker) =>
-            text.includes(marker),
+          renderedAllSteadyWitnessMarkers: expectedMarkers.every(
+            (marker) => window.__bench.witnessFirstSeen[marker],
           ),
         };
       }, result.steadyWitnessMarkersByAgent[ready.witnesses[index].agentId]),
@@ -971,7 +986,10 @@ try {
     pageErrors,
     requestFailures,
     consoleErrors,
-    expectedApiUnavailable,
+    expectedApiUnavailable: httpOutcomes.expectedUnavailable,
+    retryableSnapshotDeferred: httpOutcomes.retryableSnapshotDeferred,
+    unrecoveredSnapshotReads: httpOutcomes.unrecoveredSnapshotReads(),
+    unexpectedHttpFailures: httpOutcomes.failures,
     syncAndPullLatencyByTab: ui.map((tab) => tab.apiLatencyMs),
     longTasksMs: ui.flatMap((tab) => tab.longTasks),
     tabStalenessMs: ui.map((tab) => ({
@@ -1019,6 +1037,22 @@ try {
   await Promise.all(pages.map((page) => page.close()));
   await Promise.all(contexts.map((browserContext) => browserContext.close()));
   await new Promise((resolve) => setImmediate(resolve));
+  await responseHandling;
+  browserReport.recoveredSnapshotReads =
+    httpOutcomes.retryableSnapshotDeferred.filter(
+      (attempt) => attempt.recoveredAtEpochMs !== null,
+    );
+  browserReport.unrecoveredSnapshotReads =
+    httpOutcomes.unrecoveredSnapshotReads();
+  browserReport.unexpectedHttpFailures = httpOutcomes.failures;
+  for (const attempt of httpOutcomes.unrecoveredSnapshotReads())
+    pageErrors.push(
+      `unrecovered retryable snapshot HTTP 503 in tab ${attempt.tab} scope=${attempt.scope} after=${new URL(attempt.url).searchParams.get("after")}`,
+    );
+  for (const failure of httpOutcomes.failures)
+    pageErrors.push(
+      `HTTP ${failure.status} ${failure.method} ${failure.url}: ${String(failure.detail).slice(0, 1000)}`,
+    );
   assert.equal(
     pageErrors.length,
     0,
@@ -1071,6 +1105,18 @@ try {
       originalRuntimeEventIdsExactlyOnce: true,
       httpServerErrors: result.httpServerErrors.length,
       deadlineRequestErrors: deadlineRequestFailures.length,
+      retryableSnapshot503Count: httpOutcomes.retryableSnapshotDeferred.length,
+      recoveredSnapshot503Count: httpOutcomes.retryableSnapshotDeferred.filter(
+        (attempt) => attempt.recoveredAtEpochMs !== null,
+      ).length,
+      unrecoveredSnapshot503Count:
+        httpOutcomes.unrecoveredSnapshotReads().length,
+      retryableSnapshotRecoveryLatencyMs: summarize(
+        httpOutcomes.retryableSnapshotDeferred
+          .filter((attempt) => attempt.recoveryLatencyMs !== null)
+          .map((attempt) => attempt.recoveryLatencyMs),
+      ),
+      unexpectedHttpFailures: httpOutcomes.failures.length,
     },
     resourceLimits: {
       deadlineMs,
@@ -1153,7 +1199,10 @@ try {
             pageErrors,
             requestFailures,
             consoleErrors,
-            expectedApiUnavailable,
+            expectedApiUnavailable: httpOutcomes.expectedUnavailable,
+            retryableSnapshotDeferred: httpOutcomes.retryableSnapshotDeferred,
+            unrecoveredSnapshotReads: httpOutcomes.unrecoveredSnapshotReads(),
+            unexpectedHttpFailures: httpOutcomes.failures,
             runtimeSummary: result
               ? {
                   teams: result.teams,
