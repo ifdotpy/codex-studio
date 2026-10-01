@@ -155,7 +155,7 @@ export function useChatPrefetch(
       }
     };
     schedule(1000);
-    const stopInvalidations = watchSyncInvalidations(pump);
+    const stopInvalidations = watchSyncInvalidations("state", pump);
     const stopResume = onResume(pump);
     return () => {
       stopped = true;

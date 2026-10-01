@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import json
 import os
@@ -64,6 +64,12 @@ THREAD_CONFIG = {
 
 class ComplaintConflict(ValueError):
     """The user response targets an older complaint version."""
+
+
+class SnapshotDeferred(RuntimeError):
+    """A coherent snapshot must be retried while native connections are starting."""
+
+    retryable_snapshot = True
 
 
 DEFAULT_LEAD_MODEL = "gpt-6-astra"
@@ -4730,9 +4736,38 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This conversation was deleted")
             return task
 
-    def snapshot(self, *, include_work=True):
+    def snapshot(self, *, include_work=True, _db=None):
         from codex_peer_teams import snapshot as peer_snapshot
-        with self.lock, self.db() as db:
+        with (self.db() if _db is None else nullcontext(_db)) as db:
+            db.execute("PRAGMA query_only=ON")
+            # Connection IDs are protected by start_lock, which connect() may
+            # hold across slow native startup/close. Defer this read rather than
+            # publish or cache a permission-filtered snapshot without that map.
+            if not self.start_lock.acquire(blocking=False):
+                raise SnapshotDeferred("Runtime snapshot is temporarily unavailable; retry shortly.")
+            try:
+                with self.lock:
+                    # Anchor SQLite's WAL read view and copy every mutable field
+                    # under the same lock boundary. Lock order matches connect
+                    # and Canvas.state_signature: start_lock, then Runtime.lock.
+                    db.execute("BEGIN")
+                    db.execute("SELECT id FROM runtime_agents LIMIT 1").fetchall()
+                    connection_ids = dict(self.connection_ids)
+                    # Keep volatile snapshot fields aligned with Canvas.state_signature:
+                    # add new visible warning/status maps to its brief copy too.
+                    rate_limits = json.loads(json.dumps(self.rate_limits))
+                    rate_limits_by_account = {
+                        key: json.loads(json.dumps(self.rate_limits_for(key)))
+                        for key in self.rate_limits_by_account
+                    }
+                    connected = bool(set(self.servers) - self.offline_accounts) and not self.closed
+            finally:
+                self.start_lock.release()
+            # account_notices only needs a record reader and connection identities.
+            # Give it the immutable copy so authorization filtering cannot observe
+            # a newer native connection map than the anchored SQLite view.
+            from types import SimpleNamespace
+            notice_view = SimpleNamespace(connection_ids=connection_ids, records=self.records)
             agents = [a for a in self.records(db, "agents") if not a.get("deletedAt")]
             team_names = {a["id"]: a["name"] for a in agents}
             for a in agents:
@@ -4797,11 +4832,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     for r in self.records(db, "rules")
                     if r["agent"] in {a["id"] for a in agents}
                 ],
-                "rateLimits": self.rate_limits.copy(),
-                "nativeNotices": account_notices(self, db),
-                "rateLimitsByAccount": {k: self.rate_limits_for(k).copy() for k in self.rate_limits_by_account},
+                "rateLimits": rate_limits,
+                "nativeNotices": account_notices(notice_view, db),
+                "rateLimitsByAccount": rate_limits_by_account,
                 "events": events,
-                "connected": bool(set(self.servers) - self.offline_accounts) and not self.closed,
+                "connected": connected,
             }
 
     def team(self, root):

@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import threading
+import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -15,6 +16,7 @@ spec = importlib.util.spec_from_file_location(
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+import codex_runtime
 from codex_canvas import Canvas, make_server
 
 
@@ -98,6 +100,60 @@ class MobileStateContract(unittest.TestCase):
             self.runtime.work_action(lead["id"], {"action": "list"})
         self.assertEqual(len(self.saved_work()), 1)
 
+    def test_snapshot_uses_captured_connection_map_for_notice_visibility(self):
+        self.runtime.connection_ids["default"] = "connection-before"
+        with self.runtime.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            self.runtime.put(db, "native_notices", {
+                "id": "notice", "accountKey": "default",
+                "connectionId": "connection-before", "message": "Visible",
+            })
+        original = codex_runtime.account_notices
+
+        def replace_connection_after_snapshot_lock(runtime_view, db):
+            self.runtime.connection_ids["default"] = "connection-after"
+            return original(runtime_view, db)
+
+        with patch("codex_runtime.account_notices", side_effect=replace_connection_after_snapshot_lock):
+            snapshot = self.runtime.snapshot()
+        self.assertEqual([notice["id"] for notice in snapshot["nativeNotices"]], ["notice"])
+
+    def test_snapshot_defers_while_connection_map_is_locked(self):
+        with self.runtime.start_lock:
+            self.runtime.connection_ids["default"] = "stable-connection"
+        with self.runtime.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            self.runtime.put(db, "native_notices", {
+                "id": "deferred-notice", "accountKey": "default",
+                "connectionId": "stable-connection", "message": "Visible after retry",
+            })
+
+        with self.runtime.db() as probe:
+            before = probe.execute("PRAGMA data_version").fetchone()[0]
+            self.runtime.start_lock.acquire()
+            try:
+                with self.assertRaisesRegex(codex_runtime.SnapshotDeferred, "retry shortly"):
+                    self.runtime.snapshot()
+            finally:
+                self.runtime.start_lock.release()
+
+            snapshot = self.runtime.snapshot()
+            after = probe.execute("PRAGMA data_version").fetchone()[0]
+        self.assertEqual([notice["id"] for notice in snapshot["nativeNotices"]], ["deferred-notice"])
+        self.assertEqual(after, before)
+
+    def test_snapshot_preserves_effective_rate_limit_account_fallbacks(self):
+        self.runtime.rate_limits = {"accountKey": "default", "data": {"effective": True}}
+        self.runtime.rate_limits_by_account = {
+            "default": {"accountKey": "default", "data": {"stale": True}},
+            "secondary": {"accountKey": "secondary", "data": {"secondary": True}},
+        }
+        snapshot = self.runtime.snapshot()
+        self.assertEqual(snapshot["rateLimits"], self.runtime.rate_limits)
+        self.assertEqual(snapshot["rateLimitsByAccount"]["default"], self.runtime.rate_limits)
+        self.assertEqual(snapshot["rateLimitsByAccount"]["secondary"],
+                         self.runtime.rate_limits_by_account["secondary"])
+
 
 class MobileStateHttpContract(unittest.TestCase):
     lead = fixture.WorkspaceContract.lead
@@ -148,6 +204,40 @@ class MobileStateHttpContract(unittest.TestCase):
         status, _, body = self.request(path)
         self.assertEqual(status, 200, body)
         return json.loads(body)
+
+    def test_busy_connection_lock_returns_retryable_sync_pull_then_restores_notice(self):
+        lead = self.lead()
+        with self.runtime.start_lock:
+            self.runtime.connection_ids["default"] = "http-stable-connection"
+        with self.runtime.db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_native_notices(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            self.runtime.put(db, "native_notices", {
+                "id": "http-deferred-notice", "accountKey": "default",
+                "connectionId": "http-stable-connection", "message": "Visible after retry",
+            })
+
+        warm = self.get("/api/sync/pull?scope=state:chat")
+        warm_payload = json.loads(warm["documents"][0]["payload"])
+        self.assertEqual([notice["id"] for notice in warm_payload["runtime"]["nativeNotices"]],
+                         ["http-deferred-notice"])
+        self.runtime.start_lock.acquire()
+        try:
+            # Invalidate the cached state while native connection identity is
+            # unavailable. No further database write occurs after the 503.
+            self.agent_update(lead, name="Updated during deferred snapshot")
+            status, _, body = self.request("/api/sync/pull?scope=state:chat")
+        finally:
+            self.runtime.start_lock.release()
+        self.assertEqual(status, 503, body)
+        self.assertIn("retry shortly", json.loads(body)["error"])
+
+        result = self.get("/api/sync/pull?scope=state:chat")
+        payload = json.loads(result["documents"][0]["payload"])
+        self.assertEqual([notice["id"] for notice in payload["runtime"]["nativeNotices"]],
+                         ["http-deferred-notice"])
+        self.assertEqual(next(agent for agent in payload["runtime"]["agents"]
+                              if agent["id"] == lead["id"])["name"],
+                         "Updated during deferred snapshot")
 
     def assert_no_work_reads(self, path):
         original = self.runtime.records
@@ -200,6 +290,32 @@ class MobileStateHttpContract(unittest.TestCase):
             self.assertEqual("work" in payload["runtime"], scope == "state")
         details = self.get("/api/work?agent=" + lead["id"])
         self.assertEqual(details["items"][0]["description"], work["description"])
+
+    def test_volatile_rate_and_connection_changes_advance_state_without_broad_writes(self):
+        before = self.get("/api/sync/generations")
+        with self.runtime.db() as db:
+            broad_before = db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()[0]
+        with self.runtime.lock:
+            self.runtime.rate_limits_by_account["signature-only"] = {
+                "accountKey": "signature-only", "data": {"remaining": 7},
+            }
+            self.runtime.connection_ids["default"] = "signature-only-replacement"
+        after = self.get("/api/sync/generations")
+        with self.runtime.db() as db:
+            broad_after = db.execute("SELECT value FROM sync_generation WHERE id=1").fetchone()[0]
+        self.assertGreater(after["generations"]["state"], before["generations"]["state"])
+        self.assertEqual(broad_after, broad_before)
+
+    def test_generation_endpoint_does_not_wait_for_native_start_lock(self):
+        self.runtime.start_lock.acquire()
+        started = time.monotonic()
+        try:
+            state = self.get("/api/sync/generations")
+            elapsed = time.monotonic() - started
+        finally:
+            self.runtime.start_lock.release()
+        self.assertIn("state", state["generations"])
+        self.assertLess(elapsed, 1.0)
 
     def test_checkpoint_and_workspace_survive_adapter_reload(self):
         lead = self.lead()

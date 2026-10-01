@@ -48,7 +48,7 @@ try {
       json: { workspaceId: currentWorkspace, chatState: true },
     });
   });
-  await page.route("**/api/sync/stream", (route) =>
+  await page.route("**/api/sync/stream*", (route) =>
     route.fulfill({ contentType: "text/event-stream", body: "" }),
   );
   await page.route("**/api/sync/pull?*", (route) => {

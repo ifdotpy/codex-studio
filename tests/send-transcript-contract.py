@@ -68,7 +68,7 @@ class SendTranscriptContract(unittest.TestCase):
                 self.assertEqual(stored["toolStatus"], "running", "Read must not rewrite historical evidence")
 
     def test_empty_or_malformed_native_content_keeps_history_available(self):
-        from codex_sync import SyncStore
+        from sync.sync_store import SyncStore
         for contents in (None, [], {}, "unexpected", [None, 7, {}, {"type": "inputText", "text": None}]):
             with self.subTest(contents=contents):
                 a, _ = self.tool_fixture(None, native={"contentItems": contents})

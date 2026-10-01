@@ -55,7 +55,7 @@ try {
   await page.route("**/api/session", (route) =>
     route.fulfill({ json: { token: "fixture" } }),
   );
-  await page.route("**/api/sync/stream", (route) =>
+  await page.route("**/api/sync/stream*", (route) =>
     route.fulfill({ contentType: "text/event-stream", body: "" }),
   );
   await page.route("**/api/sync/pull?*", (route) => {

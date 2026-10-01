@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import Runtime, write_generation
-from codex_sync import SyncStore
+from sync.sync_store import SyncStore
 
 spec = importlib.util.spec_from_file_location("scheduler_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)

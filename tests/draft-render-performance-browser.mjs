@@ -47,7 +47,7 @@ try {
         json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
       }),
     );
-    await page.route("**/api/sync/stream", (r) =>
+    await page.route("**/api/sync/stream*", (r) =>
       r.fulfill({ contentType: "text/event-stream", body: "" }),
     );
     await page.goto(
@@ -358,7 +358,7 @@ try {
         json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
       }),
     );
-    await other.route("**/api/sync/stream", (route) =>
+    await other.route("**/api/sync/stream*", (route) =>
       route.fulfill({ contentType: "text/event-stream", body: "" }),
     );
     await other.goto(

@@ -137,7 +137,7 @@ class Canvas:
         finally:
             db.close()
 
-    def threads(self, runtime_agents=None):
+    def threads(self, runtime_agents=None, db=None):
         rows = read_threads(self.root)
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
@@ -152,7 +152,7 @@ class Canvas:
             rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
                                                 else self.runtime.snapshot(include_work=False)["agents"]))
         else:
-            with self.connect() as db:
+            if db is not None:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
                     for item in db.execute("SELECT record FROM runtime_agents"):
                         a = json.loads(item[0])
@@ -160,9 +160,21 @@ class Canvas:
                             continue
                         rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
                                      "launcherAlive": False, "wave": "Managed team"})
+            else:
+                with self.connect() as connection:
+                    if connection.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
+                        for item in connection.execute("SELECT record FROM runtime_agents"):
+                            a = json.loads(item[0])
+                            if a.get("deletedAt"):
+                                continue
+                            rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
+                                         "launcherAlive": False, "wave": "Managed team"})
         by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
-        with self.connect() as db:
+        if db is not None:
             registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
+        else:
+            with self.connect() as connection:
+                registered = [json.loads(r['record']) for r in connection.execute("SELECT record FROM graph_agents")]
         for record in registered:
             existing = by_thread.get(record.get('threadId'))
             if existing:
@@ -188,21 +200,28 @@ class Canvas:
                 by_id[resolved] = node
         return rows
 
-    def chats(self):
-        with self.connect() as db:
+    def chats(self, db=None):
+        def read(connection):
             chats = []
-            for row in db.execute("SELECT * FROM groups"):
-                members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
-                last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
-                count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
+            for row in connection.execute("SELECT * FROM groups"):
+                members = [e['source'] for e in connection.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
+                last = connection.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
+                count = connection.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
                 chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
                               'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
-        return chats
+            return chats
+        if db is not None:
+            return read(db)
+        with self.connect() as connection:
+            return read(connection)
 
-    def edges(self, threads=None):
-        threads = threads if threads is not None else self.threads()
-        with self.connect() as db:
+    def edges(self, threads=None, db=None):
+        threads = threads if threads is not None else self.threads(db=db)
+        if db is not None:
             edges = [dict(e) for e in db.execute('SELECT * FROM graph_edges')]
+        else:
+            with self.connect() as connection:
+                edges = [dict(e) for e in connection.execute('SELECT * FROM graph_edges')]
         for row in threads:
             if row.get('parentId'):
                 edges.append({'id': identity('spawn', row['parentId'], row['id']), 'source': row['parentId'],
@@ -323,10 +342,10 @@ class Canvas:
                 db.execute('DELETE FROM graph_edges WHERE id=?', (key,))
         return {'id': key, 'connected': connected}
 
-    def snapshot(self, runtime_snapshot=None):
-        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None)
-        chats = self.chats()
-        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads), "at": time.time(), "stateDir": str(self.root)}
+    def snapshot(self, runtime_snapshot=None, db=None):
+        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None, db=db)
+        chats = self.chats(db=db)
+        return {"threads": threads, "chats": chats, 'nodes': threads + chats, 'edges': self.edges(threads, db=db), "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
         matches = [t for t in self.threads() if t["id"] == key]
@@ -557,17 +576,74 @@ def make_server(canvas, port=0, public_origin=None):
             return terminal_manager[0]
 
     def snapshot(include_work=True):
-        with canvas.lock:
-            runtime = canvas.runtime.snapshot(include_work=include_work) if canvas.runtime else None
-            return {**canvas.snapshot(runtime_snapshot=runtime), "runtime": runtime}
+        if canvas.runtime:
+            # One pinned SQLite read transaction covers both runtime permissions
+            # and canvas chat membership; Runtime holds its lock only to anchor
+            # this view and copy its mutable in-memory fields.
+            with canvas.runtime.db() as db:
+                runtime = canvas.runtime.snapshot(include_work=include_work, _db=db)
+                return {**canvas.snapshot(runtime_snapshot=runtime, db=db), "runtime": runtime}
+        with canvas.connect() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            db.execute("SELECT id FROM groups LIMIT 1").fetchall()
+            return {**canvas.snapshot(db=db), "runtime": None}
 
     def sync():
         with terminal_lock:
             if sync_store[0] is None:
-                from codex_sync import SyncStore
+                from sync.sync_store import SyncStore
+
+                def state_signature():
+                    runtime = canvas.runtime
+                    connected = False
+                    volatile = None
+                    if runtime:
+                        # Native startup holds start_lock across potentially slow
+                        # initialization. Signature sampling is on the SSE/HTTP
+                        # hot path, so skip this tick instead of waiting for it.
+                        if not runtime.start_lock.acquire(blocking=False):
+                            return None
+                        try:
+                            if not runtime.lock.acquire(blocking=False):
+                                return None
+                            try:
+                                connected = bool(set(runtime.servers) - runtime.offline_accounts) and not runtime.closed
+                                rate_limits = json.loads(json.dumps(runtime.rate_limits, sort_keys=True))
+                                rate_limits_by_account = {
+                                    key: json.loads(json.dumps(runtime.rate_limits_for(key), sort_keys=True))
+                                    for key in runtime.rate_limits_by_account
+                                }
+                                connection_ids = dict(runtime.connection_ids)
+                                volatile = json.dumps({
+                                    "rateLimits": rate_limits,
+                                    "rateLimitsByAccount": rate_limits_by_account,
+                                    "connectionIds": connection_ids,
+                                }, sort_keys=True, separators=(",", ":"))
+                            finally:
+                                runtime.lock.release()
+                        finally:
+                            runtime.start_lock.release()
+                    # Legacy app-server threads come from status files and launcher
+                    # liveness. They have no SQLite trigger, so fold file identity
+                    # and process liveness into the scoped state revision.
+                    files = []
+                    for path in sorted(canvas.root.glob("codex-swarm-status.*.json")):
+                        try:
+                            stat = path.stat()
+                        except FileNotFoundError:
+                            continue
+                        files.append((path.name, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+                    liveness = tuple(sorted((
+                        (row.get("launcherPid"), process_is_alive(row.get("launcherPid")))
+                        for row in read_threads(canvas.root)
+                        if row.get("launcherPid") is not None
+                    ), key=lambda item: str(item[0])))
+                    return connected, volatile, tuple(files), liveness
 
                 sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript,
-                                          chat_snapshot=lambda: snapshot(include_work=False))
+                                          chat_snapshot=lambda: snapshot(include_work=False),
+                                          state_signature=state_signature)
             return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):
@@ -651,6 +727,7 @@ def make_server(canvas, port=0, public_origin=None):
 
         def stream_sync(self):
             store = sync()
+            protocol = parse_qs(urlparse(self.path).query).get("protocol") == ["2"]
             self.connection.settimeout(20)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -662,8 +739,16 @@ def make_server(canvas, port=0, public_origin=None):
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
-                    current = store.generation()
-                    self.wfile.write(b'data: "RESYNC"\n\n' if current != previous else b": heartbeat\n\n")
+                    if protocol:
+                        current = store.generation_state()
+                        if current != previous:
+                            body = json.dumps(current, separators=(",", ":"))
+                            self.wfile.write(("data: " + body + "\n\n").encode())
+                        else:
+                            self.wfile.write(b": heartbeat\n\n")
+                    else:
+                        current = store.legacy_generation()
+                        self.wfile.write(b'data: "RESYNC"\n\n' if current != previous else b": heartbeat\n\n")
                     self.wfile.flush()
                     previous = current
                     time.sleep(1)
@@ -680,6 +765,8 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send({"token": token})
                 if path.path == "/api/sync/identity":
                     return self.send(sync().identity())
+                if path.path == "/api/sync/generations":
+                    return self.send(sync().generation_state())
                 if path.path == "/api/sync/pull":
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
                     return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0), q.get("limit", 100)))
@@ -876,7 +963,9 @@ def make_server(canvas, port=0, public_origin=None):
                 if path.path == "/":
                     return self.send({"error": "Build the interface: cd web && npm ci && npm run build"}, 503)
                 return self.send({"error": "Not found"}, 404)
-            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+            except RuntimeError as error:
+                return self.send({"error": str(error)}, 503 if getattr(error, "retryable_snapshot", False) else 400)
+            except (ValueError, OSError, sqlite3.Error) as error:
                 return self.send({"error": str(error)}, 400)
 
         def do_POST(self):

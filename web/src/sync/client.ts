@@ -157,22 +157,86 @@ async function pull(
     throw new Error("The server workspace changed. Reload to synchronize.");
   return result;
 }
-// All projection scopes and drafts share one stream and one fallback clock.
+// All projections and drafts share one stream with scope-aware callbacks.
 // A background PWA must not retain one HTTP connection per conversation.
-const invalidations = new Set<() => void>();
+const invalidations = new Map<() => void, string>();
 let stopInvalidations: (() => void) | undefined;
-export function watchSyncInvalidations(resync: () => void) {
-  invalidations.add(resync);
+export function watchSyncInvalidations(scope: string, resync: () => void) {
+  const generationScope =
+    scope === "state" || scope === "state:chat"
+      ? "state"
+      : scope.startsWith("transcript:")
+        ? "transcripts"
+        : scope;
+  invalidations.set(resync, generationScope);
   if (!stopInvalidations) {
     let source: EventSource | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastGenerations: Record<string, number> | undefined;
+    let lastWorkspaceId: string | undefined;
+    let pendingScopes = new Set<string>();
+    let pendingFullRefresh = false;
+    let openedStream = false;
     const available = () => !document.hidden && navigator.onLine !== false;
-    const notify = () => {
-      if (!available() || timer !== undefined) return;
+    const notify = (changed?: Set<string>) => {
+      if (!available()) return;
+      if (changed) for (const scope of changed) pendingScopes.add(scope);
+      else pendingFullRefresh = true;
+      if (timer !== undefined) return;
       timer = setTimeout(() => {
         timer = undefined;
-        if (available()) for (const callback of invalidations) callback();
+        const fullRefresh = pendingFullRefresh;
+        const scopes = pendingScopes;
+        pendingFullRefresh = false;
+        pendingScopes = new Set();
+        if (available())
+          for (const [callback, subscribed] of invalidations)
+            if (fullRefresh || scopes.has(subscribed)) callback();
       }, 50);
+    };
+    const applyGenerations = (current: Record<string, number>) => {
+      const changed = new Set(
+        Object.keys(current).filter(
+          (scope) => lastGenerations?.[scope] !== current[scope],
+        ),
+      );
+      lastGenerations = current;
+      notify(changed);
+    };
+    const applyGenerationState = (value: {
+      protocol?: number;
+      workspaceId?: string;
+      generations?: Record<string, number>;
+    }) => {
+      const generations = value?.generations;
+      const expected = ["drafts", "state", "transcripts"];
+      const valid =
+        value?.protocol === 2 &&
+        /^[a-f0-9]{32}$/.test(value.workspaceId || "") &&
+        generations &&
+        Object.keys(generations).sort().join(",") === expected.join(",") &&
+        expected.every(
+          (scope) =>
+            Number.isSafeInteger(generations[scope]) && generations[scope] >= 0,
+        );
+      if (!valid) {
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+        return;
+      }
+      if (
+        (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
+        (lastGenerations &&
+          expected.some(
+            (scope) => generations[scope] < lastGenerations![scope],
+          ))
+      ) {
+        lastGenerations = undefined;
+        notify();
+      }
+      lastWorkspaceId = value.workspaceId;
+      applyGenerations(generations!);
     };
     const close = () => {
       source?.close();
@@ -182,9 +246,29 @@ export function watchSyncInvalidations(resync: () => void) {
     };
     const connect = () => {
       if (!available() || source) return;
-      source = new EventSource("/api/sync/stream");
-      source.onopen = notify;
-      source.onmessage = notify;
+      source = new EventSource("/api/sync/stream?protocol=2");
+      source.onopen = () => {
+        if (openedStream) notify();
+        openedStream = true;
+      };
+      source.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (
+            message?.protocol === 2 &&
+            message.generations &&
+            typeof message.generations === "object"
+          ) {
+            applyGenerationState(message);
+            return;
+          }
+        } catch {
+          // Legacy RESYNC data and unknown protocol values invalidate all.
+        }
+        lastGenerations = undefined;
+        lastWorkspaceId = undefined;
+        notify();
+      };
     };
     const suspend = () => {
       if (!available()) close();
@@ -197,8 +281,18 @@ export function watchSyncInvalidations(resync: () => void) {
     });
     window.addEventListener("offline", suspend);
     document.addEventListener("visibilitychange", suspend);
-    // File-backed state still needs periodic reconciliation without SSE events.
-    const fallback = setInterval(notify, 3000);
+    // Reconcile the compact generation row as a bounded fallback. This does
+    // not pull a projection unless its own generation changed.
+    const fallback = setInterval(() => {
+      if (!available()) return;
+      void api<{
+        protocol: number;
+        workspaceId: string;
+        generations: Record<string, number>;
+      }>("/api/sync/generations")
+        .then(applyGenerationState)
+        .catch(() => {});
+    }, 3000);
     connect();
     stopInvalidations = () => {
       close();
@@ -319,7 +413,7 @@ async function acquireProjection(
         });
       return pending;
     };
-    const stopInvalidation = watchSyncInvalidations(() => {
+    const stopInvalidation = watchSyncInvalidations(remoteScope, () => {
       invalidated = true;
       void refresh().catch(() => {});
     });
@@ -488,7 +582,9 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const stopInvalidation = watchSyncInvalidations(() => replication.reSync());
+  const stopInvalidation = watchSyncInvalidations("drafts", () =>
+    replication.reSync(),
+  );
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"

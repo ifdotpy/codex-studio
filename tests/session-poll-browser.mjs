@@ -48,7 +48,7 @@ try {
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ json: { workspaceId } }),
   );
-  await page.route("**/api/sync/stream", (route) =>
+  await page.route("**/api/sync/stream*", (route) =>
     route.fulfill({
       contentType: "text/event-stream",
       body: 'data: "RESYNC"\n\n',
