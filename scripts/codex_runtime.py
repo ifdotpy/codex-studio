@@ -2859,13 +2859,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         restart_wait_agents = []
 
         def current_agents(db):
-            # Decoding every agent record costs tens of milliseconds under the
-            # shared lock. Reuse this pass's list until an agent write changes
-            # the generation; each writer saves what it edits.
-            generation = write_generation(db)
-            if generation is None or not decoded or decoded[0] != generation:
-                decoded[:] = [generation, self.scheduler_agents(db)]
-            return decoded[1]
+            # Reuse the roster within this database session. The revision and
+            # connection write count catch both put() and direct SQL updates.
+            generation = (self._agent_record_revision, db.total_changes,
+                          write_generation(db))
+            if not decoded or decoded[0] is not db or decoded[1] != generation:
+                decoded[:] = [db, generation, self.scheduler_agents(db)]
+            return decoded[2]
 
         with self.lock, self.db() as db:
             from codex_radio import tick as radio_tick
