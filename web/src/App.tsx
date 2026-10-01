@@ -19,6 +19,8 @@ import {
   Modal,
   Menu,
   NativeSelect,
+  Slider,
+  Tabs,
   useMantineColorScheme,
   TextInput,
   UnstyledButton,
@@ -41,6 +43,7 @@ import {
   PanelLeft,
   Plus,
   Search,
+  Settings2,
   Users,
   X,
 } from "lucide-react";
@@ -57,6 +60,15 @@ import {
 import { api, ApiError, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
 import {
+  defaultStudioPreferences,
+  fontFamilies,
+  formatSidebarShortcut,
+  parseSidebarShortcut,
+  parseStudioPreferences,
+  studioPreferencesStorageKey,
+  type StudioPreferences,
+} from "./studioPreferences";
+import {
   acknowledgeOutbox,
   editOutboxDisplay,
   durableSend,
@@ -65,10 +77,14 @@ import {
 } from "./sync/send";
 import { useSyncedDrafts } from "./sync/drafts";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
-import { busy, nativeReleaseLabel, statusLabel, type Agent, type Json } from "./types";
+import {
+  busy,
+  nativeReleaseLabel,
+  statusLabel,
+  type Agent,
+  type Json,
+} from "./types";
 import Sidebar from "./components/Sidebar";
-import ChatStatus from "./components/ChatStatus";
-import AgentModeSwitch from "./components/AgentModeSwitch";
 import {
   chatIndicators,
   backgroundActivities,
@@ -78,15 +94,17 @@ import {
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
-import SessionActivity from "./components/SessionActivity";
-import { useWorkerModels } from "./components/WorkerModelPicker";
-import { ExecutionSettings } from "./components/ExecutionSettings";
+import SessionActivity from "./components/agents/SessionActivity";
+import { useWorkerModels } from "./components/agents/WorkerModelPicker";
+import { ExecutionSettings } from "./components/agents/ExecutionSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
 import CodexSignIn from "./components/CodexSignIn";
+import ConversationTitle from "./components/shell/ConversationTitle";
+import AgentModeSwitch from "./components/agents/AgentModeSwitch";
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import RadioChat from "./components/RadioChat";
@@ -96,12 +114,13 @@ import SharedChatCreate, {
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import "./desktop";
 import "./components/team-navigation.css";
-import WorkerCard, {
+import WorkerCard from "./components/agents/WorkerCard";
+import {
   awaitingAnswerIds,
   TeamSummary,
   workerState,
   TEAM_PANEL_STATES,
-} from "./components/WorkerOverview";
+} from "./components/agents/WorkerOverview";
 import { TeamDiskTotal } from "./components/WorktreeDisk";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
 const ClaudeSettings = lazy(() =>
@@ -110,8 +129,10 @@ const ClaudeSettings = lazy(() =>
   })),
 );
 const TerminalDock = lazy(() => import("./components/TerminalDock"));
-const Workspace = lazy(() => import("./components/Workspace"));
-const BackgroundTasks = lazy(() => import("./components/BackgroundTasks"));
+const Workspace = lazy(() => import("./components/shell/Workspace"));
+const BackgroundTasks = lazy(
+  () => import("./components/shell/BackgroundTasks"),
+);
 export default function App() {
   reportPromptComposerRender("app");
   const outbox = useOutbox();
@@ -162,6 +183,7 @@ export default function App() {
   );
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [studioSettingsOpen, setStudioSettingsOpen] = useState(false);
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
@@ -169,9 +191,114 @@ export default function App() {
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
+  const preferenceLoad = useMemo(() => {
+    try {
+      const stored = localStorage.getItem(studioPreferencesStorageKey);
+      if (!stored)
+        return {
+          value: { ...defaultStudioPreferences, theme: colorScheme },
+          error: "",
+        };
+      try {
+        return { value: parseStudioPreferences(stored), error: "" };
+      } catch {
+        return {
+          value: { ...defaultStudioPreferences, theme: colorScheme },
+          error:
+            "Saved Studio preferences were invalid; safe defaults are active.",
+        };
+      }
+    } catch {
+      return {
+        value: { ...defaultStudioPreferences, theme: colorScheme },
+        error:
+          "Studio preferences could not be read. Changes may not persist in this browser.",
+      };
+    }
+  }, []);
+  const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
+    preferenceLoad.value,
+  );
+  const [studioPreferencesError, setStudioPreferencesError] = useState(
+    preferenceLoad.error,
+  );
+  const [sidebarShortcutError, setSidebarShortcutError] = useState("");
+  const updateStudioPreferences = useCallback(
+    (next: StudioPreferences) => {
+      setStudioPreferences(next);
+      if (next.theme !== colorScheme) setColorScheme(next.theme);
+      try {
+        localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        setStudioPreferencesError("");
+      } catch {
+        setStudioPreferencesError(
+          "Studio preferences could not be saved in this browser.",
+        );
+      }
+    },
+    [colorScheme, setColorScheme],
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
   );
+  useEffect(() => {
+    if (studioPreferences.theme !== colorScheme)
+      setColorScheme(studioPreferences.theme);
+  }, [studioPreferences.theme, colorScheme, setColorScheme]);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--studio-font-family",
+      fontFamilies[studioPreferences.fontFamily].css,
+    );
+    root.style.setProperty(
+      "--studio-sidebar-font-size",
+      `${studioPreferences.sidebarFontSize}px`,
+    );
+    root.style.setProperty(
+      "--studio-main-font-size",
+      `${studioPreferences.mainFontSize}px`,
+    );
+    root.style.setProperty(
+      "--studio-content-width-ratio",
+      String(studioPreferences.contentWidth / 100),
+    );
+  }, [studioPreferences]);
+  const toggleSidebar = useCallback(() => {
+    if (mobileClient) {
+      setSidebar((visible) => !visible);
+      return;
+    }
+    setSidebarCollapsed((collapsed) => {
+      save("codex-sidebar-collapsed", !collapsed);
+      return !collapsed;
+    });
+  }, [mobileClient]);
+  useEffect(() => {
+    const shortcut = parseSidebarShortcut(studioPreferences.sidebarShortcut);
+    if (!shortcut) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.closest("input, textarea, select, [role='textbox']"))
+      )
+        return;
+      if (
+        event.key.toLowerCase() !== shortcut.key ||
+        event.metaKey !== shortcut.meta ||
+        event.ctrlKey !== shortcut.ctrl ||
+        event.altKey !== shortcut.alt ||
+        event.shiftKey !== shortcut.shift
+      )
+        return;
+      event.preventDefault();
+      toggleSidebar();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [studioPreferences.sidebarShortcut, toggleSidebar]);
   const [wideTeamOpen, setWideTeamOpen] = useState(() =>
     saved("codex-team-open", false),
   );
@@ -395,9 +522,9 @@ export default function App() {
     true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
-  const selectedAccount = accounts.data.accounts.find(
-    (a) => a.id === accountKey,
-  );
+  const selectedAccount =
+    accounts.data.accounts.find((a) => a.id === accountKey) ||
+    accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
   const accountId = selectedAccount?.accountId;
   const cachedLimits = accountLimits(
     limitsByAccount[accountKey],
@@ -725,9 +852,12 @@ export default function App() {
   ) => {
     if (creationLock.current) return null;
     if (!retryId && !cwd) {
-      cwd = lead?.cwd || (mobileClient
-        ? data?.runtime.projects?.[0]?.path || leads.find((item) => item.cwd)?.cwd
-        : undefined);
+      cwd =
+        lead?.cwd ||
+        (mobileClient
+          ? data?.runtime.projects?.[0]?.path ||
+            leads.find((item) => item.cwd)?.cwd
+          : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
     try {
@@ -738,7 +868,8 @@ export default function App() {
           : pending.find(
               (request) =>
                 (request.cwd ||
-                  leads.find((item) => item.id === request.previous)?.cwd) === cwd &&
+                  leads.find((item) => item.id === request.previous)?.cwd) ===
+                  cwd &&
                 (request.project_folder || undefined) === projectFolder,
             )) || null;
       setPendingCreations(pending);
@@ -1151,9 +1282,7 @@ export default function App() {
     ([state]) => state !== "completed",
   ).map(([state, name]) => ({
     name,
-    workers: shown.filter(
-      (a) => panelState(a) === state,
-    ),
+    workers: shown.filter((a) => panelState(a) === state),
   }));
   const completed = shown.filter(
     (a) => workerState(a, answerIds, deferredIds) === "completed",
@@ -1247,11 +1376,7 @@ export default function App() {
               aria-label={group.name}
               key={group.name}
             >
-              {!smallTeam && (
-                <h3>
-                  {group.name}
-                </h3>
-              )}
+              {!smallTeam && <h3>{group.name}</h3>}
               {group.workers.map(worker)}
             </section>
           ) : null,
@@ -1278,6 +1403,13 @@ export default function App() {
       </div>
     </aside>
   );
+  const toggleTeam = () => {
+    if (narrowTeam) setTeamOpen(!teamOpen);
+    else {
+      setWideTeamOpen(!wideTeamOpen);
+      save("codex-team-open", !wideTeamOpen);
+    }
+  };
   return (
     <>
       <Sidebar
@@ -1355,76 +1487,81 @@ export default function App() {
           }
         }}
       />
-      <main className="workspace">
+      <main
+        className="workspace"
+        data-show-message-avatars={studioPreferences.showMessageAvatars}
+      >
         <SupervisorRecoveryNotice />
         <header className="workspace-header simple-workspace-header">
           <ActionIcon
             id="sidebar-toggle"
             aria-label="Toggle conversations"
             aria-expanded={mobileClient ? sidebar : !sidebarCollapsed}
-            onClick={() => {
-              if (mobileClient) setSidebar(!sidebar);
-              else {
-                setSidebarCollapsed(!sidebarCollapsed);
-                save("codex-sidebar-collapsed", !sidebarCollapsed);
-              }
-            }}
+            onClick={toggleSidebar}
           >
             <PanelLeft size={18} />
           </ActionIcon>
-          <div className="conversation-heading">
-            {lead && agent?.id !== lead.id && (
-              <Button
-                size="compact-xs"
-                leftSection={<ArrowLeft size={13} />}
-                id="back-lead"
-                onClick={() => open(lead.id)}
-              >
-                Back to main agent
-              </Button>
-            )}
-            <h1 id="conversation-title" title={title}>
-              <ChatStatus
-                provider={agent?.provider}
-                model={agent?.model}
-                status={agent ? indicators.get(agent.id) : undefined}
-              />
-              {title}
-            </h1>
-            <div className="conversation-meta">
-              <span id="conversation-status">
-                {agent
-                  ? indicators.get(agent.id)?.kind === "answer" ||
-                    ["waiting", "parked"].includes(agent.status) ||
-                    (indicators.get(agent.id)?.kind === "working" &&
-                      !agent.inFlight)
-                    ? indicators.get(agent.id)?.label
-                    : livePhase?.id === agent.id
-                      ? livePhase.label
-                      : [statusLabel(agent.status, agent.activity?.phase, agent.parkedEvent), nativeReleaseLabel(agent)]
-                          .filter(Boolean).join(" · ")
-                  : room?.radio
-                    ? "Shared chat · One agent speaks at a time"
-                    : room?.kind === "private"
-                      ? "Private agent chat"
-                      : room
-                        ? "Broadcast"
-                        : ""}
-                {mobileClient && agent?.cwd ? ` · ${projectName}` : ""}
-              </span>
-              {!mobileClient && lead?.source === "managed" && (
+          <ConversationTitle
+            title={title}
+            agent={agent}
+            indicator={agent ? indicators.get(agent.id) : undefined}
+            projectPrefix={
+              mobileClient && agent?.cwd ? `${projectName} · ` : ""
+            }
+            onBack={
+              lead && agent?.id !== lead.id ? () => open(lead.id) : undefined
+            }
+            modeControl={
+              lead?.source === "managed" && !mobileClient ? (
                 <AgentModeSwitch
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
                   refresh={refresh}
                 />
-              )}
-            </div>
-          </div>
+              ) : undefined
+            }
+            statusText={
+              agent
+                ? indicators.get(agent.id)?.kind === "answer" ||
+                  (indicators.get(agent.id)?.kind === "working" &&
+                    !agent.inFlight)
+                  ? indicators.get(agent.id)?.label || ""
+                  : livePhase?.id === agent.id
+                    ? livePhase.label
+                    : [
+                        statusLabel(
+                          agent.status,
+                          agent.activity?.phase,
+                          agent.parkedEvent,
+                        ),
+                        nativeReleaseLabel(agent),
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                : room?.radio
+                  ? "Shared chat · One agent speaks at a time"
+                  : room?.kind === "private"
+                    ? "Private agent chat"
+                    : room
+                      ? "Broadcast"
+                      : ""
+            }
+          />
+          <ActionIcon
+            id="studio-settings-toggle"
+            aria-label="Studio settings"
+            title="Studio settings"
+            onClick={() => setStudioSettingsOpen(true)}
+          >
+            <Settings2 size={18} />
+          </ActionIcon>
+          <div id="conversation-header-tools" />
           {!room?.radio && (
             <ActionIcon
+              id="chat-settings-toggle"
               aria-label="Chat settings"
+              title="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
               <Settings size={20} />
@@ -1436,13 +1573,7 @@ export default function App() {
               id="team-toggle"
               aria-label="Team"
               aria-expanded={narrowTeam ? teamOpen : wideTeamOpen}
-              onClick={() => {
-                if (narrowTeam) setTeamOpen(!teamOpen);
-                else {
-                  setWideTeamOpen(!wideTeamOpen);
-                  save("codex-team-open", !wideTeamOpen);
-                }
-              }}
+              onClick={toggleTeam}
             >
               Team
               {workers.length > 0 && (
@@ -1514,6 +1645,27 @@ export default function App() {
                 >
                   Activity {taskCount || ""}
                 </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item
+                  id="chat-actions-settings"
+                  aria-label="Chat settings"
+                  leftSection={<Settings size={14} />}
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  Chat settings
+                </Menu.Item>
+                {!!workers.length && (
+                  <Menu.Item
+                    id="chat-actions-team"
+                    aria-label="Team"
+                    leftSection={<Users size={14} />}
+                    onClick={toggleTeam}
+                  >
+                    Team{" "}
+                    {workers.filter((worker) => busy.has(worker.status)).length}
+                    /{workers.length}
+                  </Menu.Item>
+                )}
                 {agent?.source === "managed" && (
                   <Menu.Item
                     id="mark-unread"
@@ -1632,11 +1784,17 @@ export default function App() {
           />
         )}
         {claudeLoginKey &&
-          accounts.data.accounts.some((item) => item.id === claudeLoginKey) && (
+          (accounts.data.accounts.some((item) => item.id === claudeLoginKey) ||
+            accounts.data.archivedAccounts?.some(
+              (item) => item.id === claudeLoginKey,
+            )) && (
             <ClaudeSignIn
               key={claudeLoginKey}
               account={
                 accounts.data.accounts.find(
+                  (item) => item.id === claudeLoginKey,
+                ) ||
+                accounts.data.archivedAccounts!.find(
                   (item) => item.id === claudeLoginKey,
                 )!
               }
@@ -1645,18 +1803,46 @@ export default function App() {
               onReady={accounts.refresh}
             />
           )}
-        {codexLoginKey && accounts.data.accounts.some((item) => item.id === codexLoginKey) && (
-          <CodexSignIn account={accounts.data.accounts.find((item) => item.id === codexLoginKey)!}
-            state={accounts} onClose={() => setCodexLoginKey("")} />
-        )}
-        {accounts.data.accounts.filter((account) => account.id === accountKey || agents.some((item) =>
-          item.rootId === lead?.id && !item.deletedAt && (item.accountKey || "default") === account.id && item.status === "failed",
-        )).map((account) => (
-          <AccountSignInNotice key={account.id} account={account}
-            errors={agents.filter((item) => (item.id === agent?.id || item.rootId === lead?.id) &&
-              (item.accountKey || "default") === account.id).flatMap((item) => [item.error, item.nativeStatus?.error])}
-            onSignIn={account.provider === "claude" ? setClaudeLoginKey : setCodexLoginKey} />
-        ))}
+        {codexLoginKey &&
+          accounts.data.accounts.some((item) => item.id === codexLoginKey) && (
+            <CodexSignIn
+              account={accounts.data.accounts.find(
+                (item) => item.id === codexLoginKey,
+              )!}
+              state={accounts}
+              onClose={() => setCodexLoginKey("")}
+            />
+          )}
+        {[...accounts.data.accounts, ...(accounts.data.archivedAccounts || [])]
+          .filter(
+            (account) =>
+              account.id === accountKey ||
+              agents.some(
+                (item) =>
+                  item.rootId === lead?.id &&
+                  !item.deletedAt &&
+                  (item.accountKey || "default") === account.id &&
+                  item.status === "failed",
+              ),
+          )
+          .map((account) => (
+            <AccountSignInNotice
+              key={account.id}
+              account={account}
+              errors={agents
+                .filter(
+                  (item) =>
+                    (item.id === agent?.id || item.rootId === lead?.id) &&
+                    (item.accountKey || "default") === account.id,
+                )
+                .flatMap((item) => [item.error, item.nativeStatus?.error])}
+              onSignIn={
+                account.provider === "claude"
+                  ? setClaudeLoginKey
+                  : setCodexLoginKey
+              }
+            />
+          ))}
         {error && (
           <div id="error" role="alert">
             {error}
@@ -1833,6 +2019,225 @@ export default function App() {
         </Suspense>
       )}
       <Modal
+        opened={studioSettingsOpen}
+        closeOnEscape={!accountModalOpen}
+        closeOnClickOutside={!accountModalOpen}
+        onClose={() => setStudioSettingsOpen(false)}
+        title="Studio settings"
+      >
+        <div className="studio-settings-panel" data-testid="studio-settings">
+          <Tabs defaultValue="accounts" className="studio-settings-tabs">
+            <Tabs.List aria-label="Studio settings">
+              <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
+              <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
+              <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
+            </Tabs.List>
+            <Tabs.Panel value="accounts" pt="md">
+              <section className="settings-group" aria-label="Studio accounts">
+                <h2>Accounts</h2>
+                <p className="settings-help">
+                  Manage accounts and choose the default for new chats. Existing
+                  chats keep their account.
+                </p>
+                <Accounts
+                  managerOnly
+                  onModalOpenChange={setAccountModalOpen}
+                  state={accounts}
+                  onError={notify}
+                />
+              </section>
+            </Tabs.Panel>
+            <Tabs.Panel value="appearance" pt="md">
+              <div className="studio-appearance-groups">
+                <section className="settings-group" aria-label="Theme">
+                  <h2>Theme</h2>
+                  <div className="settings-field">
+                    <span className="settings-label">Color scheme</span>
+                    <NativeSelect
+                      aria-label="Studio theme"
+                      value={studioPreferences.theme}
+                      data={[
+                        { value: "auto", label: "System" },
+                        { value: "light", label: "Light" },
+                        { value: "dark", label: "Dark" },
+                      ]}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          theme: event.currentTarget
+                            .value as StudioPreferences["theme"],
+                        })
+                      }
+                    />
+                  </div>
+                </section>
+                <section className="settings-group" aria-label="Fonts">
+                  <h2>Fonts</h2>
+                  <div className="settings-field">
+                    <span className="settings-label">Font family</span>
+                    <NativeSelect
+                      aria-label="Studio font family"
+                      value={studioPreferences.fontFamily}
+                      data={Object.entries(fontFamilies).map(
+                        ([value, font]) => ({ value, label: font.label }),
+                      )}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          fontFamily: event.currentTarget
+                            .value as StudioPreferences["fontFamily"],
+                        })
+                      }
+                    />
+                  </div>
+                  <label className="studio-range-field">
+                    <span>
+                      Sidebar text{" "}
+                      <output>{studioPreferences.sidebarFontSize}px</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Sidebar font size"
+                      min={12}
+                      max={24}
+                      step={1}
+                      value={studioPreferences.sidebarFontSize}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          sidebarFontSize: value,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="studio-range-field">
+                    <span>
+                      Main text{" "}
+                      <output>{studioPreferences.mainFontSize}px</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Main font size"
+                      min={12}
+                      max={24}
+                      step={1}
+                      value={studioPreferences.mainFontSize}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          mainFontSize: value,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Column">
+                  <h2>Column</h2>
+                  <label className="studio-range-field">
+                    <span>
+                      Transcript width{" "}
+                      <output>{studioPreferences.contentWidth}%</output>
+                    </span>
+                    <Slider
+                      thumbLabel="Transcript width"
+                      min={60}
+                      max={100}
+                      step={1}
+                      value={studioPreferences.contentWidth}
+                      onChange={(value) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          contentWidth: value,
+                        })
+                      }
+                    />
+                    <small>
+                      Applies to messages, progress, and composer. Narrow
+                      screens use the full available width.
+                    </small>
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Messages">
+                  <h2>Messages</h2>
+                  <label className="settings-field studio-preference-toggle">
+                    <span className="settings-label">Show message avatars</span>
+                    <input
+                      aria-label="Show message avatars"
+                      type="checkbox"
+                      checked={studioPreferences.showMessageAvatars}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          showMessageAvatars: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+              </div>
+            </Tabs.Panel>
+            <Tabs.Panel value="hotkeys" pt="md">
+              <section className="settings-group" aria-label="Sidebar shortcut">
+                <h2>Keyboard shortcut</h2>
+                <div className="settings-field">
+                  <span className="settings-label">Toggle sidebar</span>
+                  <TextInput
+                    aria-label="Toggle sidebar shortcut"
+                    readOnly
+                    value={formatSidebarShortcut(
+                      studioPreferences.sidebarShortcut,
+                    )}
+                    onKeyDown={(event) => {
+                      if (event.key === "Tab" || event.key === "Escape") {
+                        setSidebarShortcutError("");
+                        return;
+                      }
+                      if (
+                        ["Control", "Meta", "Alt", "Shift"].includes(event.key)
+                      )
+                        return;
+                      if (event.ctrlKey || event.metaKey)
+                        event.stopPropagation();
+                      event.preventDefault();
+                      const mods = [
+                        event.metaKey ? "Meta" : "",
+                        event.ctrlKey ? "Control" : "",
+                        event.altKey ? "Alt" : "",
+                        event.shiftKey ? "Shift" : "",
+                      ].filter(Boolean);
+                      const candidate = [...mods, event.key].join("+");
+                      if (!parseSidebarShortcut(candidate)) {
+                        setSidebarShortcutError(
+                          "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+                        );
+                        return;
+                      }
+                      setSidebarShortcutError("");
+                      updateStudioPreferences({
+                        ...studioPreferences,
+                        sidebarShortcut: candidate,
+                      });
+                    }}
+                    onFocus={() =>
+                      setSidebarShortcutError(
+                        "Press a modifier and a letter or number to set the shortcut.",
+                      )
+                    }
+                    onBlur={() => setSidebarShortcutError("")}
+                  />
+                  {sidebarShortcutError && (
+                    <small role="status">{sidebarShortcutError}</small>
+                  )}
+                </div>
+              </section>
+            </Tabs.Panel>
+          </Tabs>
+          {studioPreferencesError && (
+            <p className="studio-preferences-error" role="alert">
+              {studioPreferencesError}
+            </p>
+          )}
+        </div>
+      </Modal>
+      <Modal
         opened={settingsOpen}
         closeOnEscape={
           !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
@@ -1850,12 +2255,15 @@ export default function App() {
           >
             <h2>Conversation</h2>
             {mobileClient && lead?.source === "managed" && (
-              <AgentModeSwitch
-                lead={lead}
-                stateDir={data.stateDir}
-                workspaceId={workspaceId}
-                refresh={refresh}
-              />
+              <div className="settings-field">
+                <span className="settings-label">Agent mode</span>
+                <AgentModeSwitch
+                  lead={lead}
+                  stateDir={data.stateDir}
+                  workspaceId={workspaceId}
+                  refresh={refresh}
+                />
+              </div>
             )}
             <BrowserAccessNotice
               accountKey={accountKey}
@@ -1949,23 +2357,6 @@ export default function App() {
               <ClaudeSettings agent={agent} />
             </Suspense>
           )}
-          <section className="settings-group settings-appearance">
-            <h2>Appearance</h2>
-            <NativeSelect
-              aria-label="Appearance"
-              value={colorScheme}
-              data={[
-                { value: "auto", label: "System" },
-                { value: "light", label: "Light" },
-                { value: "dark", label: "Dark" },
-              ]}
-              onChange={(event) =>
-                setColorScheme(
-                  event.currentTarget.value as "auto" | "light" | "dark",
-                )
-              }
-            />
-          </section>
           {agent?.cwd && (
             <Button
               variant="subtle"

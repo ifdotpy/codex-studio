@@ -3,7 +3,11 @@ import type { OutgoingMessage } from "../sync/send";
 
 export function explicitQueue(item: Record<string, unknown>) {
   if (item.localDelivery && item.deliveryStatus === "queued") return false;
-  return ["pending", "queued"].includes(String(item.deliveryStatus || item.status || "")) || item.pending === true;
+  return (
+    ["pending", "queued"].includes(
+      String(item.deliveryStatus || item.status || ""),
+    ) || item.pending === true
+  );
 }
 
 export function dispatchedMessage(item: Message) {

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -16,13 +17,63 @@ with tempfile.TemporaryDirectory() as directory:
     )
     try:
         port = process.stdout.readline().strip()
+        assert port.isdigit(), process.stderr.read()
         origin = 'http://127.0.0.1:' + port
         def get(path):
-            return json.load(urllib.request.urlopen(origin + path, timeout=10))
+            # Native startup can defer read-only snapshots; the browser retries
+            # this same documented response. Never retry mutation requests here.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with urllib.request.urlopen(origin + path, timeout=10) as response:
+                        return json.load(response)
+                except urllib.error.HTTPError as error:
+                    error.close()
+                    if error.code != 503 or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(.1)
         identity, state = get('/api/sync/identity'), get('/api/state')
+        generations = get('/api/sync/generations')
+        assert identity['syncProtocol'] == generations['protocol'] == 2
+        assert set(generations['generations']) == {'state', 'transcripts', 'drafts'}
+        with urllib.request.urlopen(origin + '/api/sync/stream?protocol=2', timeout=10) as stream:
+            lines = []
+            while True:
+                line = stream.readline().decode().rstrip('\r\n')
+                if line.startswith('data: '):
+                    lines.append(line[6:])
+                if not line:
+                    break
+        event = json.loads(lines[0])
+        assert event['protocol'] == 2
+        assert event['workspaceId'] == identity['workspaceId']
+        assert set(event['generations']) == {'state', 'transcripts', 'drafts'}
+        assert all(isinstance(value, int) for value in event['generations'].values())
+        before_legacy_thread = generations['generations']['state']
+        status_file = Path(directory) / 'codex-swarm-status.legacy-contract.json'
+        status_file.write_text(json.dumps([{
+            'name': 'Legacy fixture', 'threadId': 'a' * 36, 'runId': 'b' * 36,
+            'wave': 'legacy-contract', 'launcherPid': os.getpid(),
+            'turnStatus': 'running', 'cwd': directory,
+        }]))
+        after_legacy_thread = get('/api/sync/generations')
+        deadline = time.monotonic() + 5
+        while (after_legacy_thread['generations']['state'] <= before_legacy_thread
+               and time.monotonic() < deadline):
+            time.sleep(.05)
+            after_legacy_thread = get('/api/sync/generations')
+        assert after_legacy_thread['generations']['state'] > before_legacy_thread
+        with urllib.request.urlopen(origin + '/api/sync/stream', timeout=10) as stream:
+            while True:
+                line = stream.readline().decode().rstrip('\r\n')
+                if line.startswith('data: '):
+                    assert line == 'data: "RESYNC"'
+                    break
         projection = get('/api/sync/pull?scope=state')
+        assert projection['generation'] >= after_legacy_thread['generations']['state']
         payload = json.loads(projection['documents'][0]['payload'])
         assert 'runtime' in payload and 'threads' in payload and 'token' not in payload
+        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
         assert projection['workspaceId'] == identity['workspaceId']
         entities = get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100')
         assert entities['workspaceId'] == identity['workspaceId']

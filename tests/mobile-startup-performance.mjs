@@ -1,7 +1,14 @@
 // Production renderer and Runtime with generated history, no live user data.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +36,11 @@ assert.ok(
 );
 const proc = spawn(
   process.env.PYTHON || "python3",
-  ["-B", join(fixtureRepo, "tests/mobile-startup-fixture.py"), join(dir, "state")],
+  [
+    "-B",
+    join(fixtureRepo, "tests/mobile-startup-fixture.py"),
+    join(dir, "state"),
+  ],
   {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, MOBILE_TEST_DIST: join(dir, "dist") },
@@ -74,13 +85,19 @@ const scriptSizes = await Promise.all(
   })),
 );
 const entryHtml = await readFile(join(dir, "dist/index.html"), "utf8");
-const initialNames = [...entryHtml.matchAll(/(?:src|href)="\.\/assets\/([^"?#]+\.js)"/g)].map((m) => m[1]);
+const initialNames = [
+  ...entryHtml.matchAll(/(?:src|href)="\.\/assets\/([^"?#]+\.js)"/g),
+].map((m) => m[1]);
 measurements.bundle = {
   totalJsBytes: scriptSizes.reduce((sum, item) => sum + item.bytes, 0),
   totalJsGzipBytes: scriptSizes.reduce((sum, item) => sum + item.gzipBytes, 0),
   initialJsAssets: initialNames,
-  initialJsBytes: scriptSizes.filter((item) => initialNames.includes(item.name)).reduce((sum, item) => sum + item.bytes, 0),
-  initialJsGzipBytes: scriptSizes.filter((item) => initialNames.includes(item.name)).reduce((sum, item) => sum + item.gzipBytes, 0),
+  initialJsBytes: scriptSizes
+    .filter((item) => initialNames.includes(item.name))
+    .reduce((sum, item) => sum + item.bytes, 0),
+  initialJsGzipBytes: scriptSizes
+    .filter((item) => initialNames.includes(item.name))
+    .reduce((sum, item) => sum + item.gzipBytes, 0),
 };
 try {
   const origin = await new Promise((resolve, reject) => {
@@ -153,12 +170,16 @@ try {
     if ("PerformanceObserver" in window) {
       try {
         new PerformanceObserver((list) =>
-          window.mobileLongTasks.push(...list.getEntries().map((entry) => ({
-            startTime: entry.startTime,
-            duration: entry.duration,
-          }))),
+          window.mobileLongTasks.push(
+            ...list.getEntries().map((entry) => ({
+              startTime: entry.startTime,
+              duration: entry.duration,
+            })),
+          ),
         ).observe({ type: "longtask", buffered: true });
-      } catch { /* WebKit does not expose longtask entries on all versions. */ }
+      } catch {
+        /* WebKit does not expose longtask entries on all versions. */
+      }
     }
     window.EventSource = class extends NativeEventSource {
       constructor(url, options) {
@@ -216,7 +237,9 @@ try {
         historyVersion: body.historyVersion ?? null,
         error: body.error ?? null,
       });
-    } catch { /* Ignore streaming and non-JSON responses. */ }
+    } catch {
+      /* Ignore streaming and non-JSON responses. */
+    }
   });
   let cdp;
   if (browserType === chromium) {
@@ -238,9 +261,14 @@ try {
   );
   measurements.coldComposerMs = Date.now() - started;
   await page.locator("#sidebar-toggle").click();
-  await page.locator("#chat-list [data-chat]").first().waitFor({ state: "visible" });
+  await page
+    .locator("#chat-list [data-chat]")
+    .first()
+    .waitFor({ state: "visible" });
   await page.locator("#chat-search").fill("Release lead");
-  await page.locator(`#chat-list [data-chat="${fixture.lead}"]`).waitFor({ state: "visible" });
+  await page
+    .locator(`#chat-list [data-chat="${fixture.lead}"]`)
+    .waitFor({ state: "visible" });
   measurements.coldUsableChatListMs = Date.now() - started;
   if (expectCurrentBudgets) {
     assert.equal(
@@ -249,13 +277,15 @@ try {
       "Startup does not download full state",
     );
     assert.ok(
-      requests.some((request) => request.path.includes("scope=state%3Aentities%3Av1")),
+      requests.some((request) =>
+        request.path.includes("scope=state%3Aentities%3Av1"),
+      ),
       "Startup pulls the incremental entity projection",
     );
     assert.equal(
       requests.filter(
         (request) =>
-          /^\/api\/sync\/pull\?/.test(request.path) &&
+          request.path.startsWith("/api/sync/pull?") &&
           new URL(request.path, origin).searchParams.get("scope") === "state",
       ).length,
       0,
@@ -270,7 +300,7 @@ try {
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index);
       if (
-        key.startsWith("codex-drafts:") &&
+        key.startsWith("codex-chat-draft:") &&
         localStorage.getItem(key).includes(text)
       )
         return true;
@@ -284,11 +314,13 @@ try {
     .filter((request) => request.path.startsWith("/api/"));
   measurements.idleRequests = idleRequests.map((request) => request.path);
   measurements.observedTranscriptScopes = [
-    ...new Set(requests.flatMap((request) => {
-      if (!request.path.startsWith("/api/sync/pull?")) return [];
-      const scope = new URL(request.path, origin).searchParams.get("scope");
-      return scope?.startsWith("transcript:") ? [scope] : [];
-    })),
+    ...new Set(
+      requests.flatMap((request) => {
+        if (!request.path.startsWith("/api/sync/pull?")) return [];
+        const scope = new URL(request.path, origin).searchParams.get("scope");
+        return scope?.startsWith("transcript:") ? [scope] : [];
+      }),
+    ),
   ];
   if (expectCurrentBudgets)
     assert.ok(
@@ -311,8 +343,8 @@ try {
       "The full app retains one shared entity sequence stream",
     );
     assert.ok(
-      idleRequests.filter((request) => request.path === "/api/session").length <=
-        1,
+      idleRequests.filter((request) => request.path === "/api/session")
+        .length <= 1,
       "Idle credentials do not poll every 1.6 seconds",
     );
   }
@@ -333,57 +365,64 @@ try {
       "Repeated pulls at the same cursor remain bounded",
     );
     assert.ok(
-      idleRequests.filter((request) => request.path.startsWith("/api/sync/pull?"))
-        .length <= maxIdlePulls,
+      idleRequests.filter((request) =>
+        request.path.startsWith("/api/sync/pull?"),
+      ).length <= maxIdlePulls,
       `Idle projection pulls exceed 6 one-time pulls plus 12 repeats`,
     );
   }
-  await page.waitForFunction(async (entityCount) => {
-    const databases = await indexedDB.databases();
-    for (const info of databases) {
-      if (!info.name) continue;
-      const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open(info.name);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      if (!db.objectStoreNames.contains("projections")) {
+  await page.waitForFunction(
+    async (entityCount) => {
+      const databases = await indexedDB.databases();
+      for (const info of databases) {
+        if (!info.name) continue;
+        const db = await new Promise((resolve, reject) => {
+          const request = indexedDB.open(info.name);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        if (!db.objectStoreNames.contains("projections")) {
+          db.close();
+          continue;
+        }
+        const rows = await new Promise((resolve, reject) => {
+          const result = [];
+          const request = db
+            .transaction("projections", "readonly")
+            .objectStore("projections")
+            .openCursor();
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return resolve(result);
+            result.push(cursor.value);
+            cursor.continue();
+          };
+          request.onerror = () => reject(request.error);
+        });
         db.close();
-        continue;
+        const complete = rows.some(
+          (row) => row.id === "state:entities:complete" && !row._deleted,
+        );
+        const entities = rows.filter(
+          (row) => row.id?.startsWith("entity:") && !row._deleted,
+        ).length;
+        if (complete || entities >= entityCount) return true;
       }
-      const rows = await new Promise((resolve, reject) => {
-        const result = [];
-        const request = db
-          .transaction("projections", "readonly")
-          .objectStore("projections")
-          .openCursor();
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (!cursor) return resolve(result);
-          result.push(cursor.value);
-          cursor.continue();
-        };
-        request.onerror = () => reject(request.error);
-      });
-      db.close();
-      const complete = rows.some(
-        (row) => row.id === "state:entities:complete" && !row._deleted,
-      );
-      const entities = rows.filter(
-        (row) => row.id?.startsWith("entity:") && !row._deleted,
-      ).length;
-      if (complete || entities >= entityCount) return true;
-    }
-    return false;
-  }, fixture.entityCount, { timeout: 90000 });
+      return false;
+    },
+    fixture.entityCount,
+    { timeout: 90000 },
+  );
   measurements.fullEntitySyncMs = Date.now() - started;
   measurements.initialSyncTransfer = await page.evaluate(() => {
     const resources = performance
       .getEntriesByType("resource")
       .filter((entry) => {
         const url = new URL(entry.name);
-        return url.origin === location.origin &&
-          (url.pathname === "/api/state" || url.pathname === "/api/sync/pull");
+        return (
+          url.origin === location.origin &&
+          (url.pathname === "/api/state" || url.pathname === "/api/sync/pull")
+        );
       })
       .map((entry) => {
         const url = new URL(entry.name);
@@ -457,7 +496,10 @@ try {
     const at = Date.now();
     await row.click();
     await waitUntil(
-      (expected) => document.querySelector("#conversation-title")?.textContent?.includes(expected),
+      (expected) =>
+        document
+          .querySelector("#conversation-title")
+          ?.textContent?.includes(expected),
       name,
       `chat ${name}`,
     );
@@ -465,7 +507,11 @@ try {
     return Date.now() - at;
   };
   const switchTargets = fixture.switchTargets;
-  assert.equal(switchTargets.length, 2, "The fixture provides two switch chats");
+  assert.equal(
+    switchTargets.length,
+    2,
+    "The fixture provides two switch chats",
+  );
   const target = switchTargets[0];
   if (target) {
     measurements.openChatMs = await openChat(target.id, target.name);
@@ -476,7 +522,10 @@ try {
     await page.locator("#message").fill(sendText);
     const sendAt = Date.now();
     await page.locator("#send").click();
-    await page.locator("#messages [data-message]").filter({ hasText: sendText }).waitFor({ state: "visible" });
+    await page
+      .locator("#messages [data-message]")
+      .filter({ hasText: sendText })
+      .waitFor({ state: "visible" });
     measurements.sendToVisibleMs = Date.now() - sendAt;
   }
   const leadName = await openChat(fixture.lead, "Release lead");
@@ -488,35 +537,45 @@ try {
   let maxVisibleMessages = 0;
   const scrollPageTimes = [];
   const observedMessageIds = new Set();
-  while (await earlier.count() && observedMessageIds.size <= 1000) {
+  while ((await earlier.count()) && observedMessageIds.size <= 1000) {
     await earlier.scrollIntoViewIfNeeded();
     const messageRows = page.locator("#messages [data-message]");
-    maxVisibleMessages = Math.max(maxVisibleMessages, await messageRows.count());
+    maxVisibleMessages = Math.max(
+      maxVisibleMessages,
+      await messageRows.count(),
+    );
     for (const id of await messageRows.evaluateAll((rows) =>
       rows.map((row) => row.getAttribute("data-message")),
-    )) if (id) observedMessageIds.add(id);
+    ))
+      if (id) observedMessageIds.add(id);
     const previousTop = await messageRows.first().getAttribute("data-message");
-    const pageResponsePromise = page.waitForResponse((response) =>
-      new URL(response.url()).pathname === "/api/transcript/page" &&
-      new URL(response.url()).searchParams.has("before"),
+    const pageResponsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/transcript/page" &&
+        new URL(response.url()).searchParams.has("before"),
       { timeout: 30000 },
     );
     const pageStarted = Date.now();
     await earlier.click();
     const pageResponse = await pageResponsePromise;
     const pageData = await pageResponse.json();
-    assert.equal(pageData.error, undefined, "Older transcript page has no API error");
+    assert.equal(
+      pageData.error,
+      undefined,
+      "Older transcript page has no API error",
+    );
     assert.ok(pageData.items?.length, "Older transcript page returns items");
     await page.locator("#messages").evaluate((root) => {
       root.scrollTop = 0;
       root.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await page.evaluate(() => new Promise((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(resolve)),
-    ));
-    const returnedPageIds = pageData.items
-      .slice(0, 5)
-      .map((item) => item.id);
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const returnedPageIds = pageData.items.slice(0, 5).map((item) => item.id);
     scrollExpectation = {
       previousTop,
       expectedFirstIds: returnedPageIds,
@@ -526,9 +585,16 @@ try {
       ({ id, expectedIds }) => {
         const button = document.querySelector("#earlier-messages");
         const rows = [...document.querySelectorAll("#messages [data-message]")];
-        const ids = new Set(rows.map((row) => row.getAttribute("data-message")));
+        const ids = new Set(
+          rows.map((row) => row.getAttribute("data-message")),
+        );
         const first = rows[0]?.getAttribute("data-message");
-        return !button || (expectedIds.some((messageId) => ids.has(messageId)) && !button.disabled && first !== id);
+        return (
+          !button ||
+          (expectedIds.some((messageId) => ids.has(messageId)) &&
+            !button.disabled &&
+            first !== id)
+        );
       },
       { id: previousTop, expectedIds: returnedPageIds },
       { timeout: 30000 },
@@ -537,16 +603,22 @@ try {
     scrollExpectation = null;
     scrollPagesLoaded++;
     scrollPageTimes.push(Date.now() - pageStarted);
-    console.log(`SCROLL_PAGE ${scrollPagesLoaded}: ${scrollPageTimes.at(-1)} ms`);
+    console.log(
+      `SCROLL_PAGE ${scrollPagesLoaded}: ${scrollPageTimes.at(-1)} ms`,
+    );
   }
-  for (const id of await page.locator("#messages [data-message]").evaluateAll((rows) =>
-    rows.map((row) => row.getAttribute("data-message")),
-  )) if (id) observedMessageIds.add(id);
-  measurements.longChatMessagesRendered = await page.locator("#messages [data-message]").count();
+  for (const id of await page
+    .locator("#messages [data-message]")
+    .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-message"))))
+    if (id) observedMessageIds.add(id);
+  measurements.longChatMessagesRendered = await page
+    .locator("#messages [data-message]")
+    .count();
   measurements.longChatMessagesObserved = observedMessageIds.size;
   const expectedFixtureMessages = Array.from(
     { length: 1500 },
-    (_, index) => `${fixture.lead}:mobile-perf-message-${String(index).padStart(4, "0")}`,
+    (_, index) =>
+      `${fixture.lead}:mobile-perf-message-${String(index).padStart(4, "0")}`,
   );
   const missingFixtureMessages = expectedFixtureMessages.filter(
     (id) => !observedMessageIds.has(id),
@@ -559,7 +631,10 @@ try {
   measurements.longChatPagesScrolled = scrollPagesLoaded;
   measurements.longChatScrollPageMs = scrollPageTimes;
   measurements.longChatScrollMs = Date.now() - scrollStarted;
-  assert.ok(scrollPagesLoaded > 0, "The long transcript must load older pages while scrolling");
+  assert.ok(
+    scrollPagesLoaded > 0,
+    "The long transcript must load older pages while scrolling",
+  );
   assert.ok(
     measurements.longChatMessagesObserved > 1000,
     `The scrolling run observed only ${measurements.longChatMessagesObserved} messages`,
@@ -570,7 +645,10 @@ try {
     : await page.evaluate(() => performance.memory?.usedJSHeapSize ?? null);
   measurements.longTasks = await page.evaluate(() => ({
     count: window.mobileLongTasks.length,
-    totalMs: window.mobileLongTasks.reduce((sum, task) => sum + task.duration, 0),
+    totalMs: window.mobileLongTasks.reduce(
+      (sum, task) => sum + task.duration,
+      0,
+    ),
     maxMs: Math.max(0, ...window.mobileLongTasks.map((task) => task.duration)),
   }));
   measurements.storage = await page.evaluate(async () => {
@@ -586,7 +664,9 @@ try {
         request.onerror = () => reject(request.error);
       });
       for (const storeName of Array.from(db.objectStoreNames)) {
-        const store = db.transaction(storeName, "readonly").objectStore(storeName);
+        const store = db
+          .transaction(storeName, "readonly")
+          .objectStore(storeName);
         const rows = await new Promise((resolve, reject) => {
           const values = [];
           const request = store.openCursor();
@@ -599,7 +679,10 @@ try {
           request.onerror = () => reject(request.error);
         });
         objects += rows.length;
-        serializedBytes += rows.reduce((sum, row) => sum + JSON.stringify(row).length * 2, 0);
+        serializedBytes += rows.reduce(
+          (sum, row) => sum + JSON.stringify(row).length * 2,
+          0,
+        );
         transcriptDocuments += rows.filter((row) =>
           String(row.id).startsWith("transcript:"),
         ).length;
@@ -628,23 +711,50 @@ try {
 } catch (error) {
   try {
     scrollDebug = await page?.evaluate(() => ({
-      firstMessage: document.querySelector("#messages [data-message]")?.getAttribute("data-message"),
-      messageCount: document.querySelectorAll("#messages [data-message]").length,
+      firstMessage: document
+        .querySelector("#messages [data-message]")
+        ?.getAttribute("data-message"),
+      messageCount: document.querySelectorAll("#messages [data-message]")
+        .length,
       buttonText: document.querySelector("#earlier-messages")?.textContent,
       buttonDisabled: document.querySelector("#earlier-messages")?.disabled,
-      visibleText: document.querySelector("#messages")?.innerText?.slice(0, 300),
+      visibleText: document
+        .querySelector("#messages")
+        ?.innerText?.slice(0, 300),
       draftValue: document.querySelector("#message")?.value,
       title: document.querySelector("#conversation-title")?.textContent,
       longTasks: window.mobileLongTasks?.length,
-      maxLongTaskMs: Math.max(0, ...(window.mobileLongTasks || []).map((task) => task.duration)),
+      maxLongTaskMs: Math.max(
+        0,
+        ...(window.mobileLongTasks || []).map((task) => task.duration),
+      ),
       heapBytes: performance.memory?.usedJSHeapSize ?? null,
-      notices: [...document.querySelectorAll("[role=alert], .notice")].map((node) => node.textContent),
+      notices: [...document.querySelectorAll("[role=alert], .notice")].map(
+        (node) => node.textContent,
+      ),
     }));
-  } catch { /* The page may have closed after a browser error. */ }
+  } catch {
+    /* The page may have closed after a browser error. */
+  }
   await page?.screenshot({ path: join(dir, "failure.png") });
   await writeFile(
     join(dir, "failure.json"),
-    JSON.stringify({ measurements, errors, consoleErrors, failedRequests, transcriptResponses, responseStatuses, requests, scrollDebug, scrollExpectation, log }, null, 2),
+    JSON.stringify(
+      {
+        measurements,
+        errors,
+        consoleErrors,
+        failedRequests,
+        transcriptResponses,
+        responseStatuses,
+        requests,
+        scrollDebug,
+        scrollExpectation,
+        log,
+      },
+      null,
+      2,
+    ),
   );
   console.error("Evidence:", dir);
   throw error;

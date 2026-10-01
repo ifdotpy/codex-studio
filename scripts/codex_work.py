@@ -420,6 +420,10 @@ class WorkMixin:
         return True
 
     def _check_search_rows_batch(self, db, batch_size=500):
+        # The check table is dropped when the check completes.
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                          "AND name='runtime_search_rows_rollout'").fetchone():
+            return False
         state = db.execute("SELECT cursor FROM runtime_search_rows_rollout WHERE id=1").fetchone()
         if not state:
             return False

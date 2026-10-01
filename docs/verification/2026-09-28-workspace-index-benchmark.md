@@ -11,17 +11,17 @@ creation takes the writer lock.
 Counts and average record lengths were read on 2026-09-28 from the live SQLite
 database with `mode=ro` and `PRAGMA query_only=ON`. No index was created there.
 
-| Candidate index | Table rows | Fixture index size | Fixture build time |
-|---|---:|---:|---:|
-| `runtime_agent_workspace_root` | 745 | 36 KiB | 0.0006 s |
-| `runtime_request_workspace_agent_status` | 180 | 16 KiB | 0.0004 s |
-| `runtime_complaint_workspace_lead` | 151 | 12 KiB | 0.0004 s |
-| `runtime_monitor_workspace_agent_status_created` | 30,330 | 1.73 MiB | 0.0220 s |
-| `runtime_work_workspace_root_status` | 1,347 | 76 KiB | 0.0010 s |
-| `runtime_task_workspace_agent_status_created` | 523,094 | 29.95 MiB | 0.4631 s |
-| `runtime_annotation_workspace_agent` | 0 | 4 KiB | 0.0003 s |
-| `runtime_checkpoint_workspace_agent` | 6,143 | 268 KiB | 0.0026 s |
-| `runtime_rule_workspace_agent` | 51 | 4 KiB | 0.0003 s |
+| Candidate index                                  | Table rows | Fixture index size | Fixture build time |
+| ------------------------------------------------ | ---------: | -----------------: | -----------------: |
+| `runtime_agent_workspace_root`                   |        745 |             36 KiB |           0.0006 s |
+| `runtime_request_workspace_agent_status`         |        180 |             16 KiB |           0.0004 s |
+| `runtime_complaint_workspace_lead`               |        151 |             12 KiB |           0.0004 s |
+| `runtime_monitor_workspace_agent_status_created` |     30,330 |           1.73 MiB |           0.0220 s |
+| `runtime_work_workspace_root_status`             |      1,347 |             76 KiB |           0.0010 s |
+| `runtime_task_workspace_agent_status_created`    |    523,094 |          29.95 MiB |           0.4631 s |
+| `runtime_annotation_workspace_agent`             |          0 |              4 KiB |           0.0003 s |
+| `runtime_checkpoint_workspace_agent`             |      6,143 |            268 KiB |           0.0026 s |
+| `runtime_rule_workspace_agent`                   |         51 |              4 KiB |           0.0003 s |
 
 The fixture had the exact live row count for each table, 36-character agent/root
 keys, matching JSON fields and value types, and SQLite `dbstat` measured each

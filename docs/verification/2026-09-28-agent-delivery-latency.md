@@ -14,17 +14,17 @@ The paired heavy fixture uses 600 agents with 8 KiB JSON records, 240 prior 4 Ki
 
 Three paired runs gave these median p50 / p90 values in milliseconds. Each pair used the same synthetic input.
 
-| Segment | Busy full pass | Busy fast | Released idle full pass | Released idle fast |
-| --- | ---: | ---: | ---: | ---: |
-| Enqueue to reservation | 254 / 374 | 55 / 67 | 469 / 519 | 32 / 52 |
-| Reservation to start | <1 / <1 | <1 / <1 | <1 / <1 | <1 / <1 |
-| Start to validation | 379 / 494 | 84 / 102 | 171 / 223 | 39 / 62 |
-| Validation to program ready | 1 / 1 | 1 / 1 | 1 / 1 | <1 / <1 |
-| Program to repair ready | 0 / 0 | 0 / 0 | 663 / 756 | 282 / 306 |
-| Repair to prepared | 0 / 0 | 0 / 0 | 52 / 89 | 26 / 46 |
-| Prepared to connected | <1 / <1 | <1 / <1 | 2 / 2 | 2 / 4 |
-| Connected to submitted | 297 / 445 | 53 / 63 | 58 / 86 | 33 / 55 |
-| Total | 934 / 1,088 | 200 / 226 | 1,428 / 1,557 | 438 / 449 |
+| Segment                     | Busy full pass | Busy fast | Released idle full pass | Released idle fast |
+| --------------------------- | -------------: | --------: | ----------------------: | -----------------: |
+| Enqueue to reservation      |      254 / 374 |   55 / 67 |               469 / 519 |            32 / 52 |
+| Reservation to start        |        <1 / <1 |   <1 / <1 |                 <1 / <1 |            <1 / <1 |
+| Start to validation         |      379 / 494 |  84 / 102 |               171 / 223 |            39 / 62 |
+| Validation to program ready |          1 / 1 |     1 / 1 |                   1 / 1 |            <1 / <1 |
+| Program to repair ready     |          0 / 0 |     0 / 0 |               663 / 756 |          282 / 306 |
+| Repair to prepared          |          0 / 0 |     0 / 0 |                 52 / 89 |            26 / 46 |
+| Prepared to connected       |        <1 / <1 |   <1 / <1 |                   2 / 2 |              2 / 4 |
+| Connected to submitted      |      297 / 445 |   53 / 63 |                 58 / 86 |            33 / 55 |
+| Total                       |    934 / 1,088 | 200 / 226 |           1,428 / 1,557 |          438 / 449 |
 
 Across all 30 recipients, the median full pass p50 / p90 was 1,023 / 1,479 ms; corrected fast dispatch was 219 / 445 ms. Within the fast path, queued to scheduled was 0.3 / 0.5 ms for busy and 0.3 / 0.4 ms for idle. Scheduled to worker entry was below 0.1 ms at both percentiles. Worker entry to `Runtime.lock` acquisition was 26 / 35 ms for busy and 4 / 26 ms for idle. Lock acquisition to reservation was 27 / 31 ms for busy and 28 / 32 ms for idle. `fastQueuedAt`, `fastScheduledAt`, `fastEnteredAt`, and `fastLockedAt` are monotonic marks in event metadata. `fastSkipReason` records `autoWake`, `scheduleOverride`, `closed`, or `disabled` when the route is skipped.
 
@@ -36,26 +36,26 @@ The fixture creates 600 agents in one team. It sends one agent message to each o
 
 Three paired runs gave these medians of each run's percentiles, in milliseconds:
 
-| Recipient | Full pass p50 | Full pass p90 | Per agent p50 | Per agent p90 |
-| --- | ---: | ---: | ---: | ---: |
-| All 30 | 269 | 493 | 153 | 555 |
-| Busy 20 | 254 | 292 | 135 | 174 |
-| Released idle 10 | 471 | 496 | 527 | 627 |
+| Recipient        | Full pass p50 | Full pass p90 | Per agent p50 | Per agent p90 |
+| ---------------- | ------------: | ------------: | ------------: | ------------: |
+| All 30           |           269 |           493 |           153 |           555 |
+| Busy 20          |           254 |           292 |           135 |           174 |
+| Released idle 10 |           471 |           496 |           527 |           627 |
 
 The per-agent route meets the fixture target of p50 below 300 ms and p90 below 1 s. The released idle group still pays for `thread/resume`. Its p90 increased in these runs. An earlier run under heavier host load measured full pass p50 1,605 ms and p90 1,687 ms, then per-agent p50 259 ms and p90 749 ms. These are fake-native timings, not live delivery evidence.
 
 Segment medians from the three paired runs follow. Each cell is p50 / p90 in milliseconds. Monotonic marks are in `runtime_event_meta.record.timing`.
 
-| Segment | Busy full | Busy per agent | Idle full | Idle per agent |
-| --- | ---: | ---: | ---: | ---: |
-| Enqueued to dispatch picked | 87 / 185 | 31 / 61 | 68 / 136 | 22 / 61 |
-| Dispatch picked to start began | 0.2 / 0.5 | 0.2 / 0.3 | 0.4 / 0.6 | 0.2 / 0.9 |
-| Start began to validated | 50 / 71 | 57 / 97 | 60 / 80 | 35 / 80 |
-| Validated to program ready | 0.7 / 0.9 | 0.7 / 4.1 | 0.3 / 1.0 | 0.6 / 1.1 |
-| Program ready to repair ready | 0 / 0 | 0 / 0 | 268 / 293 | 356 / 451 |
-| Repair ready to prepared | 0 / 0 | 0 / 0 | 6 / 47 | 18 / 52 |
-| Prepared to connected | 0.1 / 0.2 | 0.2 / 0.2 | 1.3 / 7.1 | 1.3 / 2.8 |
-| Connected to submitted | 67 / 117 | 24 / 62 | 29 / 59 | 23 / 80 |
+| Segment                        | Busy full | Busy per agent | Idle full | Idle per agent |
+| ------------------------------ | --------: | -------------: | --------: | -------------: |
+| Enqueued to dispatch picked    |  87 / 185 |        31 / 61 |  68 / 136 |        22 / 61 |
+| Dispatch picked to start began | 0.2 / 0.5 |      0.2 / 0.3 | 0.4 / 0.6 |      0.2 / 0.9 |
+| Start began to validated       |   50 / 71 |        57 / 97 |   60 / 80 |        35 / 80 |
+| Validated to program ready     | 0.7 / 0.9 |      0.7 / 4.1 | 0.3 / 1.0 |      0.6 / 1.1 |
+| Program ready to repair ready  |     0 / 0 |          0 / 0 | 268 / 293 |      356 / 451 |
+| Repair ready to prepared       |     0 / 0 |          0 / 0 |    6 / 47 |        18 / 52 |
+| Prepared to connected          | 0.1 / 0.2 |      0.2 / 0.2 | 1.3 / 7.1 |      1.3 / 2.8 |
+| Connected to submitted         |  67 / 117 |        24 / 62 |   29 / 59 |        23 / 80 |
 
 The idle preparation work dominates its delay. Preparing before reservation could start a native resume for an event that a radio, budget, team, or capacity check later holds. The measured idle p90 remains below the target, so this change keeps preparation after reservation.
 
@@ -67,18 +67,18 @@ Required contracts passed: critical steer, runtime, team delivery, queue order, 
 
 ## Function and state inventory
 
-| Module | Class | Changed or added functions |
-| --- | --- | --- |
-| `scripts/codex_runtime.py` | `Runtime` | `enqueue`, `dispatch_after_user_batch` (new), `dispatch_executor` (new), `delivery_executor` (new), `mark_event_timing` (new), `mark_event_timings` (new), `dispatch`, `dispatch_all` (new), `dispatch_candidates` (new), `start`, `start_accepted`, `request`, `dynamic`, `close` |
-| `scripts/codex_radio.py` | module | `tick` |
-| `scripts/codex_team_isolation.py` | module | `cancel_pending` |
-| `scripts/codex_tool_requests.py` | `RequestMixin` | `tool_request_actor` (new), `reserve_tool_request`, `begin_tool_request`, `finish_tool_request` |
-| `tests/critical-steer-contract.py` | `CriticalDelivery` | `test_timing_write_failure_after_submission_does_not_replay` (new) |
-| `tests/queue-order-contract.py` | `QueueOrderContract` | `test_dispatch_wins_race_without_edit_or_cancel_of_reserved_input` |
-| `tests/radio-runtime-contract.py` | `RadioRuntime` | `eventually_radio` (new), `active`, `test_direct_creation_starts_one_shared_conversation`, `test_completed_question_holds_floor_and_resumes_in_shared_chat`, `test_question_keeps_ordinary_queue_out_of_held_turn` |
-| `tests/runtime-contract.py` | `RuntimeContract` | `test_restart_keeps_pending_events_without_replaying_unknown_work` |
-| `tests/tool-request-contract.py` | `RequestContract` | `test_latency_separates_callback_reservation_and_execution_waits` |
-| `tests/delivery-latency-fixture.py` | module | `percentile` (new), `measure` (new) |
+| Module                              | Class                | Changed or added functions                                                                                                                                                                                                                                                         |
+| ----------------------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scripts/codex_runtime.py`          | `Runtime`            | `enqueue`, `dispatch_after_user_batch` (new), `dispatch_executor` (new), `delivery_executor` (new), `mark_event_timing` (new), `mark_event_timings` (new), `dispatch`, `dispatch_all` (new), `dispatch_candidates` (new), `start`, `start_accepted`, `request`, `dynamic`, `close` |
+| `scripts/codex_radio.py`            | module               | `tick`                                                                                                                                                                                                                                                                             |
+| `scripts/codex_team_isolation.py`   | module               | `cancel_pending`                                                                                                                                                                                                                                                                   |
+| `scripts/codex_tool_requests.py`    | `RequestMixin`       | `tool_request_actor` (new), `reserve_tool_request`, `begin_tool_request`, `finish_tool_request`                                                                                                                                                                                    |
+| `tests/critical-steer-contract.py`  | `CriticalDelivery`   | `test_timing_write_failure_after_submission_does_not_replay` (new)                                                                                                                                                                                                                 |
+| `tests/queue-order-contract.py`     | `QueueOrderContract` | `test_dispatch_wins_race_without_edit_or_cancel_of_reserved_input`                                                                                                                                                                                                                 |
+| `tests/radio-runtime-contract.py`   | `RadioRuntime`       | `eventually_radio` (new), `active`, `test_direct_creation_starts_one_shared_conversation`, `test_completed_question_holds_floor_and_resumes_in_shared_chat`, `test_question_keeps_ordinary_queue_out_of_held_turn`                                                                 |
+| `tests/runtime-contract.py`         | `RuntimeContract`    | `test_restart_keeps_pending_events_without_replaying_unknown_work`                                                                                                                                                                                                                 |
+| `tests/tool-request-contract.py`    | `RequestContract`    | `test_latency_separates_callback_reservation_and_execution_waits`                                                                                                                                                                                                                  |
+| `tests/delivery-latency-fixture.py` | module               | `percentile` (new), `measure` (new)                                                                                                                                                                                                                                                |
 
 New nested functions: `tests/critical-steer-contract.py|CriticalDelivery.test_timing_write_failure_after_submission_does_not_replay|fail_after_submission`; `tests/radio-runtime-contract.py|RadioRuntime.eventually_radio|ready`; `tests/radio-runtime-contract.py|RadioRuntime.active|ready`.
 

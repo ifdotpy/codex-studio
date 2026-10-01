@@ -39,7 +39,9 @@ export default function AccountSignIn({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const lock = useRef(false);
-  const receipts = (state.data.logins || []).filter((r) => r.reauthAccountKey === targetAccount?.id);
+  const receipts = (state.data.logins || []).filter(
+    (r) => r.reauthAccountKey === targetAccount?.id,
+  );
   const receipt =
     receipts.find((r) => r.requestId === requestId) ||
     [...receipts].reverse().find((r) => active(r.status));
@@ -92,12 +94,19 @@ export default function AccountSignIn({
   const start = () =>
     run("start", async () => {
       // Keep the identity when the HTTP reply is lost, including across reloads.
-      const id = receipt?.status === "uncertain" ? receipt.requestId :
-        !receipt && requestId ? requestId : crypto.randomUUID();
+      const id =
+        receipt?.status === "uncertain"
+          ? receipt.requestId
+          : !receipt && requestId
+            ? requestId
+            : crypto.randomUUID();
       remember(id);
       const result = await api<LoginReceipt>(
         "/api/accounts/login",
-        { request_id: id, ...(targetAccount ? { account_key: targetAccount.id } : {}) },
+        {
+          request_id: id,
+          ...(targetAccount ? { account_key: targetAccount.id } : {}),
+        },
         { timeoutMs: 30000 },
       );
       store({ ...result, requestId: id });
@@ -132,11 +141,18 @@ export default function AccountSignIn({
   }
   const connected = ["ready", "duplicate"].includes(receipt?.status || "");
   return (
-    <section className="account-add" aria-label={targetAccount ? "Restore account sign-in" : "Add an account"}>
+    <section
+      className="account-add"
+      aria-label={targetAccount ? "Restore account sign-in" : "Add an account"}
+    >
       <div className="account-add-heading">
         <div>
           <strong>{targetAccount ? "Sign in again" : "Add an account"}</strong>
-          <p>{targetAccount ? `Use ${targetAccount.email || targetAccount.label}. Your chats keep this account.` : "Run another team with its own login and limits."}</p>
+          <p>
+            {targetAccount
+              ? `Use ${targetAccount.email || targetAccount.label}. Your chats keep this account.`
+              : "Run another team with its own login and limits."}
+          </p>
         </div>
         <Button
           leftSection={<Plus size={15} />}
@@ -158,9 +174,9 @@ export default function AccountSignIn({
                 ? "This account is saved but disconnected. Reconnect it in Accounts to use it for new chats."
                 : targetAccount
                   ? "Sign-in restored. Send a new instruction to continue."
-                : receipt.status === "duplicate"
-                  ? "This account is already connected."
-                  : "Account connected."}{" "}
+                  : receipt.status === "duplicate"
+                    ? "This account is already connected."
+                    : "Account connected."}{" "}
               {account?.email}
             </p>
           ) : receipt.status === "cancelled" ? (
@@ -174,7 +190,11 @@ export default function AccountSignIn({
               {receipt.userCode && url ? (
                 <>
                   <strong>Complete sign-in in your browser</strong>
-                  <p>{targetAccount ? `Use ${targetAccount.email || targetAccount.label}, then enter this code.` : "Use the new account, then enter this code."}</p>
+                  <p>
+                    {targetAccount
+                      ? `Use ${targetAccount.email || targetAccount.label}, then enter this code.`
+                      : "Use the new account, then enter this code."}
+                  </p>
                   <div className="account-login-code">
                     <code>{receipt.userCode}</code>
                     <Button

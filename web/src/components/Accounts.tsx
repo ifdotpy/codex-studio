@@ -14,12 +14,62 @@ import {
   RefreshCw,
   UserRound,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type SetStateAction,
+} from "react";
 import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
 import AccountSignIn, { type LoginReceipt } from "./AccountSignIn";
+import AccountManagerHost from "./AccountManagerHost";
 import { readBuckets, formatPercent } from "./Usage";
+
+const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
+
+function deleteRequestsStorageKey(scope?: string) {
+  return `${DELETE_REQUESTS_KEY}:${scope || "default"}`;
+}
+
+function storedDeleteRequest(scope: string | undefined, accountKey: string) {
+  try {
+    const requests = JSON.parse(
+      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
+    );
+    return typeof requests[accountKey] === "string"
+      ? (requests[accountKey] as string)
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDeleteRequest(
+  scope: string | undefined,
+  accountKey: string,
+  requestId: string | null,
+) {
+  try {
+    const current = JSON.parse(
+      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
+    );
+    const requests =
+      current && typeof current === "object" && !Array.isArray(current)
+        ? current
+        : {};
+    if (requestId) requests[accountKey] = requestId;
+    else delete requests[accountKey];
+    localStorage.setItem(
+      deleteRequestsStorageKey(scope),
+      JSON.stringify(requests),
+    );
+  } catch {
+    // The live dialog still retains its exact request identity when storage is unavailable.
+  }
+}
 
 export interface Account {
   id: string;
@@ -37,9 +87,11 @@ export interface Account {
 }
 export interface AccountsState {
   accounts: Account[];
+  archivedAccounts?: Account[];
   defaultAccountKey: string;
   logins?: LoginReceipt[];
   supportsDisconnect?: boolean;
+  supportsDelete?: boolean;
 }
 export function useAccounts(stateDir?: string) {
   const [data, setAccountsData] = useState<AccountsState>({
@@ -59,7 +111,8 @@ export function useAccounts(stateDir?: string) {
     const read = ++latestRead.current;
     try {
       const result = await api<AccountsState>("/api/accounts");
-      if (read !== latestRead.current || scope.current !== stateDir) return null;
+      if (read !== latestRead.current || scope.current !== stateDir)
+        return null;
       setAccountsData(result);
       setError("");
       return result;
@@ -226,7 +279,8 @@ export function AccountTransferStatus({
         </div>
         {!!transfer.nativeHistoryPending && (
           <small>
-            History transfer in progress: {transfer.nativeHistoryPending} remaining.
+            History transfer in progress: {transfer.nativeHistoryPending}{" "}
+            remaining.
           </small>
         )}
         {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
@@ -307,7 +361,9 @@ export function AccountTransferConfirmation({
       withCloseButton={!pending}
     >
       <p>
-        {extend ? "Add descendants to the pending team transfer to" : "Transfer this chat to"}{" "}
+        {extend
+          ? "Add descendants to the pending team transfer to"
+          : "Transfer this chat to"}{" "}
         <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
@@ -355,13 +411,15 @@ export default function Accounts({
   onError,
   projectAccountKeys,
   onModalOpenChange,
+  managerOnly = false,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
-  accountKey: string;
+  accountKey?: string;
   projectAccountKeys?: string[];
   onModalOpenChange?: (opened: boolean) => void;
-  changeAccount: (key: string) => Promise<void>;
+  managerOnly?: boolean;
+  changeAccount?: (key: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(false);
@@ -382,15 +440,36 @@ export default function Accounts({
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
   );
+  const [deleteChoice, setDeleteChoice] = useState<Account | null>(null);
+  const [deleteRequestId, setDeleteRequestId] = useState("");
   const actionLock = useRef(false);
   const childModalOpen =
-    opened || !!transferChoice || !!disconnectChoice || !!claudeLogin || !!codexLogin;
+    (!managerOnly && opened) ||
+    !!transferChoice ||
+    !!disconnectChoice ||
+    !!deleteChoice ||
+    !!claudeLogin ||
+    !!codexLogin;
   useEffect(() => {
-    onModalOpenChange?.(childModalOpen);
+    onModalOpenChange?.(
+      managerOnly
+        ? !!disconnectChoice || !!deleteChoice || !!claudeLogin || !!codexLogin
+        : childModalOpen,
+    );
     return () => onModalOpenChange?.(false);
-  }, [childModalOpen, onModalOpenChange]);
+  }, [
+    childModalOpen,
+    managerOnly,
+    disconnectChoice,
+    deleteChoice,
+    claudeLogin,
+    codexLogin,
+    onModalOpenChange,
+  ]);
   const accounts = state.data.accounts || [];
-  const selected = accounts.find((a) => a.id === accountKey);
+  const selected =
+    accounts.find((a) => a.id === accountKey) ||
+    state.data.archivedAccounts?.find((a) => a.id === accountKey);
   const pinned =
     !!agent &&
     (!agent.isLead || !agent.empty || !!agent.threadId || !!agent.inFlight);
@@ -410,6 +489,13 @@ export default function Accounts({
   );
   const disconnectsDefault =
     disconnectChoice?.id === state.data.defaultAccountKey;
+  const deletesDefault = deleteChoice?.id === state.data.defaultAccountKey;
+  const deleteReplacement = accounts.find(
+    (account) =>
+      account.id !== deleteChoice?.id &&
+      !account.disconnected &&
+      account.status === "ready",
+  );
   const action = async (key: string, run: () => Promise<unknown>) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -426,12 +512,18 @@ export default function Accounts({
     }
   };
   useEffect(() => {
-    if (!opened) return;
+    if (!opened && !managerOnly) return;
     void state.refresh();
-  }, [opened, state.refresh]);
+  }, [opened, managerOnly, state.refresh]);
   return (
     <>
-      {codexLogin && <CodexSignIn account={codexLogin} state={state} onClose={() => setCodexLogin(null)} />}
+      {codexLogin && (
+        <CodexSignIn
+          account={codexLogin}
+          state={state}
+          onClose={() => setCodexLogin(null)}
+        />
+      )}
       {claudeLogin && (
         <ClaudeSignIn
           key={claudeLogin.id}
@@ -441,155 +533,159 @@ export default function Accounts({
           onReady={state.refresh}
         />
       )}
-      <Menu
-        position="bottom-end"
-        width={300}
-        withinPortal
-        onChange={setMenuOpened}
-      >
-        <Menu.Target>
-          <Button
-            className="account-picker"
-            data-testid="account-picker"
-            variant="subtle"
-            aria-label={`Account: ${title}`}
-            title={title}
-            leftSection={<UserRound size={15} />}
-            rightSection={<ChevronDown size={13} />}
-          >
-            <span className="account-picker-label">{title}</span>
-            {transferring && (
-              <span aria-label="Account transfer in progress">
-                {transfer.moved ?? transfer.completed}/{transfer.total}
-              </span>
-            )}
-          </Button>
-        </Menu.Target>
-        <Menu.Dropdown>
-          <Menu.Label>
-            {pinned
-              ? "Transfer chat to account"
-              : "Account for this conversation"}
-          </Menu.Label>
-          {accounts
-            .filter(
-              (account) => !account.disconnected || account.id === accountKey,
-            )
-            .sort(
-              (a, b) =>
-                Number(projectAccountKeys?.includes(b.id) || false) -
-                Number(projectAccountKeys?.includes(a.id) || false),
-            )
-            .map((account) => (
-              <Menu.Item
-                key={account.id}
-                disabled={
-                  !!pending ||
-                  account.status !== "ready" ||
-                  account.disconnected ||
-                  (pinned && !owner) ||
-                  (transferring && account.id !== teamTransfer?.targetAccountKey)
-                }
-                leftSection={
-                  account.id === accountKey ? (
-                    <Check size={14} />
-                  ) : (
-                    <span style={{ width: 14 }} />
-                  )
-                }
-                onClick={() => {
-                  const extendTransfer =
-                    transferring && account.id === teamTransfer?.targetAccountKey;
-                  if (account.id === accountKey && !extendTransfer) return;
-                  if (pinned && owner)
-                    setTransferChoice({
-                      target: account,
-                      sourceProvider:
-                        selected?.provider || owner.provider || "codex",
-                      agentId: owner.id,
-                      requestId: crypto.randomUUID(),
-                      extend: !!extendTransfer,
-                    });
-                  else if (!pinned)
-                    void action(account.id, () => changeAccount(account.id));
-                }}
-              >
-                <span className="account-menu-identity">
-                  {account.email || account.label}
-                  <small>
-                    {[
-                      projectAccountKeys?.includes(account.id)
-                        ? "Project"
-                        : null,
-                      account.provider === "claude" ? "Claude Code" : null,
-                      account.plan,
-                      account.status !== "ready" ? account.status : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") || "Ready"}
-                    {account.id === state.data.defaultAccountKey
-                      ? " · Application default"
-                      : ""}
-                  </small>
-                  <AccountCapacity
-                    account={account}
-                    opened={menuOpened}
-                    compact
-                  />
+      {!managerOnly && (
+        <Menu
+          position="bottom-end"
+          width={300}
+          withinPortal
+          onChange={setMenuOpened}
+        >
+          <Menu.Target>
+            <Button
+              className="account-picker"
+              data-testid="account-picker"
+              variant="subtle"
+              aria-label={`Account: ${title}`}
+              title={title}
+              leftSection={<UserRound size={15} />}
+              rightSection={<ChevronDown size={13} />}
+            >
+              <span className="account-picker-label">{title}</span>
+              {transferring && (
+                <span aria-label="Account transfer in progress">
+                  {transfer.moved ?? transfer.completed}/{transfer.total}
                 </span>
-              </Menu.Item>
-            ))}
-          <AccountTransferStatus
-            transfer={teamTransfer}
-            targetLabel={transferTarget?.email || transferTarget?.label}
-            pending={!!pending}
-            onAction={(kind) =>
-              void action(`${kind}-transfer`, () =>
-                api("/api/agents/account-transfer", {
-                  action: kind,
-                  request_id: teamTransfer?.id,
-                }),
+              )}
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Label>
+              {pinned
+                ? "Transfer chat to account"
+                : "Account for this conversation"}
+            </Menu.Label>
+            {accounts
+              .filter(
+                (account) => !account.disconnected || account.id === accountKey,
               )
-            }
-          />
-          <Menu.Divider />
-          <Menu.Item
-            leftSection={<Plus size={14} />}
-            onClick={() => {
-              setAdding(true);
-              setOpened(true);
-            }}
-          >
-            Add account
-          </Menu.Item>
-          <Menu.Item
-            leftSection={<UserRound size={14} />}
-            onClick={() => {
-              setAdding(false);
-              setOpened(true);
-            }}
-          >
-            Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
-          </Menu.Item>
-          {Boolean(error || selected?.error) && (
-            <ErrorDescription
-              className="account-action-error"
-              value={error || selected?.error}
+              .sort(
+                (a, b) =>
+                  Number(projectAccountKeys?.includes(b.id) || false) -
+                  Number(projectAccountKeys?.includes(a.id) || false),
+              )
+              .map((account) => (
+                <Menu.Item
+                  key={account.id}
+                  disabled={
+                    !!pending ||
+                    account.status !== "ready" ||
+                    account.disconnected ||
+                    (pinned && !owner) ||
+                    (transferring &&
+                      account.id !== teamTransfer?.targetAccountKey)
+                  }
+                  leftSection={
+                    account.id === accountKey ? (
+                      <Check size={14} />
+                    ) : (
+                      <span style={{ width: 14 }} />
+                    )
+                  }
+                  onClick={() => {
+                    const extendTransfer =
+                      transferring &&
+                      account.id === teamTransfer?.targetAccountKey;
+                    if (account.id === accountKey && !extendTransfer) return;
+                    if (pinned && owner)
+                      setTransferChoice({
+                        target: account,
+                        sourceProvider:
+                          selected?.provider || owner.provider || "codex",
+                        agentId: owner.id,
+                        requestId: crypto.randomUUID(),
+                        extend: !!extendTransfer,
+                      });
+                    else if (!pinned)
+                      void action(account.id, async () => {
+                        await changeAccount?.(account.id);
+                      });
+                  }}
+                >
+                  <span className="account-menu-identity">
+                    {account.email || account.label}
+                    <small>
+                      {[
+                        projectAccountKeys?.includes(account.id)
+                          ? "Project"
+                          : null,
+                        account.provider === "claude" ? "Claude Code" : null,
+                        account.plan,
+                        account.status !== "ready" ? account.status : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || "Ready"}
+                      {account.id === state.data.defaultAccountKey
+                        ? " · Application default"
+                        : ""}
+                    </small>
+                    <AccountCapacity
+                      account={account}
+                      opened={menuOpened}
+                      compact
+                    />
+                  </span>
+                </Menu.Item>
+              ))}
+            <AccountTransferStatus
+              transfer={teamTransfer}
+              targetLabel={transferTarget?.email || transferTarget?.label}
+              pending={!!pending}
+              onAction={(kind) =>
+                void action(`${kind}-transfer`, () =>
+                  api("/api/agents/account-transfer", {
+                    action: kind,
+                    request_id: teamTransfer?.id,
+                  }),
+                )
+              }
             />
-          )}
-        </Menu.Dropdown>
-      </Menu>
-      <Modal
+            <Menu.Divider />
+            <Menu.Item
+              leftSection={<Plus size={14} />}
+              onClick={() => {
+                setAdding(true);
+                setOpened(true);
+              }}
+            >
+              Add account
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<UserRound size={14} />}
+              onClick={() => {
+                setAdding(false);
+                setOpened(true);
+              }}
+            >
+              Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
+            </Menu.Item>
+            {Boolean(error || selected?.error) && (
+              <ErrorDescription
+                className="account-action-error"
+                value={error || selected?.error}
+              />
+            )}
+          </Menu.Dropdown>
+        </Menu>
+      )}
+      <AccountManagerHost
+        inline={managerOnly}
         opened={opened}
         onClose={() => setOpened(false)}
         title={adding ? "Add account" : "Accounts"}
-        closeOnEscape={!disconnectChoice}
-        closeOnClickOutside={!disconnectChoice}
-        size="lg"
-        classNames={{ body: "accounts-manager" }}
+        closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
       >
         {adding ? (
-          <AccountSignIn state={state} opened={opened} />
+          <AccountSignIn state={state} opened={managerOnly || opened} />
         ) : (
           <Button
             onClick={() => setAdding(true)}
@@ -608,7 +704,10 @@ export default function Accounts({
             <p className="accounts-intro">
               Used when a project has no default.
             </p>
-            <NativeRuntimeStatus opened={opened} accounts={accounts} />
+            <NativeRuntimeStatus
+              opened={managerOnly || opened}
+              accounts={accounts}
+            />
             <div className="accounts-list" aria-label="Saved accounts">
               {accounts.map((account) => (
                 <section
@@ -670,7 +769,10 @@ export default function Accounts({
                   )}
                   {account.disconnected && <p>Hidden from new chats.</p>}
                   {!account.disconnected && (
-                    <AccountCapacity account={account} opened={opened} />
+                    <AccountCapacity
+                      account={account}
+                      opened={managerOnly || opened}
+                    />
                   )}
                   {account.provider === "claude" && (
                     <>
@@ -688,7 +790,11 @@ export default function Accounts({
                     </>
                   )}
                   {account.provider !== "claude" && account.accountId && (
-                    <Button variant="subtle" size="compact-xs" onClick={() => setCodexLogin(account)}>
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      onClick={() => setCodexLogin(account)}
+                    >
                       Sign in again
                     </Button>
                   )}
@@ -713,6 +819,23 @@ export default function Accounts({
                       {account.disconnected
                         ? "Reconnect account"
                         : "Disconnect account"}
+                    </Button>
+                  )}
+                  {state.data.supportsDelete && (
+                    <Button
+                      variant="subtle"
+                      size="compact-xs"
+                      disabled={!!pending}
+                      onClick={() => {
+                        const requestId =
+                          storedDeleteRequest(state.scope, account.id) ||
+                          crypto.randomUUID();
+                        saveDeleteRequest(state.scope, account.id, requestId);
+                        setDeleteRequestId(requestId);
+                        setDeleteChoice(account);
+                      }}
+                    >
+                      Delete account
                     </Button>
                   )}
                 </section>
@@ -782,7 +905,7 @@ export default function Accounts({
             {error || state.error}
           </p>
         )}
-      </Modal>
+      </AccountManagerHost>
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}
@@ -850,6 +973,66 @@ export default function Accounts({
           }
         >
           Disconnect account
+        </Button>
+        {error && <p role="alert">{error}</p>}
+      </Modal>
+      <Modal
+        opened={!!deleteChoice}
+        onClose={() => {
+          if (!pending) {
+            setDeleteChoice(null);
+          }
+        }}
+        title="Delete account"
+        closeOnClickOutside={!pending}
+        closeOnEscape={!pending}
+        withCloseButton={!pending}
+      >
+        <p>
+          Delete <strong>{deleteChoice?.email || deleteChoice?.label}</strong>{" "}
+          from this account list?
+        </p>
+        <p>
+          New chats and account choices will no longer use it. Existing chats
+          and active work keep their account identity. Native credentials and
+          saved history are preserved.
+        </p>
+        {deletesDefault && (
+          <p>
+            {deleteReplacement
+              ? `The application default changes to ${deleteReplacement.email || deleteReplacement.label}.`
+              : "Add another connected account before deleting the application default."}
+          </p>
+        )}
+        <Button
+          variant="default"
+          disabled={!!pending}
+          onClick={() => {
+            setDeleteChoice(null);
+          }}
+        >
+          Cancel
+        </Button>
+        <Button
+          color="red"
+          loading={pending === "delete"}
+          disabled={!!pending || (deletesDefault && !deleteReplacement)}
+          onClick={() =>
+            void action("delete", async () => {
+              state.setData(
+                await api<AccountsState>("/api/accounts/delete", {
+                  account_key: deleteChoice?.id,
+                  request_id: deleteRequestId,
+                }),
+              );
+              if (deleteChoice)
+                saveDeleteRequest(state.scope, deleteChoice.id, null);
+              setDeleteChoice(null);
+              setDeleteRequestId("");
+            })
+          }
+        >
+          Delete account
         </Button>
         {error && <p role="alert">{error}</p>}
       </Modal>

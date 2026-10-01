@@ -264,7 +264,9 @@ check("a Claude Edit diff is rebuilt from its multi-line input", () => {
   );
   assert.equal(file.parsed, true);
   assert.deepEqual(
-    file.lines.filter((line) => line.kind !== "meta").map((line) => [line.kind, line.text]),
+    file.lines
+      .filter((line) => line.kind !== "meta")
+      .map((line) => [line.kind, line.text]),
     [
       ["delete", "one"],
       ["delete", "    two"],

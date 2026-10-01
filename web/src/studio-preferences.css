@@ -1,0 +1,207 @@
+:root {
+  --studio-font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --studio-sidebar-font-size: 14px;
+  --studio-main-font-size: 14px;
+  --studio-content-width-ratio: 1;
+}
+
+.workspace #conversation {
+  --studio-content-column: calc(
+    (100cqw - 2 * var(--chat-gutter)) * var(--studio-content-width-ratio)
+  );
+}
+
+#sidebar {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size);
+}
+
+#sidebar
+  :is(
+    .chat-row,
+    .row-copy strong,
+    .row-copy small,
+    .row-meta,
+    #chat-search,
+    .sidebar-nav-button,
+    .sidebar-footer,
+    .load-more,
+    #open-complaints
+  ) {
+  font-size: var(--studio-sidebar-font-size);
+}
+
+.workspace {
+  font-family: var(--studio-font-family);
+  font-size: var(--studio-main-font-size);
+}
+
+.workspace
+  :is(
+    input:not(.xterm-helper-textarea),
+    textarea:not(.xterm-helper-textarea),
+    select,
+    button
+  ) {
+  font-family: var(--studio-font-family);
+}
+
+#sidebar :is(button, input, textarea, select) {
+  font-family: var(--studio-font-family);
+}
+
+#conversation .message-content,
+#conversation .conversation-navigation,
+#conversation .room-footer {
+  width: var(--studio-content-column);
+  max-width: 100%;
+  align-self: center;
+  margin-inline: auto;
+}
+
+#conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+  width: var(--studio-content-column);
+  max-width: none;
+  margin-inline: auto;
+  align-self: center;
+}
+
+#conversation #messages {
+  padding-inline: 0;
+  scrollbar-gutter: stable both-edges;
+}
+
+#conversation #messages .prose,
+#conversation #composer #message,
+#conversation .agent-panel .progress-markdown {
+  font-size: var(--studio-main-font-size);
+}
+
+#conversation-title,
+.workspace-header .conversation-meta #conversation-status {
+  font-size: var(--studio-main-font-size);
+}
+
+#sidebar code,
+#conversation code,
+#conversation pre,
+#conversation kbd,
+.xterm,
+.xterm * {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.studio-settings-panel {
+  display: grid;
+  gap: 22px;
+}
+
+.studio-settings-tabs > .mantine-Tabs-list {
+  margin-bottom: 4px;
+}
+
+.studio-appearance-groups {
+  display: grid;
+  gap: 22px;
+}
+
+.studio-settings-panel .settings-group {
+  gap: 12px;
+}
+
+.studio-settings-panel .settings-help {
+  margin: -5px 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.studio-settings-panel .account-picker {
+  width: 100%;
+}
+
+.studio-settings-panel .settings-field > .mantine-NativeSelect-root {
+  width: 100%;
+}
+
+.studio-preference-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.studio-preference-toggle input {
+  accent-color: var(--mantine-primary-color-filled);
+}
+
+[data-show-message-avatars="false"] .chat-message-author .agent-avatar {
+  display: none;
+}
+
+[data-show-message-avatars="false"] .chat-message-author:not(:has(strong)) {
+  display: none;
+}
+
+.studio-range-field {
+  display: grid;
+  gap: 10px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.studio-range-field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.studio-range-field output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.studio-range-field small,
+.studio-settings-panel .settings-field small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.studio-preferences-error {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--mantine-color-red-light);
+  color: var(--mantine-color-red-light-color);
+  font-size: 12px;
+}
+
+#conversation-header-tools:empty {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  #conversation #composer #message {
+    font-size: max(16px, var(--studio-main-font-size));
+  }
+
+  .workspace {
+    --studio-content-width-ratio: 1;
+  }
+
+  #conversation #messages {
+    padding-inline: 0;
+  }
+
+  #conversation .message-content,
+  #conversation .conversation-navigation,
+  #conversation.room-footer {
+    width: var(--studio-content-column);
+    max-width: 100%;
+  }
+
+  #conversation :is(#composer, .agent-panel, .usage-footer, .message-queue) {
+    width: var(--studio-content-column);
+  }
+}

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
 import { api, errorText, saved } from "../api";
 import { busy, type Agent, type Json } from "../types";
-import { useWorkerModels } from "./WorkerModelPicker";
+import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { requiresThinking } from "../../../scripts/claude_bridge/thinking.mjs";
 import "./claude-settings.css";
 

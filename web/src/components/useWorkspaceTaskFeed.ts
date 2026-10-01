@@ -11,7 +11,10 @@ type TaskFeed = {
 };
 
 export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
-  const [feed, setFeed] = useState<{ leadId?: string; tasks: BackgroundTask[] }>({
+  const [feed, setFeed] = useState<{
+    leadId?: string;
+    tasks: BackgroundTask[];
+  }>({
     tasks: [],
   });
   useEffect(() => {
@@ -46,10 +49,11 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
             const ordered = [...tasks.values()].sort(
               (a, b) => b.created - a.created,
             );
-            tasks = new Map(ordered.slice(0, 100).map((task) => [task.id, task]));
+            tasks = new Map(
+              ordered.slice(0, 100).map((task) => [task.id, task]),
+            );
           }
-          if (alive)
-            setFeed({ leadId, tasks: [...tasks.values()] });
+          if (alive) setFeed({ leadId, tasks: [...tasks.values()] });
         }
       } catch {
         // The next five-second poll retries from the last applied cursor.

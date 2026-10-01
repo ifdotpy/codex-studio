@@ -126,21 +126,22 @@ responses return to voice automatically. Do not repeat them with
 Without active voice, it saves text silently. Its receipt does not confirm exact
 playback. Ending voice stops audio, not the task. Continue unless the user asks
 to stop work. Use chat permission buttons; do not infer approval from playback.
+
 ## Agent work and messages
 
 Use the operation that matches the task's next transition. The caller supplies the
 content; the harness records the change and delivers its event.
 
-| Goal | Caller and operation | Input | Harness result |
-|---|---|---|---|
-| Define work | Orchestrator: `orchestration_task action=create` | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item. |
-| Cancel work | Lead or task creator: `orchestration_task action=cancel` | `task_id` and required `reason` | Closes the task, records the actor and reason, releases its assignment, and notifies a live owner. |
-| Delegate defined work | Orchestrator: `orchestration_spawn` | `task_id` on the agent entry | Sets the new worker as owner and names the task in its first message. |
-| Start ready work | Worker: `orchestration_task action=claim` | `task_id` | Reserves the task atomically and sets `running`. |
-| Request review | Owner: `orchestration_task action=submit` | `task_id`, `result`, `checks`, `revision`, `files` | Sets `review` and delivers evidence to the lead. |
-| Accept evidence | Orchestrator: `orchestration_task action=accept` | `task_id` and review reason in `result` | Sets `accepted`, notifies the owner, and releases eligible dependent work. |
-| Request corrections | Orchestrator: `orchestration_task action=reject` | `task_id`; reason and required corrections in `result` | Sets `ready` and delivers these instructions to the owner as `work_decision`. |
-| Give a new or revised assignment | Parent: `orchestration_send` | `agent_id` and instruction in `text` | Native delivery steers an active turn or starts a turn when idle. The old `delivery` field is accepted and ignored. |
+| Goal                             | Caller and operation                                     | Input                                                                                        | Harness result                                                                                                      |
+| -------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Define work                      | Orchestrator: `orchestration_task action=create`         | `title`; scope and completion criteria in `description`; optional `owner` and `dependencies` | Saves the work item.                                                                                                |
+| Cancel work                      | Lead or task creator: `orchestration_task action=cancel` | `task_id` and required `reason`                                                              | Closes the task, records the actor and reason, releases its assignment, and notifies a live owner.                  |
+| Delegate defined work            | Orchestrator: `orchestration_spawn`                      | `task_id` on the agent entry                                                                 | Sets the new worker as owner and names the task in its first message.                                               |
+| Start ready work                 | Worker: `orchestration_task action=claim`                | `task_id`                                                                                    | Reserves the task atomically and sets `running`.                                                                    |
+| Request review                   | Owner: `orchestration_task action=submit`                | `task_id`, `result`, `checks`, `revision`, `files`                                           | Sets `review` and delivers evidence to the lead.                                                                    |
+| Accept evidence                  | Orchestrator: `orchestration_task action=accept`         | `task_id` and review reason in `result`                                                      | Sets `accepted`, notifies the owner, and releases eligible dependent work.                                          |
+| Request corrections              | Orchestrator: `orchestration_task action=reject`         | `task_id`; reason and required corrections in `result`                                       | Sets `ready` and delivers these instructions to the owner as `work_decision`.                                       |
+| Give a new or revised assignment | Parent: `orchestration_send`                             | `agent_id` and instruction in `text`                                                         | Native delivery steers an active turn or starts a turn when idle. The old `delivery` field is accepted and ignored. |
 
 The outbox holds input for stops, account moves, context repair, native Review
 or Compact actions, new turn slot waits, and active shared radio turns.

@@ -82,8 +82,8 @@ try {
         "picker",
         "claude",
         "deadline",
-          "accounts",
-          "accounts-write",
+        "accounts",
+        "accounts-write",
         "name",
         "move",
         "project-account",
@@ -250,7 +250,13 @@ try {
           await new Promise((resolve) => setTimeout(resolve, 10));
         assert.equal(typeof releaseOld, "function");
         await page
-          .getByRole("button", { name: mode === "accounts-write" ? "Use saved accounts" : "Refresh accounts", exact: true })
+          .getByRole("button", {
+            name:
+              mode === "accounts-write"
+                ? "Use saved accounts"
+                : "Refresh accounts",
+            exact: true,
+          })
           .click();
         await page.getByText("New account", { exact: true }).waitFor();
         const oldResponse = page.waitForResponse((response) =>

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real app-server notification handlers, SQLite, event stream, and browser. No inference.
+// Real app-server notification handlers, SQLite sync stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
@@ -44,9 +44,11 @@ try {
   page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
   const errors = [];
   let transcriptPolls = 0;
+  let transcriptStreams = 0;
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("request", (r) => {
     if (r.url().includes("/api/transcript?id=")) transcriptPolls++;
+    if (r.url().includes("/api/transcript/stream")) transcriptStreams++;
   });
   const initial = await state();
   const lead = initial.runtime.agents.find((a) => a.name === "Other project");
@@ -57,40 +59,26 @@ try {
   page.on("response", (response) => {
     const url = new URL(response.url());
     if (
-      url.pathname === "/api/transcript" &&
-      url.searchParams.get("id") === lead.id &&
+      ((url.pathname === "/api/transcript" &&
+        url.searchParams.get("id") === lead.id) ||
+        (url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${lead.id}`)) &&
       response.ok()
     )
       resolveInitialTranscript();
   });
-  await page.addInitScript((agentId) => {
-    const NativeEventSource = window.EventSource;
-    window.EventSource = class extends NativeEventSource {
-      constructor(url, options) {
-        super(url, options);
-        const target = new URL(url, location.href);
-        if (
-          target.pathname === "/api/transcript/stream" &&
-          target.searchParams.get("id") === agentId
-        )
-          this.addEventListener(
-            "message",
-            () => (window.__transcriptStreamLive = true),
-            { once: true },
-          );
-      }
-    };
-  }, lead.id);
   await page.goto(origin);
   await page
     .locator("[data-chat]")
     .filter({ hasText: "Other project" })
     .click();
-  // The stream snapshot or its completed fallback request means history is ready.
-  await Promise.race([
-    page.waitForFunction(() => window.__transcriptStreamLive === true),
-    initialTranscriptLoaded,
-  ]);
+  // The first scoped pull or empty-projection HTTP read means sync is attached.
+  await initialTranscriptLoaded;
+  assert.equal(
+    transcriptStreams,
+    0,
+    "managed chats must not open a per-tab transcript EventSource",
+  );
   const transcriptPollsAtStart = transcriptPolls;
   await page.locator("#message").fill("Exercise the live stream");
   await page.locator("#send").click();

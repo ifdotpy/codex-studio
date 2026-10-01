@@ -41,7 +41,7 @@ const server = await createServer({
       },
       load(id) {
         if (id !== entry) return;
-        return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import SessionActivity from'/src/components/SessionActivity.tsx';
+        return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import SessionActivity from'/src/components/agents/SessionActivity.tsx';
 const now=Date.now()/1000;window.opened=[];window.time=Date.now();Date.now=()=>window.time;
 const items=[{id:'long-command',kind:'task',agentId:'paused-child',agentName:'webcrypto-globals',label:'Running command',command:'find /Users/igor '+ 'directory/'.repeat(35),created:now-14*3600,status:'running'},{id:'monitor-one',kind:'monitor',agentId:'lead',agentName:'Main chat',label:'Waiting for a monitor',command:'watch build',created:now-120,status:'running'},{id:'worker-one',kind:'agent',agentId:'worker-one',agentName:'Worker one',label:'Working',status:'running'},{id:'tool-two',kind:'task',agentId:'worker-two',agentName:'Worker with a very long name that must fit the mobile viewport',label:'Using tools',created:now-30,status:'starting'}];
 function Fixture(){const[activities,setActivities]=useState(items);window.setActivities=value=>flushSync(()=>setActivities(value));window.activities=activities;return <><header>Main chat</header><SessionActivity activities={activities} onOpen={value=>window.opened.push(value)}/><main>Conversation</main></>};createRoot(document.getElementById('root')).render(<Fixture/>);`;

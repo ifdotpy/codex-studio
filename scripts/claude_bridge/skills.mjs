@@ -78,7 +78,8 @@ async function pluginRoots(errors) {
   try {
     installed = JSON.parse(await fs.readFile(file, "utf8"));
   } catch (error) {
-    if (error.code !== "ENOENT") errors.push({ message: `${file}: ${error.message}` });
+    if (error.code !== "ENOENT")
+      errors.push({ message: `${file}: ${error.message}` });
     return [];
   }
   let enabled = null;
@@ -96,7 +97,10 @@ async function pluginRoots(errors) {
     if (enabled && enabled[key] === false) continue;
     const install = Array.isArray(installs) ? installs[0] : installs;
     if (!install?.installPath) continue;
-    roots.push({ root: path.join(install.installPath, "skills"), prefix: key.split("@")[0] });
+    roots.push({
+      root: path.join(install.installPath, "skills"),
+      prefix: key.split("@")[0],
+    });
   }
   return roots;
 }

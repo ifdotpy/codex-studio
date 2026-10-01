@@ -104,12 +104,6 @@
   font-size: 12px;
 }
 
-.native-account-notices {
-  margin: 8px 20px;
-  max-height: 180px;
-  overflow: auto;
-}
-
 .capacity-retry p {
   margin: 6px 0;
   color: var(--mantine-color-dimmed);
@@ -167,7 +161,20 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.native-safety-title { display: flex; align-items: center; gap: 8px; }
-.native-safety-title svg { flex-shrink: 0; color: var(--mantine-color-dimmed); }
-.native-safety p { margin: 6px 0 0; color: var(--mantine-color-dimmed); line-height: 1.5; }
-.native-safety .native-error-actions { align-items: center; }
+.native-safety-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.native-safety-title svg {
+  flex-shrink: 0;
+  color: var(--mantine-color-dimmed);
+}
+.native-safety p {
+  margin: 6px 0 0;
+  color: var(--mantine-color-dimmed);
+  line-height: 1.5;
+}
+.native-safety .native-error-actions {
+  align-items: center;
+}

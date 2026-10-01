@@ -626,8 +626,59 @@ def make_server(canvas, port=0, public_origin=None):
             if sync_store[0] is None:
                 from codex_sync import SyncStore
 
+                def state_signature():
+                    runtime = canvas.runtime
+                    connected = False
+                    volatile = None
+                    if runtime:
+                        # Native startup holds start_lock across potentially slow
+                        # initialization. Signature sampling is on the SSE/HTTP
+                        # hot path, so skip this tick instead of waiting for it.
+                        if not runtime.start_lock.acquire(blocking=False):
+                            return None
+                        try:
+                            if not runtime.lock.acquire(blocking=False):
+                                return None
+                            try:
+                                connected = bool(set(runtime.servers) - runtime.offline_accounts) and not runtime.closed
+                                rate_limits = json.loads(json.dumps(runtime.rate_limits, sort_keys=True))
+                                rate_limits_by_account = {
+                                    key: json.loads(json.dumps(runtime.rate_limits_for(key), sort_keys=True))
+                                    for key in runtime.rate_limits_by_account
+                                }
+                                connection_ids = dict(runtime.connection_ids)
+                                version_monitor = getattr(runtime, "provider_version_monitor", None)
+                                provider_warnings = version_monitor.status()["warnings"] if version_monitor else []
+                                volatile = json.dumps({
+                                    "rateLimits": rate_limits,
+                                    "rateLimitsByAccount": rate_limits_by_account,
+                                    "connectionIds": connection_ids,
+                                    "providerWarnings": provider_warnings,
+                                }, sort_keys=True, separators=(",", ":"))
+                            finally:
+                                runtime.lock.release()
+                        finally:
+                            runtime.start_lock.release()
+                    # Legacy app-server threads come from status files and launcher
+                    # liveness. They have no SQLite trigger, so fold file identity
+                    # and process liveness into the scoped state revision.
+                    files = []
+                    for path in sorted(canvas.root.glob("codex-swarm-status.*.json")):
+                        try:
+                            stat = path.stat()
+                        except FileNotFoundError:
+                            continue
+                        files.append((path.name, stat.st_ino, stat.st_size, stat.st_mtime_ns))
+                    liveness = tuple(sorted((
+                        (row.get("launcherPid"), process_is_alive(row.get("launcherPid")))
+                        for row in read_threads(canvas.root)
+                        if row.get("launcherPid") is not None
+                    ), key=lambda item: str(item[0])))
+                    return connected, volatile, tuple(files), liveness
+
                 sync_store[0] = SyncStore(canvas.connect, snapshot, canvas.transcript,
-                                          chat_snapshot=lambda: snapshot(include_work=False))
+                                          chat_snapshot=lambda: snapshot(include_work=False),
+                                          state_signature=state_signature)
             return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):
@@ -848,6 +899,7 @@ def make_server(canvas, port=0, public_origin=None):
         def stream_sync(self):
             store = sync()
             query = parse_qs(urlparse(self.path).query)
+            shared_stream = query.get("protocol") == ["2"]
             entity_stream = query.get("scope") == ["state:entities:v1"]
             draft_stream = query.get("scope") == ["drafts"]
             transcript_scope = query.get("scope", [""])[0]
@@ -868,7 +920,8 @@ def make_server(canvas, port=0, public_origin=None):
                 while not (canvas.runtime and canvas.runtime.closed):
                     if not self.trusted():
                         break
-                    current = (store.entity_sequence() if entity_stream else
+                    current = (store.generation_state() if shared_stream else
+                               store.entity_sequence() if entity_stream else
                                store.draft_sequence() if draft_stream else
                                store.transcript_revision(transcript_id) if transcript_id is not None else
                                store.generation())
@@ -877,7 +930,7 @@ def make_server(canvas, port=0, public_origin=None):
                     if current != previous:
                         data = (
                             json.dumps(current)
-                            if entity_stream or draft_stream or transcript_id is not None
+                            if shared_stream or entity_stream or draft_stream or transcript_id is not None
                             else '"RESYNC"'
                         )
                         self.wfile.write(("data: " + data + "\n\n").encode())
@@ -902,11 +955,13 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(sync().identity())
                 if path.path == "/api/sync/pull":
                     q = {k: v[0] for k, v in parse_qs(path.query).items()}
-                    return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0),
-                                                 q.get("limit", 100), q.get("fresh") == "1",
-                                                 q.get("initialHigh", 0),
-                                                 q.get("reset") == "1",
-                                                 q.get("priorityId")))
+                    store = sync()
+                    projection = store.pull(q.get("scope", "state"), q.get("after", 0),
+                                            q.get("limit", 100), q.get("fresh") == "1",
+                                            q.get("initialHigh", 0), q.get("reset") == "1", q.get("priorityId"))
+                    return self.send({**projection, "generation": store.generation()})
+                if path.path == "/api/sync/generations":
+                    return self.send(sync().generation_state())
                 if path.path == "/api/sync/stream":
                     return self.stream_sync()
                 if path.path == "/api/state":
@@ -1275,6 +1330,9 @@ def make_server(canvas, port=0, public_origin=None):
                         return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/login/cancel":
                         return self.send(runtime.accounts.cancel_login(runtime, body.get("request_id")))
+                    if self.path == "/api/accounts/delete":
+                        runtime.accounts.delete(body.get("account_key"), body.get("request_id"))
+                        return self.send(runtime.accounts.snapshot())
                     if self.path == "/api/accounts/disconnect":
                         runtime.accounts.disconnect(body.get("account_key"))
                         return self.send(runtime.accounts.snapshot())

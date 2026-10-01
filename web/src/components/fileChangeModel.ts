@@ -62,7 +62,7 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
   const lines: DiffLine[] = [];
   let added = 0,
     removed = 0;
-  for (let i = 0; i < input.length; ) {
+  for (let i = 0; i < input.length;) {
     const text = input[i];
     if (
       text.startsWith("--- ") &&

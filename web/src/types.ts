@@ -139,12 +139,13 @@ export interface Snapshot {
     }[];
     rooms: Room[];
     complaints: Complaint[];
-    monitors: (Omit<MonitorEntityDto, "id" | "agent" | "status" | "created"> & Json & {
-      id: string;
-      agent: string;
-      status: string;
-      created: number;
-    })[];
+    monitors: (Omit<MonitorEntityDto, "id" | "agent" | "status" | "created"> &
+      Json & {
+        id: string;
+        agent: string;
+        status: string;
+        created: number;
+      })[];
     tasks?: BackgroundTask[];
     work?: Json[];
     rules?: Json[];
@@ -175,8 +176,14 @@ export const nativeReleaseLabel = (agent: Agent) => {
     ? "Tool reset waits for Codex to close the native session"
     : "Native thread released";
 };
-export const statusLabel = (status: string, phase?: string, parkedEvent?: string) =>
-  (status === "parked" && parkedEvent ? `Waiting for event ${parkedEvent}` : null) ||
+export const statusLabel = (
+  status: string,
+  phase?: string,
+  parkedEvent?: string,
+) =>
+  (status === "parked" && parkedEvent
+    ? `Waiting for event ${parkedEvent}`
+    : null) ||
   (status === "running" &&
     phase &&
     (

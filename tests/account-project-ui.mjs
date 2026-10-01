@@ -58,6 +58,7 @@ const projects = [
     folders: [{ id: "review", name: "Review", parentId: null }],
   },
 ];
+const archivedAccounts = [];
 let loseCreation = false;
 let holdCreation = false;
 let releaseCreation;
@@ -86,7 +87,6 @@ const agents = [
 const bodies = [];
 let delayed = null;
 let delayWork = false;
-let discoverCount = 0;
 let snapshotLimits = {};
 const limits = (key) => {
   const codex = {
@@ -171,8 +171,28 @@ const server = createServer(async (req, res) => {
     url.pathname === "/api/accounts/default"
   ) {
     if (url.pathname.endsWith("/default")) defaultAccountKey = body.account_key;
-    if (url.pathname.endsWith("/discover")) discoverCount++;
-    return json({ accounts, defaultAccountKey });
+    return json({
+      accounts,
+      archivedAccounts,
+      defaultAccountKey,
+      supportsDelete: true,
+      supportsDisconnect: true,
+    });
+  }
+  if (url.pathname === "/api/accounts/delete") {
+    const index = accounts.findIndex(
+      (account) => account.id === body.account_key,
+    );
+    assert.notEqual(index, -1);
+    const [deleted] = accounts.splice(index, 1);
+    archivedAccounts.push({ ...deleted, deleted: true });
+    return json({
+      accounts,
+      archivedAccounts,
+      defaultAccountKey,
+      supportsDelete: true,
+      supportsDisconnect: true,
+    });
   }
   if (url.pathname === "/api/projects") {
     let project = projects.find((item) => item.path === body.path);
@@ -738,6 +758,64 @@ try {
       .click();
     await dialog.waitFor({ state: "hidden" });
   }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openSettings();
+  await picker.click();
+  await page
+    .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
+    .click();
+  const removalManager = page.getByRole("dialog", {
+    name: "Accounts",
+    exact: true,
+  });
+  const otherRow = removalManager.locator('[data-account="other"]');
+  await otherRow.getByRole("button", { name: "Delete account" }).click();
+  const deletion = page.getByRole("dialog", {
+    name: "Delete account",
+    exact: true,
+  });
+  await deletion
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  await otherRow.waitFor({ state: "detached" });
+  assert.equal(archivedAccounts[0].id, "other");
+  await removalManager.locator(".mantine-Modal-close").click();
+  await removalManager.waitFor({ state: "hidden" });
+  await closeSettings();
+
+  await openProject("fixture");
+  const deletedMembership = dialog.getByRole("checkbox", {
+    name: "another.long.account@example.com (deleted, remove from project)",
+    exact: true,
+  });
+  assert.equal(await deletedMembership.isChecked(), true);
+  assert.equal(
+    await selection.inputValue(),
+    "",
+    "the deleted default requires an explicit replacement despite another linked account",
+  );
+  const saveAccounts = dialog.getByRole("button", {
+    name: "Save accounts",
+    exact: true,
+  });
+  assert.equal(await saveAccounts.isDisabled(), true);
+  await deletedMembership.click();
+  await deletedMembership.waitFor({ state: "detached" });
+  assert.equal(await selection.inputValue(), "");
+  assert.equal(await saveAccounts.isDisabled(), true);
+  await selection.selectOption("work");
+  assert.equal(await saveAccounts.isDisabled(), false);
+  await saveAccounts.click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(projects[0].accountKey, "work");
+  assert.deepEqual(projects[0].accountKeys, ["work"]);
+  await newChat("fixture");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#conversation-title")?.textContent ===
+      "Created conversation",
+  );
+  assert.equal(agents.at(-1).accountKey, "work");
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -758,6 +836,7 @@ try {
         "lost response identity",
         "obsolete rules removed",
         "390px and 320px project settings",
+        "deleted project default removal, replacement, save, and new chat",
       ],
       evidence,
     }),

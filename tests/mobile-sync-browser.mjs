@@ -25,7 +25,11 @@ const server = await createServer({
           response.setHeader("Cache-Control", "no-cache");
           response.write(`data: ${revision}\n\n`);
           opened++;
-          streamScopes.push(new URL(_request.url, "http://localhost").searchParams.get("scope") || "legacy");
+          streamScopes.push(
+            new URL(_request.url, "http://localhost").searchParams.get(
+              "scope",
+            ) || "legacy",
+          );
           streams.add(response);
           response.on("close", () => streams.delete(response));
         });
@@ -135,15 +139,19 @@ try {
       window.values.team?.revision === 1 &&
       window.values["history:lead"]?.revision === 1,
   );
-  await until(() => streams.size === 3, `Each active sync scope opens a live stream, opened=${opened} scopes=${streamScopes.join(",")} pulls=${pulls.join(",")}`);
+  await until(
+    () => streams.size === 3,
+    `Each active sync scope opens a live stream, opened=${opened} scopes=${streamScopes.join(",")} pulls=${pulls.join(",")}`,
+  );
   assert.equal(opened, 3, "Entity, legacy, and transcript scopes open streams");
   await delay(250);
   const beforeBurst = pulls.length;
   revision = 2;
   for (let index = 0; index < 30; index++)
     for (const stream of streams) stream.write(`data: ${revision}\n\n`);
-  await page.waitForFunction(() =>
-    window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&
+  await page.waitForFunction(
+    () =>
+      window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&
       window.values.team?.revision === 2 &&
       window.values["history:lead"]?.revision === 2,
   );
@@ -180,8 +188,9 @@ try {
     window.dispatchEvent(new Event("pageshow"));
     window.dispatchEvent(new Event("online"));
   });
-  await page.waitForFunction(() =>
-    window.values.state?.runtime?.agents?.[0]?.name === "Agent 3" &&
+  await page.waitForFunction(
+    () =>
+      window.values.state?.runtime?.agents?.[0]?.name === "Agent 3" &&
       window.values.team?.revision === 3 &&
       window.values["history:lead"]?.revision === 3,
   );
@@ -272,8 +281,11 @@ try {
   const localState = await page.evaluate(async () => {
     const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
     return {
-      ready: (await db.projections.findOne("state:entities:ready").exec())?.payload,
-      entity: JSON.parse((await db.projections.findOne("entity:agent:lead").exec()).payload),
+      ready: (await db.projections.findOne("state:entities:ready").exec())
+        ?.payload,
+      entity: JSON.parse(
+        (await db.projections.findOne("entity:agent:lead").exec()).payload,
+      ),
       remote: Boolean(await db.projections.findOne("state:chat").exec()),
     };
   });
@@ -304,7 +316,9 @@ try {
     ).syncDatabase();
     return {
       workspaceId,
-      value: JSON.parse((await db.projections.findOne("entity:agent:lead").exec()).payload),
+      value: JSON.parse(
+        (await db.projections.findOne("entity:agent:lead").exec()).payload,
+      ),
       elapsed: performance.now() - started,
     };
   });

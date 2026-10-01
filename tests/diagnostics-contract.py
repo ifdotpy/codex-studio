@@ -91,13 +91,19 @@ class DiagnosticsContract(unittest.TestCase):
                     connection.request("GET", "/api/diagnostics")
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
-                    self.assertEqual(json.load(response), {"processTree": {"kinds": {}}})
+                    body = json.load(response)
+                    # The route adds the process supervisor state to the snapshot.
+                    self.assertEqual(body.pop("processTree"), {"kinds": {}})
+                    self.assertEqual(set(body), {"supervisor"})
+                    self.assertIs(type(body["supervisor"]["mode"]), bool)
                     connection.close()
                     cli = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]
                                            / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
-                    self.assertEqual(json.loads(cli.stdout), {"processTree": {"kinds": {}}})
+                    printed = json.loads(cli.stdout)
+                    self.assertEqual(printed.pop("processTree"), {"kinds": {}})
+                    self.assertEqual(set(printed), {"supervisor"})
             finally:
                 server.shutdown()
                 server.server_close()

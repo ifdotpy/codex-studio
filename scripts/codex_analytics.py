@@ -322,6 +322,89 @@ class AnalyticsMixin:
                 return budget_capture(runtime_db, agent, params, at=at, source=source)
         return budget_capture(db, agent, params, at=at, source=source)
 
+    def analytics_delta_batch_safe(self, db, a, samples, *, at_values=None):
+        """Capture coalesced live assistant deltas with the sequential semantics."""
+        samples = list(samples)
+        if not samples:
+            return
+        if at_values is None:
+            at_values = [time.time() for _ in samples]
+        if len(at_values) != len(samples):
+            raise ValueError('One timestamp is required for each analytics sample')
+        first = samples[0]
+        identity = {key: value for key, value in first.items() if key != 'delta'} if isinstance(first, dict) else None
+        if identity is None or any(not isinstance(sample, dict) or not isinstance(sample.get('delta'), str)
+               or {key: value for key, value in sample.items() if key != 'delta'} != identity
+               for sample in samples):
+            for sample, at in zip(samples, at_values):
+                self.analytics_safe(db, self.analytics_event, a, 'item/agentMessage/delta', sample, at=at)
+            return
+
+        def capture_batch(db):
+            meta = self.analytics_agent(db, a)
+            meta.update(threadId=first.get('threadId') or a.get('threadId'),
+                        turnId=first.get('turnId') or (first.get('turn') or {}).get('id') or a.get('turnId'))
+            buckets = {}
+            for sample, at in zip(samples, at_values):
+                hour = int(at // 3600) * 3600
+                count, byte_count = buckets.get(hour, (0, 0))
+                buckets[hour] = (count + 1, byte_count + len(encoded(sample).encode('utf-8')))
+            for hour, (count, byte_count) in buckets.items():
+                key = encoded([a['id'], 'item/agentMessage/delta', hour])
+                db.execute('INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?) '
+                           'ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes',
+                           (key, a['id'], meta['rootId'], 'item/agentMessage/delta', hour, count, byte_count))
+
+            turn = meta['turnId']
+            if turn:
+                turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
+                row = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
+                record = json.loads(row[0]) if row else {**meta, 'id': turn_key, 'at': at_values[0],
+                    'startedAt': None, 'finishedAt': None, 'firstOutputAt': None, 'durationMs': None,
+                    'firstOutputDelayMs': None, 'status': 'unknown', 'source': 'live'}
+                if record['firstOutputAt'] is None:
+                    for sample, at in zip(samples, at_values):
+                        if sample.get('delta'):
+                            record['firstOutputAt'] = at
+                            break
+                if record['startedAt'] is not None:
+                    for event, metric in (('finishedAt', 'durationMs'), ('firstOutputAt', 'firstOutputDelayMs')):
+                        if record[event] is not None:
+                            record[metric] = max(0, (record[event] - record['startedAt']) * 1000)
+                db.execute('INSERT INTO analytics_turns VALUES (?,?,?,?,?) '
+                           'ON CONFLICT(id) DO UPDATE SET record=excluded.record',
+                           (turn_key, a['id'], meta['rootId'], record['at'], json.dumps(record)))
+
+            item_id = first.get('itemId')
+            if item_id:
+                item_key = ':'.join((a['id'], str(meta['threadId']), str(item_id)))
+                row = db.execute('SELECT record FROM analytics_items WHERE id=?', (item_key,)).fetchone()
+                record = json.loads(row[0]) if row else None
+                if record and record.get('finishedAt') is None:
+                    stream = record.get('stream') or {'bytes': 0, 'chars': 0, 'lines': 0, 'deltas': 0}
+                    stream['bytes'] += sum(len(sample['delta'].encode('utf-8')) for sample in samples)
+                    stream['chars'] += sum(len(sample['delta']) for sample in samples)
+                    stream['lines'] += sum(sample['delta'].count('\n') for sample in samples)
+                    stream['deltas'] += len(samples)
+                    record['stream'] = stream
+                    self.analytics_store_item(db, record)
+
+        try:
+            with self.analytics_connection(db) as analytics_db:
+                if not analytics_db.in_transaction:
+                    analytics_db.execute('BEGIN')
+                analytics_db.execute('SAVEPOINT analytics_delta_batch')
+                try:
+                    capture_batch(analytics_db)
+                    analytics_db.execute('RELEASE analytics_delta_batch')
+                except Exception:
+                    analytics_db.execute('ROLLBACK TO analytics_delta_batch')
+                    analytics_db.execute('RELEASE analytics_delta_batch')
+                    raise
+        except Exception:
+            for sample, at in zip(samples, at_values):
+                self.analytics_safe(db, self.analytics_event, a, 'item/agentMessage/delta', sample, at=at)
+
     def analytics_limit(self, db, account_key, value):
         if self.analytics_limit_changed(db, account_key, value):
             db.execute('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', (account_key, time.time(), json.dumps(value)))

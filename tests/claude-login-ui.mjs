@@ -103,7 +103,9 @@ try {
       .click();
   };
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
-  await page.getByRole("button", {name:"Sign in to Claude", exact:true}).click();
+  await page
+    .getByRole("button", { name: "Sign in to Claude", exact: true })
+    .click();
   assert.equal(await page.evaluate(() => window.signInAccount), "claude");
   await open();
   await page

@@ -333,10 +333,18 @@ try {
     fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>
       response.json(),
     );
-  assert.equal(await page.getByRole("button", { name: "Queue after turn", exact: true }).count(), 0);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Queue after turn", exact: true })
+      .count(),
+    0,
+  );
   await page.locator("#message").fill("Immediate instruction");
   await page.locator("#message").press("Enter");
-  await page.locator("#messages .message.user").filter({ hasText: "Immediate instruction" }).waitFor();
+  await page
+    .locator("#messages .message.user")
+    .filter({ hasText: "Immediate instruction" })
+    .waitFor();
   assert.equal(
     await page
       .getByRole("group", { name: "Message delivery", exact: true })
@@ -354,7 +362,10 @@ try {
   );
   await page.locator("#message").fill("Keyboard check");
   await page.locator("#message").press("Tab");
-  assert.equal((await queue()).items.some((item) => item.text === "Keyboard check"), false);
+  assert.equal(
+    (await queue()).items.some((item) => item.text === "Keyboard check"),
+    false,
+  );
   assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
   await page.locator("#message").fill("Keyboard navigation draft");
   await page.locator("#message").press("Shift+Tab");

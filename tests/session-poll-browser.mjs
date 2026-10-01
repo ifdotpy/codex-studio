@@ -68,8 +68,11 @@ try {
                 id: "entity:workspace:current",
                 seq: 1,
                 _deleted: false,
-                payload: JSON.stringify({ collection: "workspace", id: "current",
-                  value: { marker: "replicated", stateDir: "fixture" } }),
+                payload: JSON.stringify({
+                  collection: "workspace",
+                  id: "current",
+                  value: { marker: "replicated", stateDir: "fixture" },
+                }),
               },
             ],
         checkpoint: { seq: 1 },

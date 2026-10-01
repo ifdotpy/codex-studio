@@ -40,7 +40,7 @@ try:
 except ProcessLookupError:
     pass
 
-end = time.monotonic() + 60
+end = time.monotonic() + 300
 while time.monotonic() < end:
     try:
         current = get()
@@ -57,5 +57,5 @@ while time.monotonic() < end:
         break
     time.sleep(.25)
 else:
-    raise SystemExit("The recovery service did not replace the backend within 60 seconds.")
+    raise SystemExit("The recovery service did not replace the backend within 300 seconds.")
 PY

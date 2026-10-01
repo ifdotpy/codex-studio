@@ -154,7 +154,12 @@ try {
             );
           })
         : undefined;
-    await page.locator("#team-toggle").click();
+    if (width <= 760) {
+      await page
+        .getByRole("button", { name: "Chat actions", exact: true })
+        .click();
+      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+    } else await page.locator("#team-toggle").click();
     if (priorityRequest) await priorityRequest;
     await page.locator("#team").waitFor({ state: "visible" });
     const panel = page.locator("#team");

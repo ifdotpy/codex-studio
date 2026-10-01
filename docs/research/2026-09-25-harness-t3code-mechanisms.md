@@ -33,7 +33,7 @@ T3 maps child signals to task events. The parent uses the native collaboration t
 
 ## 4. Long commands and background work
 
-Codex runs commands inside the native turn. T3 converts command output deltas into runtime content events and forwards approval requests to the application ([CodexAdapter.ts:1798-1816](https://github.com/pingdotgg/t3code/blob/d06f0ff1048d42a156824765316c5a2dc54f5bca/apps/server/src/provider/Layers/CodexAdapter.ts#L1798-L1816), [CodexSessionRuntime.ts:2105-2155](https://github.com/pingdotgg/t3code/blob/d06f0ff1048d42a156824765316c5a2dc54f5bca/apps/server/src/provider/Layers/CodexSessionRuntime.ts#L2105-L2155)). Codex waits for the tool result and continues the turn. 
+Codex runs commands inside the native turn. T3 converts command output deltas into runtime content events and forwards approval requests to the application ([CodexAdapter.ts:1798-1816](https://github.com/pingdotgg/t3code/blob/d06f0ff1048d42a156824765316c5a2dc54f5bca/apps/server/src/provider/Layers/CodexAdapter.ts#L1798-L1816), [CodexSessionRuntime.ts:2105-2155](https://github.com/pingdotgg/t3code/blob/d06f0ff1048d42a156824765316c5a2dc54f5bca/apps/server/src/provider/Layers/CodexSessionRuntime.ts#L2105-L2155)). Codex waits for the tool result and continues the turn.
 
 Studio has a separate command monitor service with process, approval, input, output, cancel, persistence, and recovery paths. A monitor can outlive a model turn. This adds a second command lifecycle.
 
@@ -99,4 +99,3 @@ These are design questions, not confirmed defects. Root causes marked “inferen
 6. **Medium: combine retry policy.** Evidence: capacity and usage resume use separate state machines. Proposal: one policy engine with exact errors and receipt-based resumption.
 7. **Medium: use native collaboration where provider and account permit it.** Evidence: T3 delegates child lifecycle and results to Codex; Studio always manages its own agent fleet. Proposal: retain managed children for mixed-provider use, use native children for compatible Codex work.
 8. **Lower: move browser reconnect ownership closer to the browser runtime.** Evidence: Studio has a one-off reconnect and verification chain. Proposal: let the browser runtime report readiness and reconnect state directly.
-

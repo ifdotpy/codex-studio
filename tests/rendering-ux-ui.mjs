@@ -23,9 +23,9 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import StreamingText from "./src/components/StreamingText";
-import Activity from "./src/components/Activity";
-import TurnHistory from "./src/components/TurnHistory";
+import StreamingText from "./src/components/conversation/transcript/StreamingText";
+import Activity from "./src/components/conversation/transcript/Activity";
+import TurnHistory from "./src/components/conversation/transcript/TurnHistory";
 import ComposerAttachments, { MessageAttachments } from "./src/components/ComposerAttachments";
 const asset = { id:"fixture-image",name:"pixel.png",mime:"image/png",image:true,size:68,preview:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=" };
 function Harness() {

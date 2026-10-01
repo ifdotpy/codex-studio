@@ -207,7 +207,10 @@ try {
     );
   });
   assert.equal(running, 2, "Foreground joins the same in-flight chat transfer");
-  await until(() => streams.size === 1, "Foreground opens one transcript stream");
+  await until(
+    () => streams.size === 1,
+    "Foreground opens one transcript stream",
+  );
   releaseA();
   releaseB();
   assert.deepEqual(await page.evaluate(() => Promise.all(jobs)), [true, true]);

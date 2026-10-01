@@ -15,7 +15,9 @@ const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
 const fixture = spawn(
   "python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
-  { stdio: ["ignore", "pipe", "pipe"] },
+  {
+    stdio: ["ignore", "pipe", "pipe"],
+  },
 );
 let browser,
   log = "";
@@ -103,14 +105,21 @@ try {
     await page.setViewportSize({ width, height: 960 });
     for (const scheme of ["light", "dark"]) {
       await page
-        .getByRole("button", { name: "Chat settings", exact: true })
+        .getByRole("button", { name: "Studio settings", exact: true })
         .click();
-      const dialog = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
+      const dialog = page.getByTestId("studio-settings");
+      await dialog.waitFor({ state: "visible" });
+      assert.deepEqual(
+        (await dialog.getByRole("tab").allTextContents()).map((label) =>
+          label.trim(),
+        ),
+        ["Accounts", "Appearance", "Hotkeys"],
+      );
       await dialog
-        .getByLabel("Appearance", { exact: true })
+        .getByRole("tab", { name: "Appearance", exact: true })
+        .click();
+      await dialog
+        .getByLabel("Studio theme", { exact: true })
         .selectOption(scheme);
       await page.waitForFunction(
         (scheme) =>
@@ -161,6 +170,307 @@ try {
       await page.keyboard.press("Escape");
     }
   }
+  const compactPage = await browser.newPage({
+    viewport: { width: 860, height: 960 },
+  });
+  let warningNoticesEnabled = false;
+  compactPage.on("pageerror", (error) => errors.push(error.message));
+  await compactPage.route("**/api/sync/identity", (route) =>
+    route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
+  );
+  await compactPage.route("**/api/state*", async (route) => {
+    const state = await route.fetch().then((response) => response.json());
+    const usageError = {
+      codexErrorInfo: "usageLimitExceeded",
+      message: "Usage limit reached",
+    };
+    const addError = (agent) =>
+      agent.name === "Release lead" ? { ...agent, error: usageError } : agent;
+    state.threads = state.threads.map(addError);
+    state.runtime.agents = state.runtime.agents.map(addError);
+    state.runtime.nativeNotices = warningNoticesEnabled
+      ? [
+          {
+            id: "fixture-current-account-warning",
+            accountKey: "default",
+            nativeNotice: "warning",
+            message: "Account configuration needs review",
+            details: {
+              code: "fixture_configuration",
+              files: ["first.toml", "second.toml"],
+              retryAllowed: false,
+            },
+          },
+          {
+            id: "fixture-other-account-warning",
+            accountKey: "other-account",
+            nativeNotice: "warning",
+            message: "Account configuration needs review",
+            details: {
+              code: "fixture_configuration",
+              files: ["first.toml", "second.toml"],
+              retryAllowed: false,
+            },
+          },
+        ]
+      : [];
+    if (state.nodes) state.nodes = [...state.threads, ...(state.chats || [])];
+    return route.fulfill({ json: state });
+  });
+  await compactPage.route("**/api/limits*", (route) =>
+    route.fulfill({
+      json: {
+        at: Date.now() / 1000,
+        data: {
+          rateLimits: {
+            limitId: "codex",
+            primary: {
+              usedPercent: 25,
+              windowDurationMins: 300,
+              resetsAt: Date.now() / 1000 + 3600,
+            },
+          },
+        },
+      },
+    }),
+  );
+  await compactPage.goto(origin);
+  if (
+    (await compactPage
+      .locator("#sidebar-toggle")
+      .getAttribute("aria-expanded")) === "false"
+  )
+    await compactPage.locator("#sidebar-toggle").click();
+  await compactPage
+    .locator(".chat-row")
+    .filter({ hasText: "Release lead" })
+    .click();
+  await compactPage.locator(".native-error").waitFor();
+  assert.equal(
+    await compactPage.locator(".native-error").count(),
+    1,
+    "A blocking current-chat error remains visible alongside warning notices",
+  );
+  assert.equal(
+    await compactPage
+      .locator('#conversation-header-tools button[aria-label="Warnings"]')
+      .count(),
+    0,
+    "A blocking current-chat error alone does not produce the warning trigger",
+  );
+  assert.equal(
+    await compactPage.locator(".native-account-notices").count(),
+    0,
+    "Account warning details are not duplicated in the workspace transcript",
+  );
+  warningNoticesEnabled = true;
+  await compactPage.reload();
+  await compactPage
+    .locator(".chat-row")
+    .filter({ hasText: "Release lead" })
+    .click();
+  const warningTrigger = compactPage.locator(
+    '#conversation-header-tools button[aria-label="Warnings"]',
+  );
+  await warningTrigger.waitFor({ state: "visible" });
+  assert.equal(await compactPage.locator(".native-account-notices").count(), 0);
+  const warningsDialogPromise = compactPage
+    .getByRole("dialog", {
+      name: "Warnings",
+      exact: true,
+    })
+    .waitFor();
+  await warningTrigger.click();
+  await warningsDialogPromise;
+  const warningsDialog = compactPage.getByRole("dialog", {
+    name: "Warnings",
+    exact: true,
+  });
+  await warningsDialog.getByText("Account notice", { exact: true }).waitFor();
+  assert.equal(
+    await warningsDialog
+      .getByText("Account configuration needs review", {
+        exact: true,
+      })
+      .count(),
+    1,
+    "The selected account warning appears once in full details",
+  );
+  assert.equal(
+    await warningsDialog.getByText("other-account", { exact: false }).count(),
+    0,
+    "Notices for other accounts are excluded",
+  );
+  assert.equal(
+    await warningsDialog
+      .getByText('"fixture_configuration"', {
+        exact: false,
+      })
+      .count(),
+    1,
+  );
+  await compactPage.waitForTimeout(250);
+  await compactPage.screenshot({
+    path: join(evidence, "warnings-desktop.png"),
+  });
+  await compactPage.setViewportSize({ width: 390, height: 844 });
+  await compactPage.waitForTimeout(250);
+  await compactPage.screenshot({
+    path: join(evidence, "warnings-mobile.png"),
+  });
+  await warningsDialog
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await warningsDialog.waitFor({ state: "hidden" });
+  await compactPage.locator(".native-error").waitFor({ state: "visible" });
+  await compactPage.screenshot({
+    path: join(evidence, "usage-footer-mobile.png"),
+  });
+  await compactPage.setViewportSize({ width: 1440, height: 960 });
+  await compactPage.screenshot({
+    path: join(evidence, "usage-footer-desktop.png"),
+  });
+  await compactPage.setViewportSize({ width: 860, height: 960 });
+  await compactPage
+    .getByRole("button", { name: "Chat actions", exact: true })
+    .click();
+  await compactPage
+    .getByRole("menuitem", { name: "Team", exact: true })
+    .click();
+  await compactPage.locator("#team").waitFor();
+  await compactPage.waitForFunction(
+    () =>
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  const toolsSummary = compactPage.locator(
+    '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+  );
+  await toolsSummary.waitFor();
+  const workspaceBounds = await compactPage
+    .locator(".workspace")
+    .evaluate((element) => {
+      const { x, width } = element.getBoundingClientRect();
+      return { x, width };
+    });
+  assert.ok(
+    workspaceBounds.width < 900,
+    `Sidebar/team should constrain the workspace: ${JSON.stringify(workspaceBounds)}`,
+  );
+  await compactPage.locator("#team-close").click();
+  if (
+    (await compactPage
+      .locator("#sidebar-toggle")
+      .getAttribute("aria-expanded")) === "true"
+  )
+    await compactPage.locator("#sidebar-toggle").click();
+  await compactPage.waitForFunction(
+    () =>
+      document.querySelector(".workspace").clientWidth < 900 &&
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  await toolsSummary.click();
+  await compactPage.waitForFunction(() =>
+    document
+      .querySelector(".conversation-header-tools-menu")
+      ?.hasAttribute("open"),
+  );
+  assert.equal(
+    await compactPage
+      .locator("#conversation-header-tools .usage-footer")
+      .count(),
+    0,
+    "Account usage is restored beneath the composer",
+  );
+  const usage = compactPage.locator("#usage-footer");
+  await usage.locator(".session-cost-summary").waitFor({ state: "visible" });
+  await usage.getByRole("button", { name: "Chat context" }).waitFor({
+    state: "visible",
+  });
+  await usage.getByRole("button", { name: "Account limits" }).waitFor({
+    state: "visible",
+  });
+  const [usageBounds, composerBounds] = await Promise.all([
+    usage.boundingBox(),
+    compactPage.locator("#composer").boundingBox(),
+  ]);
+  assert.ok(usageBounds && composerBounds);
+  assert.ok(usageBounds.y >= composerBounds.y + composerBounds.height - 1);
+  await compactPage
+    .locator(
+      "#conversation-header-tools .conversation-prompt-navigation-slot .prompt-navigation-compact",
+    )
+    .waitFor({ state: "visible" });
+  const compactMenuBounds = await compactPage
+    .locator(".conversation-header-tools-content")
+    .boundingBox();
+  assert.ok(compactMenuBounds);
+  assert.ok(
+    compactMenuBounds.x >= 0 &&
+      compactMenuBounds.x + compactMenuBounds.width <= 860 &&
+      compactMenuBounds.y >= 0 &&
+      compactMenuBounds.y + compactMenuBounds.height <= 960,
+    JSON.stringify(compactMenuBounds),
+  );
+  await compactPage.screenshot({
+    path: join(evidence, "constrained-header-tools-menu.png"),
+  });
+  await toolsSummary.click();
+  await compactPage.waitForFunction(
+    () =>
+      !document
+        .querySelector(".conversation-header-tools-menu")
+        ?.hasAttribute("open"),
+  );
+  await compactPage
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
+  const studioSettings = compactPage.getByTestId("studio-settings");
+  assert.deepEqual(
+    (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
+      label.trim(),
+    ),
+    ["Accounts", "Appearance", "Hotkeys"],
+  );
+  await studioSettings
+    .getByRole("tab", { name: "Appearance", exact: true })
+    .click();
+  await studioSettings
+    .getByRole("slider", { name: "Main font size" })
+    .press("End");
+  await compactPage.keyboard.press("Escape");
+  await studioSettings.waitFor({ state: "hidden" });
+  await compactPage.waitForFunction(
+    () =>
+      getComputedStyle(document.documentElement).getPropertyValue(
+        "--studio-main-font-size",
+      ) === "24px" &&
+      document.querySelector(".conversation-header-tools-menu")?.dataset
+        .compact === "yes",
+  );
+  await compactPage
+    .getByRole("button", { name: "View account limits", exact: true })
+    .click();
+  const accountLimits = compactPage.getByRole("region", {
+    name: "Account limits details",
+  });
+  await accountLimits.waitFor();
+  const limitsBounds = await compactPage
+    .locator(".account-limits-popover")
+    .boundingBox();
+  assert.ok(limitsBounds);
+  assert.ok(
+    limitsBounds.x >= 0 &&
+      limitsBounds.x + limitsBounds.width <= 860 &&
+      limitsBounds.y >= 0 &&
+      limitsBounds.y + limitsBounds.height <= 960,
+    JSON.stringify(limitsBounds),
+  );
+  await compactPage.screenshot({
+    path: join(evidence, "quota-error-open-account-limits.png"),
+  });
+  await compactPage.close();
   const firstUse = await browser.newPage({
     viewport: { width: 320, height: 844 },
     isMobile: true,
@@ -281,6 +591,14 @@ try {
                   turnStatus: "completed",
                   at: 1,
                 },
+                {
+                  id: "branch-source-answer",
+                  role: "assistant",
+                  text: "Completed branch answer",
+                  turnId: "completed-turn",
+                  turnStatus: "completed",
+                  at: 2,
+                },
               ]
             : [],
         agent: { id, status: "idle" },
@@ -305,6 +623,33 @@ try {
     });
   });
   await branchPage.goto(origin);
+  const answerActions = branchPage.locator(
+    '[data-message="branch-source-answer"] .message-bottom',
+  );
+  const actionLabels = [
+    ["Copy message", "Copy this message"],
+    ["Quote message", "Quote this message in your reply"],
+    ["Branch after this turn", "Start a new branch after this turn"],
+    [
+      "Another answer in a new chat",
+      "Prepare a request for another answer in a new chat",
+    ],
+  ];
+  for (const [buttonLabel, tooltipLabel] of actionLabels) {
+    const action = answerActions.getByRole("button", {
+      name: buttonLabel,
+      exact: true,
+    });
+    const tooltip = branchPage.getByRole("tooltip", {
+      name: tooltipLabel,
+      exact: true,
+    });
+    await action.hover();
+    await tooltip.waitFor({ state: "visible" });
+    await branchPage.mouse.move(0, 0);
+    await action.focus();
+    await tooltip.waitFor({ state: "visible" });
+  }
   await branchPage.locator("#message").fill("Preserve source draft");
   await branchPage
     .getByRole("button", { name: "Edit in a new chat", exact: true })
@@ -337,7 +682,11 @@ try {
       const workspace = JSON.parse(
         localStorage.getItem("codex-sync-workspace") || '"unassigned"',
       );
-      return JSON.parse(localStorage.getItem(`codex-drafts:${workspace}`))[id];
+      return JSON.parse(
+        localStorage.getItem(
+          `codex-chat-draft:${workspace}:${encodeURIComponent(id)}`,
+        ),
+      ).text;
     }, sourceAgent.id),
     "Preserve source draft",
   );

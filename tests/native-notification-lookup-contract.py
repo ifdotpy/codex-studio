@@ -129,14 +129,56 @@ class NativeLookup(unittest.TestCase):
         with self.runtime.db() as db:
             self.runtime.put(db, 'tasks', {'id': 'target:old-command', 'agent': 'target',
                 'itemId': 'old-command', 'turnId': 'old-turn', 'kind': 'command', 'status': 'running'})
-        self.emit(method='item/completed', turnId='old-turn', item={
-            'id': 'old-command', 'type': 'commandExecution', 'status': 'completed',
-            'exitCode': 0, 'aggregatedOutput': 'Original command finished'})
+        task_queries = []
+        original_db = self.runtime.db
+        @contextmanager
+        def observed_db():
+            with original_db() as db:
+                db.set_trace_callback(lambda sql: task_queries.append(sql) if sql.startswith(
+                    'SELECT record FROM runtime_tasks WHERE id=') else None)
+                yield db
+        with patch.object(self.runtime, 'db', side_effect=observed_db):
+            self.emit(method='item/completed', turnId='old-turn', item={
+                'id': 'old-command', 'type': 'commandExecution', 'status': 'completed',
+                'exitCode': 0, 'aggregatedOutput': 'Original command finished'})
+        self.assertEqual(len(task_queries), 1)
         with self.runtime.db() as db:
             task = json.loads(db.execute("SELECT record FROM runtime_tasks WHERE id='target:old-command'").fetchone()[0])
         self.assertEqual(task['status'], 'completed')
         self.assertEqual(task['tail'], 'Original command finished')
         self.assertEqual(self.runtime.agent('target')['turnId'], 'current-turn')
+
+    def test_non_task_item_kinds_skip_task_lookup_even_when_ids_collide(self):
+        self.actor()
+        original_task = {'id': 'target:shared-id', 'agent': 'target', 'itemId': 'shared-id',
+                         'turnId': 'current-turn', 'kind': 'command', 'status': 'running',
+                         'tail': 'original output'}
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tasks', original_task)
+        task_queries = []
+        original_db = self.runtime.db
+        @contextmanager
+        def observed_db():
+            with original_db() as db:
+                db.set_trace_callback(lambda sql: task_queries.append(sql) if sql.startswith(
+                    'SELECT record FROM runtime_tasks WHERE id=') else None)
+                yield db
+        callbacks = (
+            ('item/started', {'id': 'shared-id', 'type': 'agentMessage', 'text': ''}),
+            ('item/completed', {'id': 'shared-id', 'type': 'agentMessage', 'text': 'answer'}),
+            ('item/started', {'id': 'shared-id', 'type': 'userMessage', 'content': []}),
+            ('item/completed', {'id': 'shared-id', 'type': 'userMessage', 'content': []}),
+            ('item/started', {'id': 'shared-id', 'type': 'reasoning', 'text': 'thought'}),
+        )
+        with patch.object(self.runtime, 'db', side_effect=observed_db):
+            for method, item in callbacks:
+                self.runtime.notification({'method': method, 'params': {
+                    'threadId': 'shared-thread', 'turnId': 'current-turn', 'item': item}},
+                    'default', 'connection')
+        self.assertEqual(task_queries, [])
+        with self.runtime.db() as db:
+            task = json.loads(db.execute("SELECT record FROM runtime_tasks WHERE id='target:shared-id'").fetchone()[0])
+        self.assertEqual(task, original_task)
 
     def test_notification_uses_index_and_decodes_only_its_owner(self):
         for i in range(124):

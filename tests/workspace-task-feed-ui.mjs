@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // Verify the visible task drawer follows the cursor feed while it is open.
-import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,7 +36,9 @@ try {
   const origin = `http://127.0.0.1:${port}`;
   const get = async (path) => (await fetch(origin + path)).json();
   const initial = await get("/api/state");
-  const lead = initial.runtime.agents.find((agent) => agent.name === "Release lead");
+  const lead = initial.runtime.agents.find(
+    (agent) => agent.name === "Release lead",
+  );
   const task = {
     id: "feed-ui-command",
     agent: lead.id,
@@ -50,7 +51,9 @@ try {
     processId: "5173",
     created: Date.now() / 1000,
   };
-  proc.stdin.write(JSON.stringify({ method: "fixture/task", params: task }) + "\n");
+  proc.stdin.write(
+    JSON.stringify({ method: "fixture/task", params: task }) + "\n",
+  );
 
   browser = await chromium.launch({
     executablePath:
@@ -58,7 +61,9 @@ try {
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     headless: true,
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 900 },
+  });
   const feeds = [];
   page.on("response", (response) => {
     if (new URL(response.url()).pathname === "/api/workspace/tasks")
@@ -69,7 +74,9 @@ try {
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
   await poll(() => feeds.length > 0, "task feed request arrives");
-  await page.getByRole("heading", { name: task.command, exact: true }).waitFor();
+  await page
+    .getByRole("heading", { name: task.command, exact: true })
+    .waitFor();
 
   proc.stdin.write(
     JSON.stringify({
@@ -84,12 +91,16 @@ try {
     "completed task disappears within the five-second feed refresh",
     8,
   );
-  console.log("PASS workspace task feed UI: initial task and completion refreshed within five seconds");
+  console.log(
+    "PASS workspace task feed UI: initial task and completion refreshed within five seconds",
+  );
 } catch (error) {
   if (browser) {
     const page = browser.contexts().flatMap((context) => context.pages())[0];
     if (page)
-      await page.screenshot({ path: join(stateDir, "task-feed-failure.png") }).catch(() => {});
+      await page
+        .screenshot({ path: join(stateDir, "task-feed-failure.png") })
+        .catch(() => {});
   }
   console.error("Evidence:", stateDir);
   throw error;

@@ -189,6 +189,7 @@
     padding: 14px;
   }
 }
+
 /* Dense quota rows keep both pools and reset clocks visible together. */
 .account-limits-panel {
   padding: 12px;

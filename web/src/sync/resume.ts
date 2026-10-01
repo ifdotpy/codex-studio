@@ -8,7 +8,7 @@ const resume = () => {
   timer = setTimeout(() => {
     timer = undefined;
     if (!document.hidden && navigator.onLine !== false)
-      for (const action of [...listeners]) action();
+      for (const action of listeners) action();
   }, 50);
 };
 export function onResume(action: () => void) {

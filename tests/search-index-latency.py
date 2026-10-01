@@ -83,6 +83,45 @@ class SearchIndex(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_next WHERE runtime_search_next MATCH 'original'").fetchone()[0], 31)
         self.assertEqual(search_text(self.db, "agent:0000"), legacy["agent:0000"])
 
+    def test_worker_builds_index_after_the_row_check_table_is_gone(self):
+        # Live state on 2026-10-01: the row check finished and dropped its table,
+        # and runtime_search_next did not exist yet. The worker must still build.
+        import tempfile, threading
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        self.seed(12)
+        self.db.execute("DROP TABLE runtime_search_next")
+        self.db.commit()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "canvas.sqlite3"
+            self.db.execute("VACUUM INTO ?", (str(path),))
+            work = WorkMixin()
+            work.db_path, work.closed, work.lock = path, False, threading.RLock()
+
+            @contextmanager
+            def db():
+                connection = sqlite3.connect(path)
+                connection.row_factory = sqlite3.Row
+                try:
+                    with connection:
+                        yield connection
+                finally:
+                    connection.close()
+            work.db = db
+            steps = []
+            def sleep(_seconds):
+                steps.append(1)
+                if len(steps) > 500:
+                    work.closed = True
+            with patch("codex_work.time.sleep", side_effect=sleep), \
+                    patch("codex_work.shutil.disk_usage", return_value=type("U", (), {"free": 64 * 1024**3})()):
+                work._search_migration_run()
+            self.assertIsNone(getattr(work, "search_migration_error", None))
+            check = sqlite3.connect(path)
+            self.assertEqual(check.execute("SELECT phase FROM runtime_search_rollout").fetchone()[0], "complete")
+            self.assertEqual(check.execute("SELECT count(*) FROM runtime_search_next WHERE runtime_search_next MATCH 'original'").fetchone()[0], 12)
+            check.close()
+
     def test_live_updates_and_deletes_are_transactional(self):
         self.seed(2)
         self.work._search_migration_batch(self.db)

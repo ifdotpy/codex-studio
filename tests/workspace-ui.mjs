@@ -90,8 +90,7 @@ try {
   const planNotModified = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.pathname === "/api/resources")
-      resourceRequests.push(request.url());
+    if (url.pathname === "/api/resources") resourceRequests.push(request.url());
     if (
       url.pathname === "/api/workspace" &&
       url.searchParams.get("view") === "annotations"
@@ -453,11 +452,8 @@ try {
     .click();
   await poll(
     async () =>
-      (
-        await get(
-          "/api/workspace?agent=" + lead.id + "&view=annotations",
-        )
-      ).annotations.length === 1,
+      (await get("/api/workspace?agent=" + lead.id + "&view=annotations"))
+        .annotations.length === 1,
     "line comment stored",
   );
   assert.ok(annotationRequests.length > 0, "Changes requests only annotations");
@@ -556,7 +552,10 @@ try {
   await drawer.locator(".mantine-Drawer-close").click();
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.locator("#tasks-toggle").click();
-  await poll(() => taskFeedResponses.length > 0, "task drawer uses incremental feed");
+  await poll(
+    () => taskFeedResponses.length > 0,
+    "task drawer uses incremental feed",
+  );
   await page.keyboard.press("Escape");
   assert.deepEqual(
     resourceRequests,

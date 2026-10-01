@@ -2,11 +2,11 @@
 
 Measured in headless Chromium against the production web build and isolated local API fixtures. The fixture mounted 261 chats and supplied a 301-turn Claude history. It used no live app, database, account, or model request.
 
-| Interaction | Before | After | Target |
-| --- | ---: | ---: | ---: |
-| Click Chat settings to usable controls | 86.9 ms | 94.5 ms | < 150 ms |
-| Change permission mode to saved confirmation | 53.5 ms | 54.6 ms | < 300 ms |
-| Full state snapshot reads after a setting change | 1 in the old `run → load → refresh` path | 0 observed | 0 |
+| Interaction                                      |                                   Before |      After |   Target |
+| ------------------------------------------------ | ---------------------------------------: | ---------: | -------: |
+| Click Chat settings to usable controls           |                                  86.9 ms |    94.5 ms | < 150 ms |
+| Change permission mode to saved confirmation     |                                  53.5 ms |    54.6 ms | < 300 ms |
+| Full state snapshot reads after a setting change | 1 in the old `run → load → refresh` path | 0 observed |        0 |
 
 Both local timing runs are under the stated budgets. The save timing is similar because the fixture returns its snapshot quickly; it does not model production network latency. Before, each Save click ran `load()` and one full `/api/state` refresh. Now, a setting change sends only the Claude settings mutation, updates the local value, and shows inline confirmation. The regression asserts zero snapshot reads after the change.
 

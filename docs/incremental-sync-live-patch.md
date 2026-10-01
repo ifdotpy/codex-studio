@@ -14,24 +14,24 @@ The guarded server patch artifact is [`scripts/codex_sync_live_patch.py`](../scr
 
 Objects created by this change:
 
-| Object | Created when | Persistent write cost |
-| --- | --- | --- |
-| `sync_entities` table | First lazy `SyncStore` construction | One row per `(collection,id)`. Initial pull seeds current renderer DTOs; later writes upsert only when projected DTO hash or deletion state changes. Transcript rows store `payload=NULL`, and transcript tombstones are retained within the 512-item bound. |
-| `sqlite_autoindex_sync_entities_1` primary-key index on `(collection,id)` | Created with `sync_entities` | Updated for each inserted entity key; an upsert of an existing key keeps the same key entry. Included in the measured combined entity-table write cost below. |
-| `sync_entities_seq` index on `seq` | First lazy `SyncStore` construction | Updated on each changed-entity upsert; supports ordered incremental pulls. Included in the combined write measurement below. |
-| `sync_entity_meta` table | First lazy `SyncStore` construction | One row, `seeded=1`, on the first entity pull; no recurring writes. |
-| `sqlite_autoindex_sync_entity_meta_1` primary-key index on `key` | Created with `sync_entity_meta` | One index insertion with the one-time seed marker; no recurring writes. |
+| Object                                                                    | Created when                        | Persistent write cost                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sync_entities` table                                                     | First lazy `SyncStore` construction | One row per `(collection,id)`. Initial pull seeds current renderer DTOs; later writes upsert only when projected DTO hash or deletion state changes. Transcript rows store `payload=NULL`, and transcript tombstones are retained within the 512-item bound. |
+| `sqlite_autoindex_sync_entities_1` primary-key index on `(collection,id)` | Created with `sync_entities`        | Updated for each inserted entity key; an upsert of an existing key keeps the same key entry. Included in the measured combined entity-table write cost below.                                                                                                |
+| `sync_entities_seq` index on `seq`                                        | First lazy `SyncStore` construction | Updated on each changed-entity upsert; supports ordered incremental pulls. Included in the combined write measurement below.                                                                                                                                 |
+| `sync_entity_meta` table                                                  | First lazy `SyncStore` construction | One row, `seeded=1`, on the first entity pull; no recurring writes.                                                                                                                                                                                          |
+| `sqlite_autoindex_sync_entity_meta_1` primary-key index on `key`          | Created with `sync_entity_meta`     | One index insertion with the one-time seed marker; no recurring writes.                                                                                                                                                                                      |
 
 The synthetic write measurement for `sync_entities` and its indexes is **824,032 WAL bytes per minute** for 100 changed entities in a minute. SQLite reported 819,200 committed WAL-frame bytes at checkpoint. This includes the table pages, primary-key index and sequence index; their byte costs were not isolated from one another. Internal-only runtime writes and unchanged projected DTOs add no entity-table writes. `sync_entity_meta` and its primary-key index add one-time seed-marker cost, not recurring per-minute writes.
 
 The following compatibility objects are also ensured if missing. They predate this change and are not part of its incremental write cost:
 
-| Existing object | Purpose and write behavior |
-| --- | --- |
-| `sync_identity` table and its primary-key autoindex | Existing workspace identity; one row is inserted only for a database without an identity. |
-| `sync_generation` table | Existing legacy coarse change generation; initialized to one row if absent. Entity writes do not bump it. |
-| `sync_documents` table, its `UNIQUE(scope,id)` autoindex, and `sync_scope_seq` index | Existing drafts and legacy scope storage; writes remain limited to those old routes. New entity state is not copied here. |
-| `sync_versions` table and its `UNIQUE(scope)` autoindex | Existing old-scope hash checkpoints; first-use DDL is lazy. Old `state` / `state:chat` pulls write a checkpoint when their snapshot hash changes. |
+| Existing object                                                                      | Purpose and write behavior                                                                                                                        |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sync_identity` table and its primary-key autoindex                                  | Existing workspace identity; one row is inserted only for a database without an identity.                                                         |
+| `sync_generation` table                                                              | Existing legacy coarse change generation; initialized to one row if absent. Entity writes do not bump it.                                         |
+| `sync_documents` table, its `UNIQUE(scope,id)` autoindex, and `sync_scope_seq` index | Existing drafts and legacy scope storage; writes remain limited to those old routes. New entity state is not copied here.                         |
+| `sync_versions` table and its `UNIQUE(scope)` autoindex                              | Existing old-scope hash checkpoints; first-use DDL is lazy. Old `state` / `state:chat` pulls write a checkpoint when their snapshot hash changes. |
 
 No other new indexes are created. Three triggers, `sync_entity_event_INSERT`, `sync_entity_event_UPDATE`, and `sync_entity_event_DELETE`, cover direct `runtime_events` writes that bypass `Runtime.put`; they do not create a journal table. They upsert the current event entity only when its renderer hash changes. Old `sync_watch_%` row triggers are removed when the version reader initializes.
 

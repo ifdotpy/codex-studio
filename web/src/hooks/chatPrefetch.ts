@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { prefetchTranscript, watchSyncInvalidations } from "../sync/client";
 import { peekTranscript } from "../sync/transcriptCache";
-import { prefetchProgress } from "../components/progressCache";
+import { prefetchProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 
@@ -111,9 +111,10 @@ export function useChatPrefetch(
             agent,
             version,
             previous,
-            historyAt: historyTargets && !historyTargets.has(agent.id)
-              ? Infinity
-              : historyAt,
+            historyAt:
+              historyTargets && !historyTargets.has(agent.id)
+                ? Infinity
+                : historyAt,
             progressAt,
           };
         })
@@ -179,7 +180,7 @@ export function useChatPrefetch(
       }
     };
     schedule(1000);
-    const stopInvalidations = watchSyncInvalidations(pump);
+    const stopInvalidations = watchSyncInvalidations("state", pump);
     const stopResume = onResume(pump);
     return () => {
       stopped = true;

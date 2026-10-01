@@ -9,12 +9,12 @@ The live database received no writes.
 
 Each value is the median of seven runs. Times are milliseconds.
 
-| Path | Before | After | Measurement |
-|---|---:|---:|---|
-| Event window | 352.009 | 0.029 | Two ordered event scans, then the unchanged window marker path |
-| Agent put | 0.055 | 0.002 | Root record lookup and decode, then the full view builder without that lookup |
-| Known context | 79.178 | 0.017 | Delivered event join and JSON sort, then the persisted manifest lookup |
-| Team status | 936.715 | 4.311 | Global record decode and monitor filter, then team selection and indexed capacity counts |
+| Path          |  Before | After | Measurement                                                                              |
+| ------------- | ------: | ----: | ---------------------------------------------------------------------------------------- |
+| Event window  | 352.009 | 0.029 | Two ordered event scans, then the unchanged window marker path                           |
+| Agent put     |   0.055 | 0.002 | Root record lookup and decode, then the full view builder without that lookup            |
+| Known context |  79.178 | 0.017 | Delivered event join and JSON sort, then the persisted manifest lookup                   |
+| Team status   | 936.715 | 4.311 | Global record decode and monitor filter, then team selection and indexed capacity counts |
 
 The event pull uses a created and ID index. It checks the event entity sequence
 through a collection and sequence index. It sorts the 200 row window only after

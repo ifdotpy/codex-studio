@@ -76,7 +76,7 @@ Microphone capture, voice calls, secret form answers, and native permission
 requests require a new user action. iOS can suspend a PWA and prevent background
 message delivery. Browser storage eviction or deletion removes local-only data.
 Fullscreen mode, minimized state, and the previous macOS Space are not restored
-  automatically.
+automatically.
 
 ## Opt-in process supervisor (v1)
 

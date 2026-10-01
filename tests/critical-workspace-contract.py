@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Regression contracts for durable workspace recovery."""
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
+import copy
 from pathlib import Path
+import threading
 import tempfile
 import unittest
 from unittest.mock import patch
+import uuid
 
 
 HERE = Path(__file__).resolve().parent
@@ -218,6 +222,90 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
         self.assertEqual(branch["forkedFrom"], lead["id"])
         forks = [method for method, _ in self.runtime.server.calls if method == "thread/fork"]
         self.assertEqual(len(forks), 1)
+
+    def test_accepted_branch_completes_after_account_delete_and_restart(self):
+        lead = self.start(self.lead())
+        self.runtime.notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": lead["threadId"],
+                    "turnId": lead["turnId"],
+                    "item": {
+                        "id": "branch-answer-delete",
+                        "type": "agentMessage",
+                        "text": "Branch point before account removal",
+                    },
+                },
+            }
+        )
+        self.runtime.server.complete(lead["threadId"], lead["turnId"])
+        message = next(
+            item
+            for item in self.runtime.transcript(lead["id"])["items"]
+            if item["text"] == "Branch point before account removal"
+        )
+        request = {"id": "branch-delete-retry", "message_id": message["id"]}
+
+        accounts = self.runtime.accounts
+        replacement = copy.deepcopy(accounts.data["accounts"]["default"])
+        replacement.update(id="replacement", label="Replacement")
+        accounts.data["accounts"]["replacement"] = replacement
+        accounts.data["defaultAccountKey"] = "replacement"
+        accounts._save()
+
+        server = self.runtime.connect(lead["accountKey"])
+        original_call = server.call
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed_fork(method, params, timeout=60):
+            if method == "thread/fork":
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError("test gate expired")
+            return original_call(method, params, timeout)
+
+        original_create = self.runtime.create
+
+        def fail_local_once(*args, **kwargs):
+            if kwargs.get("_accepted_provider_operation"):
+                raise RuntimeError("local branch completion interrupted")
+            return original_create(*args, **kwargs)
+
+        with patch.object(server, "call", delayed_fork), patch.object(
+            self.runtime, "create", side_effect=fail_local_once
+        ), ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(self.runtime.branch_conversation, lead["id"], request)
+            self.assertTrue(entered.wait(2))
+            accounts.delete("default", str(uuid.uuid4()))
+            release.set()
+            with self.assertRaisesRegex(RuntimeError, "local branch completion"):
+                pending.result(5)
+
+        with self.runtime.db() as db:
+            operation = self.runtime._workspace_operation(
+                db,
+                self.runtime._workspace_operation_id("branch", lead["id"], request),
+            )
+        self.assertEqual(operation["phase"], "provider_ready")
+        self.assertTrue(accounts.data["accounts"]["default"].get("deleted"))
+        first_server = server
+
+        self.runtime.close()
+        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        branch = self.runtime.branch_conversation(lead["id"], request)
+        self.assertEqual(branch["forkedFrom"], lead["id"])
+        self.assertEqual(branch["accountKey"], "default")
+        self.assertEqual(
+            sum(method == "thread/fork" for method, _ in first_server.calls), 1
+        )
+        self.assertFalse(
+            any(
+                method == "thread/fork"
+                for retry_server in self.runtime.servers.values()
+                for method, _ in retry_server.calls
+            )
+        )
 
 
 if __name__ == "__main__":

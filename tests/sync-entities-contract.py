@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert task == {"id": "task-1", "status": "failed", "command": "echo ok"}
 
     # Renderer fields used by the worker cards and team panel must stay on wire.
-    renderer = (root / "web/src/components/WorkerOverview.tsx").read_text() + (
+    renderer = (root / "web/src/components/agents/WorkerCard.tsx").read_text() + (root / "web/src/components/agents/WorkerOverview.tsx").read_text() + (
         root / "web/src/App.tsx"
     ).read_text() + (root / "web/src/types.ts").read_text() + (
         root / "web/src/nativeErrors.ts"

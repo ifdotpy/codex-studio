@@ -47,7 +47,7 @@ try {
         json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
       }),
     );
-    await page.route("**/api/sync/stream", (r) =>
+    await page.route("**/api/sync/stream*", (r) =>
       r.fulfill({ contentType: "text/event-stream", body: "" }),
     );
     await page.goto(
@@ -190,68 +190,97 @@ try {
       const cdp = await context.newCDPSession(page);
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     }
-    const result = await page.evaluate(async (workspaceId) => {
-      const baseCommits = window.commits,
-        baseRenders = window.renders,
-        baseComposerCommits = window.composerCommits,
-        baseSidebarRenders = window.sidebarRenders,
-        baseTranscriptRenders = window.transcriptRenders;
-      let mapWrites = 0,
-        mapBytes = 0,
-        journalWrites = 0;
-      const original = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (k, v) {
-        if (k.startsWith("codex-drafts:")) {
-          if (k.includes(":pending:")) journalWrites++;
-          else {
-            mapWrites++;
-            mapBytes += v.length * 2;
+    const result = await page.evaluate(
+      async ({ workspaceId, baselineMode }) => {
+        const baseCommits = window.commits,
+          baseRenders = window.renders,
+          baseComposerCommits = window.composerCommits,
+          baseSidebarRenders = window.sidebarRenders,
+          baseTranscriptRenders = window.transcriptRenders;
+        let mapWrites = 0,
+          mapBytes = 0,
+          chatWrites = 0,
+          chatBytes = 0,
+          journalWrites = 0;
+        const original = Storage.prototype.setItem;
+        Storage.prototype.setItem = function (k, v) {
+          if (k.startsWith("codex-drafts:")) {
+            if (k.includes(":pending:")) journalWrites++;
+            else {
+              mapWrites++;
+              mapBytes += v.length * 2;
+            }
+          } else if (k.startsWith("codex-chat-draft:")) {
+            chatWrites++;
+            chatBytes += v.length * 2;
           }
-        }
-        return original.call(this, k, v);
-      };
-      const setTimes = [];
-      for (let i = 0; i < 20; i++) {
-        const at = performance.now();
-        window.draft.setDrafts((old) => ({ ...old, "chat-0": "typed " + i }));
-        if (
-          JSON.parse(localStorage.getItem("codex-drafts:" + workspaceId))[
-            "chat-0"
-          ] !==
-          "typed " + i
-        )
-          throw new Error("Each edit must synchronously reach the scope map");
-        if (
-          !Object.keys(localStorage).some(
-            (k) =>
-              k.includes(":pending:") &&
-              JSON.parse(localStorage.getItem(k)).text === "typed " + i,
+          return original.call(this, k, v);
+        };
+        const setTimes = [];
+        for (let i = 0; i < 20; i++) {
+          const at = performance.now();
+          window.draft.setDrafts((old) => ({ ...old, "chat-0": "typed " + i }));
+          const legacy = localStorage.getItem("codex-drafts:" + workspaceId);
+          const local = localStorage.getItem(
+            "codex-chat-draft:" + workspaceId + ":chat-0",
+          );
+          const persisted = baselineMode
+            ? JSON.parse(legacy)["chat-0"]
+            : JSON.parse(local).text;
+          if (persisted !== "typed " + i)
+            throw new Error(
+              "Each edit must synchronously reach its local chat record",
+            );
+          if (
+            !Object.keys(localStorage).some(
+              (k) =>
+                k.includes(":pending:") &&
+                JSON.parse(localStorage.getItem(k)).text === "typed " + i,
+            )
           )
-        )
-          throw new Error("Each edit must synchronously reach the journal");
-        setTimes.push(performance.now() - at);
-        await new Promise((r) => setTimeout(r, 40));
-      }
-      await new Promise((r) => setTimeout(r, 500));
-      Storage.prototype.setItem = original;
-      const sorted = setTimes.slice().sort((a, b) => a - b);
-      return {
-        setMedianMs: sorted[10],
-        setMaxMs: Math.max(...setTimes),
-        commits: window.commits - baseCommits,
-        renders: window.renders - baseRenders,
-        composerCommits: window.composerCommits - baseComposerCommits,
-        sidebarRenders: window.sidebarRenders - baseSidebarRenders,
-        transcriptRenders: window.transcriptRenders - baseTranscriptRenders,
-        mapWrites,
-        mapBytes,
-        journalWrites,
-      };
-    }, workspaceId);
+            throw new Error("Each edit must synchronously reach the journal");
+          setTimes.push(performance.now() - at);
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        await new Promise((r) => setTimeout(r, 500));
+        Storage.prototype.setItem = original;
+        const sorted = setTimes.slice().sort((a, b) => a - b);
+        const migrationChatBytes = Object.keys(localStorage)
+          .filter((key) => key.startsWith("codex-chat-draft:"))
+          .reduce(
+            (bytes, key) => bytes + localStorage.getItem(key).length * 2,
+            0,
+          );
+        return {
+          setMedianMs: sorted[10],
+          setMaxMs: Math.max(...setTimes),
+          commits: window.commits - baseCommits,
+          renders: window.renders - baseRenders,
+          composerCommits: window.composerCommits - baseComposerCommits,
+          sidebarRenders: window.sidebarRenders - baseSidebarRenders,
+          transcriptRenders: window.transcriptRenders - baseTranscriptRenders,
+          mapWrites,
+          mapBytes,
+          chatWrites,
+          chatBytes,
+          migrationChatBytes,
+          journalWrites,
+        };
+      },
+      {
+        workspaceId,
+        baselineMode: process.env.RENDER_ISOLATION === "baseline",
+      },
+    );
     assert.equal(
       result.mapWrites,
-      20,
-      "Local sync must not rewrite all drafts for unchanged reconciliation",
+      process.env.RENDER_ISOLATION === "baseline" ? 20 : 0,
+      "The current store must not rewrite the aggregate legacy map",
+    );
+    assert.equal(
+      result.chatWrites,
+      process.env.RENDER_ISOLATION === "baseline" ? 0 : 20,
+      "Each edit writes only its per-chat record",
     );
     assert.equal(
       result.journalWrites,
@@ -263,8 +292,10 @@ try {
       20,
       "The active composer must still commit once per edit",
     );
-    const expectedOwnerRenders =
-      process.env.RENDER_ISOLATION === "baseline" ? 20 : 0;
+    // The pinned 2470fb5 baseline already keeps draft subscriptions isolated
+    // from the owning hook; compare storage/latency without attributing an
+    // intervening React-render refactor to this migration.
+    const expectedOwnerRenders = 0;
     assert.equal(
       result.renders,
       expectedOwnerRenders,
@@ -286,15 +317,18 @@ try {
       "Only the active composer should commit for the 20 edits",
     );
     assert.ok(
-      result.mapBytes < 45_000_000,
-      "Twenty edits do not serialize the map three times per edit",
+      process.env.RENDER_ISOLATION === "baseline"
+        ? result.mapBytes > 35_000_000
+        : result.chatBytes < 400_000,
+      "Per-chat edits stay below 400 KB versus the paired baseline's >35 MB",
     );
     const noOp = await page.evaluate(async () => {
       const before = window.commits;
       const original = Storage.prototype.setItem;
       let writes = 0;
       Storage.prototype.setItem = function (k, v) {
-        if (k.startsWith("codex-drafts:")) writes++;
+        if (k.startsWith("codex-drafts:") || k.startsWith("codex-chat-draft:"))
+          writes++;
         return original.call(this, k, v);
       };
       const doc = await db.drafts.findOne("fixture:chat-10").exec();
@@ -358,7 +392,7 @@ try {
         json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
       }),
     );
-    await other.route("**/api/sync/stream", (route) =>
+    await other.route("**/api/sync/stream*", (route) =>
       route.fulfill({ contentType: "text/event-stream", body: "" }),
     );
     await other.goto(

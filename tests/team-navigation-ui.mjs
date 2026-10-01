@@ -106,13 +106,27 @@ try {
   const team = page.getByRole("complementary", { name: "Team", exact: true });
   const search = team.getByRole("searchbox", { name: "Find a subagent" });
   const row = (n) => team.locator(`[data-worker="${worker(n).id}"]`);
+  const openTeamFromHeader = async () => {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+  };
+  const openChatSettingsFromHeader = async () => {
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Chat settings", exact: true })
+      .click();
+  };
   const waitForTeamInViewport = () =>
     page.waitForFunction(() => {
       const panel = document.querySelector("#team");
       const rect = panel?.getBoundingClientRect();
       return !!rect && rect.left >= 0 && rect.right <= innerWidth;
     });
-  const waitForTeamToggleHitTarget = async () => {
+  const waitForChatActionsHitTarget = async () => {
     try {
       await page.waitForFunction(
         () =>
@@ -120,7 +134,9 @@ try {
             let previous = "";
             let stableFrames = 0;
             const sample = () => {
-              const button = document.querySelector("#team-toggle");
+              const button = document.querySelector(
+                'button[aria-label="Chat actions"]',
+              );
               if (!button) {
                 stableFrames = 0;
                 requestAnimationFrame(sample);
@@ -149,7 +165,9 @@ try {
       );
     } catch (error) {
       const state = await page.evaluate(() => {
-        const button = document.querySelector("#team-toggle");
+        const button = document.querySelector(
+          'button[aria-label="Chat actions"]',
+        );
         if (!button) return { button: null };
         const rect = button.getBoundingClientRect();
         const target = document.elementFromPoint(
@@ -158,7 +176,7 @@ try {
         );
         return {
           viewport: { width: innerWidth, height: innerHeight },
-          button: {
+          chatActions: {
             rect: {
               x: rect.x,
               y: rect.y,
@@ -187,7 +205,7 @@ try {
         };
       });
       throw new Error(
-        `Team toggle hit target did not settle: ${JSON.stringify(state)}`,
+        `Chat Actions hit target did not settle: ${JSON.stringify(state)}`,
         { cause: error },
       );
     }
@@ -300,7 +318,7 @@ try {
     "true",
   );
   await page.setViewportSize({ width: 800, height: 844 });
-  await page.locator("#team-toggle").click();
+  await openTeamFromHeader();
   await search.waitFor({ state: "visible" });
   await search.fill("approval");
   await row(2).waitFor();
@@ -344,8 +362,8 @@ try {
       );
     }
     await page.locator("#message").fill(`Lead draft ${width}`);
-    await waitForTeamToggleHitTarget();
-    await page.getByRole("button", { name: "Team", exact: true }).click();
+    await waitForChatActionsHitTarget();
+    await openTeamFromHeader();
     await search.waitFor({ state: "visible" });
     await search.fill("Worker 39");
     await row(39).waitFor({ state: "visible" });
@@ -409,9 +427,7 @@ try {
       await page.locator("#message").inputValue(),
       `Worker draft ${width}`,
     );
-    await page
-      .getByRole("button", { name: "Chat settings", exact: true })
-      .click();
+    await openChatSettingsFromHeader();
     await page.getByTestId("account-picker").click();
     const accountOptions = page.getByRole("menuitem").filter({
       has: page.locator(".account-menu-identity"),

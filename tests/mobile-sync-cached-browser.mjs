@@ -52,7 +52,10 @@ try {
   });
   await page.route("**/api/sync/stream*", (route) => {
     streamCalls++;
-    return route.fulfill({ contentType: "text/event-stream", body: "data: 2\n\n" });
+    return route.fulfill({
+      contentType: "text/event-stream",
+      body: "data: 2\n\n",
+    });
   });
   await page.route("**/api/sync/pull?*", (route) => {
     pullCount++;
@@ -190,7 +193,7 @@ try {
       () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
       null,
       {
-      timeout: 10000,
+        timeout: 10000,
       },
     )
     .catch(async (error) => {
@@ -202,7 +205,9 @@ try {
         pullLog,
         currentWorkspace,
         state: await page.evaluate(async () => {
-          const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
+          const { db } = await (
+            await import("/src/sync/client.ts")
+          ).syncDatabase();
           const rows = await db.projections.find().exec();
           return {
             value: window.state,
@@ -211,8 +216,13 @@ try {
             online: navigator.onLine,
             entities: rows
               .filter((row) => row.id.startsWith("entity:"))
-              .map((row) => [row.id, row.seq, JSON.parse(row.payload).value?.name]),
-            ready: (await db.projections.findOne("state:entities:ready").exec())?.payload,
+              .map((row) => [
+                row.id,
+                row.seq,
+                JSON.parse(row.payload).value?.name,
+              ]),
+            ready: (await db.projections.findOne("state:entities:ready").exec())
+              ?.payload,
           };
         }),
       });

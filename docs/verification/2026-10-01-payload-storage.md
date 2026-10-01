@@ -6,13 +6,13 @@ Measured on 2026-10-01 with `scripts/codex_payload_measure.py` against the live 
 
 The externalization cutoff is 65,536 bytes. The sample shows that checkpoint `items` is commonly large (p50 174 KB) and 69.9% of sampled values exceed the cutoff. In contrast, only about 3% of sampled tool payloads exceed it. A 64 KiB cutoff captures most checkpoint bytes while avoiding a filesystem object for the many small tool results. `runtime_items.text` is capped at about 24.8 KB in this sample and task `tail` at about 14 KB; both remain inline.
 
-| Table and field | Samples | p50 | p95 | Max | >4 KiB | >64 KiB | Estimated DB bytes removed |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `runtime_checkpoints.items` | 495 | 174,434 B | 1,131,340 B | 1,723,525 B | 95.2% | 69.9% | 2.132 GB |
-| `runtime_tool_requests.result` | 500 | 818 B | 63,340 B | 810,507 B | 25.4% | 3.2% | 675.2 MB |
-| `runtime_tool_results.contentItems` | 500 | 626 B | 51,160 B | 1,257,779 B | 23.4% | 2.8% | 854.3 MB |
-| `runtime_tasks.tail` (retention) | 423 | 1,706 B | 12,620 B | 23,879 B | 39.2% | 0% | 1.527 GB |
-| `runtime_items.text` (kept inline) | 500 | 2,166 B | 20,478 B | 22,357 B | 34.0% | 0% | 0 B |
+| Table and field                     | Samples |       p50 |         p95 |         Max | >4 KiB | >64 KiB | Estimated DB bytes removed |
+| ----------------------------------- | ------: | --------: | ----------: | ----------: | -----: | ------: | -------------------------: |
+| `runtime_checkpoints.items`         |     495 | 174,434 B | 1,131,340 B | 1,723,525 B |  95.2% |   69.9% |                   2.132 GB |
+| `runtime_tool_requests.result`      |     500 |     818 B |    63,340 B |   810,507 B |  25.4% |    3.2% |                   675.2 MB |
+| `runtime_tool_results.contentItems` |     500 |     626 B |    51,160 B | 1,257,779 B |  23.4% |    2.8% |                   854.3 MB |
+| `runtime_tasks.tail` (retention)    |     423 |   1,706 B |    12,620 B |    23,879 B |  39.2% |      0% |                   1.527 GB |
+| `runtime_items.text` (kept inline)  |     500 |   2,166 B |    20,478 B |    22,357 B |  34.0% |      0% |                        0 B |
 
 Projections multiply average sampled eligible bytes by maximum rowid: checkpoints 6,781; tasks 623,867; tool requests 102,667; tool results 102,544; items 782,738. Task projection applies the seven-day/newest-100 policy and assumes a 512-byte trailing preview. Gross estimated JSON reduction is about 5.19 GB before JSON reference overhead, SQLite page fragmentation, and VACUUM. It does not estimate filesystem allocation or deduplication savings. The task sample is an 800-row age/status-aware sample; other listed distributions use 500 probes.
 

@@ -34,7 +34,7 @@ const server = await createServer({
       },
       load(id) {
         if (id === entry)
-          return "import * as cache from '/src/components/progressCache.ts'; window.progressCache = cache;";
+          return "import * as cache from '/src/components/agents/progressCache.ts'; window.progressCache = cache;";
       },
     },
   ],

@@ -29,7 +29,7 @@ TABLES = {
 
 def copy_step(analytics_path, canvas_path):
     """Copy or retire one bounded page. Returns (advanced, status, timing)."""
-    db = sqlite_connect(analytics_path, timeout=15, site="Analytics.migration")
+    db = sqlite_connect(analytics_path, uri=True, timeout=15, site="Analytics.migration")
     try:
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")

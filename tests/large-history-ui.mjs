@@ -206,7 +206,10 @@ try {
     while (await loadEarlier.count()) {
       const response = page
         .waitForResponse((r) => r.url().includes("/api/transcript/page?"))
-        .then((value) => ({ value }), (error) => ({ error }));
+        .then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
       await page.locator("#messages").evaluate((root) => {
         root.scrollTop = 0;
         root.dispatchEvent(new Event("scroll"));
@@ -233,7 +236,7 @@ try {
     // active to check its saved disclosure and selected tool details.
     items = items.map((item) => {
       if (item.turnId !== `turn-${turns - 1}`) return item;
-      const { turnStatus, ...activeItem } = item;
+      const { turnStatus: _turnStatus, ...activeItem } = item;
       return activeItem;
     });
     await page.reload();

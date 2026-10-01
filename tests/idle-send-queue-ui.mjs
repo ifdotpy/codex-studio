@@ -210,7 +210,9 @@ try {
   );
   assert.equal(sent.length, 2, "Reload does not send input again");
   assert.deepEqual(errors, []);
-  console.log("PASS idle send, Tab queues after the turn, after-tool messages stay out of the queue, reload identity");
+  console.log(
+    "PASS idle send, Tab queues after the turn, after-tool messages stay out of the queue, reload identity",
+  );
 } catch (error) {
   console.error(error);
   console.error(JSON.stringify({ evidence: root, diagnostics }, null, 2));

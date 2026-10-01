@@ -58,8 +58,8 @@
   white-space: nowrap;
 }
 .conversation-meta .agent-mode-control {
-  flex-wrap: nowrap;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  flex-shrink: 1;
   margin-top: 0;
 }
 .conversation-meta .agent-mode-switch {

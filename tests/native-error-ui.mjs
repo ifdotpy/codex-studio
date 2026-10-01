@@ -117,17 +117,64 @@ try {
     message: "Account configuration needs review",
     details: accountDetails,
   });
-  const accountNotice = page.locator(".native-account-notices");
-  await accountNotice.locator("summary").click();
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  const accountNotice = page.getByRole("dialog", {
+    name: "Warnings",
+    exact: true,
+  });
   assert.deepEqual(
     JSON.parse(await accountNotice.locator("pre").innerText()),
     accountDetails,
     "Account-wide native diagnostics retain object details without removing the UI",
   );
+  await page.keyboard.press("Escape");
+  await accountNotice.waitFor({ state: "hidden" });
+  assert.equal(
+    await page.locator("#conversation .native-account-notices").count(),
+    0,
+  );
   assert.equal(
     await page.locator("#conversation-title").innerText(),
     "Other project",
   );
+  const featureWarning =
+    "Under-development features enabled: current_time_reminder. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in config.toml.";
+  event("configWarning", {
+    message: featureWarning,
+    details: { feature: "current_time_reminder" },
+  });
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  await accountNotice.getByText(featureWarning, { exact: true }).waitFor();
+  assert.equal(
+    await page
+      .locator("#messages")
+      .getByText(featureWarning, { exact: true })
+      .count(),
+    0,
+  );
+  await accountNotice
+    .getByText('"current_time_reminder"', { exact: false })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await accountNotice.waitFor({ state: "hidden" });
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.getByRole("button", { name: "Warnings", exact: true }).click();
+  await accountNotice.waitFor({ state: "visible" });
+  assert.equal(
+    await accountNotice.getByText(featureWarning, { exact: true }).count(),
+    0,
+  );
+  await page.keyboard.press("Escape");
+  await accountNotice.waitFor({ state: "hidden" });
+  await page
+    .locator("[data-chat]")
+    .filter({ hasText: "Other project" })
+    .click();
+  await page.reload();
+  await page
+    .locator("#conversation-title")
+    .getByText("Other project", { exact: true })
+    .waitFor();
   event("model/safetyBuffering/updated", {
     model: "gpt-6-astra",
     showBufferingUi: true,

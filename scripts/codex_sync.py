@@ -22,9 +22,12 @@ TRANSCRIPT_REVISION_ID = '@revision'
 
 
 class SyncStore:
-    def __init__(self, connect, snapshot, transcript, chat_snapshot=None):
+    def __init__(self, connect, snapshot, transcript, chat_snapshot=None, state_signature=None):
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
         self.chat_snapshot = chat_snapshot
+        self.state_signature = state_signature
+        self._observed_state_signature = None
+        self._signature_lock = threading.Lock()
         self._entity_prune_lock = threading.Lock()
         # One scope stays serial: its compare-and-replace keeps one checkpoint
         # per version. Other scopes proceed; a slow state snapshot must not
@@ -61,7 +64,7 @@ class SyncStore:
 
     def identity(self):
         with self.connection("SyncStore.identity") as db:
-            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0], 'syncProtocol': 2,
                     **({'chatState': True} if self.chat_snapshot else {})}
 
     def generation(self):
@@ -70,6 +73,22 @@ class SyncStore:
         self._ensure_versions()
         with self._version_lock:
             return self._version_reader.execute('PRAGMA data_version').fetchone()[0]
+
+    def generation_state(self):
+        # The legacy generation also covers file-backed/state:chat clients.
+        # Transcript pulls still use their per-agent revision to skip unchanged
+        # projections; the shared stream is only an invalidation hint.
+        if self.state_signature:
+            current = self.state_signature()
+            with self._signature_lock:
+                if current is not None and current != self._observed_state_signature:
+                    with self.connection("SyncStore.external_state") as db:
+                        db.execute('UPDATE sync_generation SET value=value+1 WHERE id=1')
+                    self._observed_state_signature = current
+        generation = self.generation()
+        return {"protocol": 2, **self.identity(), "generations": {
+            "state": generation, "transcripts": generation,
+            "drafts": self.draft_sequence()}}
 
     def entity_sequence(self):
         from codex_sync_entities import max_seq

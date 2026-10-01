@@ -76,10 +76,12 @@ try {
     page.setDefaultTimeout(12000);
     const mutations = [];
     page.on("request", (request) => {
-      // The voice transcript uses POST for a read on every chat mount.
+      // Voice reads and background draft migration are independent of receipt dismissal.
       if (
         !["GET", "HEAD", "OPTIONS"].includes(request.method()) &&
-        new URL(request.url()).pathname !== "/api/voice/records"
+        !["/api/voice/records", "/api/sync/drafts"].includes(
+          new URL(request.url()).pathname,
+        )
       )
         mutations.push({
           method: request.method(),
@@ -88,7 +90,7 @@ try {
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
+    await page.addInitScript((workspaceId) => {
       window.deliveryStreams = [];
       window.EventSource = class extends EventTarget {
         constructor(url) {
@@ -102,17 +104,26 @@ try {
           );
         }
       };
-      window.publishDelivery = (id, revision) => {
+      let generation = Date.now();
+      window.publishDelivery = (_id, _revision) => {
+        const revision = ++generation;
         for (const stream of window.deliveryStreams) {
           const url = new URL(stream.url, location.href);
-          if (
-            url.pathname === "/api/sync/stream" &&
-            url.searchParams.get("scope") === `transcript:${id}`
-          )
-            stream.onmessage?.({ data: String(revision) });
+          if (url.pathname === "/api/sync/stream")
+            stream.onmessage?.({
+              data: JSON.stringify({
+                protocol: 2,
+                workspaceId,
+                generations: {
+                  state: revision,
+                  transcripts: revision,
+                  drafts: 0,
+                },
+              }),
+            });
         }
       };
-    });
+    }, identity.workspaceId);
     const history = new Map(
       [a, b].map((agent) => [
         agent.id,
@@ -221,7 +232,11 @@ try {
         `${mode}: draft clears only after the local outbox owns it`,
       );
       await row(text).waitFor();
-      assert.equal(await row(text).count(), 1, `${mode}: one immediate local message`);
+      assert.equal(
+        await row(text).count(),
+        1,
+        `${mode}: one immediate local message`,
+      );
       assert.equal(
         await input.evaluate((element) => document.activeElement === element),
         true,
@@ -723,7 +738,11 @@ try {
     await publish(a.id, [
       ...serverBase,
       ...removable.map(
-        ({ deliveryStatus, deliveryError, ...message }) => message,
+        ({
+          deliveryStatus: _deliveryStatus,
+          deliveryError: _deliveryError,
+          ...message
+        }) => message,
       ),
       ...retained,
     ]);
@@ -745,9 +764,21 @@ try {
       ...removable[0],
       text: `${mode} same ID in another chat`,
     };
+    const refreshedOtherChat =
+      mode === "rxdb"
+        ? page.waitForResponse(async (response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === "/api/sync/pull" &&
+              url.searchParams.get("scope") === `transcript:${b.id}` &&
+              (await response.text()).includes(otherChatReceipt.id)
+            );
+          })
+        : Promise.resolve();
     await publish(b.id, [...history.get(b.id).items, otherChatReceipt]);
     await page.locator(`[data-chat="${b.id}"]`).click();
-    await page.locator(`[data-message="${otherChatReceipt.id}"]`).waitFor();
+    await refreshedOtherChat;
+    await row(otherChatReceipt.text).waitFor();
     assert.equal(
       await row(otherChatReceipt.text).count(),
       1,

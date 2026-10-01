@@ -39,3 +39,7 @@
   color: var(--mantine-color-red-6);
   margin: 4px 0 0;
 }
+.native-runtime-status .native-runtime-warning {
+  color: var(--warning, #e3b761);
+  margin: 4px 0 0;
+}

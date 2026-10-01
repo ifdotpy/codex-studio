@@ -171,7 +171,10 @@ try {
   await composer.fill("First input");
   await attach("queued-evidence.txt");
   await composer.press("Tab");
-  await wait(async () => (await queue()).items.length === 1, "First input reaches queue");
+  await wait(
+    async () => (await queue()).items.length === 1,
+    "First input reaches queue",
+  );
   assert.equal(sent.length, 1);
   assert.equal(sent[0].delivery, "after_turn", "Tab sends after-turn input");
   await panel.waitFor();
@@ -181,26 +184,42 @@ try {
   for (const text of ["Second input", "Third input"]) {
     await composer.fill(text);
     await composer.press("Tab");
-    await wait(async () => (await queue()).items.some((item) => item.text === text),
-      `${text} reaches queue`);
+    await wait(
+      async () => (await queue()).items.some((item) => item.text === text),
+      `${text} reaches queue`,
+    );
   }
-  await wait(async () => (await queue()).items.length === 3, "All inputs are durable");
+  await wait(
+    async () => (await queue()).items.length === 3,
+    "All inputs are durable",
+  );
   assert.equal(sent.length, 3);
   assert(sent.every((entry) => entry.delivery === "after_turn"));
   await button("Edit queued message 1").click();
   await editor().fill("Revised first input");
   await button("Save queued message").click();
-  await wait(async () => (await queue()).items[0].text === "Revised first input", "Edit persists");
+  await wait(
+    async () => (await queue()).items[0].text === "Revised first input",
+    "Edit persists",
+  );
   assert.equal((await queue()).items[0].assets[0].id, asset);
   await button("Move queued message 3 up").click();
-  await wait(async () => (await queue()).items[1].text === "Third input", "Reorder persists");
+  await wait(
+    async () => (await queue()).items[1].text === "Third input",
+    "Reorder persists",
+  );
   const order = (await queue()).items.map((item) => item.id);
   await page.reload();
   await panel.waitFor();
-  assert.deepEqual((await queue()).items.map((item) => item.id), order);
+  assert.deepEqual(
+    (await queue()).items.map((item) => item.id),
+    order,
+  );
   await list.getByText("Revised first input", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
-  console.log("PASS Tab after-turn queue, pending edit, asset, reorder and reload");
+  console.log(
+    "PASS Tab after-turn queue, pending edit, asset, reorder and reload",
+  );
 } catch (error) {
   console.error(error);
   console.error(JSON.stringify({ evidence: root, diagnostics }, null, 2));
