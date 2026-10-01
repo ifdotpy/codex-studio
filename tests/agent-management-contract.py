@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_agent_management import manage_agent, _missing_transferred_history, _finished
-from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids
+from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids, remember_context_manifest
 from codex_tool_requests import RequestMixin
 
 class Store(EfficiencyMixin, RequestMixin):
@@ -441,6 +441,7 @@ class RuntimeRouteContract(unittest.TestCase):
                 self.assertIn('Studio: 3 finished workers keep worktrees.',
                               rt.model_turn_context(db,actor,'reminder-three'))
                 db.execute("UPDATE runtime_events SET status='delivered' WHERE id='reminder-three'")
+                remember_context_manifest(db, actor['id'], 'reminder-three')
                 rt.enqueue(db,actor,'user','Continue','reminder-repeat')
                 self.assertNotIn('archive_finished',rt.model_turn_context(db,actor,'reminder-repeat'))
                 actor['compactions']=1

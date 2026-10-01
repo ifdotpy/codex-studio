@@ -56,6 +56,16 @@ class LifecycleContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already occurred'):
             self.manage(lead, 'park', agent_id=one['id'], event='seal3-published')
 
+    def test_agent_entity_put_does_not_read_root_record_for_unused_wave_field(self):
+        lead = self.lead(); worker = self.worker(lead)
+        with self.runtime.db() as db:
+            statements = []
+            db.set_trace_callback(statements.append)
+            view = self.runtime.agent_entity_view(db, worker)
+            db.set_trace_callback(None)
+        self.assertNotIn('wave', view)
+        self.assertFalse(any('SELECT record FROM runtime_agents WHERE id=' in sql for sql in statements))
+
     def test_worker_self_park_after_turn_keeps_parent_result(self):
         lead = self.lead()
         worker = self.start(self.worker(lead), 'Do work')

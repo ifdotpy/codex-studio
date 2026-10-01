@@ -17,6 +17,35 @@ def clip(text, size):
     return str(text).encode('utf-8')[:size].decode('utf-8', errors='ignore')
 
 
+def remember_context_manifest(db, agent_id, event_id):
+    """Cache only a manifest whose event reached delivered state."""
+    row = db.execute("SELECT e.status,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+                     "WHERE e.id=? AND e.agent=?", (event_id, agent_id)).fetchone()
+    if not row or row[0] != 'delivered':
+        return False
+    try:
+        manifest = json.loads(row[1]).get('contextManifest')
+        epoch = manifest.get('epoch')
+        if not isinstance(epoch, list) or len(epoch) != 2:
+            return False
+        thread_id, compactions = epoch
+        compactions = int(compactions or 0)
+        sequence = int(manifest.get('sequence', 0))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    db.execute("""INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record)
+        VALUES(?,?,?,?,?,?) ON CONFLICT(agent,thread_id,compactions) DO UPDATE SET
+        sequence=excluded.sequence,event_id=excluded.event_id,record=excluded.record
+        WHERE excluded.sequence>=runtime_context_manifests.sequence""",
+        (agent_id, str(thread_id or ''), compactions, sequence, event_id, packed(manifest)))
+    versions = manifest.get('versions')
+    reminder = versions.get('worktreeReminder') if isinstance(versions, dict) else None
+    if reminder:
+        db.execute("INSERT OR IGNORE INTO runtime_context_reminders(agent,version,event_id) VALUES(?,?,?)",
+                   (agent_id, str(reminder), event_id))
+    return True
+
+
 def digest(value):
     return hashlib.sha256(packed(value).encode()).hexdigest()[:24]
 
@@ -148,8 +177,8 @@ class EfficiencyMixin:
                 return self.model_peers_directory(db, actor_id, args, actor)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
-            agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
-            team = [a for a in agents if a['rootId'] == actor['rootId']]
+            # The JSON root index selects this team's rows before decoding them.
+            team = self.team_agents(db, actor['rootId'])
             ids = {a['id'] for a in team}
             terminal_agents = {'completed', 'failed', 'interrupted'}
             terminal_monitors = {'completed', 'failed', 'cancelled', 'lost'}
@@ -162,9 +191,12 @@ class EfficiencyMixin:
                 return {**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
                         'error': clip(m.get('error') or '', 600)}
             active_team = [a for a in team if a['status'] not in terminal_agents]
-            from codex_workspace import active_monitors
             records = [agent_record(a) for a in active_team]
-            records += [monitor_record(m) for m in active_monitors(db) if m['agent'] in ids]
+            if ids:
+                records += [monitor_record(json.loads(row[0])) for row in db.execute(
+                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.agent') IN (" +
+                    ','.join('?' for _ in ids) + ") AND json_extract(record,'$.status') IN (?,?,?)",
+                    (*sorted(ids), 'running', 'starting', 'approval'))]
             records.sort(key=lambda r: (r['kind'], r['id']))
             finished_counts = {'agents': sum(a['status'] in terminal_agents for a in team), 'monitors': 0}
             marks = ','.join('?' for _ in terminal_monitors)
@@ -176,10 +208,23 @@ class EfficiencyMixin:
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
             global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
-            active = [a for a in agents if a.get('inFlight') or a['status'] in {'running', 'starting', 'approval'}]
-            team_active = sum(a['rootId'] == actor['rootId'] for a in active)
+            active_statuses = ('running', 'starting', 'approval')
+            live_agents = "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))"
+            active_by_status = db.execute(
+                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_global_active WHERE " +
+                live_agents + " AND json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0]
+            active_by_flight = db.execute(
+                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_inflight WHERE " + live_agents +
+                " AND json_extract(record,'$.inFlight')=1 "
+                "AND json_extract(record,'$.status') NOT IN (?,?,?)", active_statuses).fetchone()[0]
+            global_active = active_by_status + active_by_flight
+            team_active = sum(bool(a.get('inFlight')) or a['status'] in active_statuses for a in team)
             root = self.agent(actor['rootId'], db)
-            reservations = {str(Path(a['cwd']).resolve()): a['id'] for a in agents if a.get('workspaceOperation')}
+            reservations = {str(Path(cwd).resolve()): key for key, cwd in db.execute(
+                "SELECT id,json_extract(record,'$.cwd') FROM runtime_agents INDEXED BY runtime_agent_reservation_cwd "
+                "WHERE json_type(record,'$.workspaceOperation')='text' "
+                "AND json_extract(record,'$.workspaceOperation')!='' AND "
+                "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))") if cwd}
             queued = []
             for a in team:
                 if a['status'] != 'queued':
@@ -199,14 +244,14 @@ class EfficiencyMixin:
                 blocker = reservations.get(str(Path(a['cwd']).resolve()))
                 if blocker:
                     reasons.append('workspace_operation')
-                if len(active) >= global_limit:
+                if global_active >= global_limit:
                     reasons.append('global_concurrency')
                 if team_active >= a['concurrency']:
                     reasons.append('team_concurrency')
                 queued.append({'id': a['id'], 'reasons': reasons or ['awaiting_dispatch'],
                                **({'blockingAgent': blocker} if blocker else {})})
             capacity = {'teamLimit': root['concurrency'], 'globalLimit': global_limit,
-                        'teamActive': team_active, 'globalActive': len(active),
+                        'teamActive': team_active, 'globalActive': global_active,
                         'maxAgents': root['maxAgents'], 'queued': queued,
                         'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
                                       'minimum': 1, 'maximum': 64}}
@@ -460,8 +505,11 @@ class EfficiencyMixin:
 
     def model_known_context(self, db, actor):
         epoch = [actor.get('threadId'), actor.get('compactions', 0)]
-        row = db.execute("SELECT m.record FROM runtime_event_meta m JOIN runtime_events e ON e.id=m.id WHERE e.agent=? AND e.status='delivered' AND json_extract(m.record,'$.contextManifest') IS NOT NULL ORDER BY coalesce(json_extract(m.record,'$.contextManifest.sequence'),0) DESC, e.created DESC LIMIT 1", (actor['id'],)).fetchone()
-        old = json.loads(row[0]).get('contextManifest', {}) if row else {}
+        latest = db.execute("SELECT record FROM runtime_context_manifests WHERE agent=? "
+                            "ORDER BY sequence DESC LIMIT 1", (actor['id'],)).fetchone()
+        # Empty means unknown. A confirmed event will seed this cache; do not
+        # discover old manifests by scanning delivered history on a cold cache.
+        old = json.loads(latest[0]) if latest else {}
         known = dict(old.get('versions', {})) if old.get('epoch') == epoch else {}
         prepared = actor.get('preparedContext') or {}
         # Native compaction retains developer instructions on the same thread.
@@ -582,9 +630,7 @@ class EfficiencyMixin:
             if len(waiting) >= 3:
                 versions['worktreeReminder'] = digest(waiting)
                 delivered = db.execute(
-                    "SELECT 1 FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
-                    "WHERE e.agent=? AND e.status='delivered' "
-                    "AND json_extract(m.record,'$.contextManifest.versions.worktreeReminder')=? LIMIT 1",
+                    "SELECT 1 FROM runtime_context_reminders WHERE agent=? AND version=?",
                     (actor['id'], versions['worktreeReminder'])).fetchone()
                 if known.get('worktreeReminder') != versions['worktreeReminder'] and not delivered:
                     blocks.append(f'Studio: {len(waiting)} finished workers keep worktrees. '

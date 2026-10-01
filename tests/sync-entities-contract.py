@@ -265,6 +265,7 @@ with tempfile.TemporaryDirectory() as directory:
             kind TEXT, status TEXT, created REAL, error TEXT);
             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);""")
+        ensure_tables(db)
         db.execute("INSERT INTO runtime_agents VALUES ('owner',?)",
                    (json.dumps({"id": "owner", "deletedAt": None}),))
         for index in range(260):
@@ -279,6 +280,17 @@ with tempfile.TemporaryDirectory() as directory:
                        (monitor["id"], json.dumps(monitor)))
             put(db, "monitor", monitor["id"], monitor)
         assert sync_event_window(db) == 60
+        # An unchanged entity checkpoint does not sort the event history again.
+        assert sync_event_window(db) == 0
+        plan = ' '.join(str(row) for row in db.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT 200"))
+        assert 'runtime_event_created_id' in plan, plan
+        changed = {"id":"newest", "agent":"owner", "kind":"message", "status":"pending",
+                   "created": 999, "error":None}
+        db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?)", tuple(changed.values()))
+        put(db, "event", changed["id"], changed)
+        sync_event_window(db)
+        assert sync_event_window(db) == 0
         assert sync_monitor_window(db) == 58
         assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='event' AND deleted=0").fetchone()[0] == 200
         assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchone()[0] == 102

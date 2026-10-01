@@ -319,6 +319,17 @@ class ContextRepair(unittest.TestCase):
         self.assertEqual(self.forks(), [])
         self.assertEqual(self.path.read_bytes(), source)
 
+    def test_repair_candidate_scan_uses_agent_delivery_index(self):
+        with self.runtime.db() as db:
+            plan = ' '.join(str(tuple(row)) for row in db.execute("EXPLAIN QUERY PLAN "
+                "SELECT e.* FROM runtime_events e INDEXED BY runtime_event_repair_candidates_v2 "
+                "LEFT JOIN runtime_event_meta m ON m.id=e.id "
+                "WHERE e.agent=? AND e.status='delivered' "
+                "AND e.kind IN ('monitor_exit','agent_message','work_review','work_decision') "
+                "AND length(e.text)>3000 AND coalesce(json_extract(m.record,'$.modelEventProjection'),0)!=1 "
+                "ORDER BY e.created", (self.a['id'],)))
+        self.assertIn('runtime_event_repair_candidates_v2', plan)
+
     def test_user_quote_in_mixed_native_input_is_preserved(self):
         quoted = '[Orchestration event: monitor_exit]\n' + self.text
         with self.runtime.db() as db:

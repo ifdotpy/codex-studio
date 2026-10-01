@@ -948,6 +948,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          ELSE json_extract(record,'$.accountKey') END);
                 CREATE INDEX IF NOT EXISTS runtime_agent_root ON runtime_agents(
                     json_extract(record,'$.rootId'));
+                CREATE INDEX IF NOT EXISTS runtime_agent_global_active ON runtime_agents(
+                    json_extract(record,'$.status')) WHERE json_extract(record,'$.status') IN
+                    ('running','starting','approval');
+                CREATE INDEX IF NOT EXISTS runtime_agent_inflight ON runtime_agents(
+                    json_extract(record,'$.inFlight')) WHERE json_extract(record,'$.inFlight')=1;
+                CREATE INDEX IF NOT EXISTS runtime_agent_reservation_cwd ON runtime_agents(
+                    json_extract(record,'$.cwd'))
+                    WHERE json_type(record,'$.workspaceOperation')='text'
+                      AND json_extract(record,'$.workspaceOperation')!='';
                 CREATE TABLE IF NOT EXISTS runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_usage_resume_agent ON runtime_usage_resumes(agent);
@@ -958,6 +967,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
                   epoch INTEGER NOT NULL, turn_id TEXT, error TEXT);
                 CREATE INDEX IF NOT EXISTS runtime_event_queue ON runtime_events(status, agent, created);
+                CREATE INDEX IF NOT EXISTS runtime_event_repair_candidates_v2 ON runtime_events(agent,created)
+                  WHERE status='delivered' AND kind IN ('monitor_exit','agent_message','work_review','work_decision');
+                CREATE INDEX IF NOT EXISTS runtime_event_user_turns ON runtime_events(agent,kind,status,turn_id);
+                CREATE TABLE IF NOT EXISTS runtime_context_manifests (
+                  agent TEXT NOT NULL, thread_id TEXT NOT NULL, compactions INTEGER NOT NULL,
+                  sequence INTEGER NOT NULL, event_id TEXT NOT NULL, record TEXT NOT NULL,
+                  PRIMARY KEY(agent,thread_id,compactions));
+                CREATE INDEX IF NOT EXISTS runtime_context_manifest_latest
+                  ON runtime_context_manifests(agent,sequence DESC);
+                CREATE TABLE IF NOT EXISTS runtime_context_reminders (
+                  agent TEXT NOT NULL, version TEXT NOT NULL, event_id TEXT NOT NULL,
+                  PRIMARY KEY(agent,version));
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
@@ -966,6 +987,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
                 CREATE TABLE IF NOT EXISTS runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'));
+                CREATE INDEX IF NOT EXISTS runtime_monitor_agent_status ON runtime_monitors(
+                    json_extract(record,'$.agent'),json_extract(record,'$.status'));
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
@@ -1260,11 +1283,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Match the renderer-facing fields added by snapshot(), so later
         # internal agent writes cannot erase visible source/team details.
         view = dict(record)
-        root = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record.get("rootId"),)).fetchone()
-        root_name = json.loads(root[0]).get("name") if root else "Team"
         block = native_thread_block(record)
         view.update(kind="agent", source="managed", canSend=not bool(block),
-                    launcherAlive=not self.closed, wave="Team: " + root_name,
+                    launcherAlive=not self.closed,
                     nextTurnSettingsSupported=True, readStateSupported=True)
         if block:
             view["nativeThreadBlock"] = block
@@ -3439,9 +3460,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 and a.get("error") == attempt.get("responseError")):
             a["error"] = None
         for event_id in attempt["events"]:
-            db.execute("UPDATE runtime_events SET status='delivered', turn_id=?, error=NULL "
+            delivered = db.execute("UPDATE runtime_events SET status='delivered', turn_id=?, error=NULL "
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
+            if delivered.rowcount:
+                from codex_efficiency import remember_context_manifest
+                remember_context_manifest(db, a["id"], event_id)
             self.sync_chat_delivery(db, event_id, a["id"])
             from codex_agent_management import reviewer_result_delivered
             reviewer_result_delivered(self, db, a["id"], event_id)
@@ -3860,9 +3884,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if (operation and operation["agent"] == a["id"]
                         and self.operation_current(a, operation, epoch=False)
                         and operation["threadId"] == tid and operation["turnId"] == p.get("turnId")):
-                    db.execute("UPDATE runtime_events SET status='delivered',error=NULL WHERE id=? AND agent=? "
+                    delivered = db.execute("UPDATE runtime_events SET status='delivered',error=NULL WHERE id=? AND agent=? "
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
+                    if delivered.rowcount:
+                        from codex_efficiency import remember_context_manifest
+                        remember_context_manifest(db, a["id"], item["clientId"])
                     self.sync_chat_delivery(db, item["clientId"], a["id"])
             stale = bool(p.get("turnId") and p["turnId"] != a.get("turnId"))
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
