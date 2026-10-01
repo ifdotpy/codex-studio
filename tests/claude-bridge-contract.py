@@ -562,7 +562,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 13)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 14)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'replacement'}]}

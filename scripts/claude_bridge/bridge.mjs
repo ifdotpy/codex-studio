@@ -29,6 +29,7 @@ import { createCommandTransport, commandMethods } from "./commands.mjs";
 import { thinkingFlag } from "./thinking.mjs";
 import { createSessionStore } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
+import { listSkills } from "./skills.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
@@ -949,7 +950,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 13 },
+      capabilities: { claudeVersion: 14 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1426,6 +1427,7 @@ async function handle(method, p) {
     await active.q.stopTask(p.taskId);
     return {};
   }
+  if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
 }
 const operations = new Map();
