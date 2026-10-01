@@ -127,14 +127,17 @@ await temporary(async (root) => {
     await store.persist(large);
     const initialSessionBytes = Buffer.byteLength(JSON.stringify(large));
     const journal = path.join(scenarioRoot, "sessions", id + ".jsonl");
-    let appendedBytes = 0, legacyBytes = 0, frameMs = 0;
+    let appendedBytes = 0, legacyBytes = 0, frameCpuMs = 0, frameWallMs = 0;
     let peakRss = process.memoryUsage().rss;
     for (let frame = 0; frame < scenario.frames; frame++) {
       large.turns[0].items.push({ id: `frame-${frame}`, type: "agentMessage", text: `frame ${frame}` });
       const before = frame === 0 ? 0 : (await fs.stat(journal)).size;
+      const cpuStart = process.cpuUsage();
       const started = performance.now();
       await store.persist(large);
-      frameMs += performance.now() - started;
+      const cpuDelta = process.cpuUsage(cpuStart);
+      frameCpuMs += (cpuDelta.user + cpuDelta.system) / 1000;
+      frameWallMs += performance.now() - started;
       const after = (await fs.stat(journal)).size;
       appendedBytes += after - before;
       legacyBytes += Buffer.byteLength(JSON.stringify(large));
@@ -154,7 +157,8 @@ await temporary(async (root) => {
       appendBytes: appendedBytes,
       appendBytesPerFrame: Math.round(appendedBytes / scenario.frames),
       legacyRewriteBytes: legacyBytes,
-      cpuMsPerFrame: Number((frameMs / scenario.frames).toFixed(3)),
+      cpuMsPerFrame: Number((frameCpuMs / scenario.frames).toFixed(3)),
+      wallMsPerFrame: Number((frameWallMs / scenario.frames).toFixed(3)),
       rssBeforeSession: rssBefore,
       rssPeak: peakRss,
       rssBeforeEviction,
