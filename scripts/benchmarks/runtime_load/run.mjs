@@ -198,6 +198,7 @@ let requestFailures = [];
 let consoleErrors = [];
 const httpOutcomes = new HttpOutcomeTracker();
 let responseHandling = Promise.resolve();
+const outstandingSyncPullRequests = new Set();
 let tabInitializationMs = [];
 const tabInitializationDeadlineMs = 15_000;
 const snapshotRecoveryDrainDeadlineMs = 15_000;
@@ -439,6 +440,7 @@ try {
       if (message.type() === "error") consoleErrors.push(message.text());
     });
     page.on("requestfailed", (request) => {
+      outstandingSyncPullRequests.delete(request);
       const failure = request.failure()?.errorText || "unknown";
       const record = {
         url: request.url(),
@@ -449,6 +451,16 @@ try {
       requestFailures.push(record);
       if (!failure.includes("ERR_ABORTED"))
         pageErrors.push(`request failed ${record.url}: ${failure}`);
+    });
+    page.on("request", (request) => {
+      if (
+        request.method() === "GET" &&
+        new URL(request.url()).pathname === "/api/sync/pull"
+      )
+        outstandingSyncPullRequests.add(request);
+    });
+    page.on("requestfinished", (request) => {
+      outstandingSyncPullRequests.delete(request);
     });
     page.on("response", (response) => {
       const status = response.status();
@@ -1042,7 +1054,11 @@ try {
     // Let the latest response classify its status/body before consulting the
     // pending set; otherwise a just-arrived SnapshotDeferred 503 can be missed.
     await responseHandling;
-    if (httpOutcomes.unrecoveredSnapshotReads().length === 0) break;
+    if (
+      httpOutcomes.unrecoveredSnapshotReads().length === 0 &&
+      outstandingSyncPullRequests.size === 0
+    )
+      break;
     const remainingMs =
       snapshotRecoveryDrainDeadlineMs -
       (Date.now() - snapshotRecoveryDrainStarted);
@@ -1069,6 +1085,12 @@ try {
   browserReport.snapshotRecoveryDrainMs = snapshotRecoveryDrainMs;
   browserReport.snapshotRecoveryDrainDeadlineMs =
     snapshotRecoveryDrainDeadlineMs;
+  browserReport.outstandingSyncPullRequestsAtDrainEnd =
+    outstandingSyncPullRequests.size;
+  if (outstandingSyncPullRequests.size > 0)
+    pageErrors.push(
+      `${outstandingSyncPullRequests.size} sync pull request(s) remained in flight after the recovery drain`,
+    );
   for (const attempt of httpOutcomes.unrecoveredSnapshotReads())
     pageErrors.push(
       `unrecovered retryable snapshot HTTP 503 in tab ${attempt.tab} scope=${attempt.scope} after=${new URL(attempt.url).searchParams.get("after")}`,
