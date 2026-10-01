@@ -2827,6 +2827,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "contextVersions": context_versions,
                              "toolCatalog": params.get("dynamicTools"),
                              "future": concurrent.futures.Future()}
+                release = latest.get("nativeRelease") or {}
+                if (release.get("phase") == "released" and release.get("threadId") == latest.get("threadId")
+                        and release.get("connectionId") == operation["connectionId"]
+                        and not release.get("closedAt")):
+                    operation["nativeReleaseId"] = release.get("id")
                 latest["prepareAttempt"] = operation["id"]
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
@@ -3944,7 +3949,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 preparation = self.preparations.get(a["id"])
                 if (preparation and preparation.get("connectionId") == connection_id
                         and preparation.get("threadId") == tid):
-                    preparation["unloaded"] = True
+                    # The unsubscribe event can arrive after a new resume starts.
+                    # Consume that close against the release it belongs to, rather
+                    # than invalidating the newer preparation.
+                    release_id = (a.get("nativeRelease") or {}).get("id")
+                    if not (preparation.get("nativeReleaseId")
+                            and preparation.get("nativeReleaseId") == release_id):
+                        preparation["unloaded"] = True
                 if a.get("inFlight") and not safety_retry_active(a):
                     self.queue_turn_recovery([a], force_id=a["id"])
                 return

@@ -2,6 +2,7 @@
 
 import threading
 import time
+import uuid
 from datetime import datetime
 
 
@@ -103,7 +104,7 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
             server = rt.servers.get(account)
             if server is None:
                 return {"status": "blocked", "reason": "owning account is offline"}
-            release = {"phase": "checking", "threadId": identity[1], "accountKey": account,
+            release = {"id": uuid.uuid4().hex, "phase": "checking", "threadId": identity[1], "accountKey": account,
                        "connectionId": identity[3], "at": now}
             if reason is not None:
                 release.update(resetReason=reason, resetBy=actor_id, resetPending=True)

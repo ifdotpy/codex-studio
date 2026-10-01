@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_agent_management import manage_agent
 from codex_native_release import IDLE_SECONDS, release_agent, tick
 from codex_native_sweep import sweep
-from codex_runtime import Runtime
+from codex_runtime import PreparationPending, Runtime
 
 spec = importlib.util.spec_from_file_location("runtime_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -128,6 +128,83 @@ class NativeReleaseContract(unittest.TestCase):
         self.rt.send(lead["id"], "Continue", "release-resume")
         fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
         fixture.eventually(lambda: self.rt.agent(lead["id"]).get("nativeRelease", {}).get("phase") == "resumed")
+
+    def test_delayed_release_close_does_not_fail_new_preparation(self):
+        lead = self.lead()
+        self.age(lead, IDLE_SECONDS + 60)
+        self.assertEqual(release_agent(self.rt, lead["id"])["status"], "released")
+
+        resume = concurrent.futures.Future()
+        original_submit = self.rt.server.submit
+
+        def submit(method, params):
+            if method == "thread/resume":
+                self.rt.server.calls.append((method, params))
+                return resume
+            return original_submit(method, params)
+
+        self.rt.server.submit = submit
+        self.rt.send(lead["id"], "Continue after release", "release-race")
+        self.rt.dispatch()
+        fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
+        operation = self.rt.preparations[lead["id"]]
+        current = self.rt.agent(lead["id"])
+        self.assertTrue(self.rt.operation_current(current, operation))
+        self.assertEqual(current["prepareAttempt"], operation["id"])
+        self.assertEqual(current["nativeRelease"]["phase"], "released")
+
+        # The unsubscribe's close notification can arrive after resume starts.
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": lead["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(lead["id"]).get("nativeRelease", {}).get("closedAt"))
+        self.assertFalse(operation.get("unloaded"))
+        self.assertFalse(self.rt.agent(lead["id"])["startAttempt"]["submitted"])
+        self.assertFalse(any(method == "turn/start" and params.get("clientUserMessageId") == "release-race"
+                             for method, params in self.rt.server.calls))
+        resume.set_result({"thread": {"id": lead["threadId"]}, "model": lead["model"],
+                           "sandbox": {"type": "readOnly"}, "approvalPolicy": "on-request"})
+
+        fixture.eventually(lambda: self.rt.delivery_receipt("release-race")["status"] == "delivered")
+        self.assertEqual(self.rt.agent(lead["id"])["status"], "running")
+        self.assertTrue(self.rt.agent(lead["id"])["startAttempt"]["submitted"])
+        submitted = [params for method, params in self.rt.server.calls
+                     if method == "turn/start" and params.get("clientUserMessageId") == "release-race"]
+        self.assertEqual(len(submitted), 1)
+
+    def test_release_starting_during_preparation_is_blocked(self):
+        lead = self.lead()
+        self.rt._native_release_last_scan = time.time()
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(lead["id"], db)
+            current["nativeRelease"] = {"id": "prior-release", "phase": "released",
+                "threadId": current["threadId"], "accountKey": "default",
+                "connectionId": self.rt.connection_ids["default"]}
+            self.rt.put(db, "agents", current)
+            self.rt.loaded.discard(lead["id"])
+        self.rt.preparation_wait_seconds = 0.05
+        resume = concurrent.futures.Future()
+        original_submit = self.rt.server.submit
+
+        def submit(method, params):
+            if method == "thread/resume":
+                self.rt.server.calls.append((method, params))
+                return resume
+            return original_submit(method, params)
+
+        self.rt.server.submit = submit
+        with self.assertRaises(PreparationPending):
+            self.rt.prepare(self.rt.agent(lead["id"]))
+        fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
+
+        result = release_agent(self.rt, lead["id"], reason="prepare race")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reason"], "thread preparation")
+        self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
+
+        resume.set_result({"thread": {"id": lead["threadId"]}, "model": lead["model"],
+                           "sandbox": {"type": "readOnly"}, "approvalPolicy": "on-request"})
+        self.rt.send(lead["id"], "Continue while release checks", "prepare-release-race")
+        self.rt.dispatch()
+        fixture.eventually(lambda: self.rt.delivery_receipt("prepare-release-race")["status"] == "delivered")
 
     def test_tick_limits_native_release_requests(self):
         leads = [self.lead() for _ in range(3)]
