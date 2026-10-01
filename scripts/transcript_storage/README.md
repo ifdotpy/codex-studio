@@ -47,5 +47,8 @@ PYTHONPATH=scripts python3 scripts/transcript_storage/benchmarks/benchmark.py
 ```
 
 The benchmark uses synthetic text and the same production persistence/index
-functions. It reports p50, p95, p99, and index-write counts. Its timings describe
-the local SQLite environment, not a live user's database.
+functions. It reports p50, p95, p99, and index-write counts for a burst microcase
+and a continuous stream with scheduler ticks every 0.5 seconds. The latter checks
+that FTS catches up within the 2 second checkpoint delay plus one scheduler
+interval. Timing uses in-memory SQLite: it describes neither durable filesystem
+cost nor end-to-end application latency, and it is not a live user's database.

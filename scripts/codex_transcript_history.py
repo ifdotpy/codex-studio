@@ -59,6 +59,8 @@ def search_history(runtime, agent, query, limit=100):
             if entries is not None:
                 for index, entry in enumerate(entries):
                     event = db.execute('SELECT text FROM runtime_events WHERE id=? AND agent=?', (entry.get('id'), agent)).fetchone()
+                    if event is None and entry.get('truncated'):
+                        raise ValueError('The full transcript input is unavailable')
                     candidates.append({**item, **entry, 'id': agent + ':' + entry['id'] if entry.get('id') else item['id'] + ':' + str(index), 'sourceId': item['id'], 'clientMessageId': entry.get('id'), 'role': 'user' if entry.get('kind') == 'user' else item['role'], 'text': event[0] if event else entry.get('text', '')})
             else:
                 # The selected runtime_items row is already agent scoped. Avoid
@@ -90,6 +92,8 @@ def history_item(runtime, agent, identity):
                 if identity != display_id:
                     continue
                 event = db.execute('SELECT text FROM runtime_events WHERE id=? AND agent=?', (entry.get('id'), agent)).fetchone()
+                if event is None and entry.get('truncated'):
+                    raise ValueError('The full transcript input is unavailable')
                 return {**item, **entry, 'id': display_id, 'sourceId': item['id'], 'agent': agent,
                     'role': 'user' if entry.get('kind') == 'user' else item['role'],
                     'text': event[0] if event else entry.get('text', ''),

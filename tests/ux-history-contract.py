@@ -83,6 +83,18 @@ class HistoryContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
             history_item(self.runtime,lead['id'],identity)
 
+    def test_missing_truncated_input_event_fails_visibly_for_search_and_item(self):
+        lead = self.lead()
+        identity = lead['id'] + ':missing-input-event'
+        with self.runtime.lock,self.runtime.db() as db:
+            self.runtime.item(db,lead['id'],'missing-input-event','user','combined',inputs=[
+                {'id':'missing-original-event','kind':'user','text':'x' * 25000}
+            ])
+        with self.assertRaisesRegex(ValueError,'full transcript input is unavailable'):
+            search_history(self.runtime,lead['id'],'not present')
+        with self.assertRaisesRegex(ValueError,'full transcript input is unavailable'):
+            history_item(self.runtime,lead['id'],lead['id'] + ':missing-original-event')
+
     def test_full_search_and_expanded_input_identity(self):
         lead = self.seed()
         with self.runtime.lock,self.runtime.db() as db:
