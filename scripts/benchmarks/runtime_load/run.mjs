@@ -426,7 +426,7 @@ try {
     );
     await page.goto(ready.origin, {
       waitUntil: "domcontentloaded",
-      timeout: 25_000,
+      timeout: check ? 25_000 : 60_000,
     });
     try {
       await page.waitForFunction(
@@ -484,7 +484,7 @@ try {
     pages.map(async (page, index) => {
       const witness = ready.witnesses[index];
       const marker = result.witnessMarkerByAgent[witness.agentId];
-      const offeredAt = result.witnessOfferedAtEpochMs[marker];
+      const offeredAt = result.finalWitnessOfferedAtEpochMs[marker];
       assert(
         marker && offeredAt != null,
         `missing offered witness for tab ${index + 1}`,
@@ -530,7 +530,7 @@ try {
           firstSeen: window.__bench.witnessFirstSeen[expected] || null,
           renderedAtEpochMs:
             window.__bench.witnessFirstSeen[expected]?.epochMs || null,
-          offerToRenderedMs:
+          finalOfferToFirstDOMAppearanceMs:
             window.__bench.witnessFirstSeen[expected] && offered != null
               ? window.__bench.witnessFirstSeen[expected].epochMs - offered
               : null,
@@ -735,9 +735,9 @@ try {
   );
   assert(
     witnessLatency.every(
-      (item) => item.firstSeen && item.offerToRenderedMs >= 0,
+      (item) => item.firstSeen && item.finalOfferToFirstDOMAppearanceMs >= 0,
     ),
-    "each phase-specific marker must first appear in the DOM after it was offered",
+    "each final-only phase marker must first appear in the DOM after final offer",
   );
   assert(
     result.exactlyOnce.consumedRuntimeEvents >=

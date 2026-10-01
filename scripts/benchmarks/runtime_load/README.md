@@ -47,6 +47,8 @@ The report records the backend source revision and digest, frontend source revis
 
 Reports default to `$XDG_STATE_HOME/evidence/latency-components` or `~/.local/state/evidence/latency-components`. Never point the fixture at an existing state directory.
 
+Each representative tab tracks a phase-specific witness that appears only in the completed assistant item, not its streaming deltas. `finalOfferToFirstDOMAppearanceMs` measures elapsed time from offering that final item until the browser first observes the marker under `#messages`.
+
 ## Reading results
 
 `offered` and `dispatched` describe callback identities admitted and consumed by production `AppServer.callbacks`. Eight assistant fragments may merge into a single callback; their identities are preserved in the production fragment sample list and counted individually. A passing run has equal unique identities, a drained callback queue, every chat and child-result event acknowledged by its original ID, no pending synthetic Runtime events, and one rendered witness per team tab.

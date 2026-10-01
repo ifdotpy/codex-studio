@@ -51,6 +51,14 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
                  for round_index in range(2)}
         self.assertEqual(len(marks), 8)
 
+    def test_final_render_witness_is_absent_from_stream_deltas(self):
+        marker = module.witness_marker("abcdefgh-0", "drain", 0)
+        stream_text, final_text = module.assistant_witness_text(
+            "drain", marker, "Load 01/01", 0
+        )
+        self.assertNotIn(marker, stream_text)
+        self.assertIn(marker, final_text)
+
     def test_delivery_receipt_preserves_exact_runtime_event_id(self):
         receipt = module.delivery_receipt("event-17", "thread-3", "turn-9")
         self.assertEqual(receipt["params"]["item"]["clientId"], "event-17")

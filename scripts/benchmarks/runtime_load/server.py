@@ -130,6 +130,15 @@ def witness_marker(agent_id, phase, round_index):
     return f"witness-{agent_id[:8]}-{phase}-r{round_index}"
 
 
+def assistant_witness_text(phase, marker, agent_name, round_index):
+    """Keep the render witness out of deltas; observe final-item display."""
+    stream_text = (
+        f"{phase} synthetic answer from {agent_name} round {round_index} "
+        + ("streamed answer content " * 100)
+    )
+    return stream_text, f"{stream_text} {marker}"
+
+
 _lock_context = threading.local()
 
 
@@ -290,7 +299,7 @@ def main():
     callback_samples = 0
     callback_count = 0
     callback_done = threading.Condition()
-    witness_offered_at = {}
+    final_witness_offered_at = {}
     delta_identities = {}
     account_count = max(1, int(os.environ.get("BENCH_ACCOUNT_COUNT", "2")))
     account_keys = [f"bench-{i + 1:02}" for i in range(account_count)]
@@ -534,7 +543,9 @@ def main():
                     turn_id = f"bench-turn-{phase}-{local_round}-{agent['id']}"
                     item_id = f"bench-item-{phase}-{local_round}-{agent['id']}"
                     marker = witness_marker(agent["id"], phase, local_round)
-                    text = f"{phase} synthetic answer {marker} from {agent['name']} round {local_round} " + ("streamed answer content " * 100)
+                    stream_text, final_text = assistant_witness_text(
+                        phase, marker, agent["name"], local_round
+                    )
                     witness_markers[agent["id"]] = marker
                     team_number = i % len(workers) // workers_per_team
                     process = fake_processes[team_number % len(fake_processes)]
@@ -543,17 +554,17 @@ def main():
                         ("hookLifecycle", "hook/started", {"turnId": turn_id, "run": {"id": item_id + "-hook", "eventName": "AfterAgentTurn", "status": "running", "entries": [{"kind": "context", "text": "synthetic hook context"}]}}),
                         ("toolStatus", "item/started", {"turnId": turn_id, "item": {"id": item_id + "-tool", "type": "commandExecution", "command": "[synthetic tool]"}}),
                         ("toolOutput", "item/completed", {"turnId": turn_id, "item": {"id": item_id + "-tool", "type": "commandExecution", "aggregatedOutput": "synthetic tool output\n" * 64, "exitCode": 0}}),
-                        ("assistantFinal", "item/completed", {"threadId": agent["threadId"], "turnId": turn_id, "item": {"id": item_id, "type": "agentMessage", "text": text, "phase": "final_answer"}}),
+                        ("assistantFinal", "item/completed", {"threadId": agent["threadId"], "turnId": turn_id, "item": {"id": item_id, "type": "agentMessage", "text": final_text, "phase": "final_answer"}}),
                         ("hookLifecycle", "hook/completed", {"turnId": turn_id, "run": {"id": item_id + "-hook", "eventName": "AfterAgentTurn", "status": "completed", "entries": [{"kind": "context", "text": "synthetic hook context"}, {"kind": "warning", "text": "synthetic hook warning"}]}}),
                         ("turnLifecycle", "turn/completed", {"threadId": agent["threadId"], "turnId": turn_id, "turn": {"id": turn_id, "status": "completed"}}),
                     ]
                     for kind, method, params in sequence:
                         if method == "item/completed" and params.get("item", {}).get("type") == "agentMessage":
                             for fragment in range(8):
-                                fragment_text = text[fragment * 256:(fragment + 1) * 256]
+                                fragment_text = stream_text[fragment * 256:(fragment + 1) * 256]
                                 delta_key = f"evt:{phase}:{local_round}:{agent['id']}:delta:{fragment}"
                                 offer("assistantDelta", delta_key, process, {"method": "item/agentMessage/delta", "params": {"threadId": agent["threadId"], "turnId": turn_id, "itemId": item_id, "delta": fragment_text}})
-                            witness_offered_at[marker] = time.time() * 1000
+                            final_witness_offered_at[marker] = time.time() * 1000
                         key = f"evt:{phase}:{local_round}:{agent['id']}:{method}:{params.get('itemId') or params.get('item', {}).get('id') or (params.get('run') or {}).get('id', '')}"
                         offer(kind, key, process, {"method": method, "params": {"threadId": agent["threadId"], **params}})
                     # Durable event APIs write worker→worker and worker→lead messages.
@@ -665,7 +676,7 @@ def main():
                       "phaseOfferedTurnLatenessMs": {phase: stats(values) for phase, values in turn_lateness_ms.items()},
                       "phaseAchievedOfferedTurnsPerSecond": phase_effective_rate,
                       "witnessMarkerByAgent": witness_markers,
-                      "witnessOfferedAtEpochMs": witness_offered_at,
+                      "finalWitnessOfferedAtEpochMs": final_witness_offered_at,
                       "httpServerLatencyMs": {route: stats(values) for route, values in http_latencies.items()},
                       "httpServerErrors": http_errors,
                       "callbackInvocationCount": callback_count,
