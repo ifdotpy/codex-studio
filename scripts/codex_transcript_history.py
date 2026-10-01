@@ -45,9 +45,10 @@ def search_history(runtime, agent, query, limit=100):
     results = []
     with runtime.lock, runtime.db() as db:
         runtime.checked_actor(db, agent)
-        from transcript_storage.storage import backfill_addresses, backfill_items, body as transcript_body, drain, has_pending
+        from transcript_storage.storage import backfill_addresses, backfill_items, backfill_partials, body as transcript_body, drain, has_pending
         backfill_addresses(db)
         backfill_items(db)
+        backfill_partials(db)
         drain(db, force=True)
         db.commit()
         if has_pending(db, [agent]):

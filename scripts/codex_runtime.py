@@ -2399,11 +2399,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_tick()
                 self.usage_resume_tick()
                 self.dispatch()
-                from transcript_storage.storage import backfill_addresses, backfill_items, drain
+                from transcript_storage.storage import backfill_addresses, backfill_items, backfill_partials, drain
                 with self.lock, self.db() as db:
                     drain(db)
                     backfill_addresses(db)
                     backfill_items(db)
+                    backfill_partials(db)
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
                 try:

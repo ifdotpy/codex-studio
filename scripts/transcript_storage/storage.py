@@ -39,10 +39,15 @@ def initialize(db):
             singleton INTEGER PRIMARY KEY CHECK(singleton=1), rowid INTEGER NOT NULL,
             done INTEGER NOT NULL DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS runtime_search_partial_cursor (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), rowid INTEGER NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0
+        );
     """)
     db.execute("INSERT OR IGNORE INTO runtime_search_address_cursor(singleton,rowid,done) VALUES (1,0,?)",
                (int(prior_address_map),))
     db.execute("INSERT OR IGNORE INTO runtime_search_item_cursor(singleton,rowid,done) VALUES (1,0,0)")
+    db.execute("INSERT OR IGNORE INTO runtime_search_partial_cursor(singleton,rowid,done) VALUES (1,0,0)")
 
 
 def persist(db, key, agent, kind, body, *, streaming=False, now=None):
@@ -181,7 +186,8 @@ def has_pending(db, agents=None):
         params.extend(agents)
     if db.execute(
         "SELECT 1 FROM runtime_search_address_cursor WHERE singleton=1 AND done=0 "
-        "UNION ALL SELECT 1 FROM runtime_search_item_cursor WHERE singleton=1 AND done=0 LIMIT 1"
+        "UNION ALL SELECT 1 FROM runtime_search_item_cursor WHERE singleton=1 AND done=0 "
+        "UNION ALL SELECT 1 FROM runtime_search_partial_cursor WHERE singleton=1 AND done=0 LIMIT 1"
     ).fetchone():
         return True
     return db.execute(
@@ -273,6 +279,39 @@ def backfill_items(db, limit=ITEM_BACKFILL_BATCH_SIZE):
         db.execute("UPDATE runtime_search_item_cursor SET rowid=?,done=? WHERE singleton=1", (rows[-1][0], done))
     else:
         db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
+    return len(rows)
+
+
+def backfill_partials(db, limit=ITEM_BACKFILL_BATCH_SIZE):
+    """Classify truncated legacy rows even when an older item cursor is complete."""
+    address_state = db.execute("SELECT done FROM runtime_search_address_cursor WHERE singleton=1").fetchone()
+    if address_state is not None and not address_state[0]:
+        return 0
+    state = db.execute("SELECT rowid,done FROM runtime_search_partial_cursor WHERE singleton=1").fetchone()
+    if state is None or state[1]:
+        return 0
+    limit = max(1, int(limit))
+    rows = db.execute("SELECT rowid,id,record FROM runtime_items WHERE rowid>? ORDER BY rowid LIMIT ?",
+                      (state[0], limit)).fetchall()
+    import json
+    for row in rows:
+        record = json.loads(row[2])
+        if not record.get("truncated"):
+            continue
+        complete = db.execute("SELECT body FROM runtime_item_bodies WHERE id=?", (row[1],)).fetchone()
+        if complete is not None:
+            continue
+        address = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (row[1],)).fetchone()
+        legacy = db.execute("SELECT body FROM runtime_search WHERE rowid=?", (address[0],)).fetchone() if address else None
+        excerpt = record.get("text", "")
+        if legacy is None or legacy[0] == excerpt:
+            db.execute("INSERT OR IGNORE INTO runtime_search_partial VALUES (?)", (row[1],))
+    if rows:
+        done = int(len(rows) < limit)
+        db.execute("UPDATE runtime_search_partial_cursor SET rowid=?,done=? WHERE singleton=1",
+                   (rows[-1][0], done))
+    else:
+        db.execute("UPDATE runtime_search_partial_cursor SET done=1 WHERE singleton=1")
     return len(rows)
 
 

@@ -400,14 +400,16 @@ class WorkMixin:
                 if not a.get("deletedAt")
                 and (not caller or a["rootId"] == caller["rootId"])
             }
-            from transcript_storage.storage import backfill_addresses, backfill_items, drain, has_partial, has_pending
+            from transcript_storage.storage import backfill_addresses, backfill_items, backfill_partials, drain, has_partial, has_pending
             backfill_addresses(db)
             backfill_items(db)
+            backfill_partials(db)
             drain(db, force=True)
             db.commit()
             if has_pending(db, allowed):
                 raise ValueError("Transcript search is indexing. Retry shortly.")
-            if has_partial(db, allowed):
+            transcript_scope = [caller["id"]] if caller else allowed
+            if has_partial(db, transcript_scope):
                 raise ValueError("Some legacy transcript text is unavailable; search may be incomplete.")
             found = []
             for row in db.execute(

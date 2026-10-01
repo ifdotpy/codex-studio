@@ -19,8 +19,9 @@ checkpoint deadline, so a long stream is indexed periodically instead of
 postponing work forever. A completed native item writes its full text over the
 streamed prefix under the same item ID and refreshes FTS synchronously.
 
-The scheduler drains due markers, maps legacy FTS row addresses, and repairs
-legacy items that have no search row in small rowid batches. Startup only
+The scheduler drains due markers, maps legacy FTS row addresses, repairs legacy
+items that have no search row, and classifies truncated rows whose earlier
+index migration already finished, all in small rowid batches. Startup only
 creates tables and cursors; it does not scan old conversations. A truncated
 legacy excerpt without a recoverable full body is marked partial and full-body
 readers report that it is unavailable; scoped work search also reports an
