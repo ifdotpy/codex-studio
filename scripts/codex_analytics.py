@@ -240,6 +240,7 @@ class AnalyticsMixin:
     def analytics_init(self, db):
         db.executescript('''
           CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS analytics_turns (
             id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, at REAL NOT NULL, record TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS analytics_turns_scope ON analytics_turns(agent,at);
@@ -254,6 +255,7 @@ class AnalyticsMixin:
             agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT, at REAL NOT NULL, record TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS analytics_usage_scope ON analytics_usage(agent,at);
           CREATE INDEX IF NOT EXISTS analytics_usage_team ON analytics_usage(root,at);
+          CREATE INDEX IF NOT EXISTS analytics_usage_root_seq ON analytics_usage(root,seq);
           CREATE INDEX IF NOT EXISTS analytics_usage_response ON analytics_usage(agent,thread,json_extract(record,'$.responseId'));
           CREATE INDEX IF NOT EXISTS analytics_usage_thread ON analytics_usage(agent,thread,seq);
           CREATE INDEX IF NOT EXISTS analytics_usage_migration ON analytics_usage(agent,seq);
@@ -344,6 +346,8 @@ class AnalyticsMixin:
             generation = db.execute("SELECT value FROM analytics_meta WHERE key='usageGeneration'").fetchone()
             generation = int(generation[0]) + 1 if generation else 1
             db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(generation),))
+            db.execute("INSERT INTO analytics_usage_roots(root,generation) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",
+                       (meta['rootId'],))
             if turn:
                 turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
                 known = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
