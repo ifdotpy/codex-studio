@@ -39,6 +39,7 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
+from codex_startup_memory import mark as startup_memory_mark
 from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, consume_native_notification, advance_native_status, notice, error_message, account_notices, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
@@ -887,6 +888,7 @@ class AppServer:
 
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
+        startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -937,8 +939,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.coordination_pool.shutdown(wait=False)
             self.recovery_pool.shutdown(wait=False)
             raise
+        startup_memory_mark("runtime-init-accounts")
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
+            startup_memory_mark("migrations-indexes-start")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -1002,11 +1006,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   created REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
+            startup_memory_mark("runtime-core-schema-indexes")
             from codex_sync_entities import (ensure_tables as ensure_sync_entity_tables,
                                              install_bypass_triggers, register_functions)
             register_functions(db)
             ensure_sync_entity_tables(db)
             install_bypass_triggers(db)
+            startup_memory_mark("entity-schema-indexes")
             from codex_sync_entities import retire_closed_requests
             retire_closed_requests(db)
             db.execute(
@@ -1048,19 +1054,29 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         continue
                     r["status"] = "expired"
                     self.put(db, "requests", r)
+            startup_memory_mark("restart-recovery")
             self.analytics_init(db)
             self.analytics_history_init(db)
+            startup_memory_mark("analytics-schema")
             self.setup_work(db)
+            startup_memory_mark("work-setup")
             self.setup_tool_requests(db)
+            startup_memory_mark("tool-request-recovery")
             from codex_user_messages import migrate
             migrate(self, db)
             from codex_state_cleanup import remove_review_assignments
             remove_review_assignments(self, db)
+            startup_memory_mark("review-assignment-cleanup")
             self.setup_workspace(db)
+            startup_memory_mark("workspace-setup")
             self.setup_rules(db)
+            startup_memory_mark("rules-setup")
             from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
             monitor_recovery = recover_monitor_results(self, db)
+            startup_memory_mark("monitor-result-file-recovery")
             self.recover_monitor_receipts(db)
+            startup_memory_mark("monitor-receipt-recovery")
+        startup_memory_mark("runtime-migrations-complete")
         for key in monitor_recovery["acknowledge"]:
             try:
                 acknowledge_monitor_result(self.root, key)
@@ -1072,6 +1088,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         os.chmod(self.db_path, 0o600)
         self.scheduler = threading.Thread(target=self.schedule, daemon=True)
         self.scheduler.start()
+        startup_memory_mark("runtime-init-complete")
         if server_factory is AppServer:
             self.analytics_history_start()
 
@@ -1469,6 +1486,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             # Existing fixtures implement the original four-argument factory.
                             server = self.factory(root, *callbacks)
                         self.servers[account_key] = server
+                        startup_memory_mark("account-server-start:" + account_key)
                         if account_key == "default":
                             self.server = server
                     return server
@@ -2579,6 +2597,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return params
 
     def prepare(self, a, timing=None):
+        startup_memory_mark("runtime-prepare-start")
         if timing is None:
             timing = getattr(self.__dict__.setdefault("_delivery_timing", threading.local()),
                              "current", None)
@@ -2650,6 +2669,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("accountTransferId") and not a.get("inFlight") and not a.get("lazyAccountTransfer"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
         server = self.connect(a.get("accountKey", "default"))
+        startup_memory_mark("prepare-connected")
         from codex_native_release import reconcile_unknown
         reconcile_unknown(self, a)
         if timing is not None:
@@ -2839,6 +2859,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     completion.set_exception(error)
 
     def schedule(self):
+        first_tick = True
         while not self.closed:
             self.changed.wait(1)
             self.changed.clear()
@@ -2849,6 +2870,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_tick()
                 self.usage_resume_tick()
                 self.dispatch()
+                if first_tick:
+                    startup_memory_mark("scheduler-first-tick")
+                    first_tick = False
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
                 try:
@@ -5377,7 +5401,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def recover_monitor_receipts(self, db, *, wake=False, keys=None):
         """Restore terminal history without replaying commands or old work."""
-        query = """SELECT m.record, a.record FROM runtime_monitors m
+        query = """SELECT m.id, m.record, a.record FROM runtime_monitors m
             JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
             LEFT JOIN runtime_events e ON e.id='monitor:' || m.id
             WHERE e.id IS NULL AND json_extract(m.record,'$.status')
@@ -5388,14 +5412,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return []
             query += " AND m.id IN (" + ",".join("?" for _ in keys) + ")"
             params = tuple(keys)
+        # Snapshot identities only before writes change the joined event set.
+        # Payload pages stay small even when many monitors share large agents.
+        identities = [row[0] for row in db.execute(
+            query.replace("SELECT m.id, m.record, a.record", "SELECT m.id"), params
+        )]
         restored = []
-        for row in db.execute(query, params).fetchall():
-            m, a = json.loads(row[0]), json.loads(row[1])
-            if self._monitor_exit_event(db, a, m, wake=wake):
-                restored.append(m["id"])
-                if isinstance(m.get("finished"), (int, float)):
-                    db.execute("UPDATE runtime_events SET created=? WHERE id=?",
-                               (m["finished"], "monitor:" + m["id"]))
+        for offset in range(0, len(identities), 32):
+            batch = identities[offset:offset + 32]
+            placeholders = ",".join("?" for _ in batch)
+            rows = db.execute(query + " AND m.id IN (" + placeholders + ")",
+                              (*params, *batch)).fetchall()
+            for identity, monitor_record, agent_record in rows:
+                m, a = json.loads(monitor_record), json.loads(agent_record)
+                if self._monitor_exit_event(db, a, m, wake=wake):
+                    restored.append(m["id"])
+                    if isinstance(m.get("finished"), (int, float)):
+                        db.execute("UPDATE runtime_events SET created=? WHERE id=?",
+                                   (m["finished"], "monitor:" + m["id"]))
         return restored
 
     def enqueue_recovery_event(self, db, a, kind, text, key):

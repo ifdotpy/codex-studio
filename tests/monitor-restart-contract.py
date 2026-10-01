@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tracemalloc
 import unittest
 from unittest.mock import patch
 
@@ -222,6 +223,31 @@ class MonitorRestart(unittest.TestCase):
                     if state == 'replaced':
                         self.assertNotIn('lastExitCode', current)
                 self.assertEqual(self.record(monitor['id'])['exitCode'], 0)
+
+    def test_terminal_receipt_recovery_streams_joined_agent_records(self):
+        actor = self.runtime.agent(self.agent['id'])
+        actor['memoryContractPayload'] = 'x' * (96 * 1024)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'agents', actor)
+            for index in range(80):
+                key = f'memory-contract-{index}'
+                self.runtime.put(db, 'monitors', {
+                    'id': key, 'agent': actor['id'], 'epoch': actor['epoch'],
+                    'status': 'completed', 'exitCode': 0, 'finished': time.time(),
+                    'command': 'memory contract', 'tail': '', 'log': '', 'bytes': 0,
+                })
+
+        tracemalloc.start()
+        try:
+            with self.runtime.lock, self.runtime.db() as db:
+                self.runtime.recover_monitor_receipts(db)
+                count = db.execute("SELECT count(*) FROM runtime_events WHERE id LIKE 'monitor:memory-contract-%'").fetchone()[0]
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(count, 80)
+        self.assertLess(peak, 8 * 1024 * 1024,
+                        f'recovery materialized joined agent records: {peak} bytes')
 
 
 if __name__ == '__main__':

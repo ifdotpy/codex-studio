@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 import zlib
+from codex_startup_memory import mark as startup_memory_mark
 
 SCOPE_STRIPES = 64
 # Windows pull state together after each RESYNC. Without a write in between,
@@ -237,7 +238,9 @@ class SyncStore:
                                                  sync_event_window, sync_monitor_window)
                 with self.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
+                    startup_memory_mark("first-renderer-sync-pull")
                     seed(db, self.chat_snapshot or self.snapshot)
+                    startup_memory_mark("entity-seed")
                     # Retire old task DTOs gradually so an existing client checkpoint
                     # can consume the resulting tombstones through ordinary deltas.
                     sync_task_window(db)
