@@ -91,10 +91,11 @@ try {
   const renderedIds = await chats
     .locator("[data-message]")
     .evaluateAll((nodes) => nodes.map((node) => node.dataset.message));
-  assert.deepEqual(
-    renderedIds,
-    roomData.messages.map((message) => message.id),
-  );
+  // Room history is virtualized: the mounted messages are the newest
+  // contiguous part of the page, in server order.
+  const pageIds = roomData.messages.map((message) => message.id);
+  assert.ok(renderedIds.length > 0);
+  assert.deepEqual(renderedIds, pageIds.slice(-renderedIds.length));
   await chats.getByRole("textbox", { name: "Search chats" }).fill("");
   await chats.locator('[data-room="you"]').click();
   assert.equal(await chats.locator(".team-message").count(), 0);
