@@ -3,6 +3,7 @@ from pathlib import Path, PurePosixPath
 
 
 _EXCLUDED_DIRS = {"tests", "benchmarks", "__pycache__", "vendor", "venv"}
+_NODE_CRYPTO_HELPER = "codex_federation_crypto.mjs"
 
 
 def _safe_relative(path, root):
@@ -40,7 +41,7 @@ def source_files(scripts):
             if child.name in _EXCLUDED_DIRS:
                 continue
             if child.is_symlink():
-                if child.suffix == ".py" or child.is_dir():
+                if child.suffix == ".py" or child.name == _NODE_CRYPTO_HELPER or child.is_dir():
                     raise ValueError("Backend source must not be a symlink: " + _safe_relative(child, root))
                 continue
             if child.is_file() and child.suffix == ".py":
@@ -57,10 +58,10 @@ def source_files(scripts):
         if path.name in _EXCLUDED_DIRS:
             continue
         if path.is_symlink():
-            if path.suffix == ".py" or path.is_dir():
+            if path.suffix == ".py" or path.name == _NODE_CRYPTO_HELPER or path.is_dir():
                 raise ValueError("Backend source must not be a symlink: " + _safe_relative(path, root))
             continue
-        if path.is_file() and (path.suffix == ".py" or path.name == "codex-canvas"):
+        if path.is_file() and (path.suffix == ".py" or path.name in {"codex-canvas", _NODE_CRYPTO_HELPER}):
             add(path)
         elif path.is_dir():
             init = path / "__init__.py"

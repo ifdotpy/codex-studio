@@ -94,6 +94,43 @@
   gap: 5px;
   min-width: 0;
 }
+.federation-settings > p,
+.federation-peer > p,
+.federation-room > p,
+.federation-room-create > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.federation-identity {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+}
+.federation-peer,
+.federation-room {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.federation-peer > span,
+.federation-room > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.federation-room-create {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+}
+.federation-room-create h3 {
+  margin: 0;
+  font-size: 13px;
+}
 .settings-label {
   font-size: 12px;
 }

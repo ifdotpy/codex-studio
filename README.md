@@ -28,6 +28,9 @@ Drag a chat onto a team to join or move between teams. Drop it onto the project
 name to leave. A team dissolves when fewer than two chats remain.
 Dissolution preserves the chats and saved messages but removes peer access.
 
+Two Studio installations can also share an approved room over Tailscale. This
+feature is off by default; see the [peer federation operator guide](docs/peer-federation.md).
+
 Select **New shared chat** to create one conversation with two agents.
 Choose a project and each participant's account and model before creation.
 The sidebar shows one chat. No existing chats or peer team are required.

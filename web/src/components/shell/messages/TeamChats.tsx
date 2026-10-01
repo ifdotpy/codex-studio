@@ -65,13 +65,16 @@ export default function TeamChats({
   const rooms = data.runtime.rooms.filter(
     (room) =>
       leadId &&
-      (room.kind === "broadcast"
+      (room.kind === "federated"
+        ? (room.localMembers || room.members).some((id) => members.has(id))
+        : room.kind === "broadcast"
         ? room.rootId === leadId
         : room.members.length > 0 &&
           (room.members.every((id) => members.has(id)) ||
             (!!room.peerTeamId && room.members.some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
+    if (room.kind === "federated") return room.peerLabel || room.name;
     if (room.kind === "broadcast") return "Team broadcast";
     const peers = room.members.filter((id) => id !== leadId);
     return peers.length === 1
@@ -111,6 +114,10 @@ export default function TeamChats({
     ) : item.kind === "broadcast" ? (
       <span className="team-conversation-icon">
         <Megaphone size={21} />
+      </span>
+    ) : item.kind === "federated" ? (
+      <span className="team-conversation-icon">
+        <Users size={21} />
       </span>
     ) : item.members.length > 2 || !item.members.includes(leadId || "") ? (
       <span className="team-conversation-icon">
@@ -405,6 +412,8 @@ export default function TeamChats({
                 ? "Questions, messages and replies"
                 : room?.kind === "broadcast"
                   ? "Team conversation"
+                  : room?.kind === "federated"
+                    ? `Remote room · ${room.peerLabel || "paired server"}`
                   : "Conversation"}
             </span>
           </div>
