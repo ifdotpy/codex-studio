@@ -223,7 +223,7 @@ _lock_context = threading.local()
 
 class MeasuredRLock:
     """Measure outer Runtime-lock wait/hold intervals and preserve Condition hooks."""
-    SAMPLE_LIMIT = 100_000
+    SAMPLE_LIMIT = 20_000
 
     def __init__(self, lock=None):
         self._lock = lock or threading.RLock()
@@ -235,10 +235,19 @@ class MeasuredRLock:
         self._held_latest = defaultdict(float)
         self._wait_max = defaultdict(float)
         self._held_max = defaultdict(float)
+        self._failed_nonblocking = 0
 
     @staticmethod
     def _context():
-        return getattr(_lock_context, "name", None) or threading.current_thread().name
+        explicit = getattr(_lock_context, "name", None)
+        if explicit:
+            return explicit
+        name = threading.current_thread().name
+        if name.startswith("Thread-") and "process_request_thread" in name:
+            return "HTTP request"
+        if name == "MainThread":
+            return "producer"
+        return "other"
 
     def _record(self, target, context, elapsed):
         with self._samples_lock:
@@ -252,7 +261,14 @@ class MeasuredRLock:
         depth = getattr(self._local, "depth", 0)
         started = time.perf_counter_ns()
         acquired = self._lock.acquire(*args, **kwargs)
+        blocking = kwargs.get("blocking", args[0] if args else True)
+        if not acquired and not blocking:
+            self._local.last_nonblocking_failed = True
+            with self._samples_lock:
+                self._failed_nonblocking += 1
         if acquired:
+            if not (kwargs.get("blocking", args[0] if args else True)):
+                self._local.last_nonblocking_failed = False
             now = time.perf_counter_ns()
             if depth == 0:
                 context = self._context()
@@ -310,9 +326,11 @@ class MeasuredRLock:
         with self._samples_lock:
             waiting = {key: list(values) for key, values in self._wait.items()}
             held = {key: list(values) for key, values in self._held.items()}
+            failed_nonblocking = self._failed_nonblocking
         return {"waitMsByContext": {key: stats(values) for key, values in waiting.items()},
                 "heldMsByContext": {key: stats(values) for key, values in held.items()},
-                "sampleLimitPerContext": self.SAMPLE_LIMIT}
+                "sampleLimitPerContext": self.SAMPLE_LIMIT,
+                "failedNonblockingAcquires": failed_nonblocking}
 
     def progress_snapshot(self):
         with self._samples_lock:
@@ -323,13 +341,74 @@ class MeasuredRLock:
                 "heldByContext": {key: {"samples": len(values), "latestMs": self._held_latest[key],
                                         "maxMs": self._held_max[key]}
                                   for key, values in self._held.items()},
+                "failedNonblockingAcquires": self._failed_nonblocking,
             }
+
+
+class MeasuredLock:
+    """Measure non-reentrant start-lock use without changing its semantics."""
+    def __init__(self, lock):
+        self._lock = lock
+        self._stats_lock = threading.Lock()
+        self._local = threading.local()
+        self._acquires = 0
+        self._failed_nonblocking = 0
+        self._wait_total_ms = 0.0
+        self._wait_max_ms = 0.0
+        self._held_total_ms = 0.0
+        self._held_max_ms = 0.0
+
+    def acquire(self, *args, **kwargs):
+        started = time.perf_counter_ns()
+        acquired = self._lock.acquire(*args, **kwargs)
+        elapsed_ms = (time.perf_counter_ns() - started) / 1_000_000
+        blocking = kwargs.get("blocking", args[0] if args else True)
+        with self._stats_lock:
+            if acquired:
+                self._acquires += 1
+                self._wait_total_ms += elapsed_ms
+                self._wait_max_ms = max(self._wait_max_ms, elapsed_ms)
+            elif not blocking:
+                self._failed_nonblocking += 1
+        if acquired:
+            self._local.started_ns = time.perf_counter_ns()
+        self._local.last_nonblocking_failed = not acquired and not blocking
+        return acquired
+
+    def release(self):
+        started = getattr(self._local, "started_ns", None)
+        if started is not None:
+            held_ms = (time.perf_counter_ns() - started) / 1_000_000
+            with self._stats_lock:
+                self._held_total_ms += held_ms
+                self._held_max_ms = max(self._held_max_ms, held_ms)
+            del self._local.started_ns
+        return self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+    def locked(self):
+        return self._lock.locked()
+
+    def progress_snapshot(self):
+        with self._stats_lock:
+            return {"acquires": self._acquires,
+                    "failedNonblockingAcquires": self._failed_nonblocking,
+                    "waitTotalMs": round(self._wait_total_ms, 3),
+                    "waitMaxMs": round(self._wait_max_ms, 3),
+                    "heldTotalMs": round(self._held_total_ms, 3),
+                    "heldMaxMs": round(self._held_max_ms, 3)}
 
 
 def main():
     from codex_canvas import Canvas, make_server
     import codex_canvas
-    from codex_runtime import AppServer, Runtime
+    from codex_runtime import AppServer, Runtime, SnapshotDeferred
 
     class BenchRuntime(BenchmarkRuntimeMixin, Runtime):
         pass
@@ -351,6 +430,27 @@ def main():
             os.environ["CODEX_HOME"] = previous
     runtime_lock = MeasuredRLock(runtime.lock)
     runtime.lock = runtime_lock
+    start_lock = MeasuredLock(runtime.start_lock)
+    runtime.start_lock = start_lock
+    snapshot_lock_failures = {"startLock": 0, "runtimeLock": 0, "unattributed": 0}
+    snapshot_lock_failures_lock = threading.Lock()
+    original_snapshot = runtime.snapshot
+
+    def measured_snapshot(*args, **kwargs):
+        try:
+            return original_snapshot(*args, **kwargs)
+        except SnapshotDeferred:
+            if getattr(start_lock._local, "last_nonblocking_failed", False):
+                label = "startLock"
+            elif getattr(runtime_lock._local, "last_nonblocking_failed", False):
+                label = "runtimeLock"
+            else:
+                label = "unattributed"
+            with snapshot_lock_failures_lock:
+                snapshot_lock_failures[label] += 1
+            raise
+
+    runtime.snapshot = measured_snapshot
     runtime.ui_condition = threading.Condition(runtime_lock)
     faulthandler.enable(file=sys.stderr)
 
@@ -429,8 +529,9 @@ def main():
     steady_seconds = 0 if quick_check else float(os.environ.get("BENCH_STEADY_SECONDS", "30"))
     lock = threading.Lock()
     dispatched = {}
-    receive_to_callback_ms = []
-    callback_duration_ms = []
+    receive_to_callback_ms = deque(maxlen=100_000)
+    callback_duration_ms = deque(maxlen=100_000)
+    callback_wrapper_duration_ms = deque(maxlen=100_000)
     callback_queue_peak = [0]
     category_offered = {}
     category_dispatched = {}
@@ -453,6 +554,7 @@ def main():
     delta_identities = {}
     account_count = max(1, int(os.environ.get("BENCH_ACCOUNT_COUNT", "2")))
     account_keys = [f"bench-{i + 1:02}" for i in range(account_count)]
+    seeded_agents_by_thread = {}
     original_runtime_notification = runtime.notification
     def measured_notification(message, account_key="default", connection_id=None):
         nonlocal callback_count, callback_samples
@@ -468,21 +570,22 @@ def main():
         matched_agent = None
         actual_account_key = None
         if thread_id:
-            with runtime.db() as db:
-                row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? LIMIT 1",
-                                 (thread_id,)).fetchone()
-                matched = row is not None
-                if row:
-                    matched_record = json.loads(row[0])
-                    matched_agent = matched_record.get("id")
-                    actual_account_key = matched_record.get("accountKey", "default")
+            seeded_agent = seeded_agents_by_thread.get(thread_id)
+            matched = seeded_agent is not None
+            if seeded_agent:
+                matched_agent = seeded_agent["id"]
+                actual_account_key = seeded_agent.get("accountKey", "default")
             if not matched:
                 errors.append(f"notification thread did not match a Runtime record: {thread_id}")
             elif actual_account_key != account_key:
                 errors.append(f"notification account mismatch for {thread_id}: callback={account_key}, record={actual_account_key}")
-        events_before = runtime.agent(matched_agent).get("events") if matched_agent else None
+        sample_state = len(notification_samples) < 20
+        events_before = runtime.agent(matched_agent).get("events") if matched_agent and sample_state else None
+        production_started = time.monotonic()
+        production_ended = None
         try:
             original_runtime_notification(message, account_key, connection_id)
+            production_ended = time.monotonic()
             samples = message.get("_studioNotificationSamples") or [params]
             for sample in samples:
                 if method == "item/agentMessage/delta":
@@ -514,7 +617,9 @@ def main():
             ended = time.monotonic()
             if type(received_at) in (int, float) and type(dispatched_at) in (int, float):
                 receive_to_callback_ms.append(max(0, dispatched_at - received_at) * 1000)
-            callback_duration_ms.append((ended - started) * 1000)
+            callback_wrapper_duration_ms.append((ended - started) * 1000)
+            if production_ended is not None:
+                callback_duration_ms.append((production_ended - production_started) * 1000)
             coverage = notification_coverage.setdefault(method, {"callbacks": 0, "matchedThread": 0})
             coverage["callbacks"] += 1
             callback_invocations_by_method[method] = callback_invocations_by_method.get(method, 0) + 1
@@ -524,7 +629,7 @@ def main():
                 notification_samples.append({"method": method, "threadId": thread_id,
                     "turnId": params.get("turnId"), "turn": params.get("turn"),
                     "eventsBefore": events_before,
-                    "eventsAfter": runtime.agent(matched_agent).get("events") if matched_agent else None,
+                    "eventsAfter": runtime.agent(matched_agent).get("events") if matched_agent and sample_state else None,
                     "callbackAccount": account_key, "recordAccount": actual_account_key})
             with callback_done:
                 callback_count += 1
@@ -600,6 +705,7 @@ def main():
                                parent=lead, team=team, index=index)
                 runtime.put(db, "agents", agent)
                 workers.append(agent)
+    seeded_agents_by_thread.update((record["threadId"], record) for record in [template, *leads, *workers])
 
     print(json.dumps({"kind": "ready", "origin": f"http://127.0.0.1:{server.server_port}",
                       "sourceRevision": os.environ.get("BENCH_SOURCE_REVISION", "unknown"),
@@ -649,6 +755,8 @@ def main():
                                  "unfinished": appserver.callbacks.unfinished_tasks}
                                 for index, appserver in enumerate(appservers)],
             "runtimeLock": runtime_lock.progress_snapshot(),
+            "startLock": start_lock.progress_snapshot(),
+            "snapshotDeferredByLock": dict(snapshot_lock_failures),
         }
         print(json.dumps(snapshot, separators=(",", ":")), flush=True)
 
@@ -914,7 +1022,10 @@ def main():
                                 "depthAtDrain": sum(appserver.callbacks.qsize() for appserver in appservers)},
                       "latencyMs": {"receiveToCallback": stats(receive_to_callback_ms),
                                     "callbackDuration": stats(callback_duration_ms),
+                                    "callbackWrapperDuration": stats(callback_wrapper_duration_ms),
                                     "runtimeLock": runtime_lock.snapshot()},
+                      "snapshotDeferredByLock": dict(snapshot_lock_failures),
+                      "startLock": start_lock.progress_snapshot(),
                       "offeredRateTurnsPerSecond": offered_rate,
                       "phaseElapsedSeconds": phase_elapsed,
                       "phaseOfferedTurnLatenessMs": {phase: stats(values) for phase, values in turn_lateness_ms.items()},

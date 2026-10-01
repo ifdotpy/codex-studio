@@ -220,12 +220,21 @@ class RuntimeLoadHelpersTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertTrue(notified.is_set())
         metrics = lock.snapshot()
-        self.assertGreater(metrics["waitMsByContext"][thread.name]["samples"], 0)
-        self.assertGreater(metrics["heldMsByContext"][thread.name]["samples"], 0)
+        self.assertGreater(metrics["waitMsByContext"]["other"]["samples"], 0)
+        self.assertGreater(metrics["heldMsByContext"]["other"]["samples"], 0)
         progress = lock.progress_snapshot()
-        self.assertGreater(progress["waitByContext"][thread.name]["samples"], 0)
-        self.assertGreaterEqual(progress["waitByContext"][thread.name]["maxMs"],
-                                progress["waitByContext"][thread.name]["latestMs"])
+        self.assertGreater(progress["waitByContext"]["other"]["samples"], 0)
+        self.assertGreaterEqual(progress["waitByContext"]["other"]["maxMs"],
+                                progress["waitByContext"]["other"]["latestMs"])
+
+    def test_measured_plain_lock_counts_nonblocking_failures(self):
+        lock = module.MeasuredLock(threading.Lock())
+        self.assertTrue(lock.acquire())
+        self.assertFalse(lock.acquire(blocking=False))
+        snapshot = lock.progress_snapshot()
+        self.assertEqual(snapshot["failedNonblockingAcquires"], 1)
+        self.assertEqual(snapshot["acquires"], 1)
+        lock.release()
 
 
 if __name__ == "__main__":

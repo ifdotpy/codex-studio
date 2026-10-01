@@ -1079,6 +1079,11 @@ try {
   }
   await responseHandling;
   snapshotRecoveryDrainMs = Date.now() - snapshotRecoveryDrainStarted;
+  // Freeze the in-flight set before closing pages: close() emits requestfailed
+  // and removes entries, which must not turn an unfinished pull into a pass.
+  const outstandingSyncPullsAtDrainEnd = [...outstandingSyncPullRequests].map(
+    (request) => ({ url: request.url(), method: request.method() }),
+  );
   // Let open UI requests finish or abort their own way before stopping HTTP.
   // In particular, App session refreshes can remain active after the last pull.
   await Promise.all(pages.map((page) => page.close()));
@@ -1096,10 +1101,10 @@ try {
   browserReport.snapshotRecoveryDrainDeadlineMs =
     snapshotRecoveryDrainDeadlineMs;
   browserReport.outstandingSyncPullRequestsAtDrainEnd =
-    outstandingSyncPullRequests.size;
-  if (outstandingSyncPullRequests.size > 0)
+    outstandingSyncPullsAtDrainEnd;
+  if (outstandingSyncPullsAtDrainEnd.length > 0)
     pageErrors.push(
-      `${outstandingSyncPullRequests.size} sync pull request(s) remained in flight after the recovery drain`,
+      `${outstandingSyncPullsAtDrainEnd.length} sync pull request(s) remained in flight after the recovery drain`,
     );
   for (const attempt of httpOutcomes.unrecoveredSnapshotReads())
     pageErrors.push(
