@@ -10,6 +10,8 @@ import time
 from codex_sqlite import connect as sqlite_connect
 
 COPY_SPACE_BYTES = 16_500_000_000
+# Pause the copy, not the server, when the volume runs low during the copy.
+MIN_FREE_BYTES = 4 * 1024**3
 BATCH_ROWS = 128
 BATCH_BYTES = 1024 * 1024
 TABLES = {
@@ -71,6 +73,8 @@ def copy_step(analytics_path, canvas_path):
             return True, migration["phase"], 0
 
         if migration["phase"] == "copy":
+            if shutil.disk_usage(analytics_path.parent).free < MIN_FREE_BYTES:
+                return False, "waitingForSpace", 0
             for table, progress in migration["tables"].items():
                 if progress["cursor"] >= progress["highWater"]:
                     continue
@@ -224,7 +228,7 @@ def start(runtime):
                 if status in {"complete", "insufficientSpace", "unsupportedTables", "missingTargetTable"}:
                     return
                 if not advanced:
-                    time.sleep(.5)
+                    time.sleep(30 if status == "waitingForSpace" else .5)
             except Exception as error:
                 runtime.analytics_migration_status = {"status": "error", "updated": time.time(),
                                                       "error": f"{type(error).__name__}: {error}"[:1000]}

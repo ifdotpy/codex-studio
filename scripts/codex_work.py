@@ -340,6 +340,9 @@ class WorkMixin:
                     elif phase in {"building", "waiting_for_space"}:
                         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_next'").fetchone():
                             free = shutil.disk_usage(self.db_path.parent).free
+                            # Free pages inside the database are reused before the file grows.
+                            free += (db.execute("PRAGMA freelist_count").fetchone()[0]
+                                     * db.execute("PRAGMA page_size").fetchone()[0])
                             db_bytes = self.db_path.stat().st_size
                             reserve = max(16 * 1024**3, db_bytes // 2)
                             if free < reserve:
@@ -352,7 +355,9 @@ class WorkMixin:
                                 db.execute("CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")
                                 db.execute("UPDATE runtime_search_rollout SET phase='building',updated=? WHERE id=1", (time.time(),))
                         if not blocked_for_space:
-                            if shutil.disk_usage(self.db_path.parent).free < 8 * 1024**3:
+                            reusable = (db.execute("PRAGMA freelist_count").fetchone()[0]
+                                        * db.execute("PRAGMA page_size").fetchone()[0])
+                            if shutil.disk_usage(self.db_path.parent).free + reusable < 8 * 1024**3:
                                 db.execute("UPDATE runtime_search_rollout SET phase='waiting_for_space',updated=? WHERE id=1", (time.time(),))
                                 blocked_for_space = True
                             else:
