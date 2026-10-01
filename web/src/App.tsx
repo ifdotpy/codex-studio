@@ -1835,23 +1835,17 @@ export default function App() {
               <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="accounts" pt="md">
-              <section className="settings-group" aria-label="Studio account">
-                <h2>Default account</h2>
+              <section className="settings-group" aria-label="Studio accounts">
+                <h2>Accounts</h2>
                 <p className="settings-help">
-                  Used for new chats. Changing this setting does not change the
-                  account on the current chat.
+                  Manage accounts and choose the default for new chats. Existing
+                  chats keep their account.
                 </p>
                 <Accounts
-                  showManagerButton
+                  managerOnly
                   onModalOpenChange={setAccountModalOpen}
                   state={accounts}
-                  accountKey={accounts.data.defaultAccountKey}
                   onError={notify}
-                  changeAccount={async (key) => {
-                    accounts.setData(
-                      await api("/api/accounts/default", { account_key: key }),
-                    );
-                  }}
                 />
               </section>
             </Tabs.Panel>

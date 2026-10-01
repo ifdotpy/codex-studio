@@ -18,8 +18,6 @@ def set_project_accounts(runtime, data):
         raise ValueError("Supply the current project account revision")
     accounts = {key: runtime.accounts.get(key) for key in keys}
     for key in keys:
-        if accounts[key].get("deleted"):
-            raise ValueError("Deleted accounts cannot be added to a project")
         if accounts[key]["status"] != "ready":
             raise ValueError("Sign in to the selected project accounts first")
     with runtime.lock, runtime.db() as db:

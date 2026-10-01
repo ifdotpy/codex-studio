@@ -80,13 +80,14 @@ class DeleteContract(unittest.TestCase):
         self.assertEqual(restored.home(key), profile.resolve())
         self.assertEqual((profile / 'auth.json').read_bytes(), credential)
         self.assertNotIn(key, [account['id'] for account in restored.discover()['accounts']])
-        self.assertEqual(self.store.register(str(profile)), key)
-        self.assertIn(key, [account['id'] for account in self.store.list()])
-        self.store.delete(key, request_id)
-        self.assertIn(key, [account['id'] for account in self.store.list()],
+        self.assertEqual(restored.register(str(profile)), key)
+        self.assertIn(key, [account['id'] for account in restored.list()])
+        replayed = module.AccountStore(self.root / 'state')
+        replayed.discover()
+        replayed.delete(key, request_id)
+        self.assertIn(key, [account['id'] for account in replayed.list()],
                       'a stale exact retry cannot delete a restored account')
-        with self.assertRaises(ValueError):
-            restored.default(key)
+        self.assertEqual(replayed.default(key), key)
 
     def test_deleting_default_requires_and_selects_a_connected_replacement(self):
         with self.assertRaises(ValueError):
@@ -143,6 +144,12 @@ class TransferDisconnectContract(transfer_fixture.TransferContract):
             self.start_transfer()
         self.assertNotIn('accountTransferId', self.runtime.agent(self.lead_agent['id']))
 
+    def test_new_transfer_rejects_deleted_destination(self):
+        self.runtime.accounts.delete(self.other_key, str(uuid.uuid4()))
+        with self.assertRaisesRegex(ValueError, "deleted"):
+            self.start_transfer()
+        self.assertNotIn('accountTransferId', self.runtime.agent(self.lead_agent['id']))
+
     def test_transfer_replay_and_pending_operation_keep_original_identity(self):
         operation = self.start_transfer()
         self.runtime.accounts.disconnect(self.other_key)
@@ -158,7 +165,7 @@ if __name__ == '__main__':
     suite = unittest.TestSuite()
     for case in (DisconnectContract, DeleteContract, ProjectDisconnectContract):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
-    for name in ('test_new_transfer_rejects_disconnected_destination', 'test_transfer_replay_and_pending_operation_keep_original_identity'):
+    for name in ('test_new_transfer_rejects_disconnected_destination', 'test_new_transfer_rejects_deleted_destination', 'test_transfer_replay_and_pending_operation_keep_original_identity'):
         suite.addTest(TransferDisconnectContract(name))
     result = unittest.TextTestRunner().run(suite)
     raise SystemExit(not result.wasSuccessful())

@@ -18,7 +18,40 @@ import { api, errorText } from "../api";
 import type { Agent, Json } from "../types";
 import "./accounts.css";
 import AccountSignIn, { type LoginReceipt } from "./AccountSignIn";
+import AccountManagerHost from "./AccountManagerHost";
 import { readBuckets, formatPercent } from "./Usage";
+
+const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
+
+function storedDeleteRequest(accountKey: string) {
+  try {
+    const requests = JSON.parse(
+      localStorage.getItem(DELETE_REQUESTS_KEY) || "{}",
+    );
+    return typeof requests[accountKey] === "string"
+      ? (requests[accountKey] as string)
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDeleteRequest(accountKey: string, requestId: string | null) {
+  try {
+    const current = JSON.parse(
+      localStorage.getItem(DELETE_REQUESTS_KEY) || "{}",
+    );
+    const requests =
+      current && typeof current === "object" && !Array.isArray(current)
+        ? current
+        : {};
+    if (requestId) requests[accountKey] = requestId;
+    else delete requests[accountKey];
+    localStorage.setItem(DELETE_REQUESTS_KEY, JSON.stringify(requests));
+  } catch {
+    // The live dialog still retains its exact request identity when storage is unavailable.
+  }
+}
 
 export interface Account {
   id: string;
@@ -294,15 +327,15 @@ export default function Accounts({
   onError,
   projectAccountKeys,
   onModalOpenChange,
-  showManagerButton = false,
+  managerOnly = false,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
-  accountKey: string;
+  accountKey?: string;
   projectAccountKeys?: string[];
   onModalOpenChange?: (opened: boolean) => void;
-  showManagerButton?: boolean;
-  changeAccount: (key: string) => Promise<void>;
+  managerOnly?: boolean;
+  changeAccount?: (key: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [opened, setOpened] = useState(false);
@@ -325,15 +358,26 @@ export default function Accounts({
   const [deleteRequestId, setDeleteRequestId] = useState("");
   const actionLock = useRef(false);
   const childModalOpen =
-    opened ||
+    (!managerOnly && opened) ||
     !!transferChoice ||
     !!disconnectChoice ||
     !!deleteChoice ||
     !!claudeLogin;
   useEffect(() => {
-    onModalOpenChange?.(childModalOpen);
+    onModalOpenChange?.(
+      managerOnly
+        ? !!disconnectChoice || !!deleteChoice || !!claudeLogin
+        : childModalOpen,
+    );
     return () => onModalOpenChange?.(false);
-  }, [childModalOpen, onModalOpenChange]);
+  }, [
+    childModalOpen,
+    managerOnly,
+    disconnectChoice,
+    deleteChoice,
+    claudeLogin,
+    onModalOpenChange,
+  ]);
   const accounts = state.data.accounts || [];
   const selected =
     accounts.find((a) => a.id === accountKey) ||
@@ -379,23 +423,11 @@ export default function Accounts({
     }
   };
   useEffect(() => {
-    if (!opened) return;
+    if (!opened && !managerOnly) return;
     void state.refresh();
-  }, [opened, state.refresh]);
+  }, [opened, managerOnly, state.refresh]);
   return (
     <>
-      {showManagerButton && (
-        <Button
-          variant="default"
-          leftSection={<UserRound size={14} />}
-          onClick={() => {
-            setAdding(false);
-            setOpened(true);
-          }}
-        >
-          Manage accounts
-        </Button>
-      )}
       {claudeLogin && (
         <ClaudeSignIn
           key={claudeLogin.id}
@@ -405,152 +437,155 @@ export default function Accounts({
           onReady={state.refresh}
         />
       )}
-      <Menu
-        position="bottom-end"
-        width={300}
-        withinPortal
-        onChange={setMenuOpened}
-      >
-        <Menu.Target>
-          <Button
-            className="account-picker"
-            data-testid="account-picker"
-            variant="subtle"
-            aria-label={`Account: ${title}`}
-            title={title}
-            leftSection={<UserRound size={15} />}
-            rightSection={<ChevronDown size={13} />}
-          >
-            <span className="account-picker-label">{title}</span>
-            {transferring && (
-              <span aria-label="Account transfer in progress">
-                {transfer.completed}/{transfer.total}
-              </span>
-            )}
-          </Button>
-        </Menu.Target>
-        <Menu.Dropdown>
-          <Menu.Label>
-            {pinned
-              ? "Transfer chat to account"
-              : "Account for this conversation"}
-          </Menu.Label>
-          {accounts
-            .filter(
-              (account) => !account.disconnected || account.id === accountKey,
-            )
-            .sort(
-              (a, b) =>
-                Number(projectAccountKeys?.includes(b.id) || false) -
-                Number(projectAccountKeys?.includes(a.id) || false),
-            )
-            .map((account) => (
-              <Menu.Item
-                key={account.id}
-                disabled={
-                  !!pending ||
-                  account.status !== "ready" ||
-                  account.disconnected ||
-                  (pinned && !owner) ||
-                  transferring
-                }
-                leftSection={
-                  account.id === accountKey ? (
-                    <Check size={14} />
-                  ) : (
-                    <span style={{ width: 14 }} />
-                  )
-                }
-                onClick={() => {
-                  if (account.id === accountKey) return;
-                  if (pinned && owner)
-                    setTransferChoice({
-                      target: account,
-                      sourceProvider:
-                        selected?.provider || owner.provider || "codex",
-                      agentId: owner.id,
-                      requestId: crypto.randomUUID(),
-                    });
-                  else if (!pinned)
-                    void action(account.id, () => changeAccount(account.id));
-                }}
-              >
-                <span className="account-menu-identity">
-                  {account.email || account.label}
-                  <small>
-                    {[
-                      projectAccountKeys?.includes(account.id)
-                        ? "Project"
-                        : null,
-                      account.provider === "claude" ? "Claude Code" : null,
-                      account.plan,
-                      account.status !== "ready" ? account.status : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ") || "Ready"}
-                    {account.id === state.data.defaultAccountKey
-                      ? " · Application default"
-                      : ""}
-                  </small>
-                  <AccountCapacity
-                    account={account}
-                    opened={menuOpened}
-                    compact
-                  />
+      {!managerOnly && (
+        <Menu
+          position="bottom-end"
+          width={300}
+          withinPortal
+          onChange={setMenuOpened}
+        >
+          <Menu.Target>
+            <Button
+              className="account-picker"
+              data-testid="account-picker"
+              variant="subtle"
+              aria-label={`Account: ${title}`}
+              title={title}
+              leftSection={<UserRound size={15} />}
+              rightSection={<ChevronDown size={13} />}
+            >
+              <span className="account-picker-label">{title}</span>
+              {transferring && (
+                <span aria-label="Account transfer in progress">
+                  {transfer.completed}/{transfer.total}
                 </span>
-              </Menu.Item>
-            ))}
-          <AccountTransferStatus
-            transfer={transfer}
-            targetLabel={transferTarget?.email || transferTarget?.label}
-            pending={!!pending}
-            onAction={(kind) =>
-              void action(`${kind}-transfer`, () =>
-                api("/api/agents/account-transfer", {
-                  action: kind,
-                  request_id: transfer.id,
-                }),
+              )}
+            </Button>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Label>
+              {pinned
+                ? "Transfer chat to account"
+                : "Account for this conversation"}
+            </Menu.Label>
+            {accounts
+              .filter(
+                (account) => !account.disconnected || account.id === accountKey,
               )
-            }
-          />
-          <Menu.Divider />
-          <Menu.Item
-            leftSection={<Plus size={14} />}
-            onClick={() => {
-              setAdding(true);
-              setOpened(true);
-            }}
-          >
-            Add account
-          </Menu.Item>
-          <Menu.Item
-            leftSection={<UserRound size={14} />}
-            onClick={() => {
-              setAdding(false);
-              setOpened(true);
-            }}
-          >
-            Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
-          </Menu.Item>
-          {Boolean(error || selected?.error) && (
-            <ErrorDescription
-              className="account-action-error"
-              value={error || selected?.error}
+              .sort(
+                (a, b) =>
+                  Number(projectAccountKeys?.includes(b.id) || false) -
+                  Number(projectAccountKeys?.includes(a.id) || false),
+              )
+              .map((account) => (
+                <Menu.Item
+                  key={account.id}
+                  disabled={
+                    !!pending ||
+                    account.status !== "ready" ||
+                    account.disconnected ||
+                    (pinned && !owner) ||
+                    transferring
+                  }
+                  leftSection={
+                    account.id === accountKey ? (
+                      <Check size={14} />
+                    ) : (
+                      <span style={{ width: 14 }} />
+                    )
+                  }
+                  onClick={() => {
+                    if (account.id === accountKey) return;
+                    if (pinned && owner)
+                      setTransferChoice({
+                        target: account,
+                        sourceProvider:
+                          selected?.provider || owner.provider || "codex",
+                        agentId: owner.id,
+                        requestId: crypto.randomUUID(),
+                      });
+                    else if (!pinned)
+                      if (changeAccount)
+                        void action(account.id, () =>
+                          changeAccount(account.id!),
+                        );
+                  }}
+                >
+                  <span className="account-menu-identity">
+                    {account.email || account.label}
+                    <small>
+                      {[
+                        projectAccountKeys?.includes(account.id)
+                          ? "Project"
+                          : null,
+                        account.provider === "claude" ? "Claude Code" : null,
+                        account.plan,
+                        account.status !== "ready" ? account.status : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || "Ready"}
+                      {account.id === state.data.defaultAccountKey
+                        ? " · Application default"
+                        : ""}
+                    </small>
+                    <AccountCapacity
+                      account={account}
+                      opened={menuOpened}
+                      compact
+                    />
+                  </span>
+                </Menu.Item>
+              ))}
+            <AccountTransferStatus
+              transfer={transfer}
+              targetLabel={transferTarget?.email || transferTarget?.label}
+              pending={!!pending}
+              onAction={(kind) =>
+                void action(`${kind}-transfer`, () =>
+                  api("/api/agents/account-transfer", {
+                    action: kind,
+                    request_id: transfer.id,
+                  }),
+                )
+              }
             />
-          )}
-        </Menu.Dropdown>
-      </Menu>
-      <Modal
+            <Menu.Divider />
+            <Menu.Item
+              leftSection={<Plus size={14} />}
+              onClick={() => {
+                setAdding(true);
+                setOpened(true);
+              }}
+            >
+              Add account
+            </Menu.Item>
+            <Menu.Item
+              leftSection={<UserRound size={14} />}
+              onClick={() => {
+                setAdding(false);
+                setOpened(true);
+              }}
+            >
+              Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
+            </Menu.Item>
+            {Boolean(error || selected?.error) && (
+              <ErrorDescription
+                className="account-action-error"
+                value={error || selected?.error}
+              />
+            )}
+          </Menu.Dropdown>
+        </Menu>
+      )}
+      <AccountManagerHost
+        inline={managerOnly}
         opened={opened}
         onClose={() => setOpened(false)}
         title={adding ? "Add account" : "Accounts"}
-        closeOnEscape={!disconnectChoice}
-        closeOnClickOutside={!disconnectChoice}
-        size="lg"
-        classNames={{ body: "accounts-manager" }}
+        closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
       >
         {adding ? (
-          <AccountSignIn state={state} opened={opened} />
+          <AccountSignIn state={state} opened={managerOnly || opened} />
         ) : (
           <Button
             onClick={() => setAdding(true)}
@@ -569,7 +604,10 @@ export default function Accounts({
             <p className="accounts-intro">
               Used when a project has no default.
             </p>
-            <NativeRuntimeStatus opened={opened} accounts={accounts} />
+            <NativeRuntimeStatus
+              opened={managerOnly || opened}
+              accounts={accounts}
+            />
             <div className="accounts-list" aria-label="Saved accounts">
               {accounts.map((account) => (
                 <section
@@ -628,7 +666,10 @@ export default function Accounts({
                   )}
                   {account.disconnected && <p>Hidden from new chats.</p>}
                   {!account.disconnected && (
-                    <AccountCapacity account={account} opened={opened} />
+                    <AccountCapacity
+                      account={account}
+                      opened={managerOnly || opened}
+                    />
                   )}
                   {account.provider === "claude" && (
                     <>
@@ -674,7 +715,11 @@ export default function Accounts({
                       size="compact-xs"
                       disabled={!!pending}
                       onClick={() => {
-                        setDeleteRequestId(crypto.randomUUID());
+                        const requestId =
+                          storedDeleteRequest(account.id) ||
+                          crypto.randomUUID();
+                        saveDeleteRequest(account.id, requestId);
+                        setDeleteRequestId(requestId);
                         setDeleteChoice(account);
                       }}
                     >
@@ -748,7 +793,7 @@ export default function Accounts({
             {error || state.error}
           </p>
         )}
-      </Modal>
+      </AccountManagerHost>
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}
@@ -823,7 +868,6 @@ export default function Accounts({
         onClose={() => {
           if (!pending) {
             setDeleteChoice(null);
-            setDeleteRequestId("");
           }
         }}
         title="Delete account"
@@ -852,7 +896,6 @@ export default function Accounts({
           disabled={!!pending}
           onClick={() => {
             setDeleteChoice(null);
-            setDeleteRequestId("");
           }}
         >
           Cancel
@@ -869,6 +912,7 @@ export default function Accounts({
                   request_id: deleteRequestId,
                 }),
               );
+              if (deleteChoice) saveDeleteRequest(deleteChoice.id, null);
               setDeleteChoice(null);
               setDeleteRequestId("");
             })

@@ -288,24 +288,14 @@ try {
     .getByRole("tab", { name: "Accounts", exact: true })
     .click();
   const transfersBeforeDefaultChange = transferCalls;
-  const studioAccount = studioSettings.getByTestId("account-picker");
-  await studioAccount.click();
-  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
-  await page.waitForFunction(() =>
-    document
-      .querySelector(
-        '[data-testid="studio-settings"] [data-testid="account-picker"] .account-picker-label',
-      )
-      ?.textContent?.includes("work@example.invalid"),
-  );
+  const studioManager = studioSettings.locator(".accounts-manager-inline");
+  const workRow = studioManager.locator('[data-account="work"]');
+  await workRow
+    .getByRole("button", { name: "Use work@example.invalid by default" })
+    .click();
+  await workRow.getByText("Application default", { exact: true }).waitFor();
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
-  await studioSettings.getByRole("button", { name: "Manage accounts" }).click();
-  const studioManager = page.getByRole("dialog", {
-    name: "Accounts",
-    exact: true,
-  });
-  await studioManager.waitFor();
   const personal = studioManager.locator('[data-account="default"]');
   await personal
     .getByRole("button", { name: "Delete account", exact: true })
@@ -319,13 +309,38 @@ try {
     .click();
   await deletion.getByRole("alert").waitFor();
   assert.equal(deleteCalls, 1, "failed deletion remains visible and retryable");
-  await deletion
+  await page.keyboard.press("Escape");
+  await deletion.waitFor({ state: "hidden" });
+  assert.ok(
+    await studioSettings.isVisible(),
+    "nested confirmation Escape keeps settings open",
+  );
+  await page.keyboard.press("Escape");
+  await studioSettings.waitFor({ state: "hidden" });
+  await page.reload();
+  await page.locator("#message").waitFor();
+  await page
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
+  const reopenedSettings = page.getByRole("dialog", {
+    name: "Studio settings",
+    exact: true,
+  });
+  const reopenedManager = reopenedSettings.locator(".accounts-manager-inline");
+  const reopenedPersonal = reopenedManager.locator('[data-account="default"]');
+  await reopenedPersonal
     .getByRole("button", { name: "Delete account", exact: true })
     .click();
-  await personal.waitFor({ state: "detached" });
+  const reopenedDeletion = page.getByRole("dialog", {
+    name: "Delete account",
+    exact: true,
+  });
+  await reopenedDeletion
+    .getByRole("button", { name: "Delete account", exact: true })
+    .click();
+  await reopenedPersonal.waitFor({ state: "detached" });
   assert.equal(deleteCalls, 2);
-  await page.keyboard.press("Escape");
-  await studioManager.waitFor({ state: "hidden" });
+  await reopenedDeletion.waitFor({ state: "hidden" });
   assert.equal(
     transferCalls,
     transfersBeforeDefaultChange,
@@ -335,7 +350,7 @@ try {
     path: join(evidence, "studio-settings-dark-390.png"),
   });
   await page.keyboard.press("Escape");
-  await studioSettings.waitFor({ state: "hidden" });
+  await reopenedSettings.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page
     .getByRole("menuitem", { name: "Chat settings", exact: true })

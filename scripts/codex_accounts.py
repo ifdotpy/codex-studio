@@ -452,6 +452,7 @@ class AccountStore:
                 for field in ("userCode", "verificationUrl"):
                     receipt.pop(field, None)
                 if duplicate:
+                    self.data["accounts"][duplicate].pop("deleted", None)
                     self.data["accounts"][key].update(status="duplicate", duplicateOf=duplicate)
                 else:
                     self.data["accounts"][key]["label"] = row.get("email") or "Codex account"

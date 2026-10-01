@@ -41,6 +41,11 @@ class Links(fixture.ProjectAccountsContract):
         second = self.set_account(self.other, first["accountRevision"])
         self.assertEqual(second["accountKeys"], sorted(["default", self.other]))
 
+    def test_accepted_membership_replay_survives_account_delete(self):
+        linked = self.link(["default", self.other])
+        self.store.accounts.delete(self.other, "55a0ad64-795e-43d0-98e8-fca3214143ae")
+        self.assertEqual(self.link(["default", self.other]), linked)
+
 
 if __name__ == "__main__":
     unittest.main()
