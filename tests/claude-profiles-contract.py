@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import codex_claude as c
@@ -66,6 +67,10 @@ class Profiles(unittest.TestCase):
         with patch.object(c, 'installed', return_value='/bin/claude'), patch.object(c, 'auth_metadata', return_value=AUTH):
             key = store.register_claude(opts, 'Work')
             self.assertEqual(key, store.register_claude(opts, 'Work'))
+            store.delete(key, str(uuid.uuid4()))
+            self.assertNotIn(key, [account['id'] for account in store.list()])
+            self.assertEqual(key, store.register_claude(opts, 'Work'))
+            self.assertIn(key, [account['id'] for account in store.list()])
             store.update_claude(key, {**opts, 'autoCompactWindow': 200000})
             reloaded = AccountStore(self.root / 'state')
             self.assertEqual(reloaded.get(key)['claudeOptions']['autoCompactWindow'], 200000)

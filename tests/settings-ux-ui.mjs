@@ -56,6 +56,7 @@ try {
     defaultAccountCalls = 0,
     disconnectCalls = 0,
     deleteCalls = 0,
+    deleteRequestId = "",
     analyticsCalls = 0;
   let holdLimits = true;
   const held = [];
@@ -93,6 +94,10 @@ try {
   });
   await page.route("**/api/accounts/delete", async (route) => {
     deleteCalls++;
+    const requestId = route.request().postDataJSON().request_id;
+    assert.ok(requestId, "deletion has a durable retry identity");
+    if (deleteRequestId) assert.equal(requestId, deleteRequestId);
+    deleteRequestId = requestId;
     if (deleteCalls === 1) {
       await route.fulfill({ status: 500, json: { error: "Delete failed" } });
       return;

@@ -322,6 +322,7 @@ export default function Accounts({
     null,
   );
   const [deleteChoice, setDeleteChoice] = useState<Account | null>(null);
+  const [deleteRequestId, setDeleteRequestId] = useState("");
   const actionLock = useRef(false);
   const childModalOpen =
     opened ||
@@ -672,7 +673,10 @@ export default function Accounts({
                       variant="subtle"
                       size="compact-xs"
                       disabled={!!pending}
-                      onClick={() => setDeleteChoice(account)}
+                      onClick={() => {
+                        setDeleteRequestId(crypto.randomUUID());
+                        setDeleteChoice(account);
+                      }}
                     >
                       Delete account
                     </Button>
@@ -817,7 +821,10 @@ export default function Accounts({
       <Modal
         opened={!!deleteChoice}
         onClose={() => {
-          if (!pending) setDeleteChoice(null);
+          if (!pending) {
+            setDeleteChoice(null);
+            setDeleteRequestId("");
+          }
         }}
         title="Delete account"
         closeOnClickOutside={!pending}
@@ -843,7 +850,10 @@ export default function Accounts({
         <Button
           variant="default"
           disabled={!!pending}
-          onClick={() => setDeleteChoice(null)}
+          onClick={() => {
+            setDeleteChoice(null);
+            setDeleteRequestId("");
+          }}
         >
           Cancel
         </Button>
@@ -856,9 +866,11 @@ export default function Accounts({
               state.setData(
                 await api<AccountsState>("/api/accounts/delete", {
                   account_key: deleteChoice?.id,
+                  request_id: deleteRequestId,
                 }),
               );
               setDeleteChoice(null);
+              setDeleteRequestId("");
             })
           }
         >

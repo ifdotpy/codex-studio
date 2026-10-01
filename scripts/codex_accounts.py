@@ -104,6 +104,7 @@ class AccountStore:
                     }
                 },
                 "logins": {},
+                "deleteReceipts": {},
             }
             self._save()
 
@@ -238,12 +239,20 @@ class AccountStore:
             self._save()
             return self.snapshot()
 
-    def delete(self, key):
+    def delete(self, key, request_id):
         """Hide an account from new choices while retaining its native identity for old chats."""
+        try:
+            request = str(uuid.UUID(request_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Supply a UUID request_id") from None
         with self.lock:
-            row = self._row(key)
-            if row.get("deleted"):
+            receipts = self.data.setdefault("deleteReceipts", {})
+            previous = receipts.get(request)
+            if previous:
+                if previous.get("accountKey") != key:
+                    raise ValueError("This delete request id has different content")
                 return self.snapshot()
+            row = self._row(key)
             if self.data["defaultAccountKey"] == key:
                 replacement = next((other for other, value in self.data["accounts"].items()
                                     if other != key and not value.get("deleted")
@@ -253,6 +262,7 @@ class AccountStore:
                     raise ValueError("Add another connected account before deleting the application default.")
                 self.data["defaultAccountKey"] = replacement
             row["deleted"] = True
+            receipts[request] = {"accountKey": key, "deletedAt": time.time()}
             self._save()
             return self.snapshot()
 
@@ -265,7 +275,7 @@ class AccountStore:
             self._save()
             return self.snapshot()
 
-    def register(self, home):
+    def register(self, home, *, restore_deleted=True):
         if not isinstance(home, str) or not home.strip():
             raise ValueError("Supply a Codex profile directory")
         path = Path(home).expanduser().resolve()
@@ -281,6 +291,9 @@ class AccountStore:
                     or metadata.get("accountId")
                     and row.get("accountId") == metadata["accountId"]
                 ):
+                    if row.get("deleted") and restore_deleted:
+                        row.pop("deleted", None)
+                        self._save()
                     return row["id"]
             key = "profile-" + hashlib.sha256(str(path).encode()).hexdigest()[:20]
             label = (
@@ -318,6 +331,9 @@ class AccountStore:
                     raise ValueError("Restore this profile's original Claude login")
                 if existing.get("claudeOptions") != options:
                     raise ValueError("This Claude configuration already exists. Update its settings")
+                if existing.get("deleted"):
+                    self.data["accounts"][key].pop("deleted", None)
+                    self._save()
                 return key
             self.data["accounts"][key] = {
                 "id": key, "provider": "claude", "claudeOptions": options,
@@ -361,7 +377,7 @@ class AccountStore:
         for path in candidates:
             if (path / "auth.json").is_file():
                 try:
-                    self.register(str(path))
+                    self.register(str(path), restore_deleted=False)
                 except ValueError:
                     continue
         from codex_claude import installed, auth_metadata as claude_auth

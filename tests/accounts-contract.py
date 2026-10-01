@@ -225,6 +225,10 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(
                 request("/api/accounts/default", {"account_key": "default"})[0], 403
             )
+            unauthorized_delete = request("/api/accounts/delete", {
+                "account_key": "default", "request_id": str(uuid.uuid4())
+            })
+            self.assertEqual(unauthorized_delete[0], 403)
             headers.update(
                 {"Origin": base, "X-Canvas-Token": request("/api/state")[1]["token"]}
             )
@@ -256,10 +260,28 @@ class AccountsContract(unittest.TestCase):
             self.assertEqual(request("/api/limits?account_key=missing")[0], 400)
             self.assertNotIn("SECRET", json.dumps(request("/api/accounts")[1]))
             self.assertTrue(all("projectRules" not in account for account in result["accounts"]))
-            self.assertEqual(
-                request("/api/agents/account", {"id": lead["id"], "account_key": key})[0],
-                200,
-            )
+            self.assertEqual(request("/api/agents/account", {
+                "id": lead["id"], "account_key": key
+            })[0], 200)
+            delete_request = str(uuid.uuid4())
+            status, deleted = request("/api/accounts/delete", {
+                "account_key": key, "request_id": delete_request
+            })
+            self.assertEqual(status, 200)
+            self.assertNotIn(key, [account["id"] for account in deleted["accounts"]])
+            self.assertIn(key, [account["id"] for account in deleted["archivedAccounts"]])
+            self.assertEqual(deleted["defaultAccountKey"], "default")
+            # Existing chat resolution still sees the retained tombstone row.
+            self.assertEqual(runtime.accounts.get(key)["accountId"], "account-two")
+            # Explicit add restores it. An exact retry of the old delete stays inert.
+            status, restored = request("/api/accounts/register", {"home": str(other)})
+            self.assertEqual(status, 200)
+            self.assertIn(key, [account["id"] for account in restored["accounts"]])
+            status, replayed = request("/api/accounts/delete", {
+                "account_key": key, "request_id": delete_request
+            })
+            self.assertEqual(status, 200)
+            self.assertIn(key, [account["id"] for account in replayed["accounts"]])
         finally:
             server.shutdown()
             server.server_close()
