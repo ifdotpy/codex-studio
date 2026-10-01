@@ -18,6 +18,7 @@ TRANSCRIPT_MAX_TOMBSTONES = 512
 TRANSCRIPT_ORDER_ID = '@order'
 TRANSCRIPT_META_ID = '@meta'
 TRANSCRIPT_FLOOR_ID = '@floor'
+TRANSCRIPT_REVISION_ID = '@revision'
 
 
 class SyncStore:
@@ -128,6 +129,30 @@ class SyncStore:
                 # uses data_version; entity sync is driven by sync_entities.
                 for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_watch_%'"):
                     db.execute('DROP TRIGGER "' + name + '"')
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
+                    db.execute('''CREATE TABLE IF NOT EXISTS runtime_transcript_revisions(
+                        agent TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)''')
+                    for table, key in (("runtime_agents", "id"), ("runtime_items", "agent")):
+                        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                            continue
+                        for operation in ("INSERT", "UPDATE", "DELETE"):
+                            trigger = f"sync_transcript_revision_{table}_{operation.lower()}"
+                            if operation == "INSERT":
+                                agent = f"NEW.{key}"
+                                body = f'''INSERT INTO runtime_transcript_revisions(agent,revision)
+                                    VALUES ({agent},1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1;'''
+                            elif operation == "DELETE":
+                                agent = f"OLD.{key}"
+                                body = f'''INSERT INTO runtime_transcript_revisions(agent,revision)
+                                    VALUES ({agent},1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1;'''
+                            else:
+                                old_agent, new_agent = f"OLD.{key}", f"NEW.{key}"
+                                body = f'''INSERT INTO runtime_transcript_revisions(agent,revision)
+                                    VALUES ({new_agent},1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1;
+                                    INSERT INTO runtime_transcript_revisions(agent,revision)
+                                    SELECT {old_agent},1 WHERE {old_agent}!={new_agent}
+                                    ON CONFLICT(agent) DO UPDATE SET revision=revision+1;'''
+                            db.execute(f"CREATE TRIGGER IF NOT EXISTS {trigger} AFTER {operation} ON {table} BEGIN {body} END")
                 path = db.execute('PRAGMA database_list').fetchone()[2]
             self._version_reader = sqlite3.connect('file:' + path + '?mode=ro', uri=True,
                                                     check_same_thread=False, timeout=10)
@@ -136,11 +161,38 @@ class SyncStore:
     def scope_lock(self, scope):
         return self.locks[zlib.crc32(str(scope).encode()) % SCOPE_STRIPES]
 
+    def transcript_revision(self, agent):
+        """Return the per-agent durable revision, or None on older stores."""
+        try:
+            with self.connection("SyncStore.transcript_revision") as db:
+                row = db.execute(
+                    "SELECT revision FROM runtime_transcript_revisions WHERE agent=?",
+                    (agent,),
+                ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return int(row[0]) if row else 0
+
+    def transcript_revision_matches(self, scope, revision, after):
+        with self.connection("SyncStore.transcript_revision_matches") as db:
+            row = db.execute(
+                "SELECT hash,deleted FROM sync_entities WHERE collection=? AND id=?",
+                (scope, TRANSCRIPT_REVISION_ID),
+            ).fetchone()
+            high = db.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection=?",
+                (scope,),
+            ).fetchone()[0]
+        if not row or row[1] or after < high:
+            return None
+        digest = hashlib.sha256(str(revision).encode()).hexdigest()
+        return high if row[0] == digest else None
+
     @staticmethod
     def document(row):
         return {'id': row[1], 'payload': row[2], 'seq': row[0], '_deleted': bool(row[3])}
 
-    def transcript_pull(self, scope, after, payload, deleted):
+    def transcript_pull(self, scope, after, payload, deleted, revision=None):
         """Project transcript deltas from bounded hash-only entity revisions."""
         from codex_sync_entities import next_sequence
 
@@ -161,6 +213,7 @@ class SyncStore:
         item_hashes = {key: digest(item) for key, item in items_by_id.items()} if not deleted else {}
         order_hash = digest(order) if not deleted else None
         metadata_hash = digest(metadata) if not deleted else digest({})
+        revision_hash = digest(revision) if revision is not None else None
 
         with self.connection("SyncStore.transcript_pull") as db:
             db.execute('BEGIN IMMEDIATE')
@@ -190,6 +243,8 @@ class SyncStore:
                     if key.startswith('item:') or key == TRANSCRIPT_ORDER_ID:
                         put(key, row[2], True)
                 put(TRANSCRIPT_META_ID, metadata_hash, True)
+                if revision_hash is not None:
+                    put(TRANSCRIPT_REVISION_ID, revision_hash, False)
             else:
                 live_keys = {'item:' + key for key in items_by_id}
                 for entity_id, value_hash in item_hashes.items():
@@ -199,6 +254,8 @@ class SyncStore:
                         put(key, row[2], True)
                 put(TRANSCRIPT_ORDER_ID, order_hash, False)
                 put(TRANSCRIPT_META_ID, metadata_hash, False)
+                if revision_hash is not None:
+                    put(TRANSCRIPT_REVISION_ID, revision_hash, False)
 
             # Tombstones are retained for a bounded replay window. The floor
             # marks cursors that must receive a complete replacement.
@@ -277,7 +334,7 @@ class SyncStore:
                    (next_sequence(db), scope, key, encoded, int(deleted)))
 
     def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0,
-             reset_support=False):
+             reset_support=False, priority_id=None):
         after = max(0, int(after))
         limit = min(500 if scope == 'state:entities:v1' else 100, max(1, int(limit)))
         with self.scope_lock(scope):
@@ -310,7 +367,16 @@ class SyncStore:
                                 'reset': True, 'floor': floor, 'maxSeq': high}
                     # A new browser has no rows to remove. Existing checkpoints
                     # still receive tombstones through the ordinary delta path.
-                    rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
+                    if after == 0 and fresh and isinstance(priority_id, str):
+                        rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
+                                         WHERE collection NOT LIKE 'transcript:%' AND seq>?
+                                           AND (deleted=0 OR seq>?)
+                                           AND (?=0 OR deleted=0 OR seq>?)
+                                         ORDER BY CASE WHEN collection='agent' AND id=? THEN 0 ELSE 1 END,
+                                                  seq LIMIT ?''',
+                                      (after, floor, int(bool(fresh)), initial_high, priority_id, limit)).fetchall()
+                    else:
+                        rows = db.execute('''SELECT collection,id,seq,payload,deleted FROM sync_entities
                                          WHERE collection NOT LIKE 'transcript:%' AND seq>?
                                            AND (deleted=0 OR seq>?)
                                            AND (?=0 OR deleted=0 OR seq>?)
@@ -326,10 +392,18 @@ class SyncStore:
                 payload = self.shared_snapshot(scope)
                 deleted = False
             elif scope.startswith('transcript:') and len(scope) < 300:
+                revision = self.transcript_revision(scope.split(':', 1)[1])
+                if revision is not None:
+                    checkpoint = self.transcript_revision_matches(scope, revision, after)
+                    if checkpoint is not None:
+                        return {'workspaceId': self.identity()['workspaceId'],
+                                'documents': [], 'checkpoint': {'seq': checkpoint}}
                 try:
                     payload, deleted = self.transcript(scope.split(':', 1)[1]), False
                 except ValueError:
                     payload, deleted = {}, True
+                if scope.startswith('transcript:'):
+                    return self.transcript_pull(scope, after, payload, deleted, revision)
             elif scope != 'drafts':
                 raise ValueError('Invalid sync scope')
             if scope.startswith('transcript:'):

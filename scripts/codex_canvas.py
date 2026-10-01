@@ -850,6 +850,13 @@ def make_server(canvas, port=0, public_origin=None):
             query = parse_qs(urlparse(self.path).query)
             entity_stream = query.get("scope") == ["state:entities:v1"]
             draft_stream = query.get("scope") == ["drafts"]
+            transcript_scope = query.get("scope", [""])[0]
+            transcript_id = (
+                transcript_scope[len("transcript:"):]
+                if transcript_scope.startswith("transcript:")
+                and len(transcript_scope) < 300
+                else None
+            )
             self.connection.settimeout(20)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -862,9 +869,17 @@ def make_server(canvas, port=0, public_origin=None):
                     if not self.trusted():
                         break
                     current = (store.entity_sequence() if entity_stream else
-                               store.draft_sequence() if draft_stream else store.generation())
+                               store.draft_sequence() if draft_stream else
+                               store.transcript_revision(transcript_id) if transcript_id is not None else
+                               store.generation())
+                    if current is None:
+                        current = store.generation()
                     if current != previous:
-                        data = json.dumps(current) if entity_stream or draft_stream else '"RESYNC"'
+                        data = (
+                            json.dumps(current)
+                            if entity_stream or draft_stream or transcript_id is not None
+                            else '"RESYNC"'
+                        )
                         self.wfile.write(("data: " + data + "\n\n").encode())
                     else:
                         self.wfile.write(b": heartbeat\n\n")
@@ -890,7 +905,8 @@ def make_server(canvas, port=0, public_origin=None):
                     return self.send(sync().pull(q.get("scope", "state"), q.get("after", 0),
                                                  q.get("limit", 100), q.get("fresh") == "1",
                                                  q.get("initialHigh", 0),
-                                                 q.get("reset") == "1"))
+                                                 q.get("reset") == "1",
+                                                 q.get("priorityId")))
                 if path.path == "/api/sync/stream":
                     return self.stream_sync()
                 if path.path == "/api/state":

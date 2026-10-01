@@ -102,14 +102,14 @@ try {
           );
         }
       };
-      window.publishDelivery = (id, payload) => {
+      window.publishDelivery = (id, revision) => {
         for (const stream of window.deliveryStreams) {
           const url = new URL(stream.url, location.href);
           if (
-            url.pathname === "/api/sync/stream" ||
-            url.searchParams.get("id") === id
+            url.pathname === "/api/sync/stream" &&
+            url.searchParams.get("scope") === `transcript:${id}`
           )
-            stream.onmessage?.({ data: JSON.stringify(payload) });
+            stream.onmessage?.({ data: String(revision) });
         }
       };
     });
@@ -190,8 +190,8 @@ try {
       history.set(id, payload);
       revisions.set(id, revisions.get(id) + 1);
       await page.evaluate(
-        ({ id, payload }) => window.publishDelivery(id, payload),
-        { id, payload },
+        ({ id, revision }) => window.publishDelivery(id, revision),
+        { id, revision: revisions.get(id) },
       );
     };
     const row = (text) =>

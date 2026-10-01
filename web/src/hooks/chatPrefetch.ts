@@ -59,6 +59,22 @@ export function useChatPrefetch(
           !agent.archived &&
           (agent.isLead || (!!root && agent.rootId === root)),
       );
+      const mobile = window.matchMedia("(max-width: 760px)").matches;
+      const historyTargets = mobile
+        ? new Set(
+            [...pool]
+              .sort(
+                (a, b) =>
+                  Number(!!b.isLead) - Number(!!a.isLead) ||
+                  Number(!!root && b.rootId === root) -
+                    Number(!!root && a.rootId === root) ||
+                  Number(!!b.inFlight) - Number(!!a.inFlight) ||
+                  b.created - a.created,
+              )
+              .slice(0, 2)
+              .map((agent) => agent.id),
+          )
+        : null;
       // Reserve one of the 32 cache entries for the selected chat. History still
       // covers the full pool, while progress warms the nearest switch targets.
       const progressTargets = new Set(
@@ -91,7 +107,15 @@ export function useChatPrefetch(
                 (progressChecked.get(agent.id) || 0) + interval,
               )
             : Infinity;
-          return { agent, version, previous, historyAt, progressAt };
+          return {
+            agent,
+            version,
+            previous,
+            historyAt: historyTargets && !historyTargets.has(agent.id)
+              ? Infinity
+              : historyAt,
+            progressAt,
+          };
         })
         .sort(
           (a, b) =>

@@ -13,6 +13,17 @@ from codex_sync import SyncStore, TRANSCRIPT_MAX_TOMBSTONES
 
 
 class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
+    @staticmethod
+    def prepare_revision(store, connect):
+        store._ensure_versions()
+        with connect() as db:
+            db.execute("INSERT INTO runtime_agents VALUES ('fixture', '{}')")
+
+    @staticmethod
+    def bump_revision(connect):
+        with connect() as db:
+            db.execute("UPDATE runtime_agents SET record=record WHERE id='fixture'")
+
     def test_cursor_returns_full_then_sparse_delta_for_lagging_cursor(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'sync.sqlite3'
@@ -21,6 +32,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
             anchor.execute('PRAGMA journal_mode=WAL')
             anchor.execute('PRAGMA wal_autocheckpoint=0')
             anchor.execute('CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)')
+            anchor.execute('CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT, payload TEXT)')
             anchor.commit()
             self.addCleanup(anchor.close)
 
@@ -35,10 +47,12 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                     db.close()
 
             store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            self.prepare_revision(store, connect)
             first = store.pull('transcript:fixture', 0)
             self.assertEqual(len(first['documents']), 1)
             cursor = first['checkpoint']['seq']
             self.assertEqual(len(json.loads(first['documents'][0]['payload'])['items']), 400)
+            self.assertEqual(store.transcript_revision('fixture'), 1)
             state = store.pull('state:entities:v1', 0)
             state_cursor = state['checkpoint']['seq']
             anchor.execute('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -49,6 +63,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
             # than being exactly one version behind.
             for i in range(5):
                 items[i] = {**items[i], 'text': items[i]['text'] + f'delta-{i}'}
+            self.bump_revision(connect)
             changed = store.pull('transcript:fixture', cursor)
             patch = json.loads(changed['documents'][0]['payload'])
             self.assertTrue(patch['delta'])
@@ -59,7 +74,29 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
             self.assertEqual(store.pull('transcript:fixture', next_cursor)['documents'], [])
             self.assertEqual(store.pull('state:entities:v1', state_cursor)['documents'], [])
 
+            # An unrelated runtime commit does not rebuild or advance this page.
+            calls = []
+            store.transcript = lambda key: calls.append(key) or {'items': items, 'agent': {'id': 'fixture'}}
+            with connect() as db:
+                db.execute("CREATE TABLE unrelated(id INTEGER)")
+                db.execute("INSERT INTO unrelated VALUES (1)")
+            revision_cursor = changed['checkpoint']['seq']
+            unchanged = store.pull('transcript:fixture', revision_cursor)
+            self.assertEqual(unchanged['documents'], [])
+            self.assertEqual(calls, [])
+
+            # A write to one transcript advances its agent revision and pulls its delta.
+            items[5] = {**items[5], 'text': items[5]['text'] + '-changed'}
+            with connect() as db:
+                db.execute("INSERT INTO runtime_items VALUES ('item-1', 'fixture', '{}')")
+            self.assertEqual(store.transcript_revision('fixture'), 3)
+            changed = store.pull('transcript:fixture', revision_cursor)
+            self.assertEqual(calls, ['fixture'])
+            self.assertEqual(json.loads(changed['documents'][0]['payload'])['items'][0]['id'], 'msg-5')
+            next_cursor = changed['checkpoint']['seq']
+
             items.reverse()
+            self.bump_revision(connect)
             reordered = store.pull('transcript:fixture', next_cursor)
             order_delta = json.loads(reordered['documents'][0]['payload'])
             self.assertEqual(order_delta['order'], [item['id'] for item in items])
@@ -93,11 +130,13 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                     db.close()
 
             store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            self.prepare_revision(store, connect)
             first = store.pull('transcript:fixture', 0)
             stale_cursor = first['checkpoint']['seq']
             cursor = stale_cursor
             for _ in range(TRANSCRIPT_MAX_TOMBSTONES + 2):
                 items.pop(0)
+                self.bump_revision(connect)
                 result = store.pull('transcript:fixture', cursor)
                 cursor = result['checkpoint']['seq']
 
@@ -111,7 +150,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                 tombstones = db.execute("""SELECT count(*) FROM sync_entities
                     WHERE collection='transcript:fixture' AND deleted=1""").fetchone()[0]
                 self.assertLessEqual(tombstones, TRANSCRIPT_MAX_TOMBSTONES)
-                self.assertLessEqual(count, len(items) + TRANSCRIPT_MAX_TOMBSTONES + 3)
+                self.assertLessEqual(count, len(items) + TRANSCRIPT_MAX_TOMBSTONES + 4)
                 self.assertEqual(payload_count or 0, 0)
 
     def test_five_400_item_pulls_send_only_changed_items(self):
@@ -137,6 +176,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                     db.close()
 
             store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            self.prepare_revision(store, connect)
             result = store.pull('transcript:fixture', 0)
             full_bytes = len(json.dumps(result, separators=(',', ':'), ensure_ascii=False).encode())
             bytes_after = full_bytes
@@ -144,6 +184,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
             delta_sizes = []
             for index in range(4):
                 items[index] = {**items[index], 'text': items[index]['text'] + ('x' * 20)}
+                self.bump_revision(connect)
                 result = store.pull('transcript:fixture', cursor)
                 payload = json.loads(result['documents'][0]['payload'])
                 self.assertEqual([item['id'] for item in payload['items']], [f'msg-{index:03d}'])
@@ -180,6 +221,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                     db.close()
 
             store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            self.prepare_revision(store, connect)
             full = store.pull('transcript:fixture', 0)
             cursor = full['checkpoint']['seq']
             anchor.execute('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -188,6 +230,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
             for index in range(54):
                 size = (40000 * (index + 1) // 54) - (40000 * index // 54)
                 items[0] = {**items[0], 'text': items[0]['text'] + ('x' * size)}
+                self.bump_revision(connect)
                 result = store.pull('transcript:fixture', cursor)
                 cursor = result['checkpoint']['seq']
             written = wal_path.stat().st_size - before
