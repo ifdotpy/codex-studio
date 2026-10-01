@@ -45,12 +45,14 @@ def search_history(runtime, agent, query, limit=100):
     results = []
     with runtime.lock, runtime.db() as db:
         runtime.checked_actor(db, agent)
-        from transcript_storage.storage import body as transcript_body, drain, has_pending
+        from transcript_storage.storage import backfill_addresses, backfill_items, body as transcript_body, drain, has_pending
+        backfill_addresses(db)
+        backfill_items(db)
         drain(db, force=True)
         db.commit()
         if has_pending(db, [agent]):
             raise ValueError('Transcript search is indexing. Retry shortly.')
-        for row in db.execute("SELECT i.record FROM runtime_items i WHERE i.agent=? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY i.created DESC,i.id DESC", (agent,)):
+        for row in db.execute("SELECT i.id,i.record FROM runtime_items i WHERE i.agent=? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY i.created DESC,i.id DESC", (agent,)):
             item = json.loads(row['record'])
             entries = item.get('inputs')
             candidates = []
@@ -59,7 +61,13 @@ def search_history(runtime, agent, query, limit=100):
                     event = db.execute('SELECT text FROM runtime_events WHERE id=? AND agent=?', (entry.get('id'), agent)).fetchone()
                     candidates.append({**item, **entry, 'id': agent + ':' + entry['id'] if entry.get('id') else item['id'] + ':' + str(index), 'sourceId': item['id'], 'clientMessageId': entry.get('id'), 'role': 'user' if entry.get('kind') == 'user' else item['role'], 'text': event[0] if event else entry.get('text', '')})
             else:
-                candidates.append({**item, 'sourceId': item['id'], 'text': transcript_body(db, item['id'], None if item.get('truncated') else item.get('text', ''), agent=agent)})
+                # The selected runtime_items row is already agent scoped. Avoid
+                # repeating that ownership lookup for each item in this bounded
+                # history walk; address/body reads remain by primary key/rowid.
+                full = transcript_body(db, row['id'], None if item.get('truncated') else item.get('text', ''))
+                if full is None and item.get('truncated'):
+                    raise ValueError('The complete transcript item is unavailable')
+                candidates.append({**item, 'sourceId': item['id'], 'text': full})
             for candidate in candidates:
                 text = candidate['text']
                 position = text.casefold().find(query.casefold())
@@ -88,6 +96,8 @@ def history_item(runtime, agent, identity):
                     'truncated': False if event else entry.get('truncated', False)}
         from transcript_storage.storage import body as transcript_body
         full = transcript_body(db, item['id'], None if item.get('truncated') else item.get('text', ''), agent=agent)
+        if full is None and item.get('truncated'):
+            raise ValueError('The complete transcript item is unavailable')
         return {**item, 'agent': agent, 'sourceId': item['id'],
             'text': full,
             'truncated': False if full is not None else item.get('truncated', False)}

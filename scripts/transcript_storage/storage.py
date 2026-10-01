@@ -7,6 +7,7 @@ import sqlite3
 STREAM_INDEX_DELAY_SECONDS = 2.0
 INDEX_BATCH_SIZE = 32
 ADDRESS_BATCH_SIZE = 8192
+ITEM_BACKFILL_BATCH_SIZE = 8192
 
 
 def initialize(db):
@@ -25,6 +26,7 @@ def initialize(db):
         CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search USING
             fts5(id UNINDEXED, agent UNINDEXED, kind UNINDEXED, body, tokenize='unicode61');
         CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS runtime_search_partial (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS runtime_search_rows (
             id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE
         );
@@ -33,9 +35,14 @@ def initialize(db):
             done INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS runtime_search_deletions (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS runtime_search_item_cursor (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), rowid INTEGER NOT NULL,
+            done INTEGER NOT NULL DEFAULT 0
+        );
     """)
     db.execute("INSERT OR IGNORE INTO runtime_search_address_cursor(singleton,rowid,done) VALUES (1,0,?)",
                (int(prior_address_map),))
+    db.execute("INSERT OR IGNORE INTO runtime_search_item_cursor(singleton,rowid,done) VALUES (1,0,0)")
 
 
 def persist(db, key, agent, kind, body, *, streaming=False, now=None):
@@ -77,6 +84,14 @@ def body(db, key, fallback=None, *, agent=None):
         row = None
     if row is not None:
         return row[0]
+    try:
+        partial = db.execute("SELECT 1 FROM runtime_search_partial WHERE id=?", (key,)).fetchone()
+    except sqlite3.OperationalError as error:
+        if "no such table" not in str(error):
+            raise
+        partial = None
+    if partial:
+        return None
     # Legacy FTS is read-only compatibility for items written before body storage.
     try:
         address = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
@@ -163,6 +178,11 @@ def has_pending(db, agents=None):
             return False
         where += " AND i.agent IN (" + ",".join("?" for _ in agents) + ")"
         params.extend(agents)
+    if db.execute(
+        "SELECT 1 FROM runtime_search_address_cursor WHERE singleton=1 AND done=0 "
+        "UNION ALL SELECT 1 FROM runtime_search_item_cursor WHERE singleton=1 AND done=0 LIMIT 1"
+    ).fetchone():
+        return True
     return db.execute(
         "SELECT 1 FROM runtime_search_pending p JOIN runtime_items i ON i.id=p.id WHERE " + where + " LIMIT 1",
         params,
@@ -190,9 +210,52 @@ def backfill_addresses(db, limit=ADDRESS_BATCH_SIZE):
                     db.execute("INSERT INTO runtime_search_rows VALUES (?,?)", (row[1], row[0]))
         done = int(len(rows) < max(1, int(limit)))
         db.execute("UPDATE runtime_search_address_cursor SET rowid=?,done=? WHERE singleton=1", (rows[-1][0], done))
+        if done:
+            db.execute("DELETE FROM runtime_search_deletions")
     else:
         db.execute("UPDATE runtime_search_address_cursor SET done=1 WHERE singleton=1")
         db.execute("DELETE FROM runtime_search_deletions")
+    return len(rows)
+
+
+def backfill_items(db, limit=ITEM_BACKFILL_BATCH_SIZE):
+    """Repair missing legacy FTS rows in bounded rowid pages after address migration."""
+    address_state = db.execute("SELECT done FROM runtime_search_address_cursor WHERE singleton=1").fetchone()
+    if address_state is not None and not address_state[0]:
+        return 0
+    state = db.execute("SELECT rowid,done FROM runtime_search_item_cursor WHERE singleton=1").fetchone()
+    if state is None or state[1]:
+        return 0
+    limit = max(1, int(limit))
+    try:
+        rows = db.execute(
+            "SELECT i.rowid,i.id,i.agent,i.record,a.id AS addressed,s.id AS indexed,p.id AS pending "
+            "FROM runtime_items i LEFT JOIN runtime_search_rows a ON a.id=i.id "
+            "LEFT JOIN runtime_search_indexed s ON s.id=i.id "
+            "LEFT JOIN runtime_search_pending p ON p.id=i.id "
+            "WHERE i.rowid>? ORDER BY i.rowid LIMIT ?", (state[0], limit)
+        ).fetchall()
+    except sqlite3.OperationalError as error:
+        if "no such table" not in str(error):
+            raise
+        db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
+        return 0
+    import json
+    for row in rows:
+        if row[4] or row[5] or row[6]:
+            continue
+        record = json.loads(row[3])
+        text = record.get("text", "")
+        if not isinstance(text, str):
+            text = ""
+        index_item(db, row[1], row[2], record.get("title", "message"), text)
+        if record.get("truncated"):
+            db.execute("INSERT OR IGNORE INTO runtime_search_partial VALUES (?)", (row[1],))
+    if rows:
+        done = int(len(rows) < limit)
+        db.execute("UPDATE runtime_search_item_cursor SET rowid=?,done=? WHERE singleton=1", (rows[-1][0], done))
+    else:
+        db.execute("UPDATE runtime_search_item_cursor SET done=1 WHERE singleton=1")
     return len(rows)
 
 

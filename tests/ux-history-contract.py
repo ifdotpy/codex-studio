@@ -69,6 +69,20 @@ class HistoryContract(unittest.TestCase):
             self.assertEqual(search_history(self.runtime,lead['id'],'no match')['results'],[])
         self.assertLess(steps[0],100000)
 
+    def test_missing_truncated_body_fails_visibly_for_search_and_history_item(self):
+        lead = self.lead()
+        identity = lead['id'] + ':missing-full-body'
+        with self.runtime.lock,self.runtime.db() as db:
+            self.runtime.item(db,lead['id'],'missing-full-body','assistant','x' * 25000)
+            row = db.execute('SELECT search_rowid FROM runtime_search_rows WHERE id=?',(identity,)).fetchone()
+            db.execute('DELETE FROM runtime_item_bodies WHERE id=?',(identity,))
+            db.execute('DELETE FROM runtime_search WHERE rowid=?',(row[0],))
+            db.execute('DELETE FROM runtime_search_rows WHERE id=?',(identity,))
+        with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
+            search_history(self.runtime,lead['id'],'not present')
+        with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
+            history_item(self.runtime,lead['id'],identity)
+
     def test_full_search_and_expanded_input_identity(self):
         lead = self.seed()
         with self.runtime.lock,self.runtime.db() as db:

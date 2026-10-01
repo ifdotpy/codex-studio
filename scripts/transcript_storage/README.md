@@ -19,11 +19,16 @@ checkpoint deadline, so a long stream is indexed periodically instead of
 postponing work forever. A completed native item writes its full text over the
 streamed prefix under the same item ID and refreshes FTS synchronously.
 
-The scheduler drains due markers and maps legacy FTS row addresses in small
-batches. A failed index write leaves
-the saved body and marker intact. Restart resumes the same queue. Startup only
-creates tables; it does not scan old conversations. Old items still read their
-full text from the legacy FTS row when present, then fall back to the item excerpt.
+The scheduler drains due markers, maps legacy FTS row addresses, and repairs
+legacy items that have no search row in small rowid batches. Startup only
+creates tables and cursors; it does not scan old conversations. A truncated
+legacy excerpt without a recoverable full body is marked partial and full-body
+readers report that it is unavailable. A failed index write leaves
+the saved body and marker intact. Restart resumes the same queues. Old items
+still read their full text from the legacy FTS row when present, then fall back
+to the item excerpt. While either migration cursor remains, search advances a
+bounded batch and reports the same retriable indexing-pending error rather than
+returning a possibly incomplete snapshot.
 
 Search force-drains one bounded batch before searching, including streaming
 markers whose checkpoint deadline has not arrived. If visible work remains, it

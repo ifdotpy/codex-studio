@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from transcript_storage.storage import backfill_addresses, body, drain, ensure_indexed, has_pending, index_item, initialize, persist, remove
+from transcript_storage.storage import backfill_addresses, backfill_items, body, drain, ensure_indexed, has_pending, index_item, initialize, persist, remove
 
 
 class TranscriptStorageTests(unittest.TestCase):
@@ -133,6 +133,48 @@ class TranscriptStorageTests(unittest.TestCase):
         self.assertEqual(backfill_addresses(legacy), 0)
         legacy.close()
 
+    def test_missing_legacy_index_rows_backfill_in_bounded_pages(self):
+        for index in range(3):
+            self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                            (f"old:{index}", "agent", json.dumps({"title": "assistant", "text": f"legacy{index}"}), index))
+        self.assertEqual(self.db.execute("SELECT done FROM runtime_search_item_cursor").fetchone()[0], 0)
+        self.assertEqual(backfill_addresses(self.db), 0)
+        self.assertEqual(backfill_items(self.db, limit=2), 2)
+        self.assertTrue(has_pending(self.db, ["agent"]))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_indexed").fetchone()[0], 2)
+        self.assertEqual(backfill_items(self.db, limit=2), 1)
+        self.assertFalse(has_pending(self.db, ["agent"]))
+        self.assertEqual(self.db.execute("SELECT body FROM runtime_search WHERE runtime_search MATCH 'legacy2'").fetchone()[0], "legacy2")
+
+    def test_item_migration_cursor_resumes_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.sqlite3"
+            db = sqlite3.connect(path)
+            db.row_factory = sqlite3.Row
+            db.execute("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT,created REAL)")
+            initialize(db)
+            for index in range(3):
+                db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                           (f"legacy:{index}", "agent", json.dumps({"text": f"body{index}"}), index))
+            backfill_addresses(db)
+            self.assertEqual(backfill_items(db, limit=2), 2)
+            db.commit()
+            db.close()
+            reopened = sqlite3.connect(path)
+            reopened.row_factory = sqlite3.Row
+            initialize(reopened)
+            self.assertEqual(backfill_items(reopened, limit=2), 1)
+            self.assertEqual(reopened.execute("SELECT done FROM runtime_search_item_cursor").fetchone()[0], 1)
+            self.assertEqual(reopened.execute("SELECT body FROM runtime_search WHERE runtime_search MATCH 'body2'").fetchone()[0], "body2")
+            reopened.close()
+
+    def test_missing_truncated_legacy_body_is_marked_partial_not_promoted(self):
+        record = {"title": "assistant", "text": "excerpt", "truncated": True}
+        self.db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)", ("old:partial", "agent", json.dumps(record), 1))
+        backfill_addresses(self.db)
+        backfill_items(self.db)
+        self.assertIsNone(body(self.db, "old:partial", agent="agent"))
+
     def test_failed_index_does_not_erase_committed_body_or_pending_row(self):
         self.item("a:3", "durable body", streaming=True, now=30)
         self.db.execute("DROP TABLE runtime_search")
@@ -161,6 +203,7 @@ class TranscriptStorageTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_deletions").fetchone()[0], 1)
         self.assertEqual(backfill_addresses(self.db, limit=32), 1)
         self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search WHERE id='legacy:gone'").fetchone()[0], 0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM runtime_search_deletions").fetchone()[0], 0)
 
     def test_recreated_identity_cancels_legacy_tombstone(self):
         self.db.execute("INSERT INTO runtime_search(id,agent,kind,body) VALUES (?,?,?,?)",
@@ -174,9 +217,13 @@ class TranscriptStorageTests(unittest.TestCase):
 
     def test_pending_freshness_includes_debounced_streams(self):
         self.item("a:5", "recently streamed", streaming=True, now=50)
+        backfill_addresses(self.db)
+        backfill_items(self.db)
         self.assertTrue(has_pending(self.db, ["agent"]))
         self.assertFalse(has_pending(self.db, ["other-agent"]))
         self.assertEqual(drain(self.db, now=50, force=True), 1)
+        self.assertEqual(backfill_addresses(self.db), 0)
+        self.assertEqual(backfill_items(self.db), 0)
         self.assertFalse(has_pending(self.db, ["agent"]))
 
     def test_body_and_new_index_updates_use_address_lookups(self):

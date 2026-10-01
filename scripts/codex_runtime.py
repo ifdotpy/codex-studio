@@ -2399,10 +2399,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_tick()
                 self.usage_resume_tick()
                 self.dispatch()
-                from transcript_storage.storage import backfill_addresses, drain
+                from transcript_storage.storage import backfill_addresses, backfill_items, drain
                 with self.lock, self.db() as db:
                     drain(db)
                     backfill_addresses(db)
+                    backfill_items(db)
             except Exception as error:
                 self.scheduler_error = {"at": time.time(), "error": str(error)}
                 try:
@@ -3125,6 +3126,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 previous = json.loads(row[0]) if row else {}
                 from transcript_storage.storage import body as transcript_body
                 prior_text = transcript_body(db, key, previous.get("text", ""), agent=a["id"]) if row else ""
+                if row and previous.get("truncated") and prior_text is None:
+                    raise ValueError("The complete streamed transcript item is unavailable")
                 text = prior_text + p.get("delta", "")
                 self.item(db, a["id"], p.get("itemId", "message"), "assistant", text,
                           streaming=True, turnId=p.get("turnId") or a.get("turnId"), phase=previous.get("phase"))
