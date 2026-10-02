@@ -3639,9 +3639,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and (not a.get("accountTransferId") or bool(a.get("lazyAccountTransfer")))
                     and not (a.get("nativeRelease") or {}).get("resetPending")
                     and not native_thread_block(a)
-                    and not ((a.get("startAttempt") or {}).get("events") and
-                             db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status IN "
-                                        "('reserved','dispatching','uncertain') LIMIT 1", (a["id"],)).fetchone())
+                    and not any(db.execute(
+                        "SELECT 1 FROM runtime_events WHERE id=? AND agent=? AND status IN "
+                        "('reserved','dispatching','uncertain')", (event_id, a["id"])).fetchone()
+                        for event_id in (a.get("startAttempt") or {}).get("events", []))
                     and str(Path(a["cwd"]).resolve()) not in reserved_cwds
                 ),
                 key=lambda a: (not a.get("inFlight"), a["parentId"] is not None, a["created"]),

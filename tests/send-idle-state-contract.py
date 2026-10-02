@@ -77,6 +77,41 @@ class IdleSendContract(unittest.TestCase):
                     start.assert_not_called()
                 self.assertEqual(self.runtime.delivery_receipt(receipt['id'])['status'], 'pending')
 
+    def test_historical_unknown_input_does_not_block_a_finished_attempt(self):
+        agent = self.lead(status='queued', inFlight=False, turnId=None,
+                          startAttempt={'id': 'finished', 'epoch': 0, 'submitted': True,
+                                        'events': ['finished-input'], 'turnId': 'finished-turn'})
+        with self.runtime.lock, self.runtime.db() as db:
+            for event_id, status in [('historical-input', 'uncertain'), ('finished-input', 'delivered')]:
+                db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                           (event_id, agent['id'], 'user', event_id, status, 1, 0, None, None))
+        self.runtime._fast_delivery_enabled = True
+        self.runtime.send(agent['id'], 'New task', 'fresh-input', delivery='after_tool')
+        f.eventually(lambda: self.runtime.delivery_receipt('fresh-input')['status'] == 'delivered',
+                     timeout=3)
+        self.assertEqual(len([method for method, _ in self.runtime.server.calls
+                              if method == 'turn/start']), 1)
+        self.assertEqual(self.runtime.delivery_receipt('historical-input')['status'], 'uncertain')
+        self.assertEqual(self.runtime.delivery_receipt('finished-input')['status'], 'delivered')
+        self.assertEqual(self.runtime.delivery_receipt('fresh-input')['status'], 'delivered')
+
+    def test_unresolved_current_attempt_still_blocks_a_new_dispatch(self):
+        for status in ('reserved', 'dispatching', 'uncertain'):
+            with self.subTest(status=status):
+                event_id = 'current-' + status
+                agent = self.lead(status='queued', inFlight=False, turnId=None,
+                                  startAttempt={'id': 'unknown', 'epoch': 0, 'submitted': True,
+                                                'events': [event_id]})
+                with self.runtime.lock, self.runtime.db() as db:
+                    db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                               (event_id, agent['id'], 'user', event_id, status, 1, 0, None, None))
+                receipt = self.runtime.send(agent['id'], 'New task', delivery='after_tool')
+                with patch.object(self.runtime.delivery_executor(), 'submit') as start:
+                    self.assertEqual(self.runtime.dispatch(agent['id']), 0)
+                    start.assert_not_called()
+                self.assertEqual(self.runtime.delivery_receipt(event_id)['status'], status)
+                self.assertEqual(self.runtime.delivery_receipt(receipt['id'])['status'], 'pending')
+
 
 if __name__ == '__main__':
     unittest.main()
