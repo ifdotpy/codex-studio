@@ -166,8 +166,36 @@ try {
     delta: "More streamed output.",
   });
   await page.waitForFunction(
-    () => Number(document.querySelector(".token-rate")?.dataset.rate) > 0,
+    (id) => window.__lastRateBatch?.rates[id]?.outputTokens > 80,
+    other.id,
   );
+  await page.waitForTimeout(500);
+  const heldFooterRate = await meter.getAttribute("data-rate");
+  const heldFooterSample = await page.evaluate(
+    () =>
+      window.__lastRateBatch?.rates[
+        document.querySelector(".token-rate")?.dataset.agent
+      ],
+  );
+  assert.ok(heldFooterSample?.outputTokens > 80);
+  notify(actor, "item/started", {
+    item: { id: "rate-tool-wait", type: "commandExecution", command: "wait" },
+  });
+  await page.waitForTimeout(1500);
+  const footerSampleAfterGap = await page.evaluate(
+    () =>
+      window.__lastRateBatch?.rates[
+        document.querySelector(".token-rate")?.dataset.agent
+      ],
+  );
+  assert.equal(await meter.getAttribute("data-rate"), heldFooterRate);
+  assert.equal(footerSampleAfterGap?.rate, heldFooterSample.rate);
+  assert.equal(
+    footerSampleAfterGap?.outputTokens,
+    heldFooterSample.outputTokens,
+  );
+  assert.equal(await meter.getAttribute("data-active"), "true");
+  assert.match(await meter.innerText(), /tok\/s$/);
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.waitForFunction(
     (id) => document.querySelector(".token-rate")?.dataset.agent === id,

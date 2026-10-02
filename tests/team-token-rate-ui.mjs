@@ -374,6 +374,46 @@ try {
       await page.waitForFunction(() =>
         window.__teamRateSources.some((source) => source.readyState === 1),
       );
+      clearInterval(timer);
+      timer = undefined;
+      await page.waitForTimeout(1000);
+      const firstMeter = meter(running[0].id);
+      const heldCardRate = await firstMeter.getAttribute("data-rate");
+      const heldCardSample = await page.evaluate(
+        (id) =>
+          window.__teamRateBatches.findLast((batch) => batch.rates[id])?.rates[
+            id
+          ],
+        running[0].id,
+      );
+      notify(running[0], "item/started", {
+        item: {
+          id: "tool-wait",
+          type: "commandExecution",
+          command: "wait",
+        },
+      });
+      await page.waitForTimeout(1500);
+      const cardSampleAfterGap = await page.evaluate(
+        (id) =>
+          window.__teamRateBatches.findLast((batch) => batch.rates[id])?.rates[
+            id
+          ],
+        running[0].id,
+      );
+      assert.equal(
+        await firstMeter.getAttribute("data-rate"),
+        heldCardRate,
+        "the Team card holds its last rate during a tool call",
+      );
+      assert.equal(cardSampleAfterGap?.rate, heldCardSample?.rate);
+      assert.equal(
+        cardSampleAfterGap?.outputTokens,
+        heldCardSample?.outputTokens,
+      );
+      assert.equal(await firstMeter.getAttribute("data-active"), "true");
+      assert.match(await firstMeter.innerText(), /tok\/s$/);
+      timer = setInterval(feed, 700);
       const injectOnBatch = async (rate) =>
         page.evaluate(
           async ({ teamId, ids, rate }) => {
