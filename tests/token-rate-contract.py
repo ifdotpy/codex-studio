@@ -19,13 +19,16 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
-    def test_window_smooths_bursts_and_decays_during_tool_wait(self):
+    def test_window_uses_active_spans_and_holds_rate_during_tool_wait(self):
         rate = TurnRate('one', 0)
-        for now in (.5, 1, 1.5, 2):
+        for now in (.25, .5, .75, 1):
             rate.text('x' * 40, now)
-        self.assertEqual(rate.snapshot(2)['rate'], 20)
-        self.assertEqual(rate.snapshot(4)['rate'], 10)
-        self.assertEqual(rate.snapshot(7)['rate'], 0)
+        self.assertEqual(rate.snapshot(1)['rate'], 40)
+        self.assertEqual(rate.snapshot(31)['rate'], 40)
+        for now in (31.25, 31.5, 31.75, 32):
+            rate.text('x' * 40, now)
+        self.assertEqual(rate.snapshot(32)['rate'], 40)
+        self.assertEqual(rate.snapshot(32)['outputTokens'], 80)
         self.assertLessEqual(len(rate.bins), 17)
 
     def test_late_count_corrects_interval_without_receipt_spike(self):

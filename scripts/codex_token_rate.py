@@ -7,6 +7,7 @@ import time
 
 WINDOW = 4.0
 BUCKET = .25
+IDLE_GAP = 1.0
 MAX_RATE = 1000.0
 _logged_implausible_correction = False
 
@@ -18,7 +19,10 @@ def count(value):
 class TurnRate:
     def __init__(self, turn, now):
         self.turn = turn
-        self.started = self.anchor = now
+        self.started = self.last_activity = now
+        self.active_time = 0.0
+        self.anchor = 0.0
+        self.has_activity = False
         self.active = True
         self.bins = deque()
         self.pending = 0.0
@@ -28,29 +32,49 @@ class TurnRate:
         self.messages = {}
         self.baseline = None
         self.last = None
+        self.rate = 0.0
 
-    def prune(self, now):
-        while self.bins and self.bins[0][0] < now - WINDOW:
+    def advance(self, now):
+        elapsed = max(0.0, now - self.last_activity)
+        if elapsed <= IDLE_GAP:
+            self.active_time += elapsed
+        else:
+            self.active_time += BUCKET
+        self.last_activity = now
+
+    def prune(self, active_time):
+        while self.bins and self.bins[0][0] < active_time - WINDOW:
             self.bins.popleft()
+
+    def update_rate(self):
+        self.prune(self.active_time)
+        tokens = sum(sample[1] + sample[2] for sample in self.bins)
+        self.rate = round(min(MAX_RATE, tokens / min(WINDOW, max(BUCKET, self.active_time))), 2)
 
     def text(self, text, now):
         if not self.active or not text:
             return
-        self.prune(now)
+        self.advance(now)
+        self.prune(self.active_time)
         tokens = len(text) / 4.0
-        stamp = math.floor(now / BUCKET) * BUCKET
+        stamp = math.floor(self.active_time / BUCKET) * BUCKET
         if not self.bins or self.bins[-1][0] != stamp:
             self.bins.append([stamp, 0.0, 0.0])  # confirmed, estimated
         self.bins[-1][2] += tokens
         self.pending += tokens
         self.estimated = True
+        self.has_activity = True
+        self.update_rate()
 
     def correct(self, total, now):
         if not self.active or total < self.actual or (self.has_actual and total == self.actual):
             return
-        self.prune(now)
         delta = total - self.actual
-        duration = max(BUCKET, now - self.anchor)
+        elapsed = max(0.0, now - self.last_activity)
+        active_time = self.active_time + (
+            elapsed if elapsed <= IDLE_GAP or not self.has_activity else BUCKET
+        )
+        duration = max(BUCKET, active_time - self.anchor)
         global _logged_implausible_correction
         if delta / duration > MAX_RATE:
             if not _logged_implausible_correction:
@@ -60,34 +84,37 @@ class TurnRate:
             return
         # Replace text estimates with the provider's count over the full
         # interval. A receipt must not turn into a one-bucket output burst.
+        self.active_time = active_time
+        self.last_activity = now
+        self.prune(self.active_time)
         self.bins = deque(sample for sample in self.bins if sample[0] <= self.anchor)
         for sample in self.bins:
             sample[2] = 0.0
-        interval = now - self.anchor
+        interval = self.active_time - self.anchor
         if delta and interval > 0:
-            start = max(self.anchor, now - WINDOW)
+            start = max(self.anchor, self.active_time - WINDOW)
             stamp = start
-            while stamp < now:
+            while stamp < self.active_time:
                 bucket = math.floor(stamp / BUCKET) * BUCKET
-                end = min(bucket + BUCKET, now)
+                end = min(bucket + BUCKET, self.active_time)
                 overlap = max(0.0, end - max(stamp, self.anchor))
                 if self.bins and self.bins[-1][0] == bucket:
                     self.bins[-1][1] += delta * overlap / interval
                 else:
                     self.bins.append([bucket, delta * overlap / interval, 0.0])
                 stamp = end
-        self.actual, self.pending, self.anchor = total, 0.0, now
+        self.actual, self.pending, self.anchor = total, 0.0, self.active_time
         self.estimated = False
         self.has_actual = True
+        self.has_activity = True
+        self.update_rate()
 
     def snapshot(self, now):
         if not self.active:
             return self.last
-        self.prune(now)
-        tokens = sum(sample[1] + sample[2] for sample in self.bins)
         value = {
             'turnId': self.turn, 'active': True, 'estimated': self.estimated,
-            'rate': round(min(MAX_RATE, tokens / min(WINDOW, max(BUCKET, now - self.started))), 2),
+            'rate': self.rate,
             'outputTokens': round(self.actual + self.pending, 2),
         }
         return value
