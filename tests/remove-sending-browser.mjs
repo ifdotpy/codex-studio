@@ -146,6 +146,10 @@ try {
     (await queue(lead.id)).items.map((item) => item.text),
     ["Keep after turn"],
   );
+  // A background desktop window may not receive animation frames.
+  await page.evaluate(() => {
+    window.requestAnimationFrame = () => 0;
+  });
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();

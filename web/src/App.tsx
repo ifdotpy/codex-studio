@@ -2042,6 +2042,7 @@ export default function App() {
       )}
       <Modal
         opened={studioSettingsOpen}
+        transitionProps={{ duration: 0 }}
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
         onClose={() => setStudioSettingsOpen(false)}
