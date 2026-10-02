@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from codex_token_rate import TokenRates, TurnRate
+from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
 from codex_streaming import StreamBuffer
 spec = importlib.util.spec_from_file_location('runtime_fixture', ROOT / 'tests/runtime-contract.py')
@@ -19,17 +19,47 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
-    def test_window_uses_active_spans_and_holds_rate_during_tool_wait(self):
-        rate = TurnRate('one', 0)
-        for now in (.25, .5, .75, 1):
-            rate.text('x' * 40, now)
-        self.assertEqual(rate.snapshot(1)['rate'], 40)
-        self.assertEqual(rate.snapshot(31)['rate'], 40)
-        for now in (31.25, 31.5, 31.75, 32):
-            rate.text('x' * 40, now)
-        self.assertEqual(rate.snapshot(32)['rate'], 40)
-        self.assertEqual(rate.snapshot(32)['outputTokens'], 80)
-        self.assertLessEqual(len(rate.bins), 17)
+    def test_reasoning_heavy_response_uses_full_model_generation_time_and_holds(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'worker', 'threadId': 'thread', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.observe(agent, 'thread/tokenUsage/updated', {
+            'turnId': 'turn', 'tokenUsage': {
+                'total': {'outputTokens': 1409, 'reasoningOutputTokens': 1072},
+                'last': {'outputTokens': 1409, 'reasoningOutputTokens': 1072},
+            },
+        }, 'a', 'c', 18.8)
+        self.assertEqual(rates.snapshot('worker')['rate'], 74.95)
+        self.assertEqual(rates.snapshot('worker')['outputTokens'], 1409)
+        self.assertEqual(rates.snapshot('worker')['rate'], 74.95, 'The last response rate holds during gaps')
+
+    def test_tool_and_user_input_spans_are_excluded(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'worker', 'threadId': 'thread', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        spans = [('commandExecution', 2, 4), ('mcpToolCall', 5, 8), ('dynamicToolCall', 10, 15)]
+        for index, (kind, started, completed) in enumerate(spans):
+            item = {'id': 'tool-' + str(index), 'type': kind}
+            rates.observe(agent, 'item/started', {'turnId': 'turn', 'item': item}, 'a', 'c', started)
+            rates.observe(agent, 'item/completed', {'turnId': 'turn', 'item': item}, 'a', 'c', completed)
+        rates.request_started('a', 'c', 'thread', 'question', 20)
+        rates.request_finished('a', 'c', 'question', 30)
+        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn', 'responseId': 'r', 'outputTokens': 1300}, 'a', 'c', 33)
+        self.assertEqual(rates.snapshot('worker')['rate'], 100)
+        self.assertEqual(rates.snapshot('worker')['outputTokens'], 1300)
+
+    def test_receive_time_wins_over_queued_dispatch_time(self):
+        message = {'_studioReceivedAt': 18.8, '_studioDispatchedAt': 50, 'params': {}}
+        self.assertEqual(event_time(message, 'thread/tokenUsage/updated'), 18.8)
+        self.assertIsNone(event_time({'_studioDispatchedAt': 50, 'params': {}}, 'thread/tokenUsage/updated'))
+        self.assertEqual(event_time({**message, 'params': {'completedAt': 18.7}}, 'item/completed'), 18.7)
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'worker', 'threadId': 'thread', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.observe(agent, 'thread/tokenUsage/updated', {
+            'turnId': 'turn', 'tokenUsage': {'total': {'outputTokens': 940}, 'last': {'outputTokens': 940}},
+        }, 'a', 'c', event_time(message, 'thread/tokenUsage/updated'))
+        self.assertEqual(rates.snapshot('worker')['rate'], 50)
 
     def test_late_count_corrects_interval_without_receipt_spike(self):
         rate = TurnRate('one', 0)
@@ -44,7 +74,7 @@ class RateContract(unittest.TestCase):
         self.assertTrue(rate.snapshot(8.2)['estimated'])
         self.assertEqual(rate.snapshot(8.2)['outputTokens'], 170)
 
-    def test_usage_without_text_spreads_output_over_its_interval(self):
+    def test_usage_without_text_uses_response_duration_and_finishes(self):
         rate = TurnRate('one', 0)
         rate.correct(80, 8)
         self.assertEqual(rate.snapshot(8)['rate'], 10)
@@ -52,7 +82,7 @@ class RateContract(unittest.TestCase):
         self.assertEqual(rate.snapshot(80)['rate'], 10)
         self.assertFalse(rate.snapshot(80)['active'])
 
-    def test_fast_usage_receipt_keeps_its_full_output_count(self):
+    def test_fast_usage_receipt_keeps_count_and_applies_rate_guard(self):
         rate = TurnRate('one', 0)
         rate.correct(50, .01)
         self.assertEqual(rate.snapshot(.01)['rate'], 200)
@@ -64,8 +94,8 @@ class RateContract(unittest.TestCase):
             rate.correct(745, .01)
             TurnRate('two', 0).correct(745, .01)
         self.assertEqual(len(log.output), 1)
-        self.assertEqual(rate.snapshot(.01)['outputTokens'], 0)
-        self.assertEqual(rate.snapshot(.01)['rate'], 0)
+        self.assertEqual(rate.snapshot(.01)['outputTokens'], 745)
+        self.assertEqual(rate.snapshot(.01)['rate'], 1000)
         rate.text('x' * 20000, .02)
         self.assertEqual(rate.snapshot(.02)['rate'], 1000)
 
@@ -192,6 +222,18 @@ class RateContract(unittest.TestCase):
         usage(turnOutputTokens=60)
         self.assertEqual(rates.snapshot('worker')['outputTokens'], 60)
         self.assertFalse(rates.snapshot('worker')['estimated'])
+
+    def test_claude_response_rate_uses_provider_output_count(self):
+        now = [0]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'claude', 'threadId': 'thread'}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'one'}}, 'a', 'c', 0)
+        now[0] = 4
+        rates.stream('provider/outputUsage', {
+            'threadId': 'thread', 'turnId': 'one', 'responseId': 'claude-response', 'outputTokens': 160,
+        }, 'a', 'c', now[0])
+        self.assertEqual(rates.snapshot('claude')['outputTokens'], 160)
+        self.assertEqual(rates.snapshot('claude')['rate'], 40)
 
 
 class NoScheduleRuntime(Runtime):

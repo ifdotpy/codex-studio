@@ -16,6 +16,7 @@ type Metadata = {
   accountLabel?: string;
   provider?: string;
   turnDurationMs?: number;
+  responseRate?: number;
   tokens?: { outputTokens?: number; reasoningOutputTokens?: number };
 };
 
@@ -134,6 +135,11 @@ export default function MessageInfo({
     rows.push([
       "Response reasoning tokens",
       metadata.tokens.reasoningOutputTokens.toLocaleString(),
+    ]);
+  if (knownNumber(metadata?.responseRate))
+    rows.push([
+      "Response output rate",
+      `${metadata.responseRate.toLocaleString(undefined, { maximumFractionDigits: 1 })} tok/s`,
     ]);
   if (cost?.pricingState === "ready" && knownNumber(cost.totalUSD))
     rows.push([

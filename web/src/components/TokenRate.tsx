@@ -105,7 +105,7 @@ export default function TokenRate({
       }
       title={
         visible
-          ? `${rate?.estimated ? "Estimate from streamed text. " : "Provider output token count. "}Average over the last four seconds.${active ? "" : " Last turn."}`
+          ? `${rate?.estimated ? "Estimate from streamed text. " : "Provider output tokens, including reasoning. "}Rate over model generation time. Tool time and user wait are excluded.${active ? "" : " Last turn."}`
           : undefined
       }
     >
