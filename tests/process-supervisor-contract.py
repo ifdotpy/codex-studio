@@ -331,6 +331,11 @@ class ProcessSupervisorContract(unittest.TestCase):
         first.close()
         self.release.touch()
         wait_for(lambda: self._journal_method_count('item/agentMessage/delta') == 1)
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            payload, = db.execute("SELECT payload FROM events WHERE kind='stdout' "
+                "AND payload LIKE '%item/agentMessage/delta%' ORDER BY sequence LIMIT 1").fetchone()
+        receipt = json.loads(payload).get('_studioSupervisorReceivedAt')
+        self.assertIsInstance(receipt, (int, float), 'Journal the supervisor receipt time before replay')
 
         entered, release_restore, constructed = threading.Event(), threading.Event(), threading.Event()
         observed, result, errors = [], [], []
@@ -650,6 +655,9 @@ class ProcessSupervisorContract(unittest.TestCase):
         fragments = [m['params']['delta'] for m in self.delivered
                      if m.get('method') == 'item/agentMessage/delta']
         self.assertEqual(fragments, list('abcdef'))
+        stamped = [m for m in self.delivered if m.get('method') == 'item/agentMessage/delta']
+        self.assertTrue(all(isinstance(m.get('_studioSupervisorReceivedAt'), (int, float)) for m in stamped))
+        self.assertTrue(all(m['_studioSupervisorReceivedAt'] <= m['_studioReceivedAt'] for m in stamped))
         self.assertFalse(server.proc.ack_pending)
         item = next(i for i in runtime.transcript(agent['id'])['items'] if i['id'].endswith(':burst-item'))
         self.assertEqual(item['text'], 'abcdef')

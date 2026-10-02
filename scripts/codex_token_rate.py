@@ -32,7 +32,7 @@ def event_time(message, method=None):
             value = count(source.get(field))
             if value is not None:
                 return value / 1000 if value > 100_000_000_000 else value
-    for field in ('_studioReceivedAt', '_studioSupervisorReceivedAt', '_studioSupervisorTime', '_studioSequenceAt'):
+    for field in ('_studioSupervisorReceivedAt', '_studioSupervisorTime', '_studioSequenceAt', '_studioReceivedAt'):
         value = count(message.get(field)) if isinstance(message, dict) else None
         if value is not None:
             return value / 1000 if value > 100_000_000_000 else value
@@ -40,7 +40,7 @@ def event_time(message, method=None):
 
 
 class TurnRate:
-    def __init__(self, turn, now):
+    def __init__(self, turn, now, timing_valid=True):
         self.turn = turn
         self.active = True
         self.last = None
@@ -50,7 +50,8 @@ class TurnRate:
         self.estimated = False
         self.baseline = None
         self.messages = {}
-        self.generation_started = now
+        self.timing_valid = timing_valid
+        self.generation_started = now if timing_valid else None
         self.generation_elapsed = 0.0
         self.tools = set()
 
@@ -59,12 +60,13 @@ class TurnRate:
             return
         self.pending += len(text) / 4.0
         self.estimated = True
-        self.rate = round(min(MAX_RATE, self.pending / max(MIN_DURATION, self.generation_time(now))), 2)
+        if self.timing_valid:
+            self.rate = round(min(MAX_RATE, self.pending / max(MIN_DURATION, self.generation_time(now))), 2)
 
     def start_tool(self, item_id, now):
         if not self.active or item_id in self.tools:
             return
-        if not self.tools:
+        if not self.tools and self.generation_started is not None:
             self.generation_elapsed += max(0.0, now - self.generation_started)
         self.tools.add(item_id)
 
@@ -74,10 +76,13 @@ class TurnRate:
         self.tools.remove(item_id)
         if not self.tools:
             self.generation_started = now
+            self.timing_valid = True
 
     def generation_time(self, now):
         if self.tools:
             return self.generation_elapsed
+        if self.generation_started is None:
+            return None
         return self.generation_elapsed + max(0.0, now - self.generation_started)
 
     def response(self, output, now, identity=None):
@@ -86,22 +91,24 @@ class TurnRate:
         prior = self.messages.get(identity) if identity is not None else None
         if prior and output <= prior[0]:
             return False
-        duration = prior[1] if prior else self.generation_time(now)
+        duration = prior[1] if prior and prior[1] is not None else self.generation_time(now)
         global _logged_implausible_correction
-        if output / max(MIN_DURATION, duration) > MAX_RATE:
+        if duration is not None and output / max(MIN_DURATION, duration) > MAX_RATE:
             if not _logged_implausible_correction:
                 logging.getLogger(__name__).warning('Capped token rate above %.0f tok/s', MAX_RATE)
                 _logged_implausible_correction = True
         current = prior[0] if prior else 0.0
-        self.rate = round(min(MAX_RATE, output / max(MIN_DURATION, duration)), 2)
+        self.rate = (round(min(MAX_RATE, output / max(MIN_DURATION, duration)), 2)
+                     if duration is not None and self.timing_valid else 0.0)
         self.actual += output - current
         if identity is not None:
             self.messages[identity] = (output, duration, self.rate)
         self.pending = 0.0
         self.estimated = False
-        if not prior:
+        if not prior and duration is not None:
             self.generation_elapsed = 0.0
             self.generation_started = now
+            self.timing_valid = True
         return True
 
     def correct(self, total, now):
@@ -110,6 +117,11 @@ class TurnRate:
         delta = total - self.actual
         if delta:
             self.response(delta, now)
+
+    def reconcile(self, total):
+        if not self.active or total < self.actual:
+            return
+        self.actual = total
 
     def snapshot(self, now):
         if not self.active:
@@ -130,6 +142,7 @@ class TokenRates:
         self.agents = {}
         self.requests = {}
         self.response_rates = OrderedDict()
+        self.pending_response_rates = OrderedDict()
 
     def request_started(self, account, connection, thread, request_id, at=None):
         now = at if count(at) is not None else self.clock()
@@ -170,13 +183,17 @@ class TokenRates:
             rate = entry['rate']
             if method == 'turn/started' or (method == 'item/started' and agent.get('inFlight') and turn == agent.get('turnId')):
                 if turn and (rate is None or turn != rate.turn):
-                    rate = entry['rate'] = TurnRate(turn, now)
+                    rate = entry['rate'] = TurnRate(turn, now, timing_valid=method == 'turn/started')
                     rate.baseline = entry['lifetime']
                     self.requests = {request_id: value for request_id, value in self.requests.items()
                                      if value[0] != key or value[1] == turn}
             item = params.get('item') or {}
             if method in {'item/started', 'item/completed'} and rate and rate.active and turn == rate.turn:
                 item_id = item.get('id') or params.get('itemId')
+                if method == 'item/started' and item.get('type') == 'agentMessage' and not rate.timing_valid:
+                    rate.generation_started = now
+                    rate.generation_elapsed = 0.0
+                    rate.timing_valid = True
                 if isinstance(item_id, str) and item.get('type') not in NON_TOOLS:
                     if method == 'item/started':
                         rate.start_tool(item_id, now)
@@ -190,19 +207,27 @@ class TokenRates:
                 total = count((usage.get('total') or {}).get('outputTokens'))
                 last = count((usage.get('last') or {}).get('outputTokens'))
                 if (rate is None or rate.turn != turn) and turn and agent.get('inFlight') and turn == agent.get('turnId'):
-                    rate = entry['rate'] = TurnRate(turn, now)
+                    rate = entry['rate'] = TurnRate(turn, now, timing_valid=False)
                     rate.baseline = entry['lifetime']
                 if rate and rate.active and (not turn or turn == rate.turn):
                     turn_output = count(params.get('turnOutputTokens'))
                     response_id = params.get('responseId')
+                    response_output = count(params.get('responseOutputTokens'))
+                    if response_output is None:
+                        response_output = count((params.get('tokenUsage') or {}).get('last', {}).get('outputTokens'))
+                    if response_id and response_output is not None:
+                        self._response(rate, response_output, now, response_id, agent['id'], agent.get('threadId'))
                     if turn_output is not None:
-                        delta = turn_output - rate.actual
-                        identity = response_id or ('turn', turn_output)
-                        self._response(rate, delta, now, identity, agent['id'], agent.get('threadId'))
+                        rate.reconcile(turn_output)
                     elif total is not None:
                         if rate.baseline is None:
                             rate.baseline = max(0, total - last) if last is not None else total
-                        turn_output = max(0, total - rate.baseline)
+                            rate.segment_turn_base = 0
+                        if entry['lifetime'] is not None and total < entry['lifetime']:
+                            rate.baseline = max(0, total - last) if last is not None else total
+                            rate.segment_turn_base = rate.actual
+                        turn_output = (getattr(rate, 'segment_turn_base', 0)
+                                       + max(0, total - rate.baseline))
                         delta = turn_output - rate.actual
                         identity = response_id or ('total', total)
                         if delta > 0:
@@ -222,12 +247,40 @@ class TokenRates:
         if output is None or not rate.response(output, now, identity):
             return
         sample = rate.messages.get(identity) if identity is not None else None
-        if isinstance(identity, str) and sample:
+        if isinstance(identity, str) and sample and sample[1] is not None:
             key = (agent_id, thread, rate.turn, identity)
             self.response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0], 'durationSeconds': sample[1]}
             self.response_rates.move_to_end(key)
             while len(self.response_rates) > 4096:
                 self.response_rates.popitem(last=False)
+        elif isinstance(identity, tuple) and sample and sample[1] is not None:
+            key = (agent_id, thread, rate.turn, identity)
+            self.pending_response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0],
+                                                'durationSeconds': sample[1], 'responseId': None}
+            self.pending_response_rates.move_to_end(key)
+            while len(self.pending_response_rates) > 4096:
+                self.pending_response_rates.popitem(last=False)
+
+    def associate_response_rate(self, agent_id, thread, turn, response_id, output_tokens):
+        output_tokens = count(output_tokens)
+        if not isinstance(response_id, str) or not response_id or output_tokens is None:
+            return False
+        with self.lock:
+            matches = [(key, sample) for key, sample in self.pending_response_rates.items()
+                       if key[:3] == (agent_id, thread, turn) and sample['outputTokens'] == output_tokens
+                       and sample['responseId'] is None]
+            if len(matches) != 1:
+                return False
+            key, sample = matches[0]
+            sample['responseId'] = response_id
+            self.response_rates[(agent_id, thread, turn, response_id)] = {
+                'rate': sample['rate'], 'outputTokens': sample['outputTokens'],
+                'durationSeconds': sample['durationSeconds']}
+            self.response_rates.move_to_end((agent_id, thread, turn, response_id))
+            while len(self.response_rates) > 4096:
+                self.response_rates.popitem(last=False)
+            del self.pending_response_rates[key]
+            return True
 
     def response_rate(self, agent_id, thread, turn, response_id):
         if not all(isinstance(value, str) and value for value in (agent_id, turn, response_id)):

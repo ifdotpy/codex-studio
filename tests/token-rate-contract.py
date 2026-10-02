@@ -146,6 +146,76 @@ class RateContract(unittest.TestCase):
         rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'active', 'tokenUsage': {
             'total': {'outputTokens': 100180}, 'last': {'outputTokens': 60}}}, 'a', 'new-connection')
         self.assertEqual(rates.snapshot('resumed')['outputTokens'], 300)
+        self.assertEqual(rates.snapshot('resumed')['rate'], 0)
+        self.assertFalse(rates.snapshot('resumed')['estimated'])
+
+    def test_resume_without_interval_never_displays_capped_exact_rate(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'resumed-exact', 'threadId': 'thread', 'turnId': 'turn', 'inFlight': True}
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn', 'tokenUsage': {
+            'total': {'outputTokens': 100000}, 'last': {'outputTokens': 1141}}}, 'a', 'c', 100)
+        sample = rates.snapshot('resumed-exact')
+        self.assertEqual((sample['outputTokens'], sample['rate'], sample['estimated']), (1141, 0, False))
+        rates = TokenRates(lambda: 0)
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 100)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn', 'tokenUsage': {
+            'total': {'outputTokens': 100000}, 'last': {'outputTokens': 1141}}}, 'a', 'c', 122.59)
+        self.assertEqual(rates.snapshot('resumed-exact')['rate'], 50.51)
+
+    def test_claude_turn_total_does_not_replace_final_response_rate(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'claude-correction', 'threadId': 'thread'}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn',
+            'responseId': 'one', 'outputTokens': 8}, 'a', 'c', 1)
+        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn',
+            'responseId': 'two', 'outputTokens': 12}, 'a', 'c', 2)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn',
+            'responseId': 'two', 'responseOutputTokens': 16, 'turnOutputTokens': 24,
+            'tokenUsage': {'last': {'outputTokens': 16}}}, 'a', 'c', 2)
+        self.assertEqual(rates.snapshot('claude-correction')['outputTokens'], 24)
+        self.assertEqual(rates.snapshot('claude-correction')['rate'], 16)
+        self.assertEqual(rates.response_rate('claude-correction', 'thread', 'turn', 'two')['outputTokens'], 16)
+
+    def test_supervisor_receipt_time_wins_over_backend_replay_time(self):
+        message = {'_studioSupervisorReceivedAt': 100.02, '_studioReceivedAt': 120,
+                   'params': {'turnId': 't'}}
+        self.assertEqual(event_time(message, 'thread/tokenUsage/updated'), 100.02)
+
+    def test_native_counter_reset_starts_segment_and_keeps_turn_count(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'reset', 'threadId': 'thread', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'old'}}, 'a', 'c', 0)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'old', 'tokenUsage': {
+            'total': {'outputTokens': 10000}, 'last': {'outputTokens': 10000}}}, 'a', 'c', 1)
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'new'}}, 'a', 'c', 2)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'new', 'tokenUsage': {
+            'total': {'outputTokens': 10100}, 'last': {'outputTokens': 100}}}, 'a', 'c', 3)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'new', 'tokenUsage': {
+            'total': {'outputTokens': 200}, 'last': {'outputTokens': 200}}}, 'a', 'c', 7)
+        self.assertEqual(rates.snapshot('reset')['outputTokens'], 300)
+        self.assertEqual(rates.snapshot('reset')['rate'], 50)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'new', 'tokenUsage': {
+            'total': {'outputTokens': 200}, 'last': {'outputTokens': 200}}}, 'a', 'c', 8)
+        self.assertEqual(rates.snapshot('reset')['outputTokens'], 300)
+
+    def test_unique_native_sample_can_link_exact_rollout_response_id(self):
+        rates = TokenRates(lambda: 0)
+        agent = {'id': 'codex', 'threadId': 'thread', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn', 'tokenUsage': {
+            'total': {'outputTokens': 1141}, 'last': {'outputTokens': 1141}}}, 'a', 'c', 20)
+        self.assertTrue(rates.associate_response_rate('codex', 'thread', 'turn', 'resp-1', 1141))
+        self.assertEqual(rates.response_rate('codex', 'thread', 'turn', 'resp-1'), {
+            'rate': 57.05, 'outputTokens': 1141, 'durationSeconds': 20})
+        self.assertFalse(rates.associate_response_rate('codex', 'thread', 'turn', 'resp-2', 1141))
+
+        ambiguous = TokenRates(lambda: 0)
+        ambiguous.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        for at, total in ((20, 1141), (40, 2282)):
+            ambiguous.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn', 'tokenUsage': {
+                'total': {'outputTokens': total}, 'last': {'outputTokens': 1141}}}, 'a', 'c', at)
+        self.assertFalse(ambiguous.associate_response_rate('codex', 'thread', 'turn', 'ambiguous', 1141))
 
     def test_claude_turn_output_corrections_are_cumulative(self):
         now = [0]
@@ -264,8 +334,8 @@ class WriteContract(unittest.TestCase):
                     writes = []
                     original_db = runtime.db
                     @contextlib.contextmanager
-                    def traced_db():
-                        with original_db() as db:
+                    def traced_db(**kwargs):
+                        with original_db(**kwargs) as db:
                             db.set_trace_callback(lambda sql: writes.append(sql.split()[0].upper()) if sql.split() and sql.split()[0].upper() in {'INSERT', 'UPDATE', 'DELETE', 'REPLACE'} else None)
                             yield db
                             db.set_trace_callback(None)
