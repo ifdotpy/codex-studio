@@ -163,4 +163,28 @@ with tempfile.TemporaryDirectory() as directory:
         AnalyticsMixin.analytics_agent(None, db, {**agent, 'name': 'Renamed'})
         assert json.loads(db.execute("SELECT record FROM analytics_agents").fetchone()[0])['name'] == 'Renamed'
     assert store.generation() > generation
+    # Each tab owns a draft branch; legacy device branches remain intact.
+    legacy = next(d for d in store.pull('drafts')['documents'] if d['id'] == 'phone:one')
+    def tab_row(writer, text):
+        key = 'phone:' + writer + ':one'
+        return {'newDocumentState': {'id': key, 'seq': 0, 'payload': json.dumps({
+            'id': key, 'device': 'phone', 'session': 'one', 'text': text})}}
+    assert store.push_drafts([tab_row('tab-a', 'First tab'), tab_row('tab-b', 'Second tab')]) == []
+    tabs = {d['id']: d for d in store.pull('drafts')['documents']}
+    assert tabs['phone:one'] == legacy
+    assert json.loads(tabs['phone:tab-a:one']['payload'])['text'] == 'First tab'
+    assert json.loads(tabs['phone:tab-b:one']['payload'])['text'] == 'Second tab'
+    assert len(store.push_drafts([tab_row('tab-a', 'Concurrent edit')])) == 1
+    for key in ['phone::one', 'phone:tab:a:one', 'other:tab-a:one', 'phone:tab-a:other']:
+        invalid = tab_row('tab-a', 'Rejected edit')
+        invalid['newDocumentState']['id'] = key
+        value = json.loads(invalid['newDocumentState']['payload'])
+        value['id'] = key
+        invalid['newDocumentState']['payload'] = json.dumps(value)
+        try:
+            store.push_drafts([invalid])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Invalid tab draft identity accepted: ' + key)
 print('sync contract passed')

@@ -12,9 +12,12 @@ const { chromium } = createRequire(join(root, "web/package.json"))(
 );
 const state = await mkdtemp(join(tmpdir(), "studio-draft-sync-"));
 const fixture = spawn(
-  "python3",
+  process.env.PYTHON_BIN || "python3",
   ["-B", join(root, "tests/simple-ui-fixture.py"), state],
-  { stdio: ["pipe", "pipe", "pipe"] },
+  {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
+  },
 );
 let browser,
   log = "";
@@ -85,6 +88,10 @@ try {
   for (const page of [desktop, phone])
     page.on("pageerror", (error) => errors.push(error.message));
   await desktop.goto(origin);
+  await desktop
+    .getByRole("button", { name: /^Other project/ })
+    .first()
+    .click();
   await desktop.locator("#message").fill("Draft from desktop");
   const waitText = (page, text) =>
     page.waitForFunction(
@@ -93,6 +100,11 @@ try {
       { timeout: 15000 },
     );
   await phone.goto(origin);
+  await phone.getByRole("button", { name: "Toggle conversations" }).click();
+  await phone
+    .getByRole("button", { name: /^Other project/ })
+    .first()
+    .click();
   await waitText(phone, "Draft from desktop");
   await phone.locator("#message").fill("Continue on phone");
   await waitText(desktop, "Continue on phone");

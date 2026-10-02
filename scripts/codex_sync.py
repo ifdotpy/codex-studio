@@ -569,8 +569,12 @@ class SyncStore:
                     raise ValueError('Invalid draft')
                 device, session = value.get('device'), value.get('session')
                 if (not isinstance(device, str) or not device
-                        or not isinstance(session, str) or not session
-                        or f'{device}:{session}' != key
+                        or not isinstance(session, str) or not session):
+                    raise ValueError('Draft identity does not match its key')
+                prefix, suffix = f'{device}:', f':{session}'
+                writer = key[len(prefix):-len(suffix)] if key.startswith(prefix) and key.endswith(suffix) else ''
+                tab_branch = bool(writer and ':' not in writer)
+                if (key != f'{device}:{session}' and not tab_branch
                         or ('id' in value and value.get('id') != key)):
                     raise ValueError('Draft identity does not match its key')
                 assumed = row.get('assumedMasterState')
