@@ -290,7 +290,7 @@ class AnalyticsHistoryMixin:
             return None, "unreadable"
         return path, None
 
-    def analytics_history_step(self, max_bytes=1024 * 1024, max_records=128):
+    def analytics_history_step(self, max_bytes=1048576, max_records=128):
         """Import one fair batch. Return whether complete lines advanced."""
         if not self._analytics_history_guard.acquire(blocking=False):
             return False
@@ -425,16 +425,33 @@ class AnalyticsHistoryMixin:
                             measurements = (event_payload_measurements(method, p) if kind == 'event'
                                             else model_payload_measurements(p) if kind == 'payload' else None)
                             collected.append((action, dict(context), measurements))
+                budget_values = {}
+                if hasattr(self, 'analytics_db'):
+                    # Native callbacks take the runtime writer before analytics.
+                    # Save exact budget receipts in that order before analytics SQL.
+                    for index, ((action, method, p, at), event_context, _) in enumerate(collected):
+                        if action != 'event' or method != 'thread/tokenUsage/updated':
+                            continue
+                        event_agent = {**a, 'turnId': event_context.get('turnId'),
+                                       'model': event_context.get('model'), 'effort': event_context.get('effort')}
+                        with self.lock, self.db() as budget_db:
+                            current = self.agent(a['id'], budget_db)
+                            if (current.get('threadId') != a['threadId']
+                                    or current.get('accountKey', 'default') != a.get('accountKey', 'default')):
+                                return False
+                            budget_values[index] = budget_capture(budget_db, event_agent, p, at=at, source='rollout')
                 with self.analytics_history_db() as db:
                     current = self.agent(a["id"], db)
                     if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
                         return False
-                    for (action, method, p, at), event_context, measurements in collected:
+                    for index, ((action, method, p, at), event_context, measurements) in enumerate(collected):
                         event_agent = {**a, "turnId": event_context.get("turnId"),
                                        "model": event_context.get("model"), "effort": event_context.get("effort")}
                         if action == "event":
+                            budget_args = ({'budget_capture_value': budget_values[index]}
+                                           if index in budget_values else {})
                             self.analytics_event(db, event_agent, method, p, at=at, source="rollout",
-                                                 measurements=measurements)
+                                                 measurements=measurements, **budget_args)
                         elif action == "payload":
                             self.analytics_model_payload(db, event_agent, p, at=at,
                                 turn_id=p.get("_analyticsTurnId"), source="rollout",

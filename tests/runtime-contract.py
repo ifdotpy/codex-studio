@@ -1177,8 +1177,8 @@ class RuntimeContract(unittest.TestCase):
         from contextlib import contextmanager
 
         @contextmanager
-        def traced():
-            with original() as db:
+        def traced(**options):
+            with original(**options) as db:
                 db.set_trace_callback(queries.append)
                 yield db
         self.runtime.db = traced

@@ -132,8 +132,8 @@ class NativeLookup(unittest.TestCase):
         task_queries = []
         original_db = self.runtime.db
         @contextmanager
-        def observed_db():
-            with original_db() as db:
+        def observed_db(**options):
+            with original_db(**options) as db:
                 db.set_trace_callback(lambda sql: task_queries.append(sql) if sql.startswith(
                     'SELECT record FROM runtime_tasks WHERE id=') else None)
                 yield db
@@ -158,8 +158,8 @@ class NativeLookup(unittest.TestCase):
         task_queries = []
         original_db = self.runtime.db
         @contextmanager
-        def observed_db():
-            with original_db() as db:
+        def observed_db(**options):
+            with original_db(**options) as db:
                 db.set_trace_callback(lambda sql: task_queries.append(sql) if sql.startswith(
                     'SELECT record FROM runtime_tasks WHERE id=') else None)
                 yield db
@@ -187,8 +187,8 @@ class NativeLookup(unittest.TestCase):
         plans = []
         original_db = self.runtime.db
         @contextmanager
-        def observed_db():
-            with original_db() as db:
+        def observed_db(**options):
+            with original_db(**options) as db:
                 db.set_trace_callback(lambda sql: plans.append(sql) if sql.startswith('SELECT record FROM runtime_agents WHERE json_extract') else None)
                 yield db
         with patch.object(self.runtime, 'db', side_effect=observed_db):

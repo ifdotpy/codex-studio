@@ -133,7 +133,7 @@ def consume_native_notification(runtime, message, account_key, connection_id):
     if method not in NOTICE_METHODS | HOOK_METHODS | TURN_NOTICE_METHODS | {'error', 'serverRequest/resolved'}:
         return False
     tid = p.get('threadId')
-    with runtime.lock, runtime.db() as db:
+    with runtime.notification_db() as db:
         if not runtime.connection_current(account_key, connection_id):
             return True
         if not tid and method in NOTICE_METHODS:

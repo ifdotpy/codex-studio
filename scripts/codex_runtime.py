@@ -47,6 +47,14 @@ from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_messag
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
+def sqlite_busy(error):
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    code = getattr(error, "sqlite_errorcode", None)
+    return (code & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} if code is not None
+            else str(error) in {"database is locked", "database table is locked"})
+
+
 def uid():
     return str(uuid.uuid4())
 
@@ -922,6 +930,22 @@ class AppServer:
         # The reader has ended and all preceding events have drained.
         callback(message)
 
+    def persistence_retry(self, operation):
+        """Retry only journal persistence, never a native request or callback."""
+        deadline = time.monotonic() + 60
+        delay = .05
+        while True:
+            try:
+                return operation()
+            except sqlite3.OperationalError as error:
+                if not sqlite_busy(error) or time.monotonic() >= deadline:
+                    raise
+                # The operation has left its DB and runtime lock scopes.
+                # Keep the current event until it commits; do not enqueue it again.
+                if self.reader_done.wait(min(delay, max(0, deadline - time.monotonic()))):
+                    raise
+                delay = min(.5, delay * 2)
+
     def dispatch(self):
         import queue
         deferred = None
@@ -949,7 +973,7 @@ class AppServer:
                 try:
                     already_applied = (sequence is not None and callback == self.notification
                                        and self.supervisor_event_applied
-                                       and self.supervisor_event_applied(sequence))
+                                       and self.persistence_retry(lambda: self.supervisor_event_applied(sequence)))
                 except Exception as error:
                     self.fail_transport(error)
                     self.callbacks.task_done()
@@ -1021,11 +1045,11 @@ class AppServer:
                         if len(callback_messages) > 1:
                             commit_message = {**commit_message,
                                               "_studioSupervisorBatchCount": len(callback_messages)}
-                        self.supervisor_commit(commit_message, sequence)
+                        self.persistence_retry(lambda: self.supervisor_commit(commit_message, sequence))
                     callback_ok = True
                 except Exception as error:
                     self.protocol_error(error)
-                    if sequence is not None:
+                    if sequence is not None or (isinstance(message, dict) and message.get("_studioReattachBarrier")):
                         self.fail_transport(error)
                 finally:
                     sequence = (callback_messages[-1].get("_studioSupervisorSequence")
@@ -1059,8 +1083,8 @@ class AppServer:
                             pass
                     for _ in range(task_count):
                         self.callbacks.task_done()
-                if sequence is not None and not callback_ok:
-                    self.fail_transport("Supervisor event was not durably applied")
+                if (sequence is not None or (isinstance(message, dict) and message.get("_studioReattachBarrier"))) and not callback_ok:
+                    self.fail_transport("Supervisor event or reattach barrier was not durably applied")
                     break
             if not self.closed:
                 self.died()
@@ -1262,6 +1286,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
                     json_extract(record,'$.threadId'),
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
@@ -1470,6 +1495,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "AND json_extract(record,'$.enabled')=1").fetchone())
             if federation_enabled:
                 self.federation().start()
+            if server_factory is AppServer:
+                from codex_connection_recovery import start as start_connection_recovery
+                start_connection_recovery(self)
         except BaseException as error:
             self._cleanup_failed_initialization(error)
             raise
@@ -1478,6 +1506,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         errors = []
         self.closed = True
         self.changed.set()
+        with self.start_lock:
+            servers = list({id(server): server for server in [
+                *self.servers.values(), *getattr(self, "_late_servers", []),
+            ]}.values())
+        for server in servers:
+            try:
+                server.close()
+            except BaseException as error:
+                errors.append(error)
+        from codex_connection_recovery import close as close_connection_recovery
+        close_connection_recovery(self)
+        for server in servers:
+            if not server.join_callbacks(timeout=30):
+                original_error.add_note("Initialization callbacks did not drain; keeper and lease retained")
+                return
         federation = getattr(self, "_federation_service", None)
         if federation is not None:
             try:
@@ -1558,7 +1601,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return self._voice_store
 
     @contextmanager
-    def db(self):
+    def db(self, *, busy_timeout=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
         reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
@@ -1588,6 +1631,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local.depth = 1
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
         pending[db] = []
+        previous_timeout = None
+        if busy_timeout is not None:
+            previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+            db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
         try:
             with sqlite_scope(db, "Runtime.db"):
                 yield db
@@ -1608,10 +1655,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         finally:
             from codex_payloads import release_db_writer_lock
             release_db_writer_lock(db)
+            if previous_timeout is not None:
+                db.execute("PRAGMA busy_timeout=" + str(previous_timeout))
             if reusable:
                 local.depth = 0
             else:
                 db.close()
+
+    @contextmanager
+    def notification_db(self):
+        """Wait for the main writer before running lifecycle effects."""
+        outer_owner = self.lock._is_owned()
+        deadline = time.monotonic() + 60
+        delay = .05
+        while True:
+            entered = False
+            try:
+                with self.lock, self.db(busy_timeout=50) as db:
+                    db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
+                    entered = True
+                    yield db
+                return
+            except sqlite3.OperationalError as error:
+                # A body or commit failure is uncertain. Never run it twice.
+                if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
+                    raise
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+            delay = min(.5, delay * 2)
 
     @contextmanager
     def read_db(self):
@@ -1959,11 +2029,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          + (', '.join(candidates) if candidates else 'none'))
 
     def connect(self, account_key="default", *, for_login=False):
+        if self.closed:
+            raise RuntimeError("Runtime is stopped")
         account = self.accounts.get(account_key)
         provider = account.get("provider", "codex")
         if provider == "claude" and account.get("status") != "ready":
             raise ValueError(account.get("error") or "Sign in with claude auth login first")
         home = self.accounts.home(account_key, for_login=for_login) if self.factory is AppServer and provider != "claude" else None
+        if provider == "codex":
+            # A healthy account need not wait for another account's startup.
+            # Update reservations and transport retirement also hold Runtime.lock.
+            with self.lock:
+                from codex_native_tools import assert_connect_allowed, account_reserved
+                assert_connect_allowed(self, account_key)
+                server = self.servers.get(account_key)
+                if (not account_reserved(self, account_key) and not self.closed and account_key not in self.offline_accounts
+                        and server is not None and not getattr(server, "closed", False)):
+                    return server
         selected = None
         while True:
             with self.start_lock:
@@ -2015,10 +2097,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         else:
                             # Existing fixtures implement the original four-argument factory.
                             server = self.factory(root, *callbacks)
-                        self.servers[account_key] = server
+                        # Close waits for start_lock before collecting transports.
+                        # Do not take Runtime.lock while holding this startup gate.
+                        stopped = self.closed
+                        if stopped:
+                            self.__dict__.setdefault("_late_servers", []).append(server)
+                        else:
+                            self.servers[account_key] = server
+                            if account_key == "default":
+                                self.server = server
+                        if stopped:
+                            server.close()
+                            if (not self.lock._is_owned() and not server.join_callbacks(timeout=30)):
+                                raise RuntimeError("Late native callbacks did not drain; runtime lease retained")
+                            raise RuntimeError("Runtime is stopped")
                         startup_memory_mark("account-server-start:" + account_key)
-                        if account_key == "default":
-                            self.server = server
                     return server
             if needs_executable:
                 from codex_native_runtime import executable_for
@@ -2137,8 +2230,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         )
 
     def supervisor_event_applied(self, handle, sequence):
-        with self.db() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+        # Journal lookup is a committed WAL read, not a schema write per event.
+        with self.read_db() as db:
             row = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchone()
             return bool(row and sequence <= row[0])
 
@@ -2148,18 +2241,48 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"}:
             stream = getattr(self, "_stream_buffer", None)
             if stream is not None and isinstance(params, dict):
-                with self.lock, self.db() as db:
+                captures = []
+                with self.lock, self.db(busy_timeout=50) as db:
+                    # Acquire the runtime writer before analytics or buffer effects.
+                    # This no-op targets only main, not the attached analytics DB.
+                    db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle=?", (handle,))
                     batch = message.get("_studioSupervisorBatchCount", 1) > 1
                     stream.flush_locked(db, account=account,
                                         thread_id=None if batch else params.get("threadId"),
                                         item_id=None if batch else params.get("itemId"),
                                         turn_id=None if batch else params.get("turnId"),
-                                        force=True, supervisor_handle=handle, supervisor_sequence=sequence)
+                                        force=True, supervisor_handle=handle, supervisor_sequence=sequence,
+                                        analytics_captures=captures)
+                # Keep analytics in event order, but outside the user-send lock.
+                # Failed runtime commits never capture the same deltas twice.
+                for capture in captures:
+                    try:
+                        self.capture_stream_analytics(capture)
+                    except Exception as error:
+                        # Text and cursor are durable. Analytics is independent;
+                        # report its failure without replaying the native event.
+                        self._stream_analytics_error = {"at": time.time(), "handle": handle,
+                                                        "sequence": sequence, "error": str(error)[:500]}
+                        print("Stream analytics capture failed: " + json.dumps(self._stream_analytics_error),
+                              file=sys.stderr)
                 return
-        with self.db() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)")
+        with self.db(busy_timeout=50) as db:
             db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
                        (handle, sequence))
+
+    def capture_stream_analytics(self, capture):
+        deadline = time.monotonic() + 60
+        delay = .05
+        while True:
+            try:
+                with self.analytics_db() as db:
+                    capture(db)
+                return
+            except sqlite3.OperationalError as error:
+                if not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
+                    raise
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+            delay = min(.5, delay * 2)
 
     def reply(self, message, account_key="default", connection_id=None):
         # Never deliver an old approval or tool result to a replacement process.
@@ -2175,6 +2298,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         token_rates(self).request_finished(account_key, connection_id, message.get("id"), time.time())
 
     def disconnected(self, account_key="default", connection_id=None):
+        from codex_connection_recovery import supervisor_identity
         with self.lock, self.db() as db:
             if connection_id is not None and self.connection_ids.get(account_key) != connection_id:
                 return
@@ -2202,6 +2326,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             "threadId": a.get("threadId"), "turnId": a.get("turnId"),
                             "startAttempt": start_attempt,
                             "connectionId": connection_id, "autoWake": bool(a.get("autoWake")),
+                            "supervisor": supervisor_identity(self.servers.get(account_key)),
                             "at": time.time(),
                         }
                         a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
@@ -4565,7 +4690,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if method in {'error', 'model/safetyBuffering/updated'} and isinstance(p, dict) and p.get('threadId'):
             stream = getattr(self, '_stream_buffer', None)
             if stream:
-                with self.lock, self.db() as db:
+                with self.notification_db() as db:
                     stream.flush_locked(db, account=account_key, thread_id=p['threadId'],
                                         turn_id=p.get('turnId'), force=True)
         if consume_native_notification(self, message, account_key, connection_id):
@@ -4656,7 +4781,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         tid = p.get("threadId") or p.get("thread", {}).get("id")
         if not tid:
             return
-        with self.lock, self.db() as db:
+        with self.notification_db() as db:
             if not self.connection_current(account_key, connection_id):
                 return
             row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
@@ -7610,6 +7735,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.ui_condition.notify_all()
         self.changed.set()
         self.scheduler.join()
+        # Let any pre-stop constructor close and register its unpublished server.
+        with self.start_lock:
+            pass
         from codex_native_tools import wait_updates
         wait_updates(self)
         native_updates = getattr(self, "native_runtime_updates", None)
@@ -7618,6 +7746,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             servers = list({id(server): server for server in [
                 *self.servers.values(),
+                *getattr(self, "_late_servers", []),
                 *(entry["server"] for entry in getattr(self, "_native_tools_retiring", {}).values()),
             ]}.values())
         transfers = getattr(self, "_account_transfers", None)
@@ -7625,6 +7754,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             transfers.close()
         for server in servers:
             server.close()
+        from codex_connection_recovery import close as close_connection_recovery
+        close_connection_recovery(self)
         with self.lock:
             monitor_threads = list(self.monitor_threads)
         for worker in monitor_threads:
