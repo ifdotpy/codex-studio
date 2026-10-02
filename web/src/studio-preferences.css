@@ -1,9 +1,12 @@
 :root {
+  --studio-content-width-ratio: 1;
+}
+
+:root:not([data-studio-typography="original"]) {
   --studio-font-family:
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --studio-sidebar-font-size: 14px;
   --studio-main-font-size: 14px;
-  --studio-content-width-ratio: 1;
 }
 
 .workspace #conversation {
@@ -12,12 +15,13 @@
   );
 }
 
-#sidebar {
+:root:not([data-studio-typography="original"]) #sidebar {
   font-family: var(--studio-font-family);
   font-size: var(--studio-sidebar-font-size);
 }
 
-#sidebar
+:root:not([data-studio-typography="original"])
+  #sidebar
   :is(
     .chat-row,
     .row-copy strong,
@@ -32,12 +36,13 @@
   font-size: var(--studio-sidebar-font-size);
 }
 
-.workspace {
+:root:not([data-studio-typography="original"]) .workspace {
   font-family: var(--studio-font-family);
   font-size: var(--studio-main-font-size);
 }
 
-.workspace
+:root:not([data-studio-typography="original"])
+  .workspace
   :is(
     input:not(.xterm-helper-textarea),
     textarea:not(.xterm-helper-textarea),
@@ -47,7 +52,9 @@
   font-family: var(--studio-font-family);
 }
 
-#sidebar :is(button, input, textarea, select) {
+:root:not([data-studio-typography="original"])
+  #sidebar
+  :is(button, input, textarea, select) {
   font-family: var(--studio-font-family);
 }
 
@@ -72,23 +79,29 @@
   scrollbar-gutter: stable both-edges;
 }
 
-#conversation #messages .prose,
-#conversation #composer #message,
-#conversation .agent-panel .progress-markdown {
+:root:not([data-studio-typography="original"])
+  #conversation
+  :is(#messages .prose, #composer #message, .agent-panel .progress-markdown) {
   font-size: var(--studio-main-font-size);
 }
 
-#conversation-title,
-.workspace-header .conversation-meta #conversation-status {
+:root:not([data-studio-typography="original"])
+  :is(
+    #conversation-title,
+    .workspace-header .conversation-meta #conversation-status
+  ) {
   font-size: var(--studio-main-font-size);
 }
 
-#sidebar code,
-#conversation code,
-#conversation pre,
-#conversation kbd,
-.xterm,
-.xterm * {
+:root:not([data-studio-typography="original"])
+  :is(
+    #sidebar code,
+    #conversation code,
+    #conversation pre,
+    #conversation kbd,
+    .xterm,
+    .xterm *
+  ) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -182,7 +195,10 @@
 }
 
 @media (max-width: 760px) {
-  #conversation #composer #message {
+  :root:not([data-studio-typography="original"])
+    #conversation
+    #composer
+    #message {
     font-size: max(16px, var(--studio-main-font-size));
   }
 

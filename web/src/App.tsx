@@ -251,6 +251,7 @@ export default function App() {
   }, [studioPreferences.theme, colorScheme, setColorScheme]);
   useEffect(() => {
     const root = document.documentElement;
+    root.dataset.studioTypography = studioPreferences.typography;
     root.style.setProperty(
       "--studio-font-family",
       fontFamilies[studioPreferences.fontFamily].css,
@@ -263,6 +264,11 @@ export default function App() {
       "--studio-main-font-size",
       `${studioPreferences.mainFontSize}px`,
     );
+    if (studioPreferences.typography === "original") {
+      root.style.removeProperty("--studio-font-family");
+      root.style.removeProperty("--studio-sidebar-font-size");
+      root.style.removeProperty("--studio-main-font-size");
+    }
     root.style.setProperty(
       "--studio-content-width-ratio",
       String(studioPreferences.contentWidth / 100),
@@ -2088,9 +2094,36 @@ export default function App() {
                 <section className="settings-group" aria-label="Fonts">
                   <h2>Fonts</h2>
                   <div className="settings-field">
+                    <span className="settings-label">Text style</span>
+                    <NativeSelect
+                      aria-label="Studio text style"
+                      value={studioPreferences.typography}
+                      data={[
+                        {
+                          value: "original",
+                          label: "Original fonts and sizes",
+                        },
+                        { value: "custom", label: "Custom fonts and sizes" },
+                      ]}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          typography: event.currentTarget
+                            .value as StudioPreferences["typography"],
+                        })
+                      }
+                    />
+                    <small>
+                      Original uses the previous fonts and separate sizes for
+                      titles, text, and status labels. Custom keeps your font
+                      settings.
+                    </small>
+                  </div>
+                  <div className="settings-field">
                     <span className="settings-label">Font family</span>
                     <NativeSelect
                       aria-label="Studio font family"
+                      disabled={studioPreferences.typography === "original"}
                       value={studioPreferences.fontFamily}
                       data={Object.entries(fontFamilies).map(
                         ([value, font]) => ({ value, label: font.label }),
@@ -2111,6 +2144,7 @@ export default function App() {
                     </span>
                     <Slider
                       thumbLabel="Sidebar font size"
+                      disabled={studioPreferences.typography === "original"}
                       min={12}
                       max={24}
                       step={1}
@@ -2130,6 +2164,7 @@ export default function App() {
                     </span>
                     <Slider
                       thumbLabel="Main font size"
+                      disabled={studioPreferences.typography === "original"}
                       min={12}
                       max={24}
                       step={1}
