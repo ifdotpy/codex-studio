@@ -1113,7 +1113,7 @@ class AppServer:
                     if sequence is not None:
                         message["_studioSupervisorSequence"] = sequence
                     if "method" in message:
-                        message["_studioReceivedAt"] = time.time()
+                        message.setdefault("_studioReceivedAt", time.time())
                         if "id" in message:
                             if message["method"] == "currentTime/read":
                                 if self.supervisor_mode:

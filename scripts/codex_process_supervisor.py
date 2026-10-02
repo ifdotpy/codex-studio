@@ -264,6 +264,8 @@ class Child:
                     value = json.loads(line)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     value = {"supervisorRaw": line}
+                if isinstance(value, dict) and isinstance(value.get("method"), str):
+                    value["_studioSupervisorReceivedAt"] = time.time()
                 if value.get("id") == 1 and "result" in value:
                     with self.process.supervisor.journal.db() as db:
                         db.execute("UPDATE handles SET init_result=? WHERE id=?",

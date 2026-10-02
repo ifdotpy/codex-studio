@@ -23,10 +23,11 @@ class MessageInfoContract(unittest.TestCase):
     event = fixture.AnalyticsContract.event
     data = fixture.AnalyticsContract.data
 
-    def seed(self):
+    def seed(self, identified=True):
         self.event('turn/started', {}, at=100)
         self.event('item/completed', {'item': {'id': 'answer', 'type': 'agentMessage', 'text': 'Answer'}}, at=101)
-        self.event('thread/tokenUsage/updated', {'responseId': 'response-one', 'requestUsage': {'outputTokens': 40, 'reasoningOutputTokens': 10},
+        self.event('thread/tokenUsage/updated', {**({'responseId': 'response-one'} if identified else {}),
+                   'requestUsage': {'outputTokens': 40, 'reasoningOutputTokens': 10},
                    'rawTokenUsageRecord': {'response_id': 'response-one'},
                    'tokenUsage': {'last': {'outputTokens': 40, 'reasoningOutputTokens': 10}, 'total': {'totalTokens': 80}}}, at=102)
         self.event('turn/completed', {'turn': {'id': self.agent['turnId'], 'status': 'completed'}, 'durationMs': 2500}, at=103)
@@ -35,9 +36,23 @@ class MessageInfoContract(unittest.TestCase):
         return self.data(view='message-info', item='answer', turn=self.agent['turnId'], **options)
 
     def test_read_only_exact_turn_metadata_and_response_usage(self):
-        self.seed()
+        self.seed(identified=False)
         with self.runtime.analytics_read_connection() as db:
             before = list(db.execute('SELECT id,record FROM analytics_turns'))
+        rates = TokenRates(lambda: 0)
+        actor = {'id': self.agent['id'], 'threadId': self.agent['threadId'], 'inFlight': True}
+        rates.observe(actor, 'turn/started', {'turn': {'id': self.agent['turnId']}},
+                      'default', 'connection', 100)
+        rates.observe(actor, 'thread/tokenUsage/updated', {
+            'turnId': self.agent['turnId'],
+            'tokenUsage': {'last': {'outputTokens': 40}, 'total': {'outputTokens': 40}},
+        }, 'default', 'connection', 102)
+        self.runtime._token_rates = rates
+        self.event('thread/tokenUsage/updated', {'responseId': 'response-one',
+            'requestUsage': {'outputTokens': 40, 'reasoningOutputTokens': 10},
+            'rawTokenUsageRecord': {'response_id': 'response-one'},
+            'tokenUsage': {'last': {'outputTokens': 40, 'reasoningOutputTokens': 10},
+                           'total': {'totalTokens': 80, 'outputTokens': 40}}}, at=102, source='rollout')
         original_read = self.runtime.analytics_read_connection
         @contextmanager
         def read_only():
@@ -53,15 +68,6 @@ class MessageInfoContract(unittest.TestCase):
         self.assertEqual(result['accountLabel'], 'Codex')
         self.assertEqual(result['turnDurationMs'], 2500)
         self.assertEqual(result['tokens'], {'outputTokens': 40, 'reasoningOutputTokens': 10})
-        rates = TokenRates(lambda: 0)
-        actor = {'id': self.agent['id'], 'threadId': self.agent['threadId'], 'inFlight': True}
-        rates.observe(actor, 'turn/started', {'turn': {'id': self.agent['turnId']}},
-                      'default', 'connection', 100)
-        rates.observe(actor, 'thread/tokenUsage/updated', {
-            'turnId': self.agent['turnId'], 'responseId': 'response-one',
-            'tokenUsage': {'last': {'outputTokens': 40}, 'total': {'outputTokens': 40}},
-        }, 'default', 'connection', 102)
-        self.runtime._token_rates = rates
         self.assertEqual(self.info()['responseRate'], 20)
         self.assertEqual(result['at'], 101)
         with self.runtime.analytics_read_connection() as db:

@@ -45,9 +45,10 @@ try {
       process.env.CHROME_BIN ||
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   });
-  const page = await browser.newPage({
+  const context = await browser.newContext({
     viewport: { width: 1200, height: 900 },
   });
+  const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -98,17 +99,24 @@ try {
   await page.locator(`[data-chat="${other.id}"]`).click();
   await meter.waitFor({ state: "attached" });
   assert.equal(await meter.innerText(), "", "no output before the turn");
-  await page.waitForFunction(
-    () =>
+  try {
+    await page.waitForFunction(() =>
       window.__rateSources.some(
         (source) =>
           source.readyState === 1 && source.url.includes("protocol=2"),
-      ) &&
-      window.__rateSources.filter(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=1"),
-      ).length >= 3,
-  );
+      ),
+    );
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      sources: window.__rateSources.map((source) => ({
+        url: source.url,
+        state: source.readyState,
+      })),
+      title: document.title,
+      text: document.body.innerText.slice(0, 1000),
+    }));
+    throw Error(`${JSON.stringify(state)} ${log}\n${error}`);
+  }
   const connections = () =>
     page.evaluate(() =>
       window.__rateSources
@@ -278,6 +286,15 @@ try {
       document.querySelector("#conversation .token-rate")?.textContent ===
       "80 tok/s",
   );
+  const follower = await page.context().newPage();
+  follower.setDefaultTimeout(10000);
+  await follower.goto(origin);
+  await follower.locator(`[data-chat="${other.id}"]`).click();
+  await follower.waitForFunction((id) => {
+    const meter = document.querySelector("#conversation .token-rate");
+    return meter?.dataset.agent === id && meter.dataset.rate === "80";
+  }, other.id);
+  await follower.close();
   assert.ok(
     await page.evaluate(() =>
       window.__footerTweenValues.some((value) => value > 20 && value < 80),
@@ -323,12 +340,10 @@ try {
   );
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.locator(`[data-chat="${lead.id}"]`).click();
-  await page.waitForFunction(
-    () =>
-      window.__rateSources.filter(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=1"),
-      ).length >= 3,
+  await page.waitForFunction(() =>
+    window.__rateSources.some(
+      (source) => source.readyState === 1 && source.url.includes("protocol=2"),
+    ),
   );
   const cardsOffConnections = await connections();
   await page.locator("#team-toggle").click();

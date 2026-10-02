@@ -466,6 +466,10 @@ async function finishTurn(s, active, result, error) {
       ...(turnOutputDelta !== undefined
         ? { turnOutputTokens: active.reportedTurnOutput }
         : {}),
+      ...(Number.isFinite(active.lastUsage?.outputTokens) &&
+      active.lastUsage.outputTokens >= 0
+        ? { responseOutputTokens: active.lastUsage.outputTokens }
+        : {}),
       turnId: turn.id,
       model: active.lastModel,
       responseId: active.lastMessageId,

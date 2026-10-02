@@ -520,6 +520,12 @@ class AnalyticsMixin:
             existing = db.execute('SELECT record FROM analytics_usage WHERE id=?', (key,)).fetchone()
             existing = json.loads(existing[0]) if existing else None
             response_id = p.get('responseId')
+            if source == 'rollout' and response_id:
+                response_usage = p.get('requestUsage') or (p.get('tokenUsage') or {}).get('last') or {}
+                response_output = number(response_usage.get('outputTokens')) if isinstance(response_usage, dict) else None
+                rates = self.__dict__.get('_token_rates')
+                if rates and response_output is not None:
+                    rates.associate_response_rate(a['id'], meta['threadId'], turn, response_id, response_output)
             if response_id:
                 exact = db.execute("SELECT id,record FROM analytics_usage WHERE agent=? AND thread IS ? AND json_extract(record,'$.responseId')=? LIMIT 1", (a['id'], meta['threadId'], response_id)).fetchone()
                 if exact:

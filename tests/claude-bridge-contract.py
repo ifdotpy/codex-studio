@@ -239,6 +239,8 @@ class Bridge(unittest.TestCase):
             final = [row['params'] for row in self.notifications
                      if row.get('method') == 'thread/tokenUsage/updated'][-1]
             self.assertEqual(final['turnOutputTokens'], 20)
+            self.assertEqual(final['responseId'], 'rate-2')
+            self.assertEqual(final['responseOutputTokens'], 12)
             self.assertTrue(all(sample['turnId'] == turn['turn']['id'] for sample in samples + [final]))
             self.assertTrue(all(sample['threadId'] == self.thread for sample in samples + [final]))
             self.assertFalse(any(row.get('method', '').startswith('studio/tokenRate') for row in self.notifications))

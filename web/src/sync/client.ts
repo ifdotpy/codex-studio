@@ -12,6 +12,7 @@ import {
   clearWorkspaceTokenRates,
   receiveWorkspaceTokenRates,
 } from "../tokenRate";
+import type { TokenRate } from "../tokenRate";
 import {
   cacheTranscript,
   cacheTranscriptValue,
@@ -278,6 +279,10 @@ export function watchSyncInvalidations(
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
       let watchdogTimer: ReturnType<typeof setInterval> | undefined;
       let lastGenerations: Record<string, number> | undefined;
+      let latestTokenRates: {
+        rates: Record<string, TokenRate | null>;
+        teams: Record<string, Record<string, TokenRate | null>>;
+      } = { rates: {}, teams: {} };
       let lastWorkspaceId: string | undefined;
       let pendingScopes = new Set<string>();
       let pendingFullRefresh = false;
@@ -400,6 +405,7 @@ export function watchSyncInvalidations(
         broadcast({
           kind: "heartbeat",
           generations: lastGenerations,
+          tokenRates: latestTokenRates,
           ...(latestTranscriptRevisions &&
           latestTranscriptRevisions.workspaceId === workspaceId &&
           latestTranscriptRevisions.revisions
@@ -408,7 +414,10 @@ export function watchSyncInvalidations(
         });
       };
       const closeSource = () => {
-        if (source) clearWorkspaceTokenRates();
+        if (source) {
+          clearWorkspaceTokenRates();
+          latestTokenRates = { rates: {}, teams: {} };
+        }
         source?.close();
         source = undefined;
       };
@@ -440,8 +449,10 @@ export function watchSyncInvalidations(
               message.protocol === 2 &&
               message.workspaceId === workspaceId &&
               receiveWorkspaceTokenRates(message)
-            )
+            ) {
+              latestTokenRates = { rates: message.rates, teams: message.teams };
               broadcast({ ...message, kind: "token-rates" });
+            }
           } catch {
             // Malformed telemetry cannot invalidate sync projections.
           }
@@ -561,6 +572,11 @@ export function watchSyncInvalidations(
         }
         if (message.kind === "heartbeat") {
           if (message.generations) applyGenerationState(message, false);
+          if (
+            message.tokenRates &&
+            receiveWorkspaceTokenRates(message.tokenRates)
+          )
+            latestTokenRates = message.tokenRates;
           return;
         }
         if (message.kind === "invalidate") {

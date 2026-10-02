@@ -96,16 +96,11 @@ try {
       }, lead.id);
       await page.goto(origin);
       await page.locator(`[data-chat="${lead.id}"]`).click();
-      await page.waitForFunction(
-        () =>
-          window.__allSources.some(
-            (source) =>
-              source.readyState === 1 && source.url.includes("protocol=2"),
-          ) &&
-          window.__allSources.filter(
-            (source) =>
-              source.readyState === 1 && source.url.includes("protocol=1"),
-          ).length >= 3,
+      await page.waitForFunction(() =>
+        window.__allSources.some(
+          (source) =>
+            source.readyState === 1 && source.url.includes("protocol=2"),
+        ),
       );
       const connections = (view) =>
         view.evaluate(() =>
@@ -319,6 +314,9 @@ try {
             .innerText(),
           /^0 tok\/s$/,
         );
+      await page.evaluate(() =>
+        document.dispatchEvent(new Event("visibilitychange")),
+      );
       await page.waitForFunction(
         () =>
           window.__teamRateSources.some((source) => source.readyState === 2) &&
