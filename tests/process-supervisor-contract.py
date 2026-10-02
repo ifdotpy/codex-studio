@@ -570,6 +570,35 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_reattach_preserves_native_environment_after_backend_launcher_changes(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
+                                    '__PYVENV_LAUNCHER__': '/different/backend/python'}):
+            second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_reattach_still_rejects_changed_credentials_options_and_command(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        for key in ('CODEX_HOME', 'HOME', 'OPENAI_API_KEY', 'STUDIO_CLAUDE_OPTIONS',
+                    'CLAUDE_CONFIG_DIR'):
+            with self.subTest(key=key), patch.dict(os.environ, {key: 'different-value'}):
+                with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+                    self.server()
+        with patch.dict(os.environ, {'PATH': '/usr/bin:/bin'}):
+            with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+                process_supervisor.native_launch_environment(self.root, 'account:default',
+                    [str(self.binary), 'different-command'], dict(os.environ), None)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
     def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):

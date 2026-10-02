@@ -47,6 +47,19 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(self.server.calls, [])
         self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
 
+    def test_launch_environment_recovery_restores_only_proved_unsent_input(self):
+        error = 'Supervisor native launch settings changed; existing work was preserved'
+        self.unsent_transport_failure(error)
+        before = self.runtime.agent(self.key)
+        with patch.object(self.runtime, 'connect', side_effect=RuntimeError(error)):
+            self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key), before)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'input_restored')
+        self.assertEqual(self.server.calls, [])
+        with self.runtime.db() as db:
+            row = db.execute("SELECT id,status FROM runtime_events WHERE id='unsent-input'").fetchone()
+        self.assertEqual(tuple(row), ('unsent-input', 'pending'))
+
     def active_survivor(self):
         self.server.supervisor_mode = True
         self.authorize()

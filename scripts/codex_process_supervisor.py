@@ -743,7 +743,15 @@ def native_launch_environment(root, handle, command, env, cwd):
         original.pop('__PYVENV_LAUNCHER__', None)
     comparable = dict(original)
     comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
-    if (comparable != clean or Supervisor.signature(command, original, cwd) != saved[0]
+    # Reattachment keeps the child's accepted launch, including its PATH and
+    # locale. A backend launcher can supply different ambient values. These
+    # values never replace the live child's settings; command, account,
+    # credentials, provider options and process identity still match exactly.
+    for key in ('PATH', 'LANG', '__PYVENV_LAUNCHER__'):
+        comparable.pop(key, None)
+    requested = {key: value for key, value in clean.items()
+                 if key not in {'PATH', 'LANG', '__PYVENV_LAUNCHER__'}}
+    if (comparable != requested or Supervisor.signature(command, original, cwd) != saved[0]
             or not process_start_matches(pid, started, allow_legacy=True)):
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
     return original
