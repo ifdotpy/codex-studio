@@ -229,6 +229,7 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "studioLoadedThreads": studio_loaded, "queues": queues,
             "runtimeLockSamples": sampled,
             "sqliteContention": sqlite_diagnostics(),
+            "analyticsCapture": getattr(runtime, "analytics_capture_status", lambda: {"available": False})(),
             "migrations": migration_status(runtime),
             "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"}),
             "searchMigrationError": getattr(runtime, "search_migration_error", None)}

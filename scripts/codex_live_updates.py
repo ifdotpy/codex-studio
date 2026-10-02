@@ -116,6 +116,9 @@ class LiveUpdates:
         key = None
         identity = None
         try:
+            # This thread owns no runtime or SQLite lock while it saves evidence.
+            from codex_sqlite_traces import transaction_watchdog
+            transaction_watchdog(self.runtime.root)
             path = self.scripts / "studio-live-update.json"
             try:
                 raw = path.read_bytes()

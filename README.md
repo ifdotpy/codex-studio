@@ -219,6 +219,15 @@ about one more minute to unload. Idle Claude queries close after 15 minutes.
 Native background tasks and unresolved input keep their sessions open. New work
 resumes the saved thread.
 
+SQLite scopes above one second retain their owner, start location, wait stack,
+duration, and completion result. Read `sqliteContention.slowTransactions` in
+the diagnostics response. The existing update worker saves this evidence in
+`diagnostics/sqlite-transactions.json` under the state directory. A process
+restart preserves the last nonempty snapshot in
+`diagnostics/sqlite-transactions.previous.json`. These files contain no SQL
+text or message contents. The coverage timestamp identifies when owner records
+start. Earlier transaction totals cannot identify a past owner.
+
 Closing the window preserves the server and its active work. Backend source
 identity remains available to diagnostics without a persistent notice in chats.
 Reviewed live patches apply in the background without a backend restart.

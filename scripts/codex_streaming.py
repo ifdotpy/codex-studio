@@ -150,8 +150,9 @@ class StreamBuffer:
             params = {**batches[0][4], 'delta': delta}
             hour = int(first_at // 3600) * 3600
             synthetic_size = len(encoded(params).encode('utf-8'))
-            def capture(db, agent=agent, method=method, params=params, first_at=first_at,
-                        batches=batches, hour=hour, synthetic_size=synthetic_size,
+            from copy import deepcopy
+            def capture(db, agent=deepcopy(agent), method=method, params=deepcopy(params), first_at=first_at,
+                        batches=deepcopy(batches), hour=hour, synthetic_size=synthetic_size,
                         count=count, thread=thread, item_id_value=item_id_value,
                         stream_bytes=stream_bytes, stream_chars=stream_chars,
                         stream_lines=stream_lines, delta=delta):

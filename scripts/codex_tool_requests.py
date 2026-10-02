@@ -333,13 +333,25 @@ class RequestMixin:
             self.put(db, "tool_requests", record)
             return True
 
-    def finish_tool_request(self, key, result, outcome=None, db=None):
+    def finish_tool_request(self, key, result, outcome=None, db=None, *, prepared_record=None):
+        """Save a completion; prepared_record is internal list snapshot evidence."""
         if db is None:
             with self.lock, self.db() as own:
-                return self.finish_tool_request(key, result, outcome, own)
+                return self.finish_tool_request(key, result, outcome, own,
+                                                prepared_record=prepared_record)
         if outcome not in (None, "applied", "not_applied", "unknown"):
             raise ValueError("Invalid request outcome")
-        record = self.tool_request(key, db)
+        if prepared_record is None:
+            record = self.tool_request(key, db)
+        else:
+            raw, record, saved_result = prepared_record
+            current = db.execute("SELECT record FROM runtime_tool_requests WHERE id=?", (key,)).fetchone()
+            saved = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
+            metadata = lambda value: {k: v for k, v in value.items()
+                                      if k not in {"result", "_payloadBlobs"}}
+            if (not current or current[0] != raw or (saved[0] if saved else None) != saved_result
+                    or record.get("id") != key or metadata(record) != metadata(json.loads(raw))):
+                raise ValueError("This request receipt changed while reading its result")
         if record is None:
             raise ValueError("Unknown tool request")
         # Definitive receipts cannot be replaced by a late transport error.
@@ -410,6 +422,55 @@ class RequestMixin:
                            "deleted": bool(agent.get("deletedAt"))})
         return agents
 
+    def _list_tool_requests(self, actor_id):
+        """Read receipt metadata and reconcile exact pending snapshots."""
+        from codex_payloads import resolve_record, resolve_result, state_root
+        if self.lock._is_owned():
+            raise RuntimeError("Request lists must run outside the runtime lock")
+        actor_fields = ("id", "epoch", "accountKey", "threadId", "turnId", "autoWake",
+                        "deletedAt", "approvalPolicy", "sandbox", "profile", "role")
+        query = ("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                 "ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")
+        pending = []
+        with self.lock, self.db() as db:
+            actor = self.checked_actor(db, actor_id)
+            identity = {field: actor.get(field) for field in actor_fields}
+            account = actor.get("accountKey", "default")
+            connection = self.connection_ids.get(account)
+            offline = account in self.offline_accounts
+            for row in db.execute(query, (actor_id,)).fetchall():
+                record = json.loads(row[0])
+                if record["outcome"] not in {"applied", "not_applied"}:
+                    saved = db.execute("SELECT result FROM runtime_tool_results WHERE id=?",
+                                       (record["id"],)).fetchone()
+                    pending.append((row[0], record, saved[0] if saved else None))
+        prepared = {}
+        # Terminal bodies are unused. Pending bodies load with no lock or transaction.
+        for raw, record, saved in pending:
+            record = resolve_record(state_root(self), record)
+            result = (resolve_result(state_root(self), saved) if saved is not None else None) or record.get("result")
+            if isinstance(result, dict):
+                prepared[record["id"]] = ((raw, record, saved), result)
+        with self.lock, self.db() as db:
+            current_actor = self.checked_actor(db, actor_id)
+            if (self.closed or any(current_actor.get(field) != identity[field] for field in actor_fields)
+                    or self.connection_ids.get(account) != connection
+                    or (account in self.offline_accounts) != offline):
+                raise ValueError("The caller changed while reading request receipts")
+            records = []
+            for row in db.execute(query, (actor_id,)).fetchall():
+                record = json.loads(row[0])
+                sampled = prepared.get(record["id"])
+                if sampled and row[0] == sampled[0][0]:
+                    saved = db.execute("SELECT result FROM runtime_tool_results WHERE id=?",
+                                       (record["id"],)).fetchone()
+                    if (saved[0] if saved else None) == sampled[0][2]:
+                        record = self.finish_tool_request(record["id"], sampled[1], db=db,
+                                                          prepared_record=sampled[0])
+                records.append({k: v for k, v in record.items()
+                                if k not in {"result", "signature", "_payloadBlobs"}})
+            return {"requests": records}
+
     def request_action(self, actor_id, data):
         if not isinstance(data, dict) or set(data) - {"action", "request_id"}:
             raise ValueError("Unsupported request fields")
@@ -421,13 +482,10 @@ class RequestMixin:
             raise ValueError("Supply request_id")
         if action == "list" and request_id is not None:
             raise ValueError("request_id is not used by list")
+        if action == "list":
+            return self._list_tool_requests(actor_id)
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id)
-            if action == "list":
-                rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-                                  "ORDER BY json_extract(record,'$.updated') DESC LIMIT 50", (actor_id,)).fetchall()
-                return {"requests": [{k: v for k, v in self._refresh_tool_request(db, json.loads(row[0])).items()
-                                      if k not in {"result", "signature"}} for row in rows]}
             record = self.tool_request(request_id, db)
             if record and record["agent"] != actor_id:
                 record = None

@@ -1556,6 +1556,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if worker.is_alive():
                     original_error.add_note("Runtime initialization cleanup could not drain " + name + "; keeper and lease retained")
                     return
+        try:
+            self.close_analytics_captures()
+        except BaseException as error:
+            original_error.add_note(f"Runtime initialization cleanup could not drain analytics: {error}")
+            return
         keeper = self._wal_keeper
         if keeper is not None:
             try:
@@ -1644,6 +1649,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local.depth = 1
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
         pending[db] = []
+        analytics = local.__dict__.setdefault("after_commit_analytics", {})
+        analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
+        original_commit, original_rollback = db.commit, db.rollback
+        missing = object()
+        previous_commit = db.__dict__.get("commit", missing)
+        previous_rollback = db.__dict__.get("rollback", missing)
+
+        def commit_analytics():
+            original_commit()
+            captures = analytics.get(db, {})
+            analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
+            self.schedule_analytics_captures(captures.get("captures", []),
+                                             overflow=captures.get("overflow", 0))
+
+        def rollback_analytics():
+            original_rollback()
+            analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
+
+        db.commit = commit_analytics
+        db.rollback = rollback_analytics
         previous_timeout = None
         if busy_timeout is not None:
             previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
@@ -1651,6 +1676,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             with sqlite_scope(db, "Runtime.db"):
                 yield db
+            captures = analytics.pop(db)
+            self.schedule_analytics_captures(captures["captures"], overflow=captures["overflow"])
             if getattr(local, "agent_cache_dirty", False):
                 local.agent_cache_dirty = False
                 self.invalidate_agent_records()
@@ -1662,10 +1689,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.changed.set()
         except BaseException:
             pending.pop(db, None)
+            analytics.pop(db, None)
             # An explicit commit inside the context can already have made work visible.
             self.changed.set()
             raise
         finally:
+            for name, previous in (("commit", previous_commit), ("rollback", previous_rollback)):
+                if previous is missing:
+                    db.__dict__.pop(name, None)
+                else:
+                    setattr(db, name, previous)
             from codex_payloads import release_db_writer_lock
             release_db_writer_lock(db)
             if previous_timeout is not None:
@@ -1674,6 +1707,221 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 local.depth = 0
             else:
                 db.close()
+
+    def analytics_safe(self, db, operation, *args, **kwargs):
+        """Keep analytics waits outside the main writer and its caller's lock."""
+        local = getattr(self, "_callback_db", None)
+        pending = getattr(local, "after_commit_analytics", {}).get(db)
+        if pending is None:
+            return AnalyticsMixin.analytics_safe(self, db, operation, *args, **kwargs)
+        captured_tokens = None
+        kwargs = dict(kwargs)
+        if operation == self.analytics_event:
+            kwargs.setdefault("at", time.time())
+            if len(args) >= 3 and args[1] == "thread/tokenUsage/updated":
+                from codex_budget import budget_capture
+                captured_tokens = kwargs.get("budget_capture_value")
+                if captured_tokens is None:
+                    captured_tokens = budget_capture(db, args[0], args[2],
+                        at=kwargs["at"], source=kwargs.get("source", "live"))
+                kwargs["budget_capture_value"] = captured_tokens
+        limits = self.analytics_capture_state()
+        size = self.analytics_capture_size(operation, args, kwargs)
+        if (len(pending["captures"]) >= limits["limit"]
+                or pending["bytes"] + size > limits["byteLimit"]):
+            pending["overflow"] += 1
+        else:
+            pending["captures"].append((operation, copy.deepcopy(args), copy.deepcopy(kwargs), size))
+            pending["bytes"] += size
+        return captured_tokens
+
+    def analytics_capture_state(self):
+        return self.__dict__.setdefault("_analytics_capture_state", {
+            "limit": 64, "byteLimit": 8 * 1024 * 1024, "queued": 0, "active": 0,
+            "bytes": 0, "completed": 0, "failed": 0, "overflow": 0,
+            "pendingErrors": 0, "lastError": None})
+
+    def analytics_capture_status(self):
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        with guard:
+            return dict(self.analytics_capture_state())
+
+    def analytics_capture_size(self, operation, args, kwargs):
+        """Bound payload references without encoding their contents again."""
+        values = [args, kwargs, getattr(operation, "__defaults__", None),
+                  getattr(operation, "__kwdefaults__", None)]
+        for cell in getattr(operation, "__closure__", None) or ():
+            try:
+                values.append(cell.cell_contents)
+            except ValueError:
+                pass
+        seen, size = set(), 0
+        limit = self.analytics_capture_state()["byteLimit"]
+        while values:
+            value = values.pop()
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            size += sys.getsizeof(value)
+            if size > limit or len(seen) > 100000:
+                return limit + 1
+            if isinstance(value, dict):
+                values.extend(value.keys())
+                values.extend(value.values())
+            elif isinstance(value, (list, tuple, set, frozenset)):
+                values.extend(value)
+        return size
+
+    def schedule_analytics_captures(self, captures, *, overflow=0):
+        """Queue only committed captures within fixed count and payload limits."""
+        if not captures and not overflow:
+            return
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        with guard:
+            state = self.analytics_capture_state()
+            waiting = self.__dict__.setdefault("_analytics_capture_unscheduled", [])
+            changed = self.__dict__.setdefault("_analytics_capture_changed", threading.Event())
+            idle = self.__dict__.setdefault("_analytics_capture_idle", threading.Event())
+            unavailable = 0
+            for capture in captures:
+                size = capture[3]
+                if getattr(self, "_analytics_capture_pool_closed", False):
+                    unavailable += 1
+                    continue
+                if (state["queued"] + state["active"] >= state["limit"]
+                        or state["bytes"] + size > state["byteLimit"]):
+                    overflow += 1
+                    continue
+                waiting.append(capture)
+                state["queued"] += 1
+                state["bytes"] += size
+            if overflow:
+                state["overflow"] += overflow
+                state["failed"] += overflow
+                state["pendingErrors"] += overflow
+                state["lastError"] = {"at": time.time(), "operation": "analytics_capture_queue",
+                    "code": "queueOverflow", "error": "Analytics capture queue limit reached"}
+            if unavailable:
+                state["failed"] += unavailable
+                state["pendingErrors"] += unavailable
+                state["lastError"] = {"at": time.time(), "operation": "analytics_capture_queue",
+                    "code": "queueUnavailable", "error": "Analytics capture worker was unavailable"}
+            if getattr(self, "_analytics_capture_pool_closed", False):
+                return
+            idle.clear()
+            changed.set()
+            try:
+                worker = getattr(self, "_analytics_capture_worker", None)
+                if worker is None or not worker.is_alive():
+                    # Own the FIFO before starting the thread. Unlike an executor,
+                    # a failed Thread.start cannot leave hidden duplicate jobs.
+                    worker = threading.Thread(target=self.analytics_capture_worker,
+                        name="studio-analytics-capture", daemon=True)
+                    worker.start()
+                    self._analytics_capture_worker = worker
+            except Exception as error:
+                # A local queue failure cannot undo the committed provider receipt.
+                self._analytics_capture_submit_error = {
+                    "at": time.time(), "errorType": type(error).__name__, "pending": len(waiting)}
+
+    def analytics_capture_worker(self):
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        changed, idle = self._analytics_capture_changed, self._analytics_capture_idle
+        while True:
+            changed.wait()
+            while True:
+                with guard:
+                    waiting = self._analytics_capture_unscheduled
+                    capture = waiting.pop(0) if waiting else None
+                    if capture is None:
+                        changed.clear()
+                if capture is not None:
+                    self.run_analytics_capture(capture)
+                    continue
+                self.record_analytics_capture_errors()
+                with guard:
+                    if not waiting and not changed.is_set():
+                        idle.set()
+                    if getattr(self, "_analytics_capture_pool_closed", False) and not waiting:
+                        return
+                break
+
+    def run_analytics_capture(self, operation):
+        function, args, kwargs, size = operation
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        with guard:
+            state = self.analytics_capture_state()
+            state["queued"] -= 1
+            state["active"] += 1
+        def capture(db):
+            return function(db, *args, **kwargs)
+        try:
+            result = self.capture_stream_analytics(capture)
+            with guard:
+                state["completed"] += 1
+                if isinstance(result, dict) and result.get("_studioAnalyticsCaptureFailures"):
+                    state["failed"] += result["_studioAnalyticsCaptureFailures"]
+                    state["lastError"] = result["lastError"]
+        except Exception as error:
+            # Main state is already durable. Record the analytics failure without
+            # replaying a lifecycle callback, command, or user message.
+            with guard:
+                state["failed"] += 1
+                state["pendingErrors"] += 1
+                state["lastError"] = {"at": time.time(),
+                    "operation": getattr(function, "__name__", type(function).__name__),
+                    "code": "captureFailed", "errorType": type(error).__name__,
+                    "error": "Analytics capture failed"}
+        finally:
+            with guard:
+                state["active"] -= 1
+                state["bytes"] -= size
+
+    def record_analytics_capture_errors(self):
+        """Persist compact failures when analytics is writable; never wait long."""
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        with guard:
+            state = self.analytics_capture_state()
+            count, detail = state["pendingErrors"], state["lastError"]
+        if not count:
+            return
+        try:
+            with self.analytics_db(busy_timeout=50) as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
+                previous = json.loads(row[0]) if row else {"count": 0, "last": None}
+                previous.update(count=previous["count"] + count, last=detail)
+                db.execute("INSERT INTO analytics_meta VALUES ('captureErrors',?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(previous),))
+        except Exception:
+            return  # The in-memory counter stays visible until a later write succeeds.
+        with guard:
+            state["pendingErrors"] -= count
+
+    def close_analytics_captures(self):
+        """Drain committed captures before releasing the runtime lease."""
+        guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
+        with guard:
+            self._analytics_capture_pool_closed = True
+            worker = getattr(self, "_analytics_capture_worker", None)
+            changed = getattr(self, "_analytics_capture_changed", None)
+            if changed is not None:
+                changed.set()
+        if worker is not None:
+            worker.join()
+        # A failed thread start leaves only this bounded FIFO. Shutdown still
+        # attempts every committed capture once, including on a healthy DB.
+        while True:
+            with guard:
+                waiting = self.__dict__.setdefault("_analytics_capture_unscheduled", [])
+                capture = waiting.pop(0) if waiting else None
+            if capture is None:
+                break
+            self.run_analytics_capture(capture)
+        self.record_analytics_capture_errors()
+        idle = getattr(self, "_analytics_capture_idle", None)
+        if idle is not None:
+            idle.set()
 
     @contextmanager
     def notification_db(self):
@@ -1710,9 +1958,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.close()
 
     @contextmanager
-    def analytics_db(self):
+    def analytics_db(self, *, busy_timeout=None):
         """Open analytics on its own WAL connection and attach runtime state read-only."""
-        db = sqlite_connect(self.analytics_db_path, uri=True, timeout=15, site="Runtime.analytics")
+        timeout = 15 if busy_timeout is None else max(0, busy_timeout) / 1000
+        db = sqlite_connect(self.analytics_db_path, uri=True, timeout=timeout, site="Runtime.analytics")
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA journal_mode=WAL")
@@ -2284,18 +2533,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                         turn_id=None if batch else params.get("turnId"),
                                         force=True, supervisor_handle=handle, supervisor_sequence=sequence,
                                         analytics_captures=captures)
-                # Keep analytics in event order, but outside the user-send lock.
-                # Failed runtime commits never capture the same deltas twice.
-                for capture in captures:
-                    try:
-                        self.capture_stream_analytics(capture)
-                    except Exception as error:
-                        # Text and cursor are durable. Analytics is independent;
-                        # report its failure without replaying the native event.
-                        self._stream_analytics_error = {"at": time.time(), "handle": handle,
-                                                        "sequence": sequence, "error": str(error)[:500]}
-                        print("Stream analytics capture failed: " + json.dumps(self._stream_analytics_error),
-                              file=sys.stderr)
+                    # The stream committed its text and cursor. Queue behind
+                    # earlier item notices before releasing this runtime lock.
+                    self.schedule_analytics_captures([(capture, (), {},
+                        self.analytics_capture_size(capture, (), {})) for capture in captures])
                 return
         with self.db(busy_timeout=50) as db:
             db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
@@ -2306,11 +2547,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         delay = .05
         while True:
             try:
-                with self.analytics_db() as db:
-                    capture(db)
-                return
+                with self.analytics_db(busy_timeout=50) as db:
+                    result = capture(db)
+                return result
             except sqlite3.OperationalError as error:
-                if not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
+                if (not sqlite_busy(error) or self.closed
+                        or getattr(self, "_analytics_capture_pool_closed", False)
+                        or time.monotonic() >= deadline):
                     raise
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
@@ -4928,7 +5171,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             samples = message.get("_studioNotificationSamples") if method in {"item/agentMessage/delta", "item/commandExecution/outputDelta"} else None
             captured_tokens = None
             if method == "item/agentMessage/delta" and samples and len(samples) > 1:
-                self.analytics_delta_batch_safe(db, a, samples)
+                self.analytics_delta_batch_safe(db, copy.deepcopy(a), copy.deepcopy(samples),
+                    capture_sink=lambda capture: self.analytics_safe(db, capture))
             else:
                 for sample in samples or [p]:
                     captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
@@ -5114,8 +5358,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                           "Plan" if method == "turn/plan/updated" else "Changes", turnId=p.get("turnId") or a.get("turnId"))
             elif method == "thread/tokenUsage/updated":
                 usage = p.get("tokenUsage", {})
-                # analytics_event already captures this notice for the budget.
-                # Retry only if analytics_safe rolled its savepoint back.
+                # The main transaction captures the budget before analytics runs.
                 if captured_tokens is None:
                     from codex_budget import budget_capture
                     a["tokensUsed"] = budget_capture(db, a, p)
@@ -7829,6 +8072,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             worker = getattr(self, name, None)
             if worker is not None and worker is not threading.current_thread():
                 worker.join()
+        self.close_analytics_captures()
         self._shutdown_writers_drained = True
         self._close_wal_keeper()
         fcntl.flock(self.lease, fcntl.LOCK_UN)

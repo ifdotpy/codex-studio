@@ -264,13 +264,47 @@ class RulesMixin:
             return None
 
     def rules_tick(self):
+        if self.lock._is_owned():
+            raise RuntimeError("Rule ticks must run outside the runtime lock")
+        if self.closed:
+            return
         now = time.time()
         launch = []
-        with self.lock, self.db() as db:
+
+        def stalled(r):
+            return (r["kind"] == "file" and r.get("stallTimeoutSeconds", 1800)
+                    and now - r.get("fileActivityAt", r.get("created", now)) >= r["stallTimeoutSeconds"]
+                    and r.get("fileGeneration", 0) > r.get("stallWakeGeneration", -1))
+
+        owner_fields = ("epoch", "accountKey", "threadId", "autoWake", "deletedAt",
+                        "restartRecovery", "disconnectRecovery", "approvalPolicy",
+                        "sandbox", "profile", "role")
+        snapshots = []
+        with self.read_db() as db:
             for r in self.records(db, "rules"):
-                if r["status"] != "active" or r.get("inFlight"):
+                if r["status"] == "active" and not r.get("inFlight"):
+                    a = self.agent(r["agent"], db)
+                    snapshots.append((r, {field: a.get(field) for field in owner_fields}))
+        # A slow filesystem must not hold the runtime lock or a SQLite writer.
+        fingerprints = {}
+        for r, owner in snapshots:
+            if (r["kind"] == "file" and not owner["deletedAt"] and owner["autoWake"]
+                    and owner["epoch"] == r["epoch"]
+                    and not self.rule_owner_recovery_pending(owner, r["epoch"])
+                    and (stalled(r) or r["nextAt"] <= now)):
+                fingerprints[r["id"]] = self.file_fingerprint(r["path"])
+        with self.lock, self.db() as db:
+            if self.closed:
+                return
+            current_rules = {r["id"]: r for r in self.records(db, "rules")}
+            for snapshot, owner in snapshots:
+                r = current_rules.get(snapshot["id"])
+                # Another tick, edit, or stop invalidates the sampled configuration.
+                if r != snapshot:
                     continue
                 a = self.agent(r["agent"], db)
+                if any(a.get(field) != owner[field] for field in owner_fields):
+                    continue
                 if (not a.get("deletedAt") and a.get("epoch") == r["epoch"]
                         and self.rule_owner_recovery_pending(a, r["epoch"])):
                     # Preserve the active watch while exact native recovery runs.
@@ -288,10 +322,8 @@ class RulesMixin:
                     continue
                 if r["kind"] == "event":
                     continue
-                if (r["kind"] == "file" and r.get("stallTimeoutSeconds", 1800)
-                        and now - r.get("fileActivityAt", r.get("created", now)) >= r["stallTimeoutSeconds"]
-                        and r.get("fileGeneration", 0) > r.get("stallWakeGeneration", -1)):
-                    fingerprint = self.file_fingerprint(r["path"])
+                if stalled(r):
+                    fingerprint = fingerprints[r["id"]]
                     if fingerprint != r.get("fingerprint"):
                         r.update(fingerprint=fingerprint, fileActivityAt=now,
                                  fileGeneration=r.get("fileGeneration", 0) + 1)
@@ -317,7 +349,7 @@ class RulesMixin:
                 r["nextAt"] = now + r["intervalSeconds"]
                 fire = True
                 if r["kind"] == "file":
-                    fingerprint = self.file_fingerprint(r["path"])
+                    fingerprint = fingerprints[r["id"]]
                     fire = fingerprint != r.get("fingerprint")
                     if fire:
                         r["fileActivityAt"] = now

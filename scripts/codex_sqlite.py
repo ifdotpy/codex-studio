@@ -56,7 +56,7 @@ def _site(site):
 
 
 def _current_site(db):
-    return getattr(db, "_codex_scope_site", getattr(db, "_codex_site", "sqlite.connect"))
+    return getattr(db, "_codex_scope_site", None) or getattr(db, "_codex_site", "sqlite.connect")
 
 
 def connect(database, *, site=None, **options):
@@ -64,6 +64,8 @@ def connect(database, *, site=None, **options):
     options["factory"] = InstrumentedConnection
     db = sqlite3.connect(database, **options)
     db._codex_site = _site(site)
+    from codex_sqlite_traces import database_kind
+    db._codex_database_kind = database_kind(database)
     return db
 
 
@@ -71,11 +73,14 @@ class InstrumentedConnection(sqlite3.Connection):
     """Connection that measures write waits and transaction lifetimes."""
 
     def __exit__(self, exc_type, exc_value, traceback):
+        outcome = "rolledBack"
         try:
-            return super().__exit__(exc_type, exc_value, traceback)
+            result = super().__exit__(exc_type, exc_value, traceback)
+            outcome = "committed" if exc_type is None else "rolledBack"
+            return result
         finally:
             if not self.in_transaction:
-                self._finish_transaction()
+                self._finish_transaction(outcome)
 
     def execute(self, sql, parameters=(), /):
         started = _clock()
@@ -98,6 +103,11 @@ class InstrumentedConnection(sqlite3.Connection):
             if not was_in_transaction and self.in_transaction:
                 self._codex_transaction_started = _clock()
                 self._codex_transaction_site = site
+                try:
+                    from codex_sqlite_traces import begin_transaction
+                    begin_transaction(self, self._codex_transaction_started, site, words[0] if words else "other")
+                except Exception as error:
+                    logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
                 self._finish_transaction()
 
@@ -122,30 +132,46 @@ class InstrumentedConnection(sqlite3.Connection):
             if not was_in_transaction and self.in_transaction:
                 self._codex_transaction_started = _clock()
                 self._codex_transaction_site = site
+                try:
+                    from codex_sqlite_traces import begin_transaction
+                    begin_transaction(self, self._codex_transaction_started, site, words[0] if words else "other")
+                except Exception as error:
+                    logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
                 self._finish_transaction()
 
-    def _finish_transaction(self):
+    def _finish_transaction(self, outcome="ended"):
         started = getattr(self, "_codex_transaction_started", None)
         if started is not None:
-            _record("transaction", getattr(self, "_codex_transaction_site", _current_site(self)),
-                    (_clock() - started) * 1000)
+            elapsed_ms = (_clock() - started) * 1000
+            _record("transaction", getattr(self, "_codex_transaction_site", _current_site(self)), elapsed_ms)
+            try:
+                from codex_sqlite_traces import end_transaction
+                end_transaction(self, elapsed_ms, outcome)
+            except Exception as error:
+                logging.getLogger("codex.sqlite").warning("SQLite owner completion failed: %s", type(error).__name__)
             self._codex_transaction_started = None
             self._codex_transaction_site = None
 
     def commit(self):
+        outcome = "ended"
         try:
-            return super().commit()
+            result = super().commit()
+            outcome = "committed"
+            return result
         finally:
             if not self.in_transaction:
-                self._finish_transaction()
+                self._finish_transaction(outcome)
 
     def rollback(self):
+        outcome = "ended"
         try:
-            return super().rollback()
+            result = super().rollback()
+            outcome = "rolledBack"
+            return result
         finally:
             if not self.in_transaction:
-                self._finish_transaction()
+                self._finish_transaction(outcome)
 
     def close(self):
         if self.in_transaction:
@@ -326,4 +352,6 @@ def diagnostics():
     result["activeTransactions"] = list(active.values())
     result["activeTransactionScan"] = {"threads": scanned_threads, "frames": scanned_frames,
                                      "locals": scanned_locals, "truncated": truncated}
+    from codex_sqlite_traces import history
+    result["slowTransactions"] = history()
     return result

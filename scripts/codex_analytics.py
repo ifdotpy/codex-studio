@@ -322,7 +322,7 @@ class AnalyticsMixin:
                 return budget_capture(runtime_db, agent, params, at=at, source=source)
         return budget_capture(db, agent, params, at=at, source=source)
 
-    def analytics_delta_batch_safe(self, db, a, samples, *, at_values=None):
+    def analytics_delta_batch_safe(self, db, a, samples, *, at_values=None, capture_sink=None):
         """Capture coalesced live assistant deltas with the sequential semantics."""
         samples = list(samples)
         if not samples:
@@ -388,6 +388,50 @@ class AnalyticsMixin:
                     stream['deltas'] += len(samples)
                     record['stream'] = stream
                     self.analytics_store_item(db, record)
+
+        if capture_sink is not None:
+            def capture_deferred(target):
+                import sqlite3
+                def busy(error):
+                    return (isinstance(error, sqlite3.OperationalError)
+                        and (getattr(error, 'sqlite_errorcode', 0) & 255 in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                             or any(word in str(error).lower() for word in ('locked', 'busy'))))
+                if not target.in_transaction:
+                    target.execute('BEGIN')
+                target.execute('SAVEPOINT analytics_delta_batch')
+                try:
+                    capture_batch(target)
+                except Exception as error:
+                    target.execute('ROLLBACK TO analytics_delta_batch')
+                    target.execute('RELEASE analytics_delta_batch')
+                    if busy(error):
+                        raise
+                    failures, detail = 0, None
+                    for sample, at in zip(samples, at_values):
+                        target.execute('SAVEPOINT analytics_delta_sample')
+                        try:
+                            self.analytics_event(target, a, 'item/agentMessage/delta', sample, at=at)
+                        except Exception as error:
+                            target.execute('ROLLBACK TO analytics_delta_sample')
+                            if busy(error):
+                                raise
+                            failures += 1
+                            detail = {'at': time.time(), 'operation': 'analytics_event',
+                                'code': 'captureFailed', 'errorType': type(error).__name__,
+                                'error': 'Analytics capture failed'}
+                        finally:
+                            target.execute('RELEASE analytics_delta_sample')
+                    if failures:
+                        row = target.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
+                        previous = json.loads(row[0]) if row else {'count': 0, 'last': None}
+                        previous.update(count=previous['count'] + failures, last=detail)
+                        target.execute("INSERT INTO analytics_meta VALUES ('captureErrors',?) "
+                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(previous),))
+                        return {'_studioAnalyticsCaptureFailures': failures, 'lastError': detail}
+                else:
+                    target.execute('RELEASE analytics_delta_batch')
+            capture_sink(capture_deferred)
+            return
 
         try:
             with self.analytics_connection(db) as analytics_db:
