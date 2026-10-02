@@ -816,6 +816,9 @@ class ProcessProxy:
             self.socket.close()
             raise
         self.initialize_result = opened.get("initResult") if opened.get("resumed") else None
+        # Expose the supervisor's exact open receipt to the runtime. Recovery
+        # may resume persisted work only when this handle reused its live child.
+        self.resumed = opened.get("resumed") is True
         self.generation = opened.get("generation", 1)
         self.cursor = opened["acknowledged"]
         self.read_cursor = self.cursor

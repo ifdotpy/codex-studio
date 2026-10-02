@@ -64,6 +64,16 @@ for line in sys.stdin:
         deadline=time.time()+10
         while not release.exists() and time.time()<deadline: time.sleep(.01)
         result={'turn':{'id':'turn','status':'completed'}}
+    elif method == 'longTurn':
+        params=request.get('params',{})
+        print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':params['threadId'],'turnId':'long-turn','itemId':'long-item','delta':'buffered-'} }),flush=True)
+        Path(os.environ['FAKE_PHASE_ONE']).touch()
+        finish=Path(os.environ['FAKE_FINISH'])
+        deadline=time.time()+10
+        while not finish.exists() and time.time()<deadline: time.sleep(.01)
+        print(json.dumps({'method':'item/completed','params':{'threadId':params['threadId'],'turnId':'long-turn','item':{'id':'long-item','type':'agentMessage','text':'buffered-final-answer','phase':'final_answer'}}}),flush=True)
+        print(json.dumps({'method':'turn/completed','params':{'threadId':params['threadId'],'turn':{'id':'long-turn','status':'completed'}}}),flush=True)
+        result={'turn':{'id':'long-turn','status':'completed'}}
     elif method == 'command/exec':
         print(json.dumps({'method':'command/exec/outputDelta','params':{'processId':request['params']['processId'],'delta':'monitor-output'}}),flush=True)
         result={'exitCode':0}
@@ -127,6 +137,8 @@ class ProcessSupervisorContract(unittest.TestCase):
             'FAKE_NATIVE_OPS':str(self.root/'native-ops.jsonl'),
             'FAKE_NATIVE_INITIALIZED':str(self.root/'native-initialized'),
             'FAKE_RELEASE':str(self.release),
+            'FAKE_PHASE_ONE':str(self.root/'phase-one'),
+            'FAKE_FINISH':str(self.root/'finish'),
         })
         self.env_patch.start()
         self.supervisor_log=self.root/'supervisor.stderr'
@@ -228,6 +240,116 @@ class ProcessSupervisorContract(unittest.TestCase):
         time.sleep(.2)
         self.assertEqual(sum(m.get('params',{}).get('delta')=='retained-output' for m in self.delivered),1)
         with (self.root/'supervisor.sqlite3').open('rb') as f: self.assertTrue(f.read(16).startswith(b'SQLite format 3'))
+
+    def test_runtime_restart_reattaches_turn_and_replays_buffered_events_once(self):
+        from codex_runtime import Runtime
+        first = Runtime(self.root, AppServer)
+        self.addCleanup(first.close)
+        agent = first.create({'name':'Lead','cwd':str(self.root),'prompt':''}, draft=True, defer=True)
+        with first.lock, first.db() as db:
+            current = first.agent(agent['id'], db)
+            current.update(threadId='thread', turnId='long-turn', status='running',
+                           autoWake=True, inFlight=True, error=None)
+            first.put(db, 'agents', current)
+            first.put(db, 'tasks', {'id':'background-task','agent':agent['id'],
+                'epoch':current['epoch'],'turnId':'long-turn','kind':'command',
+                'status':'running','processId':'background-process'})
+            first.put(db, 'monitors', {'id':'native-monitor','agent':agent['id'],
+                'epoch':current['epoch'],'turnId':'long-turn','status':'running',
+                'operation':{'accountKey':'default','epoch':current['epoch'],
+                    'agent':agent['id'],'connectionId':'old-backend'}})
+        with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
+            original_server = first.connect()
+        native_pid = int(self.pid_file.read_text())
+        original_server.submit('longTurn', {'threadId':'thread'}, operation_id='long-turn-once')
+        wait_for(lambda: (self.root/'phase-one').exists())
+
+        # Detach the backend while the model turn remains live. Its first delta
+        # is journaled after detach and must be replayed by the replacement.
+        first.close()
+        self.release.touch()
+        wait_for(lambda: self._journal_method_count('item/agentMessage/delta') == 1)
+
+        second = Runtime(self.root, AppServer)
+        self.addCleanup(second.close)
+        with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
+            replacement = second.connect()
+        self.assertTrue(replacement.supervisor_resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        current = second.agent(agent['id'])
+        self.assertEqual(current['status'], 'running')
+        self.assertTrue(current['inFlight'])
+        self.assertEqual(current['turnId'], 'long-turn')
+        self.assertNotIn('Server restarted during a turn', current.get('error') or '')
+        with second.db() as db:
+            task = json.loads(db.execute('SELECT record FROM runtime_tasks WHERE id=?',
+                                         ('background-task',)).fetchone()[0])
+            monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                            ('native-monitor',)).fetchone()[0])
+        self.assertEqual(task['status'], 'running')
+        self.assertEqual(monitor['status'], 'running')
+        wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
+        partial = self._stored_runtime_item(second, agent['id'], 'long-item')
+        self.assertEqual(partial['text'], 'buffered-')
+        self.root.joinpath('finish').touch()
+        wait_for(lambda: second.agent(agent['id']).get('lastCompletedTurn') == 'long-turn')
+
+        with second.db() as db:
+            item_rows = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                                   (agent['id'] + ':long-item',)).fetchall()
+            completed = db.execute('SELECT count(*) FROM runtime_completed_turns WHERE id=?',
+                                   (agent['id'] + ':long-turn',)).fetchone()[0]
+            restart_errors = db.execute('SELECT count(*) FROM runtime_items WHERE agent=? '
+                "AND json_extract(record,'$.text') LIKE '%Server restarted during a turn%'",
+                (agent['id'],)).fetchone()[0]
+        self.assertEqual(len(item_rows), 1)
+        self.assertEqual(json.loads(item_rows[0][0])['text'], 'buffered-final-answer')
+        self.assertEqual(completed, 1)
+        self.assertEqual(restart_errors, 0)
+        # The separate native monitor is still active, so the finished agent
+        # waits for that result while retaining the completed model turn.
+        self.assertEqual(second.agent(agent['id'])['status'], 'waiting')
+        self.assertNotIn('Server restarted during a turn', second.agent(agent['id']).get('error') or '')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('longTurn'), 1)
+
+    def test_claude_bridge_transport_reports_the_same_live_child_reattach(self):
+        observed = []
+        fake_transport = ([str(self.binary), 'app-server', '--listen', 'stdio://'],
+                          os.environ.copy())
+        with patch('codex_claude.transport', return_value=fake_transport):
+            first = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
+                provider='claude', provider_options={'provider':'claude'},
+                supervisor_handle='account:claude-fixture')
+            native_pid = int(self.pid_file.read_text())
+            self.assertFalse(first.supervisor_resumed)
+            first.close()
+            second = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
+                provider='claude', provider_options={'provider':'claude'},
+                supervisor_handle='account:claude-fixture',
+                supervisor_reattached=observed.append)
+        try:
+            self.assertTrue(second.supervisor_resumed)
+            self.assertEqual(observed, [True])
+            self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        finally:
+            second.close()
+
+    def _journal_method_count(self, method):
+        try:
+            with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+                rows = db.execute('SELECT payload FROM events WHERE kind="stdout"').fetchall()
+            return sum(json.loads(row[0]).get('method') == method for row in rows)
+        except sqlite3.OperationalError:
+            return 0
+
+    @staticmethod
+    def _stored_runtime_item(runtime, agent_id, suffix):
+        with runtime.db() as db:
+            row = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                              (agent_id + ':' + suffix,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def test_backend_identity_changes_reattach_the_same_native_process(self):
         first = self.server()

@@ -28,6 +28,17 @@ menu can disable that service without stopping the server or its active work.
   thread, and turn identity. Native history must confirm the previous outcome.
   Confirmed completion restores result delivery. Confirmed interruption can queue
   one continuation when no operation or input has an unknown outcome.
+- In supervisor mode, a replacement backend first opens each stable native
+  handle. When the supervisor confirms that the same live child resumed, Studio
+  restores that handle's exact in-flight turns, monitors, and background tasks
+  before it consumes journal replay. The existing turn continues; Studio does
+  not submit it again. The journal cursor and transcript item identities keep
+  replayed output and completion idempotent.
+- A new child generation, dead or unverified child, fallback backend, disabled
+  supervisor, or failed handle open does not grant reattachment. Existing
+  interrupted or uncertain recovery remains in force, and accepted input is
+  never resent. Monitor and task outcomes without a durable receipt remain
+  unknown.
 - Explicit user pauses, failed turns, budget limits, account restrictions, and
   unknown mutations remain protected. Reopening Studio does not override them.
 - Definitive monitor results enter a separate durable journal before the SQLite
@@ -110,6 +121,18 @@ Version 1 does not replace supervisor code while handles are active. Install a
 new supervisor package only when all handles are idle; hot supervisor replacement
 is deferred to v2.
 
+`Server restarted during a turn. Review history, then send a new instruction.`
+is correct when the handle did not resume the same live child and startup cannot
+prove what happened to the native turn. `Studio could not confirm the exact
+native turn after restart. No input was resent.` is correct when a surviving
+backend cannot read authoritative state for the exact thread and turn after its
+bounded recovery wait. Both messages are stale after a successful same-child
+reattach: the child identity is already proven and its buffered notifications
+are replayed. `Codex disconnected. Review the transcript before resuming.` is
+correct when the connection was actually lost and no same-child reattach has
+been confirmed. A later successful reattach clears this provisional state before
+replay; an unavailable, new, or mismatched child leaves it in place.
+
 ### First cutover and restart
 
 1. Install the desktop build containing `scripts/codex_process_supervisor.py`.
@@ -186,6 +209,18 @@ also stays deferred when it requires stopping the child. Existing chats continue
 with their current catalog; an unchanged native catalog can still be confirmed.
 Active-handle supervisor code replacement
 is deferred to v2.
+
+### Backend update with live supervisor handles
+
+This recovery change requires a backend update only. Keep the current supervisor
+and its state directory in place. Restart the backend through the existing
+recovery path; do not stop the supervisor or its native children. The new backend
+uses each handle's `resumed` receipt to restore active runtime records before
+journal replay. Verify that the backend reports the original native child PID,
+that active turns return to `running`, and that replay settles each final item
+and completion once. If a handle opens as a new generation or cannot be verified,
+the backend keeps the existing interruption/uncertainty behavior. No database
+migration or manual receipt cleanup is required.
 
 No application can guarantee zero data loss after physical storage failure.
 Data not yet committed before power loss can be absent. A full or unwritable disk
