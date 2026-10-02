@@ -27,14 +27,15 @@ def _claude_usage_row(row):
         "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")]
     if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
                for value in values):
-        input_tokens = None
+        input_tokens, cached_tokens, write_tokens = None, None, None
     else:
-        input_tokens = sum(values)
+        input_tokens, cached_tokens, write_tokens = values
     return {"id": identity, "model": model, "at": at,
             "usage": {"inputTokens": input_tokens,
-                      "cachedInputTokens": usage.get("cache_read_input_tokens", 0),
-                      "cacheWriteInputTokens": usage.get("cache_creation_input_tokens", 0),
-                      "outputTokens": usage.get("output_tokens")}}
+                      "cachedInputTokens": cached_tokens,
+                      "cacheWriteInputTokens": write_tokens,
+                      "outputTokens": usage.get("output_tokens")},
+            "inputTokensAreUncached": input_tokens is not None}
 
 
 def parse_claude_usage(path):

@@ -216,18 +216,29 @@ class PricingSessionCostContract(unittest.TestCase):
           CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
         """)
         lead = {"id": "lead", "rootId": "lead", "accountKey": "default", "threadId": "codex-thread"}
-        worker = {"id": "worker", "rootId": "lead", "accountKey": "claude-local", "threadId": "thread-current",
-                  "accountHistory": [{"provider": "claude", "accountKey": "claude-local", "threadId": "thread-history"}]}
+        worker = {"id": "worker", "rootId": "lead", "accountKey": "claude-local", "provider": "claude", "threadId": "thread-current",
+                  "accountHistory": [{"provider": "claude", "accountKey": "claude-local", "threadId": "thread-history"},
+                                     {"provider": "codex", "accountKey": "codex-old", "threadId": "thread-before"}]}
         for key, record in (("lead", lead), ("worker", worker)):
             db.execute("INSERT INTO analytics_agents VALUES (?,?)", (key, json.dumps(record)))
         analytics = [
             {"responseId": "codex-response", "model": "gpt-6-luna", "delta": {"inputTokens": 1000,
                 "cachedInputTokens": 100, "cacheWriteInputTokens": 0, "outputTokens": 100}},
-            {"responseId": "claude-alias", "model": "opus[1m]", "delta": {"inputTokens": 999999, "outputTokens": 999999}},
+            {"responseId": "message-1", "accountKey": "claude-local", "model": "claude-opus-5-5",
+             "delta": {"inputTokens": 100, "cachedInputTokens": 20, "cacheWriteInputTokens": 30, "outputTokens": 10}},
+            {"responseId": "claude-history-extra", "accountKey": "claude-local", "provider": "claude",
+             "model": "claude-opus-5-5", "inputTokensAreUncached": True,
+             "delta": {"inputTokens": 100, "cachedInputTokens": 20, "cacheWriteInputTokens": 30, "outputTokens": 10}},
+            {"responseId": "codex-before", "accountKey": "codex-old", "model": "gpt-6-luna",
+             "delta": {"inputTokens": 1000, "cachedInputTokens": 100, "cacheWriteInputTokens": 0, "outputTokens": 100}},
         ]
-        for index, (agent, record) in enumerate((("lead", analytics[0]), ("worker", analytics[1])), 1):
+        for index, (agent, thread, record) in enumerate((
+                ("lead", "thread", analytics[0]),
+                ("worker", "thread-current", analytics[1]),
+                ("worker", "thread-history", analytics[2]),
+                ("worker", "thread-before", analytics[3])), 1):
             db.execute("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?)",
-                       (index, agent, "lead", "thread", "turn-" + str(index), index, json.dumps(record)))
+                       (index, agent, "lead", thread, "turn-" + str(index), index, json.dumps(record)))
         db.commit()
         db.close()
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -254,9 +265,12 @@ class PricingSessionCostContract(unittest.TestCase):
                                   state_root=self.root).snapshot("worker", wait=True)
         self.assertIn("anthropic", value["breakdown"]["providers"])
         self.assertIn("openai", value["breakdown"]["providers"])
-        self.assertEqual(value["pricedSamples"], 5)
+        self.assertEqual(value["pricedSamples"], 7)
         self.assertEqual(value["unknownModels"], [])
-        self.assertAlmostEqual(value["breakdown"]["providers"]["anthropic"], 4 * .00028)
+        self.assertAlmostEqual(value["breakdown"]["providers"]["anthropic"], 5 * .00028)
+        self.assertAlmostEqual(value["breakdown"]["providers"]["openai"],
+                               2 * price_usage(catalog(), "openai", "gpt-6-luna", analytics[0]["delta"])[0])
+        self.assertTrue(value["claudeHistoryIncomplete"])
 
     def test_session_cost_reads_runtime_agent_before_analytics_registration(self):
         canvas = Canvas(self.root)

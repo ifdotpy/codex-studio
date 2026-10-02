@@ -171,6 +171,7 @@ class _UsageTotals:
         self.legacy = 0
         self.baseline_missing = 0
         self.cache_pairs = 0
+        self.cache_input_tokens = 0
         self.peak_context = None
         self.peak_percent = None
         self.deltas = {field: [] for field in TOKEN_FIELDS}
@@ -189,8 +190,11 @@ class _UsageTotals:
         delta = row['delta']
         if (number(delta.get('inputTokens')) is not None
                 and number(delta.get('cachedInputTokens')) is not None
-                and delta['cachedInputTokens'] <= delta['inputTokens']):
+                and (row.get('inputTokensAreUncached') or delta['cachedInputTokens'] <= delta['inputTokens'])):
             self.cache_pairs += 1
+            self.cache_input_tokens += (delta['inputTokens'] + delta['cachedInputTokens'] +
+                                        (number(delta.get('cacheWriteInputTokens')) or 0)
+                                        if row.get('inputTokensAreUncached') else delta['inputTokens'])
         context = number(row['last'].get('totalTokens'))
         if context is not None:
             self.peak_context = max(self.peak_context, context) if self.peak_context is not None else context
@@ -473,13 +477,16 @@ class AnalyticsMixin:
         return True
 
     def analytics_agent(self, db, a):
-        record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'threadId', 'model', 'effort', 'fastMode', 'daybreakEnabled', 'cyberAccessProgram', 'cwd', 'deletedAt')}
+        record = {key: a.get(key) for key in ('id', 'name', 'rootId', 'parentId', 'accountKey', 'accountHistory', 'provider', 'threadId', 'model', 'effort', 'fastMode', 'daybreakEnabled', 'cyberAccessProgram', 'cwd', 'deletedAt')}
+        if not isinstance(record['accountHistory'], list):
+            record['accountHistory'] = []
         # Skip an unchanged row to avoid a database write for every native
         # analytics notice.
         db.execute('INSERT INTO analytics_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record '
                    'WHERE record IS NOT excluded.record', (a['id'], json.dumps(record)))
         return {'agentId': a['id'], 'agentName': a.get('name'), 'rootId': a.get('rootId') or a['id'],
-                'accountKey': a.get('accountKey', 'default'), 'threadId': a.get('threadId'),
+                'accountKey': a.get('accountKey', 'default'), 'accountHistory': record['accountHistory'],
+                'provider': a.get('provider'), 'threadId': a.get('threadId'),
                 'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
                 'daybreakEnabled': a.get('daybreakEnabled'), 'cyberAccessProgram': a.get('cyberAccessProgram')}
 
@@ -513,6 +520,29 @@ class AnalyticsMixin:
                                self.analytics_budget_capture(db, a, p, at=at, source=source))
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
+            if p.get('usageSource') == 'claudeResponse' and isinstance(p.get('responseId'), str):
+                response_id = p['responseId']
+                response_usage = p.get('requestUsage')
+                if not response_id or not isinstance(response_usage, dict):
+                    return captured_tokens
+                key = hashlib.sha256(encoded([a['id'], meta['threadId'], response_id]).encode()).hexdigest()
+                fingerprint = hashlib.sha256(encoded([response_id, response_usage]).encode()).hexdigest()
+                delta = {k: number(response_usage.get(k)) for k in TOKEN_FIELDS}
+                delta['totalTokens'] = sum(number(response_usage.get(k)) or 0 for k in
+                                           ('inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens'))
+                record = {**meta, 'id': key, 'at': at, 'recordedAt': time.time(), 'source': source,
+                          'timestampSource': p.get('_analyticsTimestampSource', 'observed' if source == 'live' else 'record'),
+                          'model': p.get('model') or meta['model'], 'last': last, 'total': current,
+                          'delta': delta, 'inputTokensAreUncached': True,
+                          'raw': usage, 'cumulativeDelta': {k: None for k in TOKEN_FIELDS},
+                          'counterDomain': 'response', 'modelContextWindow': number(usage.get('modelContextWindow')),
+                          'reset': False, 'baselineMissing': False, 'fingerprint': fingerprint,
+                          'responseId': response_id, 'usageSource': 'claudeResponse',
+                          'requestUsage': response_usage}
+                db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) '
+                           'ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record',
+                           (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record)))
+                return captured_tokens
             # Totals identify a request across native notices and rollout records.
             # The provider response id distinguishes real zero-token responses.
             fingerprint = hashlib.sha256(encoded([turn, number(current.get('totalTokens')) if number(current.get('totalTokens')) is not None else current]).encode()).hexdigest()
@@ -1060,7 +1090,7 @@ class AnalyticsMixin:
                    'modelDurationMs': model_items.duration_total(),
                    'protocolDurationMs': protocol_items.duration_total(), 'tokens': tokens,
                    'tokenObservations': {field: len(usage_totals.deltas[field]) for field in TOKEN_FIELDS},
-                   'cacheHitRate': tokens['cachedInputTokens'] / tokens['inputTokens'] if usage_totals.cache_pairs == usage_totals.count and tokens['cachedInputTokens'] is not None and tokens['inputTokens'] else None,
+                   'cacheHitRate': tokens['cachedInputTokens'] / usage_totals.cache_input_tokens if usage_totals.cache_pairs == usage_totals.count and tokens['cachedInputTokens'] is not None and usage_totals.cache_input_tokens else None,
                    'cacheHitRateSamples': usage_totals.cache_pairs, 'cacheHitRateTotalSamples': usage_totals.count,
                    'peakContextTokens': usage_totals.peak_context,
                    'peakContextPercent': usage_totals.peak_percent, 'baselineMissingSamples': usage_totals.baseline_missing}

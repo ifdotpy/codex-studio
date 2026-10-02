@@ -435,6 +435,27 @@ async function finishTurn(s, active, result, error) {
     )
     .at(-1);
   if (answer) finishItem(s, turn, { ...answer, phase: "final_answer" });
+  for (const response of active.responseUsages.values()) {
+    const total =
+      response.requestUsage.inputTokens +
+      response.requestUsage.cachedInputTokens +
+      response.requestUsage.cacheWriteInputTokens +
+      response.requestUsage.outputTokens;
+    emit("thread/tokenUsage/updated", {
+      threadId: s.id,
+      turnId: turn.id,
+      responseId: response.responseId,
+      responseOutputTokens: response.responseOutputTokens,
+      model: response.model,
+      usageSource: "claudeResponse",
+      requestUsage: response.requestUsage,
+      tokenUsage: {
+        total: { totalTokens: total },
+        last: response.usage,
+        modelContextWindow: s.contextWindow,
+      },
+    });
+  }
   const usage = usageTokens(result?.usage);
   if (usage) {
     // SDK result usage is cumulative over a persistent query. Keep the delta.
@@ -473,6 +494,10 @@ async function finishTurn(s, active, result, error) {
       turnId: turn.id,
       model: active.lastModel,
       responseId: active.lastMessageId,
+      ...(active.lastMessageId &&
+      Number.isFinite(active.lastUsage?.outputTokens)
+        ? { responseOutputTokens: active.lastUsage.outputTokens }
+        : {}),
       tokenUsage: {
         total: { totalTokens: s.totalTokens },
         last: active.lastUsage || usage,
@@ -486,6 +511,7 @@ async function finishTurn(s, active, result, error) {
   if (!active.tasks.size) active.idleSince = Date.now();
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
+  active.responseUsages.clear();
   emit("turn/completed", {
     threadId: s.id,
     turn: { id: turn.id, status: turn.status, error: turn.error },
@@ -863,8 +889,35 @@ async function startSession(s, active, p) {
         }
         active.lastModel = m.message.model || active.lastModel;
         active.lastMessageId = m.message.id || active.lastMessageId;
-        active.lastUsage = usageTokens(m.message.usage) || active.lastUsage;
+        const responseUsage = usageTokens(m.message.usage);
+        active.lastUsage = responseUsage || active.lastUsage;
         const output = m.message.usage?.output_tokens;
+        if (m.message.id && m.message.usage && responseUsage) {
+          const raw = m.message.usage;
+          const requestUsage = {
+            inputTokens: Number.isFinite(raw.input_tokens)
+              ? raw.input_tokens
+              : 0,
+            cachedInputTokens: Number.isFinite(raw.cache_read_input_tokens)
+              ? raw.cache_read_input_tokens
+              : 0,
+            cacheWriteInputTokens: Number.isFinite(
+              raw.cache_creation_input_tokens,
+            )
+              ? raw.cache_creation_input_tokens
+              : 0,
+            outputTokens: Number.isFinite(raw.output_tokens)
+              ? raw.output_tokens
+              : 0,
+          };
+          active.responseUsages.set(m.message.id, {
+            responseId: m.message.id,
+            responseOutputTokens: requestUsage.outputTokens,
+            model: active.lastModel,
+            requestUsage,
+            usage: responseUsage,
+          });
+        }
         const tokenRateUsage =
           m.message.id && Number.isFinite(output) && output >= 0
             ? { responseId: m.message.id, outputTokens: output }
@@ -998,6 +1051,7 @@ function newActive(turn) {
     tools: new Map(),
     pendingSteers: new Set(),
     assistantBlocks: new Map(),
+    responseUsages: new Map(),
     reportedUsage: 0,
     reportedOutput: 0,
     reportedTurnOutput: 0,

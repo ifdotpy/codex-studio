@@ -430,8 +430,13 @@ class ClaudeCostReader:
                           "month" if row["at"] >= now - 30 * 86400 else None)
                 if not period:
                     continue
-                cost, status, _ = price_usage(catalog, "anthropic", row["model"], row["usage"],
-                                               context_tokens=row["usage"].get("inputTokens"))
+                usage = row["usage"]
+                context_tokens = usage.get("inputTokens", 0)
+                if row.get("inputTokensAreUncached"):
+                    context_tokens += usage.get("cachedInputTokens", 0) + usage.get("cacheWriteInputTokens", 0)
+                cost, status, _ = price_usage(catalog, "anthropic", row["model"], usage,
+                                               context_tokens=context_tokens,
+                                               input_tokens_are_uncached=row.get("inputTokensAreUncached", False))
                 if cost is None:
                     unknown.add(row["model"])
                     continue
