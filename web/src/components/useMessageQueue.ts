@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText, saved } from "../api";
+import { api, syncApi, ApiError, errorText, saved } from "../api";
 import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { Json } from "../types";
@@ -132,7 +132,7 @@ export function useMessageQueue(p: {
     setBusy(key);
     serial.current++;
     try {
-      await api("/api/queue", request, { workspaceId: p.workspaceId });
+      await syncApi("/api/queue", request, { workspaceId: p.workspaceId });
       await clearRequest(request);
       if (request.action === "cancel") p.observed?.([request.id]);
       if (request.action === "edit") p.edited?.(request.id, request.text);

@@ -20,6 +20,9 @@ import urllib.request
 import unittest
 from unittest.mock import patch
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_canvas import Canvas, make_server

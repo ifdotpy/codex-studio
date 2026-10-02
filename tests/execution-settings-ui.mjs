@@ -112,6 +112,17 @@ try {
   }
   const state = async () =>
     (await (await fetch(url + "/api/state")).json()).runtime.agents;
+  const settingsResponse = (id, matches) =>
+    page.waitForResponse((response) => {
+      const request = response.request();
+      if (
+        !response.url().endsWith("/api/conversation") ||
+        request.method() !== "POST"
+      )
+        return false;
+      const body = request.postDataJSON();
+      return body.id === id && matches(body);
+    });
   const waitFor = async (predicate) => {
     for (let i = 0; i < 100; i++) {
       const result = await predicate();
@@ -170,14 +181,24 @@ try {
     "the open list fits the window",
   );
   // Arrow keys move the highlight, Enter picks, Escape closes only the list.
+  const alternateModelSaved = settingsResponse(
+    lead.id,
+    (body) => typeof body.model === "string" && body.model !== lead.model,
+  );
   await leadModel.press("ArrowDown");
   await leadModel.press("ArrowDown");
   await leadModel.press("Enter");
   await listBox.waitFor({ state: "hidden" });
+  assert.ok(
+    (await alternateModelSaved).ok(),
+    "alternate model save is acknowledged",
+  );
   await waitFor(async () => {
     const row = (await state()).find((a) => a.id === lead.id);
     return (row.pendingSettings?.model || row.model) !== lead.model;
   });
+  // The fixture state commits before the settings response re-enables the picker.
+  await waitFor(() => leadModel.isEnabled());
   await leadModel.press("ArrowDown");
   await listBox.waitFor();
   await leadModel.press("Escape");
@@ -193,34 +214,66 @@ try {
     "model",
     "focus stays on the picker",
   );
+  const originalModelSaved = settingsResponse(
+    lead.id,
+    (body) => body.model === lead.model,
+  );
   await selectModel(leadModel, lead.model);
+  assert.ok(
+    (await originalModelSaved).ok(),
+    "original model save is acknowledged",
+  );
   await waitFor(async () => {
     const row = (await state()).find((a) => a.id === lead.id);
     return (row.pendingSettings?.model || row.model) === lead.model;
   });
   assert.equal(await modelValue(leadModel), lead.model);
-  await page
-    .getByLabel("Main agent reasoning", { exact: true })
-    .selectOption("high");
+  const leadReasoning = page.getByLabel("Main agent reasoning", {
+    exact: true,
+  });
+  const leadReasoningSaved = settingsResponse(
+    lead.id,
+    (body) => body.effort === "high",
+  );
+  await leadReasoning.selectOption("high");
+  assert.ok((await leadReasoningSaved).ok());
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).effort === "high",
   );
+  await waitFor(() => leadReasoning.isEnabled());
   await page.getByText("Permissions", { exact: true }).click();
   const yolo = page.getByRole("switch", {
     name: "Full access without approval",
     exact: true,
   });
+  assert.equal(await yolo.isChecked(), true);
+  const yoloSaved = settingsResponse(
+    lead.id,
+    (body) => body.yolo_mode === false,
+  );
   await yolo.click();
   await page
     .getByRole("alert")
     .filter({ hasText: "Wait for every team turn" })
     .waitFor();
+  assert.equal((await yoloSaved).status(), 400);
   assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);
   await waitFor(() => yolo.isChecked());
-  await page.getByRole("switch", { name: "Fast mode", exact: true }).check();
+  await waitFor(() => yolo.isEnabled());
+  const leadFastMode = page.getByRole("switch", {
+    name: "Fast mode",
+    exact: true,
+  });
+  const leadFastModeSaved = settingsResponse(
+    lead.id,
+    (body) => body.fast_mode === true,
+  );
+  await leadFastMode.check();
+  assert.ok((await leadFastModeSaved).ok());
   await waitFor(
     async () => (await state()).find((a) => a.id === lead.id).fastMode === true,
   );
+  await waitFor(() => leadFastMode.isEnabled());
   await page.keyboard.press("Escape");
   await page
     .getByRole("dialog", { name: "Main agent settings", exact: true })
@@ -243,7 +296,8 @@ try {
     await (await openModelList(defaultModel)).first().innerText(),
     /^Same as main agent \(/,
   );
-  await selectModel(defaultModel, "gpt-6-luna");
+  assert.equal(await modelValue(defaultModel), "gpt-6-luna");
+  await waitFor(() => defaultModel.isEnabled());
   assert.equal(
     await dialog
       .getByLabel("Default subagent reasoning")
@@ -251,8 +305,24 @@ try {
       .count(),
     0,
   );
-  await dialog.getByLabel("Default subagent reasoning").selectOption("high");
-  await dialog.getByRole("switch", { name: "Fast mode", exact: true }).check();
+  const defaultReasoning = dialog.getByLabel("Default subagent reasoning");
+  const inheritedReasoningSaved = settingsResponse(
+    lead.id,
+    (body) => body.worker_defaults?.effort === "high",
+  );
+  await defaultReasoning.selectOption("high");
+  assert.ok((await inheritedReasoningSaved).ok());
+  await waitFor(() => defaultReasoning.isEnabled());
+  const defaultFastMode = dialog.getByRole("switch", {
+    name: "Fast mode",
+    exact: true,
+  });
+  const inheritedFastModeSaved = settingsResponse(
+    lead.id,
+    (body) => body.worker_defaults?.fast_mode === true,
+  );
+  await defaultFastMode.check();
+  assert.ok((await inheritedFastModeSaved).ok());
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
 
@@ -315,7 +385,12 @@ try {
   await page.setViewportSize({ width: 1440, height: 960 });
   await openSettings("Subagent defaults");
   assert.equal(await modelValue(defaultModel), "gpt-6-luna");
+  const slowModelSaved = settingsResponse(
+    lead.id,
+    (body) => body.worker_defaults?.model === "test-slow",
+  );
   await selectModel(defaultModel, "test-slow");
+  assert.ok((await slowModelSaved).ok());
   assert.ok(
     await dialog
       .getByRole("switch", { name: "Fast mode", exact: true })
@@ -340,22 +415,40 @@ try {
       (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
       "test-slow",
   );
+  await waitFor(() => defaultModel.isEnabled());
+  const solModelSaved = settingsResponse(
+    lead.id,
+    (body) => body.worker_defaults?.model === "gpt-5.6-sol",
+  );
   await selectModel(defaultModel, "gpt-5.6-sol");
+  assert.ok((await solModelSaved).ok());
   await waitFor(
     async () =>
       (await state()).find((a) => a.id === lead.id).workerDefaults.model ===
       "gpt-5.6-sol",
   );
-  await dialog.getByLabel("Default subagent reasoning").selectOption("low");
+  await waitFor(() => defaultModel.isEnabled());
+  const lowReasoningSaved = settingsResponse(
+    lead.id,
+    (body) =>
+      body.worker_defaults?.model === "gpt-5.6-sol" &&
+      body.worker_defaults?.effort === "low",
+  );
+  await defaultReasoning.selectOption("low");
+  assert.ok((await lowReasoningSaved).ok());
   await waitFor(async () => {
     const defaults = (await state()).find(
       (a) => a.id === lead.id,
     ).workerDefaults;
     return defaults.model === "gpt-5.6-sol" && defaults.effort === "low";
   });
-  await dialog
-    .getByRole("switch", { name: "Fast mode", exact: true })
-    .uncheck();
+  await waitFor(() => defaultReasoning.isEnabled());
+  assert.equal(
+    await dialog
+      .getByRole("switch", { name: "Fast mode", exact: true })
+      .isChecked(),
+    false,
+  );
   await waitFor(async () => {
     const defaults = (await state()).find(
       (a) => a.id === lead.id,
@@ -413,14 +506,24 @@ try {
     exact: true,
   });
   assert.equal(await freshYolo.isChecked(), true);
+  const freshYoloOffSaved = settingsResponse(
+    fresh.id,
+    (body) => body.yolo_mode === false,
+  );
   await freshYolo.uncheck();
+  assert.ok((await freshYoloOffSaved).ok());
   await waitFor(
     async () =>
       (await state()).find((a) => a.id === fresh.id).yoloMode === false,
   );
   await waitFor(async () => !(await freshYolo.isDisabled()));
   await waitFor(async () => !(await freshYolo.isChecked()));
+  const freshYoloOnSaved = settingsResponse(
+    fresh.id,
+    (body) => body.yolo_mode === true,
+  );
   await freshYolo.check();
+  assert.ok((await freshYoloOnSaved).ok());
   await waitFor(
     async () =>
       (await state()).find((a) => a.id === fresh.id).yoloMode === true,

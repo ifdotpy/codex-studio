@@ -14,6 +14,11 @@ if (typeof window !== "undefined")
   });
 
 let token = "";
+let sessionGeneration = 0;
+let manualTokenGeneration = 0;
+const pendingSessions = new Set<number>();
+let successfulSession: { generation: number; token: string } | undefined;
+let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 export type ApiReadMetadata = { etag?: string; notModified?: boolean };
 export function setWorkspace(value: string) {
@@ -29,6 +34,9 @@ export class ApiError extends Error {
   }
 }
 export function setToken(value: string) {
+  manualTokenGeneration = ++sessionGeneration;
+  successfulSession = undefined;
+  confirmedSession = undefined;
   token = value;
 }
 export class NetworkTimeoutError extends TypeError {
@@ -43,6 +51,7 @@ export async function api<T = any>(
   options: {
     timeoutMs?: number;
     workspaceId?: string;
+    sessionToken?: string;
     signal?: AbortSignal;
     etag?: string;
     readMetadata?: ApiReadMetadata;
@@ -76,7 +85,7 @@ export async function api<T = any>(
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "X-Canvas-Token": token,
+              "X-Canvas-Token": options.sessionToken ?? token,
               ...((options.workspaceId ?? workspace)
                 ? { "X-Canvas-Workspace": options.workspaceId ?? workspace }
                 : {}),
@@ -172,8 +181,38 @@ export async function apiDownload(path: string): Promise<{
 export const syncApi = <T = any>(
   path: string,
   body?: unknown,
-  options: { workspaceId?: string } = {},
+  options: { workspaceId?: string; sessionToken?: string } = {},
 ) => api<T>(path, body, { ...options, timeoutMs: 15000 });
+
+export async function refreshSession(): Promise<{ token: string }> {
+  const generation = ++sessionGeneration;
+  pendingSessions.add(generation);
+  let session: { token: string };
+  try {
+    session = await syncApi<{ token: string }>("/api/session");
+    if (
+      generation > manualTokenGeneration &&
+      (!successfulSession || successfulSession.generation < generation)
+    )
+      successfulSession = { generation, token: session.token };
+  } finally {
+    pendingSessions.delete(generation);
+    // A failed newer read releases the last successful credential. Pending
+    // newer reads and explicit setToken owners keep their precedence.
+    const latest = successfulSession;
+    if (
+      latest &&
+      ![...pendingSessions].some((pending) => pending > latest.generation)
+    ) {
+      token = latest.token;
+      confirmedSession = latest;
+    }
+  }
+  // A delayed response cannot replace a newer confirmed server credential.
+  if (confirmedSession && confirmedSession.generation > generation)
+    return { ...session, token: confirmedSession.token };
+  return session;
+}
 
 export const errorText = displayError;
 export function saved<T>(key: string, fallback: T): T {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restart preserves admitted work without replaying unknown operations."""
 import copy
+import concurrent.futures
 import importlib.util
 import json
 import os
@@ -9,6 +10,8 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from types import SimpleNamespace
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -153,6 +156,89 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(record('monitors','active-monitor')['status'], 'running')
         self.assertEqual(record('tasks','active-task')['status'], 'running')
         self.assertFalse(any(method in {'turn/start','turn/resume'} for method, _ in self.server.calls))
+
+    def test_startup_opens_pending_accounts_before_runtime_is_exposed_and_records_each_result(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        self.runtime.close()
+        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}):
+            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        claude_agent = copy.deepcopy(self.runtime.agent(self.key))
+        claude_agent.update(id=str(uuid.uuid4()), name='Claude account turn', accountKey='claude-local',
+                            threadId='claude-thread', turnId='claude-turn', status='interrupted',
+                            autoWake=False, inFlight=False,
+                            restartRecovery={'stage': 'pending', 'autoWake': True, 'epoch': claude_agent['epoch'],
+                                'accountKey': 'claude-local', 'threadId': 'claude-thread',
+                                'turnId': 'claude-turn'})
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'agents', claude_agent)
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'interrupted')
+        self.assertEqual(agent['supervisorRestore']['status'], 'pending')
+
+        opened = []
+        def open_account(account_key):
+            with self.runtime.db() as db:
+                current = [a for a in self.runtime.records(db, 'agents')
+                           if a.get('accountKey', 'default') == account_key
+                           and (a.get('restartRecovery') or {}).get('stage') == 'pending']
+            opened.append((account_key, {a['id']: a['status'] for a in current}))
+            connection = 'startup-' + account_key
+            self.runtime.connection_ids[account_key] = connection
+            self.runtime.offline_accounts.discard(account_key)
+            self.runtime.supervisor_reattached(account_key, connection, True)
+        with patch.object(self.runtime, 'connect', side_effect=open_account):
+            self.runtime._restore_startup_supervisor_handles()
+
+        self.assertEqual([row[0] for row in opened], ['claude-local', 'default'])
+        self.assertTrue(all(set(row[1].values()) == {'interrupted'} for row in opened))
+        restored = self.runtime.agent(self.key)
+        self.assertEqual(restored['status'], 'running')
+        self.assertEqual(restored['restartRecovery']['stage'], 'reattached')
+        self.assertEqual(restored['supervisorRestore']['status'], 'restored')
+        self.assertEqual(restored['supervisorRestore']['reason'], 'live_handle_resumed')
+        claude_restored = self.runtime.agent(claude_agent['id'])
+        self.assertEqual(claude_restored['status'], 'running')
+        self.assertEqual(claude_restored['supervisorRestore']['status'], 'restored')
+        self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
+
+    def test_startup_failed_handle_open_leaves_turn_interrupted_with_reason(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        self.runtime.close()
+        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}):
+            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+
+        with patch.object(self.runtime, 'connect', side_effect=RuntimeError('no compatible supervisor')):
+            self.runtime._restore_startup_supervisor_handles()
+
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'interrupted')
+        self.assertEqual(agent['supervisorRestore']['status'], 'not_restored')
+        self.assertEqual(agent['supervisorRestore']['reason'], 'account_handle_open_failed')
+        self.assertEqual(agent['restartRecovery']['stage'], 'pending')
+
+    def test_startup_timeout_closes_runtime_without_cancelling_restore_or_exposing_api(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        self.runtime.close()
+        pending = concurrent.futures.Future()
+        observed = []
+        def connect(runtime, _account):
+            observed.append(runtime)
+            return SimpleNamespace(supervisor_reattach_future=pending)
+        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}), \
+                patch.object(fixture.Runtime, 'connect', connect), \
+                patch.object(pending, 'result', side_effect=concurrent.futures.TimeoutError):
+            with self.assertRaisesRegex(RuntimeError, 'restore did not finish before startup'):
+                fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.assertEqual(len(observed), 1)
+        self.assertTrue(observed[0].closed)
+        self.assertFalse(pending.done())
+        self.assertFalse(pending.cancelled())
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'interrupted')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
 
     def test_reattach_rechecks_connection_and_close_after_runtime_lock_wait(self):
         for change in ('connection', 'closed'):

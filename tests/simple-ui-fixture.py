@@ -6,6 +6,9 @@ import sys
 import os
 import threading
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 sys.dont_write_bytecode = True
 skill = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(skill / 'scripts'))

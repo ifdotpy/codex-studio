@@ -16,6 +16,9 @@ import unittest
 from unittest.mock import patch
 import uuid
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
