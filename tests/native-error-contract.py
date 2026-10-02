@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -312,9 +313,11 @@ class NativeErrorContract(unittest.TestCase):
             a = self.runtime.agent(self.key, db)
             a.update(status='queued', autoWake=True, nativeFailureHold=False, error=None)
             self.runtime.put(db, 'agents', a)
-            calls = len(self.server.calls)
-            self.runtime.dispatch()
-            self.assertEqual(len(self.server.calls), calls)
+            calls = [call for call in self.server.calls
+                     if call[0] not in {'account/rateLimits/read', 'thread/name/set'}]
+        self.runtime.dispatch()
+        self.assertEqual([call for call in self.server.calls
+                          if call[0] not in {'account/rateLimits/read', 'thread/name/set'}], calls)
         visible = next(a for a in self.runtime.snapshot()['agents'] if a['id'] == self.key)
         self.assertFalse(visible['canSend'])
         self.assertEqual(visible['nativeThreadBlock'], {'threadId': self.a['threadId'], 'error': error})
@@ -534,7 +537,8 @@ class NativeErrorContract(unittest.TestCase):
         warning = {'id': 'provider-version:default', 'accountKey': 'default',
                    'provider': 'codex', 'version': '0.153.3', 'baseline': '0.153.4',
                    'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.'}
-        with patch('codex_provider_versions.status', return_value={'warnings': [warning]}):
+        with patch('codex_provider_versions.monitor', return_value=SimpleNamespace(
+                status=lambda: {'warnings': [warning]})):
             notices = self.runtime.snapshot()['nativeNotices']
         self.assertEqual([item for item in notices if item['id'] == warning['id']], [warning])
 

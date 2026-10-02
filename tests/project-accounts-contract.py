@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_accounts import AccountStore
 from codex_workspace import WorkspaceMixin
+from codex_sync_entities import ensure_tables
 
 
 class Store(WorkspaceMixin):
@@ -28,6 +29,7 @@ class Store(WorkspaceMixin):
         self.accounts = AccountStore(root)
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            ensure_tables(db)
             self.setup_workspace(db)
 
     @contextmanager

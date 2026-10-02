@@ -82,17 +82,19 @@ try {
       .getAttribute("data-show-message-avatars"),
     "false",
   );
-  assert.ok(
-    (await page
+  assert.equal(
+    await page
       .locator("#conversation #messages .message .chat-message-author")
-      .count()) > 0,
+      .count(),
+    0,
+    "Main-chat messages omit author wrappers; only multi-speaker rooms need them",
   );
   assert.equal(
     await page
       .locator("#conversation #messages .chat-message-author:visible")
       .count(),
     0,
-    "Avatar-only conversation author wrappers collapse when avatars are off",
+    "Main-chat messages have no author wrappers when avatars are off",
   );
   const settleLayout = async () =>
     page.evaluate(
@@ -154,8 +156,8 @@ try {
   const settingsTabs = settings.getByRole("tab");
   assert.deepEqual(
     (await settingsTabs.allTextContents()).map((label) => label.trim()),
-    ["Accounts", "Appearance", "Hotkeys"],
-    "Studio settings exposes the three global settings tabs",
+    ["Accounts", "Appearance", "Federation", "Hotkeys"],
+    "Studio settings exposes account, appearance, federation, and hotkey tabs",
   );
   await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
   await settings.getByRole("tab", { name: "Appearance", exact: true }).click();
@@ -189,11 +191,12 @@ try {
       .getAttribute("data-show-message-avatars"),
     "true",
   );
-  assert.ok(
-    (await page
+  assert.equal(
+    await page
       .locator("#conversation #messages .chat-message-author:visible")
-      .count()) > 0,
-    "Conversation author avatars appear when enabled",
+      .count(),
+    0,
+    "The avatar preference does not add author wrappers to the two-speaker main chat",
   );
   const sidebarSize = settings.getByRole("slider", {
     name: "Sidebar font size",
@@ -483,7 +486,7 @@ try {
     (await reloadedSettings.getByRole("tab").allTextContents()).map((label) =>
       label.trim(),
     ),
-    ["Accounts", "Appearance", "Hotkeys"],
+    ["Accounts", "Appearance", "Federation", "Hotkeys"],
   );
   assert.equal(
     await reloadedSettings.getByRole("alert").count(),

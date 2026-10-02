@@ -25,6 +25,7 @@ class Runtime:
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT, record TEXT, created REAL);
+                CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, text TEXT, kind TEXT);
                 CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY, search_rowid INTEGER);
                 CREATE TABLE runtime_search(body TEXT);
@@ -229,6 +230,11 @@ class PortableHistoryContract(unittest.TestCase):
         with self.rt.db() as db:
             db.execute('INSERT INTO runtime_search(rowid,body) VALUES(1,?)', ('short',))
             db.execute('INSERT INTO runtime_search_rows VALUES(?,1)', ('chat:item',))
+            # The contentless-index rollout retains full bodies separately. This
+            # truncated fixture has neither the authoritative full-text row nor
+            # a legacy FTS row that can be treated as complete history.
+            db.execute('DELETE FROM runtime_search WHERE rowid=1')
+            db.execute('DELETE FROM runtime_search_rows WHERE id=?', ('chat:item',))
         with self.assertRaisesRegex(ValueError, 'full Studio item is unavailable'):
             self.export()
         self.assertEqual(list((self.rt.root / 'portable-history').iterdir()), [])

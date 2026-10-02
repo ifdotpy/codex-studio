@@ -40,6 +40,18 @@ class HistoryContract(unittest.TestCase):
                     raise
         self.fail('bounded transcript migration did not finish in 20 search attempts')
 
+    def remove_fulltext_sources(self, db, identity):
+        db.execute('DELETE FROM runtime_item_fulltext WHERE id=?', (identity,))
+        row = db.execute('SELECT search_rowid FROM runtime_search_next_meta WHERE id=?', (identity,)).fetchone()
+        if row:
+            db.execute('DELETE FROM runtime_search_next WHERE rowid=?', (row[0],))
+            db.execute('DELETE FROM runtime_search_next_meta WHERE id=?', (identity,))
+        row = db.execute('SELECT search_rowid FROM runtime_search_rows WHERE id=?', (identity,)).fetchone()
+        if row:
+            db.execute('DELETE FROM runtime_search WHERE rowid=?', (row[0],))
+            db.execute('DELETE FROM runtime_search_rows WHERE id=?', (identity,))
+        db.execute('DELETE FROM runtime_search WHERE id=?', (identity,))
+
     def test_all_pages_stable_scope_and_around_forward(self):
         lead = self.seed()
         other = self.seed(2)
@@ -87,10 +99,7 @@ class HistoryContract(unittest.TestCase):
         identity = lead['id'] + ':missing-full-body'
         with self.runtime.lock,self.runtime.db() as db:
             self.runtime.item(db,lead['id'],'missing-full-body','assistant','x' * 25000)
-            row = db.execute('SELECT search_rowid FROM runtime_search_rows WHERE id=?',(identity,)).fetchone()
-            db.execute('DELETE FROM runtime_item_bodies WHERE id=?',(identity,))
-            db.execute('DELETE FROM runtime_search WHERE rowid=?',(row[0],))
-            db.execute('DELETE FROM runtime_search_rows WHERE id=?',(identity,))
+            self.remove_fulltext_sources(db, identity)
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
             search_history(self.runtime,lead['id'],'not present')
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
@@ -102,8 +111,7 @@ class HistoryContract(unittest.TestCase):
         with self.runtime.lock,self.runtime.db() as db:
             self.runtime.item(db,lead['id'],'legacy-excerpt','assistant','short excerpt')
             db.execute("UPDATE runtime_items SET record=json_set(record,'$.truncated',1) WHERE id=?",(identity,))
-            db.execute('DELETE FROM runtime_item_bodies WHERE id=?',(identity,))
-            db.execute('DELETE FROM runtime_search_partial WHERE id=?',(identity,))
+            self.remove_fulltext_sources(db, identity)
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):
             history_item(self.runtime,lead['id'],identity)
         with self.assertRaisesRegex(ValueError,'complete transcript item is unavailable'):

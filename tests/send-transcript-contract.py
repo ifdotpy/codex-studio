@@ -120,7 +120,7 @@ class SendTranscriptContract(unittest.TestCase):
         self.assertTrue(all(r["materialized"] is False for r in original))
         self.assertNotIn("path", original[1]["assets"][0])
         work = []
-        with patch.object(self.runtime.pool, "submit", side_effect=lambda *args: work.append(args)):
+        with patch.object(self.runtime.delivery_executor(), "submit", side_effect=lambda *args: work.append(args)):
             self.runtime.dispatch()
         self.assertEqual(len(work), 1)
         reserved = self.messages(key)
