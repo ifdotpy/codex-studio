@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import select
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -14,6 +15,9 @@ import time
 import unittest
 import uuid
 from unittest.mock import patch
+
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -194,6 +198,61 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.deactivate=getattr(self,'deactivate',[])
         self.deactivate.append(lambda:active.update(value=False))
         return server
+
+    def test_explicit_root_refuses_decoy_environment_without_connecting(self):
+        decoy = self.root / 'decoy'
+        decoy.mkdir()
+        decoy_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        decoy_socket.bind(str(decoy / 'supervisor.sock'))
+        decoy_socket.listen(1)
+        decoy_socket.settimeout(.1)
+        try:
+            with patch.dict(os.environ, {
+                'CODEX_AGENTS_SUPERVISOR_MODE': '1',
+                'CODEX_AGENTS_STATE_DIR': str(decoy),
+                'CODEX_AGENTS_SUPERVISOR_FALLBACK': '1',
+            }):
+                with self.assertRaisesRegex(RuntimeError, 'state root mismatch.*refusing to contact'):
+                    process_supervisor.attach(self.root, 'guard', [str(self.binary)], dict(os.environ))
+            with self.assertRaises(socket.timeout):
+                decoy_socket.accept()
+        finally:
+            decoy_socket.close()
+
+    def test_live_child_rejects_changed_signature_with_operator_guidance(self):
+        first = self.server()
+        other = self.root / 'other-native'
+        other.write_text(self.binary.read_text() + '\n')
+        other.chmod(0o700)
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            with self.assertRaisesRegex(RuntimeError, 'active with PID.*operator CLI'):
+                AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
+                          executable=str(other), supervisor_handle='account:default')
+        self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
+
+    def test_exited_child_is_replaced_in_the_same_supervisor_generation(self):
+        first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        second = self.server()
+        self.assertEqual(second.proc.generation, 2)
+        self.assertNotEqual(int(self.pid_file.read_text()), old_pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+
+    def test_operator_close_requires_exact_identity_and_closes_verified_fixture(self):
+        server = self.server(handle='test:operator-close')
+        live = next(row for row in status(self.root)['handles'] if row['id'] == 'test:operator-close')
+        with self.assertRaisesRegex(RuntimeError, 'identity changed'):
+            process_supervisor.admin_close_handle(self.root, live['id'], live['pid'] + 1,
+                                                  live['startTime'], live['signature'])
+        self.assertIsNotNone(process_start_time(live['pid']))
+        result = process_supervisor.admin_close_handle(self.root, live['id'], live['pid'],
+                                                       live['startTime'], live['signature'])
+        self.assertEqual(result, {'closed': True, 'handle': live['id'], 'pid': live['pid']})
+        self.assertIsNone(process_start_time(live['pid']))
 
     @unittest.skipUnless(sys.platform == 'darwin', 'macOS process identity precision contract')
     def test_process_start_time_distinguishes_children_started_in_same_second(self):
@@ -948,7 +1007,8 @@ class ProcessSupervisorContract(unittest.TestCase):
                 root.mkdir(parents=True)
                 handle = 'account:nested-' + str(index) if index < 2 else 'terminals'
                 server = AppServer(root, lambda _: None, lambda _: None, lambda: None,
-                                   executable=str(self.binary), supervisor_handle=handle)
+                                   executable=str(self.binary), supervisor_handle=handle,
+                                   supervisor_root=self.root)
                 self.servers.append(server)
                 self.assertEqual(server.call('model/list', {})['data'][0]['model'], 'fake')
                 self.assertEqual(server.proc.root, self.root)

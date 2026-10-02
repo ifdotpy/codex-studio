@@ -345,13 +345,31 @@ class Supervisor:
         with self.lock:
             child = self.children.get(handle)
             if child is not None:
-                if child.signature != signature or child.process.poll() is not None:
-                    raise RuntimeError("Supervisor handle exists with an incompatible or stopped child")
-                return child, True
-            recovered = False
+                return_code = child.process.poll()
+                if return_code is None and child.signature != signature:
+                    raise RuntimeError(
+                        f"Supervisor handle {handle!r} is active with PID {child.process.pid} and different launch settings; "
+                        "wait for it to exit or use the operator CLI to close a verified test/unknown handle."
+                    )
+                if return_code is None:
+                    return child, True
+                child.stopping.set()
+                with child.output:
+                    child.output.notify_all()
+                self.children.pop(handle, None)
+                if self.recovery.get("blocked"):
+                    raise RuntimeError("Supervisor recovery is blocked; native outcome remains unknown")
+                with self.journal.db() as db:
+                    db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
+                               (time.time(), f"Native child exited with status {return_code}", handle))
+                    db.commit()
+                stopped_in_process = True
+            else:
+                stopped_in_process = False
+            recovered = stopped_in_process
             with self.journal.db() as db:
                 saved = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
-                if saved:
+                if saved and not stopped_in_process:
                     if saved["closed_at"] is None or self.recovery.get("blocked"):
                         raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
                     if saved["signature"] != signature:
@@ -363,7 +381,7 @@ class Supervisor:
                         if not proof or process_start_matches(saved["pid"], proof[0], allow_legacy=True):
                             raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
                     recovered = True
-                else:
+                elif not saved:
                     db.execute("INSERT INTO handles(id,signature,pid,created) VALUES (?,?,0,?)",
                                (handle, signature, time.time()))
                     db.commit()
@@ -400,7 +418,12 @@ class Supervisor:
                 handles = []
                 for row in db.execute("SELECT id,sequence,acknowledged,pid FROM handles WHERE closed_at IS NULL"):
                     child = self.children.get(row["id"])
+                    identity = db.execute("SELECT start_time FROM child_identities WHERE handle=?",
+                                          (row["id"],)).fetchone()
+                    signature = db.execute("SELECT signature FROM handles WHERE id=?",
+                                           (row["id"],)).fetchone()[0]
                     handles.append({"id": row["id"], "pid": row["pid"],
+                        "signature": signature, "startTime": identity[0] if identity else None,
                         "sequence": row["sequence"], "acknowledged": row["acknowledged"],
                         "bufferedBytes": self.journal.outstanding_bytes(db, row["id"]),
                         "backpressure": bool(child and child.paused.is_set())})
@@ -415,6 +438,47 @@ class Supervisor:
                 db.execute("INSERT INTO supervisor_state VALUES ('recovery',?) "
                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(self.recovery),))
             return {"finished": True}
+        if request.get("action") == "adminCloseHandle":
+            if (not isinstance(request.get("expectedPid"), int)
+                    or not isinstance(request.get("expectedStartTime"), str)
+                    or not request.get("expectedStartTime")
+                    or not isinstance(request.get("expectedSignature"), str)):
+                raise ValueError("Operator close requires expected PID, start time, and launch signature")
+            handle = request.get("handle")
+            with self.lock, self.journal.db() as db:
+                row = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
+                child_identity = db.execute(
+                    "SELECT pid,pgid,start_time FROM child_identities WHERE handle=?", (handle,)
+                ).fetchone()
+                if not row or not child_identity or row["closed_at"] is not None:
+                    raise RuntimeError("Operator close refused: handle is missing or already closed")
+                if (row["signature"] != request["expectedSignature"]
+                        or row["pid"] != request["expectedPid"]
+                        or child_identity["pid"] != request["expectedPid"]
+                        or child_identity["start_time"] != request["expectedStartTime"]
+                        or process_start_time(request["expectedPid"]) != request["expectedStartTime"]):
+                    raise RuntimeError("Operator close refused: handle identity changed; refresh status and verify ownership")
+                child = self.children.get(handle)
+                if child is None:
+                    raise RuntimeError("Operator close refused: no in-memory child owner exists")
+                child.stopping.set()
+                try:
+                    os.killpg(child_identity["pgid"], signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    if process_start_time(request["expectedPid"]) != request["expectedStartTime"]:
+                        raise RuntimeError("Operator close refused escalation: child identity changed")
+                    os.killpg(child_identity["pgid"], signal.SIGKILL)
+                    child.process.wait(timeout=2)
+                self.children.pop(handle, None)
+                now = time.time()
+                db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
+                           (now, "Closed by operator after verified test/unknown-client ownership", handle))
+                db.commit()
+                return {"closed": True, "handle": handle, "pid": request["expectedPid"]}
         handle = request.get("handle")
         if not isinstance(handle, str) or not handle or len(handle) > 180:
             raise ValueError("Invalid supervisor handle")
@@ -621,6 +685,7 @@ class Handler(socketserver.StreamRequestHandler):
             if first.get("protocol") != PROTOCOL or first.get("stateDir") != str(self.server.supervisor.root):
                 raise RuntimeError("Supervisor protocol or state directory mismatch")
             owner = None if first.get("probe") is True else first.get("backendId")
+            operator = first.get("operator") is True
             supervisor = self.server.supervisor
             if owner is not None:
                 with supervisor.lock:
@@ -635,6 +700,8 @@ class Handler(socketserver.StreamRequestHandler):
                     return
                 try:
                     request = json.loads(line)
+                    if request.get("action") == "adminCloseHandle" and not operator:
+                        raise RuntimeError("adminCloseHandle is available only through the operator CLI")
                     result = supervisor.handle(request)
                     response = {"requestId": request.get("requestId"), "result": result}
                 except Exception as error:
@@ -1025,10 +1092,15 @@ class _Stdout:
 def attach(root, handle, command, env, cwd=None, *, stderr_sink=None):
     if os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") != "1":
         return None
-    # Account and terminal roots own local logs and sessions. The backend's
-    # state directory owns the one supervisor socket and its durable journal.
-    state_root = os.environ.get("CODEX_AGENTS_STATE_DIR") or root
-    return ProcessProxy(state_root, handle, command, env, cwd, stderr_sink)
+    root = Path(root).expanduser().resolve()
+    configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
+    if configured and Path(configured).expanduser().resolve() != root:
+        raise RuntimeError(
+            "Supervisor state root mismatch: the caller selected " + str(root)
+            + " but CODEX_AGENTS_STATE_DIR selects " + str(Path(configured).expanduser().resolve())
+            + ". Start Studio with matching state settings; refusing to contact another supervisor."
+        )
+    return ProcessProxy(root, handle, command, env, cwd, stderr_sink)
 
 
 def status(root):
@@ -1049,6 +1121,28 @@ def status(root):
     if not result or result.get("protocol") != PROTOCOL or result.get("stateDir") != str(root):
         raise RuntimeError("Supervisor health identity is incompatible")
     return result
+
+
+def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature):
+    root = Path(root).expanduser().resolve()
+    client = _connect(root / "supervisor.sock", timeout=2)
+    reader = client.makefile("r", encoding="utf-8")
+    try:
+        _send(client, {"protocol": PROTOCOL, "stateDir": str(root), "operator": True, "probe": True})
+        hello = _recv(client, reader)
+        if hello.get("error"):
+            raise RuntimeError(hello["error"])
+        request_id = uuid.uuid4().hex
+        _send(client, {"requestId": request_id, "action": "adminCloseHandle", "handle": handle,
+                       "expectedPid": expected_pid, "expectedStartTime": expected_start_time,
+                       "expectedSignature": expected_signature})
+        response = _recv(client, reader)
+    finally:
+        reader.close()
+        client.close()
+    if response.get("error"):
+        raise RuntimeError(response["error"])
+    return response.get("result", {})
 
 
 def finish_fallback(root):
@@ -1075,9 +1169,18 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--status-json", action="store_true")
     parser.add_argument("--finish-fallback", action="store_true")
+    parser.add_argument("--admin-close-handle")
+    parser.add_argument("--expected-pid", type=int)
+    parser.add_argument("--expected-start-time")
+    parser.add_argument("--expected-signature")
     parser.add_argument("--wait-for-lease", action="store_true")
     args = parser.parse_args()
-    if args.finish_fallback:
+    if args.admin_close_handle:
+        if (args.expected_pid is None or not args.expected_start_time or not args.expected_signature):
+            parser.error("--admin-close-handle requires --expected-pid, --expected-start-time, and --expected-signature")
+        print(json.dumps(admin_close_handle(args.state, args.admin_close_handle, args.expected_pid,
+                                            args.expected_start_time, args.expected_signature)))
+    elif args.finish_fallback:
         finish_fallback(args.state)
     elif args.status_json:
         print(json.dumps(status(args.state), separators=(",", ":")))

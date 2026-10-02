@@ -329,7 +329,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None):
         import queue
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -385,7 +385,7 @@ class AppServer:
             if not supervisor_handle:
                 raise RuntimeError("Supervisor mode requires a stable native-process handle")
             from codex_process_supervisor import attach
-            self.proc = attach(root, supervisor_handle, command, env, stderr_sink=self.log.write)
+            self.proc = attach(supervisor_root or root, supervisor_handle, command, env, stderr_sink=self.log.write)
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
@@ -2099,6 +2099,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   provider_options=account if provider == "claude" else None,
                                                   executable=selected["path"] if selected else None,
                                                   supervisor_handle="account:" + account_key,
+                                                  supervisor_root=self.root,
                                                   supervisor_commit=lambda message, sequence: self.commit_supervisor_event(
                                                       "account:" + account_key, message, sequence, account_key, connection_id),
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(

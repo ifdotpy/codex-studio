@@ -182,6 +182,9 @@ if your shell does not include it. Use `--bin-dir` for another directory.
 It refuses to replace unrelated files or links. To update links from the old
 checkout, pass `--replace-from /path/to/previous-checkout`.
 
+See [the supervisor operator notes](docs/supervisor-operator.md) for verified
+per-handle cleanup and recovery guidance for older supervisor generations.
+
 For browser tasks, Studio uses the installed OpenAI Chrome plugin by default.
 Set up the ChatGPT browser extension and browser runtime in ChatGPT Desktop first.
 Studio registers the installed Chrome skill with native `skills/extraRoots/set`.
@@ -466,6 +469,9 @@ installations that have no saved supervisor setting.
 Browser checks use the installed Chrome, or `CHROME_BIN`. Desktop checks use hidden
 Electron windows. Native protocol fixtures can run without paid model requests.
 Read each test before running a check that uses the live Codex service.
+Contracts that start Studio code import the shared `tests/test_isolation.py`
+fixture before creating the runtime; browser fixtures that start Studio's
+backend use the same helper in their Python fixture process.
 
 Inside a project, drag teams, folders, and loose chats to set their order.
 Drop near a row edge to change the order. Alt + Up or Down also works.

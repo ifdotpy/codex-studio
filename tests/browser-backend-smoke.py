@@ -11,6 +11,9 @@ import threading
 import urllib.request
 from unittest.mock import patch
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 
