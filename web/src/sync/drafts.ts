@@ -187,6 +187,7 @@ export function useSyncedDrafts() {
         if (
           chosen &&
           !pendingEdits.current.has(session) &&
+          !localHeads.current.has(session) &&
           next[session] !== chosen.text
         ) {
           if (next === current.current) next = { ...next };
@@ -194,6 +195,11 @@ export function useSyncedDrafts() {
         }
         if (pendingEdits.current.has(session)) continue;
         for (const branch of active) {
+          if (
+            branch.id === draftVersionId(device, writer, session) &&
+            branch.updated < (localHeads.current.get(session) || 0)
+          )
+            continue;
           if (branch.text && branch.text !== next[session])
             alternatives.push(branch);
           for (const text of branch.alternatives || [])
@@ -245,7 +251,7 @@ export function useSyncedDrafts() {
         setConflicts(nextConflicts);
       }
     },
-    [reportLocalError],
+    [reportLocalError, writer],
   );
   const dismissDraft = useCallback(
     (version: DraftVersion) => {

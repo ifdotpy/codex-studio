@@ -70,6 +70,16 @@ try {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), []);
   };
+  const untilDraftSaved = async (text) => {
+    for (let i = 0; i < 100; i++) {
+      if (
+        (await documents()).some((doc) => JSON.parse(doc.payload).text === text)
+      )
+        return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("The draft did not reach the server: " + text);
+  };
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -107,6 +117,15 @@ try {
     .click();
   await waitText(phone, "Draft from desktop");
   await phone.locator("#message").fill("Continue on phone");
+  await untilDraftSaved("Continue on phone");
+  await desktop.waitForTimeout(3500);
+  assert.equal(
+    await desktop.locator("#message").inputValue(),
+    "Draft from desktop",
+    "A synced remote edit must not replace text edited in this tab",
+  );
+  await desktop.getByRole("button", { name: /^Other drafts/ }).waitFor();
+  await desktop.reload();
   await waitText(desktop, "Continue on phone");
   assert.equal(
     await desktop.getByRole("button", { name: /^Other drafts/ }).count(),
@@ -219,6 +238,7 @@ try {
     "Retained during sync outage",
   );
   failPush = false;
+  await phone.reload();
   await waitText(phone, "Retained during sync outage");
   await status.waitFor({ state: "hidden", timeout: 15000 });
   await desktop.reload();
@@ -297,6 +317,7 @@ try {
     .getByRole("button", { name: "Replace text", exact: true })
     .click();
   await waitText(phone, "Changed alternative");
+  await desktop.reload();
   await waitText(desktop, "Changed alternative");
   assert.equal(
     await phone.getByRole("button", { name: /^Other drafts/ }).count(),
