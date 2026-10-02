@@ -53,7 +53,10 @@ class StreamBuffer:
         return True
 
     def _schedule_locked(self):
-        if self.timer is not None or not any(entry['batches'] for entry in self.entries.values()):
+        flushable = any(entry['batches'] and not any(
+            len(batch) > 8 and batch[8] is not None for batch in entry['batches'])
+            for entry in self.entries.values())
+        if self.timer is not None or not flushable:
             return
         timer = threading.Timer(FLUSH_SECONDS, self._tick)
         timer.daemon = True
@@ -84,7 +87,9 @@ class StreamBuffer:
                         if (account is None or key[0] == account)
                         and (thread_id is None or key[2] == thread_id)
                         and (item_id is None or key[4] == item_id)
-                        and (turn_id is None or key[3] == turn_id)]
+                        and (turn_id is None or key[3] == turn_id)
+                        and (supervisor_handle is not None or not any(
+                            len(batch) > 8 and batch[8] is not None for batch in entry['batches']))]
             if close:
                 for key, _, _ in selected:
                     if close_commands or key[5] == 'item/agentMessage/delta':

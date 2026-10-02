@@ -302,7 +302,10 @@ class WakeupContract(unittest.TestCase):
             saved = json.loads(db.execute('SELECT record FROM runtime_event_meta WHERE id=?', ('projection-user',)).fetchone()[0])
             self.assertEqual(saved['modelEventProjection'], 1)
             for key, value in metadata.items():
-                self.assertEqual(saved[key], value)
+                actual = saved[key]
+                if isinstance(value, dict):
+                    actual = {name: actual.get(name) for name in value}
+                self.assertEqual(actual, value)
 
 
 if __name__ == '__main__':

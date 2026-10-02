@@ -350,13 +350,14 @@ class ProcessSupervisorContract(unittest.TestCase):
         wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
         fragments = [m['params']['delta'] for m in self.delivered
                      if m.get('method') == 'item/agentMessage/delta']
-        self.assertEqual(fragments, ['abcdef'])
-        batch = next(m for m in self.delivered if m.get('method') == 'item/agentMessage/delta')
-        self.assertEqual(len(batch['_studioNotificationSamples']), 6)
+        self.assertEqual(fragments, list('abcdef'))
         self.assertFalse(server.proc.ack_pending)
         item = next(i for i in runtime.transcript(agent['id'])['items'] if i['id'].endswith(':burst-item'))
         self.assertEqual(item['text'], 'abcdef')
-        self.assertTrue(runtime.supervisor_event_applied(server.proc.handle, batch['_studioSupervisorSequence']))
+        self.assertTrue(runtime.supervisor_event_applied(
+            server.proc.handle, self.delivered[-1]['_studioSupervisorSequence']))
+        self.assertTrue(runtime.supervisor_event_applied(server.proc.handle,
+                                                          self.delivered[-1]['_studioSupervisorSequence']))
         def counts():
             with runtime.db() as db:
                 return db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE agent=? AND method=?',
@@ -407,18 +408,22 @@ class ProcessSupervisorContract(unittest.TestCase):
         baseline_durations.append((time.time() - terminal_started) * 1000)
         delivered = []
         after_delays, after_durations = [], []
+        commit_sizes, commit_durations = [], []
         release_at = [None]
         def notification(message):
             started_at = time.time()
             runtime.notification(message, 'default', None)
-            runtime.commit_supervisor_event(server.proc.handle, message,
-                                            message['_studioSupervisorSequence'], 'default', None)
             after_delays.append((message.get('_studioDispatchedAt', started_at)
                                  - (release_at[0] or started_at)) * 1000)
             after_durations.append((time.time() - started_at) * 1000)
             delivered.append(message)
         server.notification = notification
-        server.supervisor_commit = lambda message, sequence: None
+        def commit(message, sequence):
+            started_at = time.time()
+            runtime.commit_supervisor_event(server.proc.handle, message, sequence, 'default', None)
+            commit_sizes.append(message.get('_studioSupervisorBatchCount', 1))
+            commit_durations.append((time.time() - started_at) * 1000)
+        server.supervisor_commit = commit
         server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied(
             server.proc.handle, sequence)
         gate, started = threading.Event(), threading.Event()
@@ -434,8 +439,11 @@ class ProcessSupervisorContract(unittest.TestCase):
         batches = [message for message in delivered
                    if message.get('method') == 'item/commandExecution/outputDelta']
         terminals = [message for message in delivered if message.get('method') == 'item/completed']
-        self.assertLessEqual(len(batches), 3)
-        self.assertEqual(sum(len(message['_studioNotificationSamples']) for message in batches), count)
+        self.assertEqual(len(batches), count)
+        self.assertEqual(sum(size for size in commit_sizes), count + 1)
+        self.assertLessEqual(len(commit_sizes), 4)
+        self.assertEqual([m['_studioSupervisorSequence'] for m in batches],
+                         sorted(m['_studioSupervisorSequence'] for m in batches))
         self.assertEqual(''.join(message['params']['delta'] for message in batches),
                          ''.join(f'{index},' for index in range(count)))
         self.assertEqual(len(terminals), 1)
@@ -465,7 +473,11 @@ class ProcessSupervisorContract(unittest.TestCase):
                                          'total': round(sum(baseline_durations), 2)},
             'afterCallbackDurationMs': {'p95': round(percentile(after_durations, .95), 2),
                                         'max': round(max(after_durations), 2),
-                                        'total': round(sum(after_durations), 2)}}), flush=True)
+                                        'total': round(sum(after_durations), 2)},
+            'afterCommitBatchSizes': commit_sizes,
+            'afterCommitDurationMs': {'p95': round(percentile(commit_durations, .95), 2),
+                                      'max': round(max(commit_durations), 2),
+                                      'total': round(sum(commit_durations), 2)}}), flush=True)
 
         delivered.clear()
         gate, started = threading.Event(), threading.Event()
@@ -492,6 +504,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         applied = {'sequence': 0}
         server.supervisor_commit = lambda message, sequence: applied.update(sequence=sequence)
         server.supervisor_event_applied = lambda sequence: sequence <= applied['sequence']
+        server._supervisor_stream_batch_limit = 1
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
         self.assertTrue(started.wait(3))
@@ -505,7 +518,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         gate.set()
         wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
         self.assertEqual([m['params']['delta'] for m in self.delivered
-                          if m.get('method') == 'item/agentMessage/delta'], ['def'])
+                          if m.get('method') == 'item/agentMessage/delta'], list('def'))
 
     def test_failed_delta_batch_commit_keeps_every_journal_event(self):
         server = self.server()
@@ -532,6 +545,7 @@ class ProcessSupervisorContract(unittest.TestCase):
 
     def test_legacy_delta_gaps_require_durable_proof_and_preserve_requests(self):
         server = self.server()
+        server._supervisor_stream_batch_limit = 1
         applied = {'sequence': 0}
         server.supervisor_commit = lambda message, sequence: applied.update(sequence=sequence)
         server.supervisor_event_applied = lambda sequence: sequence <= applied['sequence']
