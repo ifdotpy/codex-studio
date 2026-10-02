@@ -125,6 +125,52 @@ class AnalyticsContract(unittest.TestCase):
             self.runtime.analytics_agent(db, {**self.agent, 'model': 'old-model', 'effort': 'low'})
         self.assertEqual(self.data()['agents'][0]['model'], self.agent['model'])
 
+    def test_analytics_agent_keeps_account_history(self):
+        history = [{'accountKey': 'claude-old', 'threadId': 'old-thread', 'provider': 'claude'}]
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.analytics_agent(db, {**self.agent, 'accountHistory': history})
+            saved = json.loads(db.execute('SELECT record FROM analytics_agents WHERE id=?',
+                                          (self.agent['id'],)).fetchone()[0])
+        self.assertEqual(saved['accountHistory'], history)
+
+    def test_claude_response_usage_is_separate_and_replay_deduplicates(self):
+        for response, request_usage in (
+            ('claude-one', {'inputTokens': 100, 'cachedInputTokens': 900,
+                            'cacheWriteInputTokens': 50, 'outputTokens': 8}),
+            ('claude-two', {'inputTokens': 200, 'cachedInputTokens': 1800,
+                            'cacheWriteInputTokens': 100, 'outputTokens': 12}),
+        ):
+            params = {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                      'responseId': response, 'model': 'claude-opus-5-5',
+                      'usageSource': 'claudeResponse', 'requestUsage': request_usage,
+                      'tokenUsage': {'total': {'totalTokens': sum(request_usage.values())},
+                                     'last': {'inputTokens': sum(request_usage.values()) - request_usage['outputTokens'],
+                                              'cachedInputTokens': request_usage['cachedInputTokens'],
+                                              'cacheWriteInputTokens': request_usage['cacheWriteInputTokens'],
+                                              'outputTokens': request_usage['outputTokens'],
+                                              'totalTokens': sum(request_usage.values())}}}
+            self.event('thread/tokenUsage/updated', params)
+            self.event('thread/tokenUsage/updated', params)
+        with self.runtime.analytics_read_connection() as db:
+            rows = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM analytics_usage WHERE agent=? AND json_extract(record,'$.usageSource')='claudeResponse' ORDER BY seq",
+                (self.agent['id'],))]
+        self.assertEqual([row['responseId'] for row in rows], ['claude-one', 'claude-two'])
+        self.assertEqual(rows[0]['delta']['inputTokens'], 100)
+        self.assertEqual(rows[0]['delta']['cachedInputTokens'], 900)
+        self.assertEqual(rows[0]['delta']['cacheWriteInputTokens'], 50)
+        self.assertEqual(rows[0]['delta']['outputTokens'], 8)
+        summary = self.data()['summary']
+        self.assertEqual(summary['tokens']['inputTokens'], 300)
+        self.assertEqual(summary['tokens']['cachedInputTokens'], 2700)
+        self.assertEqual(summary['tokens']['cacheWriteInputTokens'], 150)
+        self.assertEqual(summary['tokens']['totalTokens'], 3170)
+        self.assertAlmostEqual(summary['cacheHitRate'], 2700 / 3150)
+        with self.runtime.db() as db:
+            budget_rows = db.execute("SELECT COUNT(*) FROM runtime_budget_usage WHERE agent=? AND kind='response'",
+                                     (self.agent['id'],)).fetchone()[0]
+        self.assertEqual(budget_rows, 2)
+
     def test_native_restart_counter_does_not_duplicate_exact_response(self):
         self.usage({'totalTokens': 134249}, {'totalTokens': 134249}, at=100)
         self.event('thread/tokenUsage/updated', {'responseId': 'actual', 'rawTokenUsageRecord': {'response_id': 'actual'},
@@ -239,13 +285,13 @@ class AnalyticsContract(unittest.TestCase):
         with patch.object(self.runtime, 'analytics_event', side_effect=ValueError('bad analytics')):
             self.runtime.server.complete(self.agent['threadId'], self.agent['turnId'])
         self.assertEqual(self.runtime.agent(self.agent['id'])['status'], 'completed')
-        self.assertGreater(self.data()['coverage']['captureErrors']['count'], 0)
+        fixture.eventually(lambda: self.data()['coverage']['captureErrors']['count'] > 0)
 
     def test_failed_dynamic_capture_does_not_consume_tool_reply(self):
         with patch.object(self.runtime, 'analytics_dynamic', side_effect=ValueError('bad analytics')):
             self.runtime.dynamic({'id': 'reply-safe', 'params': {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'], 'callId': 'safe', 'tool': 'orchestration_peers', 'arguments': {}}})
         self.assertTrue(self.runtime.server.responses[-1]['result']['success'])
-        self.assertEqual(self.data()['coverage']['captureErrors']['count'], 1)
+        fixture.eventually(lambda: self.data()['coverage']['captureErrors']['count'] == 1)
 
     def test_close_keeps_runtime_lease_until_history_batch_finishes(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()

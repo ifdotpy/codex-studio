@@ -448,7 +448,7 @@ export default function Usage({
         {sessionCost?.pricingState === "loading"
           ? ""
           : sessionCost
-            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+            ? `Session estimate${sessionCost.claudeHistoryIncomplete ? " · Earlier Claude totals may be incomplete" : ""}: ${dollars(sessionCost.totalUSD)}`
             : ""}
         {Array.isArray(sessionCost?.unknownModels) &&
           sessionCost.unknownModels.length > 0 &&

@@ -55,6 +55,7 @@ const server = await createServer({
                   pricingState: "ready",
                   totalUSD: 0,
                   rootId: "chat",
+                  claudeHistoryIncomplete: true,
                 }),
               );
               return;
@@ -107,6 +108,9 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(server.resolvedUrls.local[0]);
+  await page
+    .getByText("Earlier Claude totals may be incomplete", { exact: false })
+    .waitFor();
   const _toggle = page.getByRole("button", {
     name: "Account limits",
     exact: true,

@@ -126,7 +126,7 @@ class SessionCostReader:
             sessions = set()
             if current_profile and isinstance(member.get("threadId"), str):
                 sessions.add((current_key, member["threadId"]))
-            for history in member.get("accountHistory", []):
+            for history in (member.get("accountHistory") or []):
                 if not isinstance(history, dict) or history.get("provider") != "claude":
                     continue
                 old_key, old_thread = history.get("accountKey"), history.get("threadId")
@@ -160,7 +160,7 @@ class SessionCostReader:
     @staticmethod
     def _agent_signature(agents):
         identities = [(key, {field: record.get(field) for field in
-                             ("rootId", "accountKey", "threadId", "accountHistory")})
+                             ("rootId", "accountKey", "provider", "threadId", "accountHistory")})
                       for key, record in agents]
         encoded = json.dumps(sorted(identities, key=lambda value: value[0]), sort_keys=True,
                              separators=(",", ":"), ensure_ascii=False)
@@ -466,6 +466,20 @@ class SessionCostReader:
             generation = self._global_usage_generation(db)
             agents = self._root_agents(db, agent_id, root)
             claude_agents = self._claude_agents(agents)
+            provider_by_account = {}
+            for _, member in agents:
+                account_key = member.get("accountKey", "default")
+                provider = member.get("provider") or self._account(account_key).get("provider")
+                if provider:
+                    provider_by_account[account_key] = provider
+                for history in (member.get("accountHistory") or []):
+                    if isinstance(history, dict) and isinstance(history.get("accountKey"), str) and history.get("provider"):
+                        provider_by_account[history["accountKey"]] = history["provider"]
+            claude_history_present = any(
+                member.get("provider") == "claude" or any(
+                    isinstance(history, dict) and history.get("provider") == "claude"
+                    for history in (member.get("accountHistory") or []))
+                for _, member in agents)
             cache_source = {"usage": usage_state, "pricingSignature": catalog_signature,
                             "agentsSignature": self._agent_signature(agents),
                             "claudeSignature": self._claude_signature(claude_agents)}
@@ -479,9 +493,32 @@ class SessionCostReader:
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
-            db.execute("CREATE TEMP TABLE session_cost_excluded (agent TEXT PRIMARY KEY)")
-            db.executemany("INSERT INTO session_cost_excluded VALUES (?)",
-                           ((member_id,) for member_id in claude_agents))
+            claude_messages = {}
+            for _, (current_key, current_profile, sessions) in claude_agents.items():
+                for account_key, thread_id in sessions:
+                    config = self._claude_profile(account_key)
+                    if not config:
+                        continue
+                    for path in self._thread_ids(config, account_key, thread_id):
+                        for message in self._log_rows(path):
+                            claude_messages.setdefault((account_key, thread_id, message["id"]), message)
+            db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
+            db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
+                           claude_messages.keys())
+            db.execute("CREATE TEMP TABLE session_cost_excluded (seq INTEGER PRIMARY KEY)")
+            try:
+                db.execute("""
+                  INSERT INTO session_cost_excluded
+                  SELECT u.seq FROM analytics_usage u
+                   WHERE u.root=? AND EXISTS (
+                     SELECT 1 FROM session_cost_claude_messages l
+                      WHERE l.account_key IS json_extract(u.record,'$.accountKey')
+                        AND l.thread_id IS u.thread
+                        AND l.response_id IS json_extract(u.record,'$.responseId'))
+                """, (root,))
+            except sqlite3.OperationalError as error:
+                if "no such table: analytics_usage" not in str(error):
+                    raise
             try:
                 status = db.execute("""
                   SELECT MAX(CASE WHEN json_type(record,'$.model') IS NOT 'text' THEN 1 ELSE 0 END),
@@ -494,13 +531,14 @@ class SessionCostReader:
                                        (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
                                   THEN 1 ELSE 0 END)
                     FROM analytics_usage
-                   WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.agent=analytics_usage.agent)
+                   WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
                 """, (root,)).fetchone()
                 missing_models, missing_responses = (bool(value) for value in status)
                 if not missing_models and not missing_responses:
                     groups = db.execute("""
                       WITH parsed AS MATERIALIZED (
                         SELECT CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
+                               COALESCE(json_extract(record,'$.accountKey'),'default') AS account_key,
                                (json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
                                 AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')) AS delta_valid,
                                CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
@@ -518,20 +556,21 @@ class SessionCostReader:
                                CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
                                       AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
                                     THEN CASE WHEN json_type(record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.outputTokens') END
-                                    WHEN json_type(record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(record,'$.last.outputTokens') END AS output_tokens
+                                    WHEN json_type(record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(record,'$.last.outputTokens') END AS output_tokens,
+                               CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
                           FROM analytics_usage
                          WHERE root=? AND NOT EXISTS
-                               (SELECT 1 FROM session_cost_excluded x WHERE x.agent=analytics_usage.agent)
+                               (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
                       )
-                      SELECT model,input_tokens,cached_tokens,write_tokens,output_tokens,COUNT(*)
-                        FROM parsed GROUP BY model,input_tokens,cached_tokens,write_tokens,output_tokens
+                      SELECT model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,COUNT(*)
+                        FROM parsed GROUP BY model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached
                     """, (root,))
                 else:
                     if missing_responses:
                         db.execute("""
                           CREATE TEMP TABLE session_cost_responded_turns AS
                             SELECT agent,thread,turn FROM analytics_usage
-                             WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.agent=analytics_usage.agent)
+                             WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
                                AND json_type(record,'$.responseId') NOT IN ('null','false')
                                AND json_type(record,'$.responseId') IS NOT NULL
                                AND (json_type(record,'$.responseId') NOT IN ('integer','real') OR json_extract(record,'$.responseId')<>0)
@@ -560,7 +599,7 @@ class SessionCostReader:
                                    json_extract(record,'$.model') AS model
                               FROM analytics_usage
                              WHERE root=? AND json_type(record,'$.model')='text'
-                               AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.agent=analytics_usage.agent)
+                               AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
                                {model_dedupe}
                         """, (root,))
                         db.execute("""
@@ -599,6 +638,7 @@ class SessionCostReader:
                       WITH priced AS MATERIALIZED (
                         SELECT CASE WHEN json_type(u.record,'$.model')='text' THEN json_extract(u.record,'$.model')
                                     ELSE COALESCE(NULLIF({turn_model},''),{thread_model}) END AS model,
+                               COALESCE(json_extract(u.record,'$.accountKey'),'default') AS account_key,
                                (json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
                                 AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')) AS delta_valid,
                                CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
@@ -616,27 +656,32 @@ class SessionCostReader:
                                CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
                                       AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')
                                     THEN CASE WHEN json_type(u.record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(u.record,'$.delta.outputTokens') END
-                                    WHEN json_type(u.record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.outputTokens') END AS output_tokens
+                                    WHEN json_type(u.record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.outputTokens') END AS output_tokens,
+                               CASE WHEN json_extract(u.record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
                           FROM analytics_usage u {model_joins} {response_join}
-                         WHERE u.root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.agent=u.agent)
+                         WHERE u.root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=u.seq)
                            AND {response_filter}
                       )
-                      SELECT model,input_tokens,cached_tokens,write_tokens,output_tokens,COUNT(*)
-                        FROM priced GROUP BY model,input_tokens,cached_tokens,write_tokens,output_tokens
+                      SELECT model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,COUNT(*)
+                        FROM priced GROUP BY model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached
                     """, (root,))
             except sqlite3.OperationalError as error:
                 if "no such table: analytics_usage" not in str(error):
                     raise
                 groups = ()
-            for model, input_tokens, cached_tokens, write_tokens, output_tokens, count in groups:
-                provider = provider_for(model)
+            for model, account_key, input_tokens, cached_tokens, write_tokens, output_tokens, input_uncached, count in groups:
+                provider = provider_for(model) or provider_by_account.get(account_key)
                 if provider is None:
                     unpriced.add(str(model or "Unknown model"))
                     continue
                 usage = {"inputTokens": input_tokens, "cachedInputTokens": cached_tokens,
                          "cacheWriteInputTokens": write_tokens, "outputTokens": output_tokens}
+                context_tokens = usage.get("inputTokens")
+                if input_uncached:
+                    context_tokens += usage.get("cachedInputTokens", 0) + usage.get("cacheWriteInputTokens", 0)
                 cost, status, tier = price_usage(catalog, provider, model, usage,
-                                                 context_tokens=usage.get("inputTokens"))
+                                                 context_tokens=context_tokens,
+                                                 input_tokens_are_uncached=bool(input_uncached))
                 if cost is None:
                     unpriced.add(str(model))
                     if status == "unpriced":
@@ -647,19 +692,14 @@ class SessionCostReader:
                 model_totals[model] = model_totals.get(model, 0.0) + cost * count
                 provider_totals[provider] = provider_totals.get(provider, 0.0) + cost * count
                 tier_used |= tier
-            claude_messages = {}
-            for _, (current_key, current_profile, sessions) in claude_agents.items():
-                for account_key, thread_id in sessions:
-                    config = self._claude_profile(account_key)
-                    if not config:
-                        continue
-                    for path in self._thread_ids(config, account_key, thread_id):
-                        for message in self._log_rows(path):
-                            claude_messages.setdefault(message["id"], message)
             for record in claude_messages.values():
                 model = record["model"]
+                context_tokens = record["usage"].get("inputTokens", 0)
+                if record.get("inputTokensAreUncached"):
+                    context_tokens += record["usage"].get("cachedInputTokens", 0) + record["usage"].get("cacheWriteInputTokens", 0)
                 cost, _, tier = price_usage(catalog, "anthropic", model, record["usage"],
-                                            context_tokens=record["usage"].get("inputTokens"))
+                                            context_tokens=context_tokens,
+                                            input_tokens_are_uncached=record.get("inputTokensAreUncached", False))
                 if cost is None:
                     unpriced.add(model)
                     continue
@@ -673,8 +713,10 @@ class SessionCostReader:
                       "pricedSamples": priced_count,
                       "breakdown": {"providers": provider_totals, "models": model_totals},
                       "unknownModels": sorted(unpriced), "estimated": True, "pricingState": "ready",
+                      "claudeHistoryIncomplete": claude_history_present,
                       "cacheAgeSeconds": 0,
                       "method": "API prices from models.dev; cached input rates are applied when reported." +
+                                (" Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows." if claude_history_present else "") +
                                 (" Published context tier applied where request size matched its threshold." if tier_used else " Base rates used when request size was unavailable or below the published threshold.")}
             result["_cacheSource"] = cache_source
             return result

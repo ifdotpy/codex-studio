@@ -126,8 +126,8 @@ export function query({prompt,options}){
    if(text==='rate-usage'){
     yield {type:'stream_event',event:{type:'message_start',message:{id:'rate-1'}}};
     yield {type:'stream_event',event:{type:'content_block_delta',delta:{type:'text_delta',text:'Rate answer'}}};
-    for(const output of [6,6,8])yield {type:'assistant',message:{id:'rate-1',usage:{input_tokens:1000,output_tokens:output},content:[{type:'text',text:'Rate answer'}]}};
-    yield {type:'assistant',message:{id:'rate-2',usage:{input_tokens:2000,output_tokens:12},content:[{type:'text',text:'Second answer'}]}};
+    for(const output of [6,6,8])yield {type:'assistant',message:{id:'rate-1',model:'claude-opus-5-5',usage:{input_tokens:100,cache_read_input_tokens:900,cache_creation_input_tokens:50,output_tokens:output},content:[{type:'text',text:'Rate answer'}]}};
+    yield {type:'assistant',message:{id:'rate-2',model:'claude-opus-5-5',usage:{input_tokens:200,cache_read_input_tokens:1800,cache_creation_input_tokens:100,output_tokens:12},content:[{type:'text',text:'Second answer'}]}};
     outputTotal+=20;
     yield {type:'result',subtype:'success',usage:{input_tokens:3000,output_tokens:outputTotal},result:'Second answer'};
     continue;
@@ -241,6 +241,17 @@ class Bridge(unittest.TestCase):
             self.assertEqual(final['turnOutputTokens'], 20)
             self.assertEqual(final['responseId'], 'rate-2')
             self.assertEqual(final['responseOutputTokens'], 12)
+            responses = [row['params'] for row in self.notifications
+                         if row.get('params', {}).get('usageSource') == 'claudeResponse']
+            self.assertEqual(len(responses), 2)
+            self.assertEqual({row['responseId'] for row in responses}, {'rate-1', 'rate-2'})
+            last = {row['responseId']: row for row in responses}
+            self.assertEqual(last['rate-1']['responseOutputTokens'], 8)
+            self.assertEqual(last['rate-1']['requestUsage'], {
+                'inputTokens': 100, 'cachedInputTokens': 900,
+                'cacheWriteInputTokens': 50, 'outputTokens': 8})
+            self.assertEqual(last['rate-2']['requestUsage']['inputTokens'], 200)
+            self.assertEqual(last['rate-2']['requestUsage']['cachedInputTokens'], 1800)
             self.assertTrue(all(sample['turnId'] == turn['turn']['id'] for sample in samples + [final]))
             self.assertTrue(all(sample['threadId'] == self.thread for sample in samples + [final]))
             self.assertFalse(any(row.get('method', '').startswith('studio/tokenRate') for row in self.notifications))

@@ -221,7 +221,7 @@ def lookup(catalog, provider, model):
             "tiered": bool(tiers or legacy)}
 
 
-def price_usage(catalog, provider, model, usage, *, context_tokens=None):
+def price_usage(catalog, provider, model, usage, *, context_tokens=None, input_tokens_are_uncached=False):
     rates = lookup(catalog, provider, model)
     if not rates:
         return None, "unpriced", False
@@ -236,9 +236,14 @@ def price_usage(catalog, provider, model, usage, *, context_tokens=None):
         return None, "incomplete", False
     if rates["cache_write"] is not None and cache_write is None:
         return None, "incomplete", False
-    cached = min(input_tokens, cached or 0)
-    cache_write = min(max(0, input_tokens - cached), cache_write or 0)
-    base = max(0, input_tokens - cached - cache_write)
+    if input_tokens_are_uncached:
+        base = input_tokens
+        cached = cached or 0
+        cache_write = cache_write or 0
+    else:
+        cached = min(input_tokens, cached or 0)
+        cache_write = min(max(0, input_tokens - cached), cache_write or 0)
+        base = max(0, input_tokens - cached - cache_write)
     tier_size = amount(context_tokens)
     use_tier = rates["threshold"] is not None and tier_size is not None and (
         tier_size >= rates["threshold"] if rates["inclusive"] else tier_size > rates["threshold"])

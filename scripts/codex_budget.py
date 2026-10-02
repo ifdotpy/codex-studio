@@ -79,7 +79,12 @@ def _capture(db, a, state, p, at, source):
     amount = _tokens(last.get('totalTokens'))
     thread = p.get('threadId') or a.get('threadId')
     response = p.get('responseId')
-    exact = bool(response and p.get('rawTokenUsageRecord'))
+    exact = bool(response and (p.get('rawTokenUsageRecord') or p.get('usageSource') == 'claudeResponse'))
+    if amount is None and p.get('usageSource') == 'claudeResponse':
+        fields = ('inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens')
+        values = [last.get(field) for field in fields]
+        if all(_tokens(value) is not None for value in values):
+            amount = sum(values)
     identity = [a['id'], a.get('accountKey', 'default')]
     if exact:
         # Provider response identity survives a native thread fork.
