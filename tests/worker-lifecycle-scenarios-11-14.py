@@ -188,6 +188,7 @@ class LifecycleScenarios(unittest.TestCase):
         self.server = self.runtime.connect("default")
         self.server.timeout_commands = True
         key = self.monitor()
+        eventually(lambda: "outcome unknown" in (self.monitor_record(key).get("error") or ""))
         self.server.died()
         self.assertEqual(self.monitor_record(key)["status"], "lost")
         self.abandon_pending_commands()
