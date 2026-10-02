@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """A full diagnostic disk must not kill the scheduler or duplicate dispatch."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import ast
 import errno
 from pathlib import Path

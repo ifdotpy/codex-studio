@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Idle peer conversion through the user action, with real runtime sync writes."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

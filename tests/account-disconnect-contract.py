@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Disconnected choices preserve native identities and local credentials."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest

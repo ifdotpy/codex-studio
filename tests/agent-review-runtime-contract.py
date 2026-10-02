@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native review through Studio tool receipts and dispatch. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import copy
 import importlib.util

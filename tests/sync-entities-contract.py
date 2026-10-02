@@ -1,4 +1,7 @@
 """Entity DTO, bounded tracking and shared sequence-space contract."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import json
 from pathlib import Path

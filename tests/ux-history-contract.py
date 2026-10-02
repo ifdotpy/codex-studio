@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Isolated history navigation, branch, and deferred settings contracts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import base64
 from contextlib import contextmanager

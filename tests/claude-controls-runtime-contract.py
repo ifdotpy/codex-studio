@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Claude session controls against isolated SQLite and a fake native provider."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

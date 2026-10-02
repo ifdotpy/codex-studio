@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Idle native subscription release, with a fake Codex app-server."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 import concurrent.futures

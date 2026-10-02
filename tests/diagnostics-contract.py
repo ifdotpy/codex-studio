@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """The diagnostics endpoint uses fake accounts and shares no command text."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import http.client
 import json

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Full terminal output stays on disk while the live view remains bounded."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import sqlite3

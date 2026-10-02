@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Real PTY sessions with isolated files and no model service."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 import json

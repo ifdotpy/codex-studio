@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Pipe-response isolation and ordered callbacks. No Codex process or model."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import json
 from pathlib import Path

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Read state uses SQLite, exact results, and revision conflict checks."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 from pathlib import Path

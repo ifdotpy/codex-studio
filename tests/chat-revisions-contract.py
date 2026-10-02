@@ -1,4 +1,7 @@
 """Compact chat hints follow commits and do not read transcript content."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import json
 from pathlib import Path

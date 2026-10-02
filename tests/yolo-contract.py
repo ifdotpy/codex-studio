@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Team permission choices and native request parameters. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest

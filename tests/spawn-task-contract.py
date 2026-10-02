@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """A spawned worker can own a task board item from its first turn."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import subprocess
 import importlib.util

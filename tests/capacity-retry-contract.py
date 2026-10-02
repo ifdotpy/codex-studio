@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Capacity continuation uses empty input and one durable claim per failed turn."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json

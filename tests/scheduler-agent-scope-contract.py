@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Scheduler roster omits archived rows only when no scheduled cleanup needs them."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import sys

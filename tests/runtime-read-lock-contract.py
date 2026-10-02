@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Read views keep a WAL snapshot and do not hold the runtime lock."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 import json

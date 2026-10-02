@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Transcript projection deltas keep unchanged history off the wire."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import contextlib
 from pathlib import Path

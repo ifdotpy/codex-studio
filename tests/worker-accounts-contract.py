@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Worker account admission skips unavailable preferences without moving explicit work."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import contextmanager
 import unittest
 

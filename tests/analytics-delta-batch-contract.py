@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Differential contract for aggregated live assistant-delta analytics."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from contextlib import contextmanager
 from pathlib import Path

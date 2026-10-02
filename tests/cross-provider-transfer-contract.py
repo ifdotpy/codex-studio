@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Portable transfer state machine, with native servers and archive I/O isolated."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import concurrent.futures
 import importlib.util

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native executable changes must preserve work and wait for confirmed idleness."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import hashlib
 import importlib.util

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Question history, exact answer receipts and deferral without live model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

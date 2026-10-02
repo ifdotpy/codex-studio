@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native review admission and reservation use isolated Studio databases."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import subprocess

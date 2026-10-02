@@ -1,4 +1,7 @@
 """Native title synchronization and destination account selection, no model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import importlib.util
 from pathlib import Path

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """The backend raises its soft open-file limit so native children inherit it."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from pathlib import Path
 import resource
 import subprocess

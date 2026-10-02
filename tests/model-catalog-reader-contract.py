@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """The native metadata reader preserves account isolation and process boundaries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import json
 import os

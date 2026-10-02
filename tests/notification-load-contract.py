@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Isolated notification queue load and Runtime lock attribution. No model or user state."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import argparse
 from collections import defaultdict
 import io

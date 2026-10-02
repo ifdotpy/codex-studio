@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exercise native process login with a local fake CLI, without OAuth requests."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import nullcontext
 import copy
 import json

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Lost native action replies cannot create another model operation."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

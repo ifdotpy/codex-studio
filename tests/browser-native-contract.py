@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native Chrome configuration, profile isolation, and explicit opt-outs."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import json
 import os

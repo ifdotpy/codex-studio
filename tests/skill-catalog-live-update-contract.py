@@ -4,6 +4,9 @@
 Run with --patch /path/codex_*_update.py --baseline /path/codex_canvas.py.
 Uses disposable state and never touches the running Studio server.
 """
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import argparse
 import importlib.util
 from pathlib import Path

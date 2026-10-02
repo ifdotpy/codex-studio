@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native rollout parsing, profile boundaries, and resumable import contracts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import hashlib
 import json

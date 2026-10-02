@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Keep the analytics overview bounded when item history grows."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

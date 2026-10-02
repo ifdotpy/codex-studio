@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Idle sends do not wait for the periodic scheduler to repair a stale label."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import tempfile

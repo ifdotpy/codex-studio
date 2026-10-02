@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Measured reasoning history, pagination, and missing end boundaries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import sqlite3

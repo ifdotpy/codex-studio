@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Server team boundaries through model tools, history, and native dispatch."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import os

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Multiple accounts retain the project's identity, default, and live chats."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest

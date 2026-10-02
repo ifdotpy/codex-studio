@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Shared radio receipts and turn order against an independent fake native store."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

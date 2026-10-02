@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Regression contracts for durable workspace recovery."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util

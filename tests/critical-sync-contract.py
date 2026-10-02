@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Regression checks for draft identity and legacy Canvas delivery recovery."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import json
 import importlib.util

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Progress context and file access follow the existing agent permission mode."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import nullcontext
 import importlib.util
 import os

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Bound model payloads without losing durable history, identity, or hot policy."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

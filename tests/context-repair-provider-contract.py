@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Provider boundaries for Codex rollout repair after a portable transfer."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 from pathlib import Path

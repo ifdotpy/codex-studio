@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """recent_monitors returns the same rows as the full scan, through the status index."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import random

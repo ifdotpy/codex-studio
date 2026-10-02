@@ -422,6 +422,7 @@ Closing Electron leaves the backend active.
 Run checks for the changed area. These commands use isolated fixtures:
 
 ```sh
+python3 -B tests/test_isolation_contract.py
 node tests/portable-smoke.mjs
 node tests/state-contract-smoke.mjs
 python3 -B tests/daemon-contract.py

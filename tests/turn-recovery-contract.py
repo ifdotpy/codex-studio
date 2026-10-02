@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Lost terminal notifications, exact identities, and non-destructive recovery."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

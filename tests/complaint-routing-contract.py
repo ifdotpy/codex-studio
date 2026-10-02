@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Complaint responsibility, notification, and response identity. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

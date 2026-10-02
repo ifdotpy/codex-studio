@@ -2,6 +2,9 @@
 """Focused tests for the isolated native Codex cost scanner."""
 
 from __future__ import annotations
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from datetime import datetime, timedelta, timezone
 import json

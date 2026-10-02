@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native tool refresh preserves history and refuses unconfirmed account idleness."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import concurrent.futures
 from contextlib import contextmanager

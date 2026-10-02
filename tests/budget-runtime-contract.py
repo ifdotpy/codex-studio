@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Real Runtime budget deferral, fake native requests, isolated account files."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import os

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Profile durable supervisor stream receipts across concurrent agent output."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from collections import defaultdict
 import io
 import json

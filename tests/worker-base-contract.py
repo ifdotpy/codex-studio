@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Worker base selection and stale-base warnings use isolated Git repos."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import copy
 import importlib.util

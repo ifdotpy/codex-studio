@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Portable history preserves data without replay, including failed exports."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import contextmanager
 import copy
 import hashlib

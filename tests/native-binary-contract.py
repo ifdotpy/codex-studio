@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exercise installed binary approval without credentials or model requests."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import hashlib
 import json
 import os

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Claude account selection, identity and delivery boundaries. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import base64
 import importlib.util
 import os

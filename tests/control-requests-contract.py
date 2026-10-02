@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """The control CLI reads request receipts through the current HTTP API only."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json

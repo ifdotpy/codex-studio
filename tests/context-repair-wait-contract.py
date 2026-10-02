@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Maintenance waits preserve accepted input and terminal unknown receipts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import copy
 import importlib.util

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Reproduce an unscoped sqlite write and verify guarded recovery."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import sqlite3
 import sys
 import tempfile

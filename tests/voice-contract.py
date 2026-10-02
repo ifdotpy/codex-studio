@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """No network or paid model calls. Exercise voice persistence and authority."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import sqlite3
 import sys

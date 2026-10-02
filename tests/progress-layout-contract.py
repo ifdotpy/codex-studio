@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Renderer feedback refers to the exact file and preserves narrow-client failures."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import fcntl
 from contextlib import redirect_stdout
 import hashlib

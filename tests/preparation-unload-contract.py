@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Delayed native unload callbacks cannot invalidate the next preparation."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import copy
 import importlib.util

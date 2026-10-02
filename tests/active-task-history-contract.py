@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Active-task guards exclude historical payloads and retain account ownership."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from contextlib import contextmanager
 import json
 from pathlib import Path

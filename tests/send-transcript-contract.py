@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Receipt visibility across queue reservation and native input materialization."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import base64
 import importlib.util

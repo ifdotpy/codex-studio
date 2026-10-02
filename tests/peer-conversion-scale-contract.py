@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Bounded conversion reads and measured global-lock time on a large isolated DB."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

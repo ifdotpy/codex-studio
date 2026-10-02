@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Regressions for transport stalls, receipt truth, and transaction boundaries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 from contextlib import contextmanager
 import importlib.util

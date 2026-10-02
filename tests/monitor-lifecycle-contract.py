@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Monitor outcomes retain their workspace lease until the native command exits."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import base64
 import fcntl

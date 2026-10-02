@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Turn rate, provider counts, and zero added SQLite writes. No inference."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import importlib.util
 from pathlib import Path

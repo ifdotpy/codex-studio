@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Synthetic contract checks for blob storage, reference safety and retention."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import json
 import os

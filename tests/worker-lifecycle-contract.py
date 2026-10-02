@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Named event waits and archive transitions through the real Runtime caller."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import copy

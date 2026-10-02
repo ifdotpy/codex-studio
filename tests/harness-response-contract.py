@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Delayed configuration, native output, and response delivery use exact receipts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import importlib.util
 import json

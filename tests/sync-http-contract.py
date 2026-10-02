@@ -1,4 +1,7 @@
 """Exercise the real HTTP adapter in an isolated runtime fixture."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import os
 from pathlib import Path

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Worker worktree retry and disk accounting contracts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import json
 import os

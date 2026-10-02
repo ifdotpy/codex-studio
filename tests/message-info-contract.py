@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Message metadata reads preserve exact source identities and never write state."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import sys

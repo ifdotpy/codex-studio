@@ -1,4 +1,7 @@
 """Isolated checkpoint, replay, draft branch and rollback contracts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import json
 from pathlib import Path

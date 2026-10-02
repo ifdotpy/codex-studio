@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Peer teams use project records and grant only same-project lead membership."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from contextlib import contextmanager
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Plain progress reads preserve agent identity, file data, and legacy state."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from contextlib import contextmanager
 import json

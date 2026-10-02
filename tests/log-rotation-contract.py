@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Verify app-server log rotation stays bounded and retains newest bytes."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import sys
 import tempfile
 import unittest

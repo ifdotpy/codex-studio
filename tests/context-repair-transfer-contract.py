@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """A transferred repaired context keeps its checked-event provenance."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

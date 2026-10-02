@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native start-or-steer delivery and exact local input reservations."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

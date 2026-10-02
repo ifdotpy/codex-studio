@@ -1,4 +1,7 @@
 """No processes launched: verify the daemon's environment boundary."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.machinery
 import importlib.util
 import os

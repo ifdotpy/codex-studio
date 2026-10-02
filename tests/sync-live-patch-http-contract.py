@@ -1,3 +1,6 @@
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import re
 import unittest

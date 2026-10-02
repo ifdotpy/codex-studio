@@ -1,4 +1,7 @@
 """Managed chat reads avoid global discovery and full task-history scans."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

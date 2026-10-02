@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Limit refresh recovery and notification ordering. Isolated state, no model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 from pathlib import Path

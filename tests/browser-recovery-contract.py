@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native discovery recovery, transaction boundaries, and mutation non-replay."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import importlib.util
 from pathlib import Path

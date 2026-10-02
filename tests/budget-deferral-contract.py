@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exact unsubmitted budget waits. No server or model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 import copy
 import json

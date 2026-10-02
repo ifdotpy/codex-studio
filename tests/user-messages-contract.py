@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """User messages preserve history, identities, and delivery boundaries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

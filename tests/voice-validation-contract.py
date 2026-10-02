@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Prove the legacy voice validation error precedes delivery reservation."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import sqlite3
 import sys
 import tempfile

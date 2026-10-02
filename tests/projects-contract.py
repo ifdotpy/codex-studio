@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Project registry and lead directory contracts. No user state or model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util

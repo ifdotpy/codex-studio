@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Runtime's idle WAL connection preserves per-event FULL commits."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import fcntl
 from pathlib import Path
 import sqlite3

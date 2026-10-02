@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Scheduler roster reads stay scoped and refresh after agent writes."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import sys

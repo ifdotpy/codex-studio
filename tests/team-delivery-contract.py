@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Team checks for durable events, without a model or shared runtime state."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import json
 from pathlib import Path

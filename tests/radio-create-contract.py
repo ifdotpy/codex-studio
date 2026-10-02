@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Direct shared chat creation uses validated accounts and one atomic commit."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

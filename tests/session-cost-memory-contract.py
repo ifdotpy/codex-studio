@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Measure cold and warm session cost requests against a large local fixture."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import os
 from pathlib import Path

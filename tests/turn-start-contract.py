@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Late native turn acknowledgements. Isolated state, no model requests."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import concurrent.futures
 import importlib.util

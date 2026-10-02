@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Analytics capture uses isolated real Runtime state and a deterministic native server."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import base64
 import importlib.util
 import json

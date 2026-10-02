@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Provider version diagnostics are explicit, nonblocking, and connection scoped."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from pathlib import Path
 import sys
 import threading

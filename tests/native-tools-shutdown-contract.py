@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Catalog writers and retired native processes retain the Runtime lease."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import fcntl
 import importlib.util
 from pathlib import Path

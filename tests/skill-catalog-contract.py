@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Scoped composer inventory through the real HTTP adapter; no model requests."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import argparse
 from pathlib import Path

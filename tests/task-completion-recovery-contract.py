@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Supported task decisions bypass slow tools and expose committed evidence before reply."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Browser skill setup preserves account identity without reconnecting held locks."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from pathlib import Path
 import sys

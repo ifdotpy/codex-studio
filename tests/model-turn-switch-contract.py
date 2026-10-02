@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """A loaded native thread keeps Studio's selected model for its next turn."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import tempfile

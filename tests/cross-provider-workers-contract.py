@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Cross-provider worker routing and atomic spawn receipts. No paid calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

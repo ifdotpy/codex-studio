@@ -1,4 +1,7 @@
 """Exercise v1 SSE resume, cursor errors, reset, bounds and negotiation."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import http.client
 import os

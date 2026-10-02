@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Profile discovery and identity boundaries, without real credentials."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import base64
 import json

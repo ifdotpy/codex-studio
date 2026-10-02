@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Managed command shell contracts. No user state or model service."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from pathlib import Path
 import shlex

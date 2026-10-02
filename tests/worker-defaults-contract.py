@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """User defaults, worker overrides and native execution parameters. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import copy
 import importlib.util

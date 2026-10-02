@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native maintenance actions wait for selected settings on the exact thread."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest

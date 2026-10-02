@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Pending notification reconciliation. Fake native only."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 import json

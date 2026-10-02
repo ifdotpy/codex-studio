@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Account isolation with colliding native identifiers. No paid model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import copy
 import importlib.util

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Terminal monitor receipts continue current work and preserve historical stops."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import sqlite3

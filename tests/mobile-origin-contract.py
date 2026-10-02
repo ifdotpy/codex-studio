@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the Tailscale proxy boundary without modifying a tailnet."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import sys

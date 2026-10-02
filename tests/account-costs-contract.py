@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Cost profile isolation, shared scan admission, and real HTTP account routing."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import importlib.util
 import json

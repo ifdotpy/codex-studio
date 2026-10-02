@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Two-server federation contract tests. All state and HTTP listeners are private."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 import sqlite3

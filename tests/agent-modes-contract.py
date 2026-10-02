@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Hot delegation switches and arbitrary catalog models, without native model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

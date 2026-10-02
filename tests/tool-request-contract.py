@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Durable request identity, recovery, cancellation, and actor boundaries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 from contextlib import contextmanager
 import json

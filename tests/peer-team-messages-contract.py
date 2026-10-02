@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Peer teams grant explicit chat access without sharing work or descendants."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 from pathlib import Path

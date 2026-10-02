@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the bridge protocol with a deterministic SDK. No model calls."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import os
 import uuid

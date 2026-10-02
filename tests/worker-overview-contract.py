@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Worker snapshot excerpts use completed reports, never streaming commentary."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import tempfile

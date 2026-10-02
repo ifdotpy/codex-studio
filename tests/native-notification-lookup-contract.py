@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native callbacks retain exact ownership while avoiding full agent decoding."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import ast
 import copy
 from contextlib import contextmanager

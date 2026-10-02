@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Queue ordering, revision conflicts, and durable mutation receipts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import base64
 import importlib.util
 import json

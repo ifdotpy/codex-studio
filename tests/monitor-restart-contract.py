@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Monitor results survive a database rollback and an independent process restart."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import base64
 import json

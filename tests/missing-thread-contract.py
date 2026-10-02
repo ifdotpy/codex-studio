@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Native unload and rejection recovery without replaying user input."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from concurrent.futures import Future
 from unittest.mock import patch

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Run the real dynamic dispatch against isolated databases and fake app-server IO."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 
 import importlib.util
 import json

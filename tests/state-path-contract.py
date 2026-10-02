@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """State paths and launcher owner fields use the current names."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import os
 from pathlib import Path

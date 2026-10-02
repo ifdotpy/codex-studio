@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Chat reads use one database snapshot without waiting for agent execution."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import base64
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import importlib.util

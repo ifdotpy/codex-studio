@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Delayed model metadata cannot create workers or block coordination locks."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import concurrent.futures
 import importlib.util
 from pathlib import Path

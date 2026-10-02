@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """History worker liveness and recovery. Only local temporary files and SQLite."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util

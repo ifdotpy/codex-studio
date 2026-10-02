@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """HTTP compression and cache rules with an isolated server and static assets."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import gzip
 from concurrent.futures import ThreadPoolExecutor
 import http.client

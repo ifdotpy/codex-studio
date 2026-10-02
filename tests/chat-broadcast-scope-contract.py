@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Broadcast sends and room projections use only the sender team's live roster."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import sys

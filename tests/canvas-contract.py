@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the canvas with local fixtures. No model or real worker is called."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 import os
 from pathlib import Path

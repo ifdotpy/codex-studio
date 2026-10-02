@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Exact native byte/ordinal ancestry projection contracts."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json
