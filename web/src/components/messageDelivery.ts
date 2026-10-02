@@ -118,6 +118,7 @@ export function outgoingTranscript(
 
 export function deliveryLabel(item: Message) {
   const status = item.deliveryStatus || (item.pending ? "pending" : "");
+  if (status === "sending" && item.pending) return "Waiting for agent";
   return (
     (
       {

@@ -19,6 +19,8 @@ export function useMessageQueue(p: {
   observed?: (ids: string[]) => void;
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
+  pendingDelivery?: boolean;
+  refreshDelivery?: () => Promise<void>;
 }) {
   const key = `studio-queue-change:${p.scope}:${p.id}`;
   const currentKey = useRef(key);
@@ -82,6 +84,9 @@ export function useMessageQueue(p: {
       polling = true;
       try {
         if (!locks.current.has(key)) await reload();
+        // A committed send can outlive a lost stream notification. Reconcile
+        // only while this chat has an unresolved delivery, through shared sync.
+        if (active && p.pendingDelivery) await p.refreshDelivery?.();
       } catch (error) {
         if (active) setFailure({ key, text: errorText(error) });
       } finally {
@@ -96,7 +101,7 @@ export function useMessageQueue(p: {
       clearTimeout(timer);
       stop();
     };
-  }, [key, reload, p.enabled, p.id]);
+  }, [key, reload, p.enabled, p.id, p.pendingDelivery, p.refreshDelivery]);
 
   const clearRequest = async (request: Json) => {
     const next = await updateLocalDraft<Json | null>(key, null, (current) =>

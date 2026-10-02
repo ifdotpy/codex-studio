@@ -109,7 +109,20 @@ try {
         const revision = ++generation;
         for (const stream of window.deliveryStreams) {
           const url = new URL(stream.url, location.href);
-          if (url.pathname === "/api/sync/stream")
+          const scope = url.searchParams.get("scope");
+          if (scope?.startsWith("transcript:"))
+            stream.dispatchEvent(
+              new MessageEvent("changes", {
+                data: JSON.stringify({
+                  protocolVersion: 1,
+                  scope,
+                  workspaceId,
+                  documents: [],
+                  cursor: 0,
+                }),
+              }),
+            );
+          if (url.pathname === "/api/sync/stream" && !scope)
             stream.onmessage?.({
               data: JSON.stringify({
                 protocol: 2,
@@ -145,9 +158,11 @@ try {
     await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
       route.fulfill({ json: state }),
     );
-    await page.route("**/api/queue?*", (route) =>
-      route.fulfill({ json: { items: [] } }),
-    );
+    const queuedItems = new Map();
+    await page.route("**/api/queue?*", (route) => {
+      const id = new URL(route.request().url()).searchParams.get("agent");
+      return route.fulfill({ json: { items: queuedItems.get(id) || [] } });
+    });
     await page.route("**/api/transcript?*", (route) =>
       route.fulfill({
         json: history.get(
@@ -408,6 +423,11 @@ try {
     };
     await accept(queued, "queued");
     await assertQueueGeometry("queued receipt");
+    await until(
+      async () =>
+        (await row(queuedText).innerText()).includes("Waiting for agent"),
+      "Server acceptance must stop showing an active network send",
+    );
     const queueBase = history.get(a.id).items;
     const queuedEcho = {
       id: `${a.id}:${queued.body.id}`,
@@ -615,6 +635,57 @@ try {
       },
     ]);
     await row(staleText).waitFor();
+    // Suppress stream notifications after the server materializes the input.
+    // The existing queue poll must refresh this chat without a page reload.
+    const silentText = `${mode} delivered input with a silent stream`;
+    const silent = await start(silentText);
+    queuedItems.set(a.id, [
+      {
+        id: silent.body.id,
+        kind: "user",
+        text: silentText,
+        status: "pending",
+        delivery: "after_tool",
+      },
+    ]);
+    await accept(silent, "queued");
+    await until(
+      async () =>
+        (await row(silentText).innerText()).includes("Waiting for agent"),
+      "Accepted input remains visible while the agent waits",
+    );
+    const silentBase = history.get(a.id);
+    history.set(a.id, {
+      ...silentBase,
+      items: [
+        ...silentBase.items,
+        {
+          id: `${a.id}:${silent.body.id}`,
+          clientMessageId: silent.body.id,
+          role: "user",
+          text: silentText,
+          deliveryStatus: "delivered",
+          materialized: true,
+          pending: false,
+        },
+      ],
+    });
+    revisions.set(a.id, revisions.get(a.id) + 1);
+    queuedItems.set(a.id, []);
+    const postsBeforeReconcile = posts.length;
+    await until(
+      async () =>
+        (await row(silentText).count()) === 1 &&
+        (await row(silentText).locator(".message-delivery-status").count()) ===
+          0,
+      "A silent stream cannot leave a delivered input waiting forever",
+    );
+    assert.equal(
+      posts.length,
+      postsBeforeReconcile,
+      "Receipt reconciliation never resends",
+    );
+
     // Dismissal hides one receipt on this device without cancelling delivery.
     const dismissedText = `${mode} uncertain message removed from this device`;
     const dismissed = await start(dismissedText);

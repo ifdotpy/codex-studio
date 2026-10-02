@@ -2167,7 +2167,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 None,
             ),
         )
-        if a["autoWake"] and not a.get("nativeFailureHold") and a["status"] not in {"running", "starting", "approval"}:
+        idle_busy_label = (a["status"] in {"running", "starting"}
+                           and not a.get("inFlight") and not a.get("turnId")
+                           and not a.get("startAttempt"))
+        if (a["autoWake"] and not a.get("nativeFailureHold")
+                and (a["status"] not in {"running", "starting", "approval"} or idle_busy_label)):
             a["status"] = "queued"
             self.put(db, "agents", a)
         if inserted.rowcount:
