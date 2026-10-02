@@ -270,6 +270,39 @@ class ProcessSupervisorContract(unittest.TestCase):
             return db.execute('SELECT 1 FROM operations WHERE handle=? AND operation_id=?',
                               ('account:default', operation_id)).fetchone() is not None
 
+    def test_reopened_handle_completes_handshake_for_new_child_generation(self):
+        first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        self.restart_supervisor()
+        self.assertTrue(status(self.root)['recovery']['blocked'] is None)
+        (self.root/'native-initialized').unlink(missing_ok=True)
+
+        second = self.server()
+        new_pid = wait_for(lambda: pid if (pid := int(self.pid_file.read_text())) != old_pid else None)
+        self.assertNotEqual(new_pid, old_pid)
+        self.assertEqual(second.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 2)
+        self.assertEqual(operations.count('initialized'), 2)
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            initialized = [row[0] for row in db.execute(
+                "SELECT operation_id FROM operations WHERE handle='account:default' "
+                "AND operation_id LIKE 'initialized:%' ORDER BY operation_id")]
+        self.assertEqual(initialized, ['initialized:account:default', 'initialized:account:default:2'])
+
+    def restart_supervisor(self):
+        self.supervisor.terminate()
+        self.supervisor.wait(timeout=5)
+        self.supervisor_log_stream.close()
+        self.supervisor_log_stream = self.supervisor_log.open('a')
+        self.supervisor = subprocess.Popen([sys.executable, '-B', str(ROOT/'scripts/codex_process_supervisor.py'),
+            '--state', str(self.root)], stdout=subprocess.DEVNULL, stderr=self.supervisor_log_stream)
+        wait_for(lambda: status(self.root))
+
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
         runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
@@ -379,7 +412,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
             seq = server.proc.cursor + 1
             payload = json.dumps({'id': 'unsettled', 'method': 'item/tool/call', 'params': {}})
-            db.execute('INSERT INTO events VALUES (?,?,?,?,?)',
+            db.execute('INSERT INTO events(handle,sequence,kind,payload,size) VALUES (?,?,?,?,?)',
                        (server.proc.handle, seq, 'stdout', payload, len(payload)))
         server.proc.read_cursor = seq + 1
         server.proc.ack_pending.add(seq + 1)

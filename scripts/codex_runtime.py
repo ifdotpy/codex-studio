@@ -400,7 +400,12 @@ class AppServer:
         self.reader.start()
         try:
             handle = getattr(self.proc, "handle", None)
-            initialized_operation = "initialized:" + handle if handle is not None else None
+            generation = getattr(self.proc, "generation", 1)
+            initialized_operation = None
+            if handle is not None:
+                initialized_operation = "initialized:" + handle
+                if generation > 1:
+                    initialized_operation += ":" + str(generation)
             if getattr(self.proc, "initialize_result", None) is not None:
                 self.initialize_result = self.proc.initialize_result
             else:

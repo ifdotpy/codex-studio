@@ -79,14 +79,14 @@ class Journal:
                     id TEXT PRIMARY KEY, signature TEXT NOT NULL, pid INTEGER NOT NULL,
                     sequence INTEGER NOT NULL DEFAULT 0, acknowledged INTEGER NOT NULL DEFAULT 0,
                     rpc_sequence INTEGER NOT NULL DEFAULT 0, init_result TEXT, created REAL NOT NULL,
-                    closed_at REAL, closed_reason TEXT);
+                    closed_at REAL, closed_reason TEXT, generation INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS operations(
                     handle TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL,
                     native_id INTEGER, accepted REAL NOT NULL,
                     PRIMARY KEY(handle,operation_id));
                 CREATE TABLE IF NOT EXISTS events(
                     handle TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
-                    payload TEXT NOT NULL, size INTEGER NOT NULL,
+                    payload TEXT NOT NULL, size INTEGER NOT NULL, generation INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(handle,sequence));
                 CREATE TABLE IF NOT EXISTS child_identities(
                     handle TEXT PRIMARY KEY, pid INTEGER NOT NULL, pgid INTEGER NOT NULL,
@@ -106,6 +106,15 @@ class Journal:
                 db.execute("ALTER TABLE handles ADD COLUMN closed_at REAL")
             if "closed_reason" not in columns:
                 db.execute("ALTER TABLE handles ADD COLUMN closed_reason TEXT")
+            if "generation" not in columns:
+                db.execute("ALTER TABLE handles ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
+                # Existing handles predate generation tracking. Their current
+                # process is generation one, preserving the legacy initialized
+                # operation identity when a backend reattaches to it.
+                db.execute("UPDATE handles SET generation=1 WHERE pid>0")
+            event_columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
+            if "generation" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1")
 
     @contextmanager
     def db(self):
@@ -230,13 +239,14 @@ class Child:
                 with self.process.supervisor.journal.db() as db:
                     used = self.process.supervisor.journal.outstanding_bytes(db, self.handle)
                     if used + len(raw.encode()) <= HANDLE_LIMIT:
-                        row = db.execute("SELECT sequence FROM handles WHERE id=?", (self.handle,)).fetchone()
+                        row = db.execute("SELECT sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                         if not row:
                             return
                         sequence = row[0] + 1
                         db.execute("UPDATE handles SET sequence=? WHERE id=?", (sequence, self.handle))
-                        db.execute("INSERT INTO events VALUES (?,?,?,?,?)",
-                                   (self.handle, sequence, kind, raw, len(raw.encode())))
+                        db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) "
+                                   "VALUES (?,?,?,?,?,?)",
+                                   (self.handle, sequence, kind, raw, len(raw.encode()), row[1]))
                         db.commit()
                         self.paused.clear()
                         self.output.notify_all()
@@ -362,8 +372,9 @@ class Supervisor:
                 proc.wait(timeout=2)
                 raise RuntimeError("Cannot prove the native child process identity")
             with self.journal.db() as db:
-                db.execute("UPDATE handles SET pid=? WHERE id=?", (proc.pid, handle))
-                db.execute("UPDATE handles SET closed_at=NULL,closed_reason=NULL WHERE id=?", (handle,))
+                db.execute("UPDATE handles SET pid=?,rpc_sequence=0,"
+                           "generation=generation+1,init_result=NULL,"
+                           "closed_at=NULL,closed_reason=NULL WHERE id=?", (proc.pid, handle))
                 db.execute("INSERT INTO child_identities VALUES (?,?,?,?) ON CONFLICT(handle) DO UPDATE SET "
                            "pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time",
                            (handle, proc.pid, proc.pid, started))
@@ -401,9 +412,11 @@ class Supervisor:
         if request.get("action") == "open":
             child, resumed = self.open_handle(handle, request["command"], request["env"], request["cwd"])
             with self.journal.db() as db:
-                row = db.execute("SELECT init_result,acknowledged,sequence FROM handles WHERE id=?", (handle,)).fetchone()
+                row = db.execute("SELECT init_result,acknowledged,sequence,generation FROM handles WHERE id=?",
+                                 (handle,)).fetchone()
             return {"resumed": resumed, "initResult": json.loads(row[0]) if row[0] else None,
-                    "acknowledged": row[1], "sequence": row[2], "returnCode": child.process.poll()}
+                    "acknowledged": row[1], "sequence": row[2], "generation": row[3],
+                    "returnCode": child.process.poll()}
         child = self.children.get(handle)
         if child is None:
             raise RuntimeError("Unknown supervisor handle")
@@ -429,7 +442,7 @@ class Supervisor:
                 if type(cursor) is not int or cursor < row[1] or cursor > row[0]:
                     raise ValueError("Supervisor replay cursor is stale or ahead of the journal")
                 return {"events": [dict(e) for e in db.execute(
-                    "SELECT sequence,kind,payload FROM events WHERE handle=? AND sequence>? ORDER BY sequence",
+                    "SELECT sequence,kind,payload,generation FROM events WHERE handle=? AND sequence>? ORDER BY sequence",
                     (handle, cursor))], "sequence": row[0], "acknowledged": row[1],
                     "backpressure": child.paused.is_set()}
         if action == "status":
@@ -443,7 +456,7 @@ class Supervisor:
                 row = db.execute("SELECT sequence,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
                 if type(cursor) is not int or cursor < row[1] or cursor > row[0]:
                     raise ValueError("Supervisor replay cursor is stale or ahead of the journal")
-                event = db.execute("SELECT sequence,kind,payload FROM events WHERE handle=? AND sequence>? ORDER BY sequence LIMIT 1",
+                event = db.execute("SELECT sequence,kind,payload,generation FROM events WHERE handle=? AND sequence>? ORDER BY sequence LIMIT 1",
                                    (handle, cursor)).fetchone()
             if event:
                 return {"event": dict(event), "returnCode": child.process.poll(),
@@ -759,6 +772,7 @@ class ProcessProxy:
             self.socket.close()
             raise
         self.initialize_result = opened.get("initResult") if opened.get("resumed") else None
+        self.generation = opened.get("generation", 1)
         self.cursor = opened["acknowledged"]
         self.read_cursor = self.cursor
         self.ack_pending = set()
@@ -787,6 +801,14 @@ class ProcessProxy:
                         return None
                     self.read_cursor = self.sequence = event["sequence"]
                     payload = json.loads(event["payload"])
+                    prior_generation = event.get("generation", self.generation) < self.generation
+                    if prior_generation and (event["kind"] == "exit"
+                            or (event["kind"] == "stdout" and "id" in payload)):
+                        # The old child is gone, so its RPC traffic cannot be
+                        # delivered through the new proxy. Retire it without
+                        # letting the old exit close the new connection.
+                        self.ack(event["sequence"])
+                        continue
                     if event["kind"] == "stdout":
                         if "method" not in payload and isinstance(payload.get("id"), int):
                             local_id = self.remote_to_local.get(payload["id"])
