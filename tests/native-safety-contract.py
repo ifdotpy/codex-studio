@@ -206,17 +206,78 @@ class Safety(unittest.TestCase):
         self.assertEqual(self.receipt()['stage'], 'cancelled')
         self.assertFalse(any(m == 'turn/start' and p['threadId']=='forked-thread' for m,p in self.server.calls))
 
-    def test_restart_retains_receipt_and_does_not_replay_fork(self):
+    def test_scenario_19_restart_holds_unknown_fork_once_without_replay(self):
+        parent = self.runtime.create({'name':'Parent','cwd':self.temp.name,'prompt':'Parent task'}, defer=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            worker = self.runtime.agent(self.key, db)
+            worker.update(isLead=False, parentId=parent['id'], rootId=parent['id'])
+            self.runtime.put(db, 'agents', worker)
+            parent_record = self.runtime.agent(parent['id'], db)
+            parent_record.update(status='completed', autoWake=True)
+            self.runtime.put(db, 'agents', parent_record)
         self.server.gated = 'thread/fork'
         self.buffering(); self.action()
         fixture.eventually(lambda: self.server.gate_future is not None)
+        original_id = self.receipt()['id']
         self.runtime.close()
         self.runtime = Runtime(Path(self.temp.name), Server)
-        self.assertEqual(self.action()['stage'], 'fork')
-        self.assertFalse(any(m == 'thread/fork' for m,p in self.runtime.connect().calls))
-        self.assertEqual(self.action('cancel')['stage'], 'cancelled')
+        restarted_server = self.runtime.connect()
+        retry = self.runtime.agent(self.key).get('nativeSafetyRetry')
+        self.assertEqual(retry['id'], original_id)
+        self.assertEqual(retry['stage'], 'failed')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+        self.assertTrue(self.runtime.agent(self.key)['nativeFailureHold'])
+        self.assertEqual(self.action()['stage'], 'failed')
+        self.assertFalse(any(m in {'thread/fork', 'turn/interrupt', 'turn/start'}
+                             for m,p in restarted_server.calls))
+        with self.runtime.db() as db:
+            events = db.execute("SELECT id FROM runtime_events WHERE kind='child_result' AND agent=?",
+                                (parent['id'],)).fetchall()
+        self.assertEqual(len(events), 1)
         from codex_safety_buffering import active
         self.assertFalse(active(self.runtime.agent(self.key)))
+
+    def test_scenario_19_every_persisted_stage_has_one_restart_hold(self):
+        parent = self.runtime.create({'name':'Parent','cwd':self.temp.name,'prompt':'Parent task'}, defer=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            worker = self.runtime.agent(self.key, db)
+            worker.update(isLead=False, parentId=parent['id'], rootId=parent['id'])
+            self.runtime.put(db, 'agents', worker)
+            parent_record = self.runtime.agent(parent['id'], db)
+            parent_record.update(status='completed', autoWake=True)
+            self.runtime.put(db, 'agents', parent_record)
+        methods = {'turns':'thread/turns/list','items':'thread/items/list',
+            'interrupt':'turn/interrupt','verify_turns':'thread/turns/list',
+            'verify_items':'thread/items/list','fork':'thread/fork','start':'turn/start','unknown':'turn/start'}
+        for stage, method in methods.items():
+            with self.subTest(stage=stage):
+                operation_id = self.key + ':restart-stage:' + stage
+                op = {'id':operation_id,'agent':self.key,'accountKey':'default','epoch':self.a['epoch'],
+                    'threadId':self.a['threadId'],'turnId':self.turn,'model':'gpt-5.6-sol',
+                    'attemptId':'attempt-' + stage,'stage':stage,'rpcMethod':method}
+                with self.runtime.lock, self.runtime.db() as db:
+                    db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+                    agent = self.runtime.agent(self.key, db)
+                    agent.update(status='running',inFlight=True,autoWake=True,turnId=self.turn,
+                        nativeSafetyRetry={'id':operation_id,'stage':stage,'epoch':agent['epoch'],
+                                           'accountKey':'default'})
+                    self.runtime.put(db,'agents',agent)
+                    if stage != 'unknown':
+                        self.runtime.put(db,'safety_retries',op)
+                self.runtime.close()
+                self.runtime = Runtime(Path(self.temp.name), Server)
+                server = self.runtime.connect()
+                recovered = self.runtime.agent(self.key)
+                self.assertEqual(recovered['nativeSafetyRetry']['id'],operation_id)
+                self.assertEqual(recovered['nativeSafetyRetry']['stage'],'failed')
+                self.assertFalse(recovered['autoWake'])
+                self.assertTrue(recovered['nativeFailureHold'])
+                self.assertFalse(any(name in {'turn/interrupt','thread/fork','turn/start'}
+                                     for name, _ in server.calls))
+                with self.runtime.db() as db:
+                    event_id = 'child-stop:' + self.key + ':' + str(recovered['epoch']) + ':safety-retry:' + operation_id
+                    self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE id=?',
+                                                (event_id,)).fetchone()[0],1)
 
     def test_simultaneous_clicks_submit_one_fork(self):
         from concurrent.futures import ThreadPoolExecutor

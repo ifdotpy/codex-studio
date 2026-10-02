@@ -133,6 +133,12 @@ class ReviewRuntimeContract(unittest.TestCase):
             return db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
                               (self.parent['id'],)).fetchall()
 
+    def restart_runtime(self):
+        self.rt.close()
+        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.addCleanup(self.rt.close)
+        self.server = self.rt.connect()
+
     def test_retries_share_one_durable_receipt(self):
         first = self.request()
         self.assertEqual(self.request(), first)
@@ -240,6 +246,98 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.rt.dispatch()
         self.assertEqual(len(self.server.reviews), 1)
 
+    def test_scenario_7_restart_after_claim_restores_same_review_action(self):
+        from codex_agent_review import claim
+        value = self.request(args={'request_id': 'restart-review-claim',
+                                   'target': {'type':'baseBranch','branch':'main'}})
+        child = self.rt.agent(value['agentId'])
+        with self.rt.lock, self.rt.db() as db:
+            attempt = claim(self.rt, db, child)
+        self.assertEqual(attempt['action'], 'review')
+        self.assertFalse(attempt['submitted'])
+        self.assertEqual(self.rt.agent(child['id'])['nativeReview']['status'], 'started')
+        self.rt.close()
+        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.addCleanup(self.rt.close)
+        self.server = self.rt.connect()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['status'], 'pending')
+        self.assertEqual(child['nativeReview']['requestId'], value['requestId'])
+        self.assertEqual(child['nativeReview']['target'], {'type': 'baseBranch', 'branch': 'main'})
+        self.assertNotIn('startAttempt', child)
+        self.rt.dispatch()
+        f.f.eventually(lambda: bool(self.server.reviews))
+        self.assertEqual(len(self.server.reviews), 1)
+        f.f.eventually(lambda: bool(self.rt.agent(child['id']).get('threadId')))
+        child = self.rt.agent(child['id'])
+        self.assertEqual(self.server.reviews[0]['params']['threadId'], child['threadId'])
+        self.assertEqual(self.server.reviews[0]['params']['target'], child['nativeReview']['target'])
+        self.assertEqual(child['nativeReview']['requestId'], value['requestId'])
+
+    def test_scenario_7_restart_after_preparation_and_settings_keeps_same_target(self):
+        from codex_agent_review import claim
+        value = self.request(args={'request_id':'restart-review-settings',
+            'target':{'type':'baseBranch','branch':'main'}})
+        child = self.rt.agent(value['agentId'])
+        with self.rt.lock, self.rt.db() as db:
+            attempt = claim(self.rt, db, child)
+            current = self.rt.agent(child['id'], db)
+            current['threadId'] = 'prepared-review-thread'
+            attempt['threadId'] = current['threadId']
+            attempt['modelSettings'] = {'id':attempt['id'],'epoch':attempt['epoch'],
+                'accountKey':attempt['accountKey'],'threadId':attempt['threadId'],
+                'connectionId':self.rt.connection_ids['default'],
+                'settings':self.rt.preparation_settings(current),'status':'acknowledged'}
+            current['startAttempt'] = attempt
+            self.rt.put(db,'agents',current)
+        self.restart_runtime()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['status'],'pending')
+        self.assertEqual(child['nativeReview']['target'],{'type':'baseBranch','branch':'main'})
+        self.assertEqual(child['nativeReview']['requestId'],value['requestId'])
+        with patch('codex_native_tools.gate',return_value=True):
+            self.rt.dispatch()
+        f.f.eventually(lambda: bool(self.server.reviews))
+        self.assertEqual(len(self.server.reviews),1)
+        self.assertEqual(self.server.reviews[0]['params']['target'],child['nativeReview']['target'])
+
+    def test_scenario_7_restart_after_review_start_never_repeats_unknown_mutation(self):
+        self.server.mode = 'lost'
+        value = self.request(args={'request_id':'restart-review-start',
+            'target':{'type':'baseBranch','branch':'main'}})
+        entry = self.dispatch_review(value)
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['startAttempt']['submitted'])
+        self.assertEqual(len(self.server.reviews),1)
+        self.restart_runtime()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['requestId'],value['requestId'])
+        self.assertEqual(child['restartRecovery']['stage'],'held')
+        self.rt.dispatch()
+        self.assertEqual(self.server.reviews,[])
+        self.assertEqual(len(self.parent_results()),1)
+        self.assertEqual(entry['params']['target'],child['nativeReview']['target'])
+
+    def test_scenario_7_restart_after_final_result_and_parent_delivery_is_idempotent(self):
+        value = self.request(args={'request_id':'restart-review-result',
+            'target':{'type':'baseBranch','branch':'main'}})
+        entry = self.dispatch_review(value)
+        self.server.finish(entry)
+        f.f.eventually(lambda: (self.rt.agent(value['agentId'])['status']=='completed'
+                                or self.rt.agent(value['agentId']).get('agentArchive')))
+        self.assertEqual(len(self.parent_results()),1)
+        self.restart_runtime()
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['status']=='completed' or child.get('agentArchive'))
+        self.assertEqual(len(self.parent_results()),1)
+        with self.rt.lock, self.rt.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?",
+                       (self.parent_results()[0]['id'],))
+        self.restart_runtime()
+        self.assertEqual(len(self.parent_results()),1)
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['status']=='completed' or child.get('agentArchive'))
+
     def test_team_concurrency_blocks_review_until_parent_yields(self):
         self.update(self.parent['id'], concurrency=1)
         value = self.request()
@@ -267,7 +365,8 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.rt.dispatch()
         self.assertEqual(len(self.parent_results()), 1)
         self.assertEqual(len(self.server.reviews), 1)
-        self.assertEqual(self.rt.agent(child['id'])['status'], 'completed')
+        finished = self.rt.agent(child['id'])
+        self.assertTrue(finished['status'] == 'completed' or finished.get('agentArchive'))
 
     def test_lost_response_never_repeats_and_late_result_preserves_completion(self):
         self.server.mode = 'lost'

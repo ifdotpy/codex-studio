@@ -1272,6 +1272,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
+                from codex_safety_buffering import recover_restart as recover_safety_restart
+                recover_safety_restart(self, db, a)
                 self.put(db, "agents", a)
             for task in active_task_records(db):
                 task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
@@ -1967,6 +1969,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.loaded.difference_update(ids)
             for a in agents:
                 self.retire_legacy_steer(db, a)
+                start_attempt = copy.deepcopy(a.get("startAttempt"))
                 self.capacity_restart(db, a)
                 a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
@@ -1974,6 +1977,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a["disconnectRecovery"] = {
                             "epoch": a["epoch"], "accountKey": account_key,
                             "threadId": a.get("threadId"), "turnId": a.get("turnId"),
+                            "startAttempt": start_attempt,
                             "connectionId": connection_id, "autoWake": bool(a.get("autoWake")),
                             "at": time.time(),
                         }
@@ -6567,8 +6571,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["cancelledPark"] = {**cancelled_park, "cancelledAtEpoch": a["epoch"]}
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
-                self.child_stopped_event(db, a, "paused", reason,
-                    "stop:" + str(stopped_turn), requested_by_lead=bool(sender))
+                if not descendants or a["id"] == key or sender:
+                    self.child_stopped_event(db, a, "paused", reason,
+                        "stop:" + str(stopped_turn), requested_by_lead=bool(sender))
             for request in self.records(db, "requests"):
                 if request.get("agent") in ids and request["status"] == "pending" and request["method"] != "monitor/approve":
                     request["status"] = "expired"
