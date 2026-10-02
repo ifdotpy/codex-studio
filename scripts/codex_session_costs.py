@@ -150,7 +150,8 @@ class SessionCostReader:
                 for path in self._thread_ids(config, account_key, thread_id):
                     try:
                         stat = path.stat()
-                        files[str(path)] = (stat.st_size, stat.st_mtime_ns)
+                        files[str(path)] = (stat.st_dev, stat.st_ino, stat.st_size,
+                                            stat.st_mtime_ns, stat.st_ctime_ns)
                     except OSError:
                         files[str(path)] = (None, None)
         encoded = json.dumps({"configs": sorted(set(configs)), "files": sorted(files.items())}, separators=(",", ":"))
@@ -158,7 +159,10 @@ class SessionCostReader:
 
     @staticmethod
     def _agent_signature(agents):
-        encoded = json.dumps(sorted(agents, key=lambda value: value[0]), sort_keys=True,
+        identities = [(key, {field: record.get(field) for field in
+                             ("rootId", "accountKey", "threadId", "accountHistory")})
+                      for key, record in agents]
+        encoded = json.dumps(sorted(identities, key=lambda value: value[0]), sort_keys=True,
                              separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -219,10 +223,13 @@ class SessionCostReader:
         except (OSError, ValueError, TypeError, AttributeError):
             return None
 
-    def _start_refresh(self, agent_id, root):
+    def _start_refresh(self, agent_id, root, *, min_interval=0):
         with self.lock:
             # Heavy history reads share one worker across all chats.
             if self.refreshing:
+                return False
+            checked = self.__dict__.setdefault("refresh_checks", OrderedDict()).get(root)
+            if checked is not None and self.clock() - checked < min_interval:
                 return False
             self.refreshing.add(root)
         try:
@@ -239,6 +246,11 @@ class SessionCostReader:
             self._compute_shared(agent_id, root, refresh=True)
             with self.lock:
                 self.__dict__.setdefault("refresh_errors", OrderedDict()).pop(root, None)
+                checks = self.__dict__.setdefault("refresh_checks", OrderedDict())
+                checks[root] = self.clock()
+                checks.move_to_end(root)
+                while len(checks) > self.CACHE_ROOTS:
+                    checks.popitem(last=False)
         except Exception as error:
             with self.lock:
                 errors = self.__dict__.setdefault("refresh_errors", OrderedDict())
@@ -266,8 +278,11 @@ class SessionCostReader:
             db.rollback()  # End the explicit read snapshot before instrumented close.
             db.close()
         pricing_signature = self._catalog_signature(self.pricing.snapshot())
-        claude_agents = self._claude_agents(agents)
         agent_signature = self._agent_signature(agents)
+        if not wait:
+            return self._display_snapshot(agent_id, root, usage_state, pricing_signature,
+                                          agent_signature)
+        claude_agents = self._claude_agents(agents)
         claude_signature = self._claude_signature(claude_agents)
         with self.lock:
             cached = self.cache.get(root)
@@ -294,18 +309,35 @@ class SessionCostReader:
             with self.lock:
                 refreshing = started or root in self.refreshing
             return {**result, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
-        if not wait:
-            with self.lock:
-                error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
-            self._start_refresh(agent_id, root)
-            if error is not None:
-                raise error
-            return {"rootId": root, "totalUSD": None, "pricedSamples": 0,
-                    "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
-                    "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
-                    "refreshing": True, "method": "Calculating the session estimate."}
         result = self._compute_shared(agent_id, root)
         return {**result, "cacheAgeSeconds": 0, "refreshing": False}
+
+    def _display_snapshot(self, agent_id, root, usage_state, pricing_signature, agent_signature):
+        # Claude log discovery and parsing run in the worker, outside HTTP requests.
+        with self.lock:
+            cached = self.cache.get(root)
+            if cached:
+                self.cache.move_to_end(root)
+            error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
+            checked = self.__dict__.setdefault("refresh_checks", OrderedDict()).get(root)
+        if cached:
+            cached_at, result, source = cached
+            changed = (source.get("usage") != usage_state
+                       or source.get("pricingSignature") != pricing_signature
+                       or source.get("agentsSignature") != agent_signature)
+            due = checked is None or self.clock() - checked >= 10
+            started = self._start_refresh(agent_id, root, min_interval=10) if changed or due else False
+            with self.lock:
+                refreshing = changed or started or root in self.refreshing
+            return {**result, "cacheAgeSeconds": round(max(0, self.clock() - cached_at), 1),
+                    "refreshing": refreshing}
+        self._start_refresh(agent_id, root, min_interval=10)
+        if error is not None:
+            raise error
+        return {"rootId": root, "totalUSD": None, "pricedSamples": 0,
+                "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
+                "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
+                "refreshing": True, "method": "Calculating the session estimate."}
 
     def _compute_shared(self, agent_id, root, *, refresh=False):
         with self.lock:
@@ -399,18 +431,21 @@ class SessionCostReader:
             stat = path.stat()
         except OSError:
             return []
-        key, signature = str(path), (stat.st_size, stat.st_mtime_ns)
+        key = str(path)
+        signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         with self.lock:
             cached = self.file_cache.get(key)
             if cached and cached[0] == signature:
                 self.file_cache.move_to_end(key)
                 return cached[1]
         try:
-            rows = parse_claude_usage(path)
+            from codex_claude_costs import read_claude_usage_tail
+            parsed = read_claude_usage_tail(path, cached[2] if cached and len(cached) > 2 else None)
+            rows = parsed["rows"]
         except OSError:
             return []
         with self.lock:
-            self.file_cache[key] = (signature, rows)
+            self.file_cache[key] = (signature, rows, parsed)
             self.file_cache.move_to_end(key)
             while len(self.file_cache) > 4096:
                 self.file_cache.popitem(last=False)
@@ -434,6 +469,13 @@ class SessionCostReader:
             cache_source = {"usage": usage_state, "pricingSignature": catalog_signature,
                             "agentsSignature": self._agent_signature(agents),
                             "claudeSignature": self._claude_signature(claude_agents)}
+            with self.lock:
+                cached = self.cache.get(root)
+            if not cached:
+                cached = self._load_persisted(root, usage_state, catalog_signature,
+                                              cache_source["agentsSignature"], cache_source["claudeSignature"])
+            if cached and cached[2] == cache_source:
+                return {**cached[1], "_cacheSource": cache_source}
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
