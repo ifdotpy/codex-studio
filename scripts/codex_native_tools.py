@@ -78,7 +78,17 @@ def _same_source(agent):
 def _local_idle(rt, db, key, server):
     if rt.closed:
         return None, "Studio is stopped"
-    agents = [a for a in rt.records(db, "agents") if a.get("accountKey", "default") == key]
+    # A busy account needs no history decode. Other busy fields retain the
+    # checks below, including malformed legacy values and deleted agents.
+    account_scope = ("(json_extract(record,'$.accountKey')=? OR "
+                     "(?='default' AND json_type(record,'$.accountKey') IS NULL))")
+    if db.execute("SELECT 1 FROM runtime_agents WHERE " + account_scope +
+                  " AND (json_extract(record,'$.status') IN ('running','starting','approval') "
+                  "OR json_extract(record,'$.inFlight')=1) LIMIT 1", (key, key)).fetchone():
+        return None, "Waiting for account work to finish"
+    from codex_agent_modes import mode_fields
+    agents = [mode_fields(json.loads(row[0])) for row in db.execute(
+        "SELECT record FROM runtime_agents WHERE " + account_scope, (key, key))]
     ids = {a["id"] for a in agents}
     for agent in agents:
         if (agent.get("inFlight") or agent.get("status") in ACTIVE or agent.get("activeTools")

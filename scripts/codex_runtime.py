@@ -2388,12 +2388,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not resumed:
             self._record_supervisor_restore(account_key, "not_restored", "native_handle_not_resumed")
             return
+        from codex_agent_modes import mode_fields
         now = time.time()
         with self.notification_db() as db:
             if self.closed or not self.connection_current(account_key, connection_id):
                 return
-            for agent in self.records(db, "agents"):
-                if agent.get("accountKey", "default") != account_key or agent.get("deletedAt"):
+            agents = db.execute("SELECT record FROM runtime_agents WHERE "
+                "CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                "ELSE json_extract(record,'$.accountKey') END=? "
+                "AND (json_extract(record,'$.restartRecovery.stage')='pending' "
+                "OR json_type(record,'$.disconnectRecovery.autoWake') IS NOT NULL)", (account_key,))
+            for row in agents.fetchall():
+                agent = mode_fields(json.loads(row[0]))
+                if agent.get("deletedAt"):
                     continue
                 marker = agent.get("restartRecovery") or {}
                 disconnect = agent.get("disconnectRecovery") or {}
@@ -2428,7 +2435,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "threadId": recovery.get("threadId"), "epoch": recovery.get("epoch")}
                     self.put(db, "agents", agent)
             for table in ("tasks", "monitors"):
-                for row in db.execute(f"SELECT record FROM runtime_{table}").fetchall():
+                # The status indexes exclude terminal history before payloads
+                # enter Python. A stale receipt cannot reopen completed work.
+                rows = db.execute(f"SELECT record FROM runtime_{table} WHERE "
+                    "json_extract(record,'$.status') IN ('lost','running','starting','approval') "
+                    "AND json_extract(record,'$.reattachRecovery.accountKey')=? "
+                    "AND json_extract(record,'$.reattachRecovery.status') "
+                    "IN ('running','starting','approval')", (account_key,)).fetchall()
+                for row in rows:
                     record = json.loads(row[0])
                     receipt = record.get("reattachRecovery") or {}
                     if (receipt.get("accountKey") != account_key
@@ -2454,11 +2468,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.changed.set()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None):
+        from codex_agent_modes import mode_fields
         now = time.time()
         with self.notification_db() as db:
             if self.closed:
                 return
-            for agent in self.records(db, "agents"):
+            agents = db.execute("SELECT record FROM runtime_agents WHERE "
+                "CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                "ELSE json_extract(record,'$.accountKey') END=? "
+                "AND json_extract(record,'$.restartRecovery.stage')='pending'", (account_key,))
+            for row in agents.fetchall():
+                agent = mode_fields(json.loads(row[0]))
                 marker = agent.get("restartRecovery") or {}
                 if (agent.get("accountKey", "default") != account_key or agent.get("deletedAt")
                         or marker.get("stage") != "pending"):

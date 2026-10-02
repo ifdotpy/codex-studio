@@ -187,6 +187,42 @@ class Contract(unittest.TestCase):
             agent.update(changes)
             self.rt.put(db, "agents", agent)
 
+    def test_busy_account_does_not_decode_agent_history(self):
+        for changes in ({"status": "running"}, {"status": "starting"},
+                        {"status": "approval", "deletedAt": 1},
+                        {"status": "complete", "inFlight": True}):
+            with self.subTest(changes=changes):
+                self.change_agent(**changes)
+                with self.rt.db() as db, patch.object(self.rt, "records", side_effect=AssertionError(
+                        "Do not load the workspace roster")), patch.object(
+                            tools.json, "loads", side_effect=AssertionError("Do not decode history")):
+                    agents, reason = tools._local_idle(self.rt, db, "default", self.native)
+                self.assertIsNone(agents)
+                self.assertEqual(reason, "Waiting for account work to finish")
+
+    def test_idle_account_decodes_only_its_own_agents(self):
+        with self.rt.db() as db:
+            self.rt.put(db, "agents", {"id": "foreign", "accountKey": "other",
+                                      "status": "running", "historyGuard": True})
+            self.rt.put(db, "agents", {"id": "null-account", "accountKey": None,
+                                      "status": "running", "historyGuard": True})
+            self.rt.put(db, "agents", {"id": "legacy", "status": "complete"})
+        loads = json.loads
+
+        def decode(raw):
+            self.assertNotIn('"historyGuard"', raw)
+            return loads(raw)
+
+        with self.rt.db() as db, patch.object(self.rt, "records", side_effect=AssertionError(
+                "Do not load the workspace roster")), patch.object(tools.json, "loads", side_effect=decode):
+            agents, reason = tools._local_idle(self.rt, db, "default", self.native)
+        self.assertIsNone(reason)
+        self.assertEqual({a["id"] for a in agents}, {"chat-1", "legacy"})
+        self.change_agent(workspaceOperation="legacy-operation")
+        with self.rt.db() as db:
+            self.assertEqual(tools._local_idle(self.rt, db, "default", self.native)[1],
+                             "Waiting for account work to finish")
+
     def test_preserves_chat_identity_full_history_and_receipt_scopes(self):
         before = self.rt.agent("chat-1")
         result = tools.refresh_account(self.rt)
@@ -424,7 +460,7 @@ class Contract(unittest.TestCase):
             with patch.object(self.rt, "records", wraps=self.rt.records) as records:
                 agents, reason = tools._local_idle(self.rt, db, "default", self.native)
                 self.assertIsNone(reason)
-                self.assertEqual([call.args[1] for call in records.call_args_list], ["agents"])
+                records.assert_not_called()
             db.set_progress_handler(None, 0)
             self.assertLess(steps, 1000, steps)
 
