@@ -41,7 +41,7 @@ def wait_for(check, seconds=20):
 
 class RecoveryTest(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-")
+        self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-", dir="/tmp")
         self.state = Path(self.temp.name).resolve()
         self.config = {"version": 1, "enabled": True, "stateDir": str(self.state),
                        "port": free_port(), "python": sys.executable,
@@ -95,7 +95,36 @@ class RecoveryTest(unittest.TestCase):
                 recovery.tick(self.config, self.state, supervisor_fallback=True)
             self.assertNotIn(call(foreign_pid, signal.SIGTERM), kill.call_args_list)
 
+    def test_supervisor_probe_failure_never_starts_a_replacement(self):
+        config = {
+            "supervisorEnabled": True,
+            "python": sys.executable,
+            "resources": str(HERE.parent),
+            "codex": "/usr/bin/true",
+        }
+        probe_error = subprocess.TimeoutExpired(["status"], 2)
+        with patch.object(recovery.subprocess, "run", side_effect=probe_error), \
+                patch.object(recovery.subprocess, "Popen") as spawn:
+            child, status = recovery.supervisor_tick(config, self.state)
+        self.assertIsNone(child)
+        self.assertEqual(status, "supervisor starting")
+        spawn.assert_not_called()
+
     def test_same_owner_survives_supervisor_restart_and_crash_keeps_data(self):
+        self.config["supervisorEnabled"] = True
+        supervisor_log = self.state / "supervisor-owner.log"
+        with supervisor_log.open("w") as output:
+            owner = subprocess.Popen(
+                [sys.executable, "-B", str(HERE.parent / "scripts/codex_process_supervisor.py"),
+                 "--state", str(self.state)],
+                stdout=output,
+                stderr=output,
+            )
+        self.supervisors.append(owner)
+        wait_for(
+            lambda: recovery.supervisor_tick(self.config, self.state)[1]
+            == "supervisor ready"
+        )
         self.child, status = recovery.tick(self.config, self.state)
         self.assertEqual(status, "started")
         first = wait_for(lambda: recovery.identity(self.config["port"], self.state))

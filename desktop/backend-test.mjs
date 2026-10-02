@@ -213,7 +213,7 @@ test("saved supervisor mode attaches consistently when Finder supplies no variab
   }
 });
 
-test("recovery service and desktop startup racing use one persisted supervisor mode", async () => {
+test("recovery and desktop attach to the same independently launched supervisor", async () => {
   const root = mkdtempSync(path.join("/tmp", "srr-"));
   const canonicalState = path.join(root, "state");
   mkdirSync(canonicalState);
@@ -253,15 +253,24 @@ test("recovery service and desktop startup racing use one persisted supervisor m
   let backend;
   let supervisor;
   try {
-    const desktopStarting = ensureBackend({
-      resources,
-      port,
-      env: {
-        CODEX_AGENTS_STATE_DIR: canonicalState,
-        CODEX_BIN: "/usr/bin/true",
-        PATH: process.env.PATH,
+    // Model launchd starting the independent owner before either backend path.
+    spawn(
+      python,
+      [
+        "-B",
+        path.join(resources, "scripts/codex_process_supervisor.py"),
+        "--state",
+        canonicalState,
+      ],
+      {
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          CODEX_AGENTS_STATE_DIR: canonicalState,
+          CODEX_AGENTS_SUPERVISOR_MODE: "1",
+        },
       },
-    });
+    );
     recovery = spawn(python, [
       "-B",
       path.join(resources, "desktop/recover_backend.py"),
@@ -275,7 +284,29 @@ test("recovery service and desktop startup racing use one persisted supervisor m
       recoveryOutput.push(chunk.toString()),
     );
     try {
-      backend = await desktopStarting;
+      const deadline = Date.now() + 15000;
+      let recoveredBackend;
+      while (Date.now() < deadline && !recoveredBackend) {
+        recoveredBackend = await identity(
+          `http://127.0.0.1:${port}`,
+          realpathSync(canonicalState),
+        );
+        if (!recoveredBackend)
+          await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.ok(
+        recoveredBackend,
+        `Recovery did not start the backend: ${recoveryOutput.join("")}`,
+      );
+      backend = await ensureBackend({
+        resources,
+        port,
+        env: {
+          CODEX_AGENTS_STATE_DIR: canonicalState,
+          CODEX_BIN: "/usr/bin/true",
+          PATH: process.env.PATH,
+        },
+      });
     } catch (error) {
       let supervisorLog = "";
       try {

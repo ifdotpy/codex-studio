@@ -205,9 +205,16 @@ Its first cutover needs one planned interruption at an idle boundary because
 existing in-process pipes cannot transfer to it. Install the matching desktop
 package, set `CODEX_AGENTS_SUPERVISOR_MODE=1` through the desktop recovery
 configuration, and use the documented `scripts/restart-backend-v2.sh
---initial-cutover` procedure. Verify supervisor protocol and empty handles in
-`/api/desktop` and `/api/diagnostics`. Do not enable it by changing an ad hoc
-shell environment while the desktop continues to launch the old backend.
+--initial-cutover` procedure. Desktop startup installs a separate
+`local.codex.agents.supervisor.<state-hash>` LaunchAgent before it starts or
+attaches a backend. The recovery job has its own label and only probes the
+supervisor. It does not start, stop, or kickstart the owner when a probe fails.
+Rewriting, disabling, or kickstarting the recovery LaunchAgent must not unload
+the supervisor LaunchAgent. Do not unload or kickstart the supervisor service
+while it owns handles. Verify supervisor protocol and empty handles in
+`/api/desktop` and `/api/diagnostics` at the initial idle cutover. Do not enable
+it by changing an ad hoc shell environment while the desktop continues to
+launch the old backend.
 
 ## Rollback and recovery
 

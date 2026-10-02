@@ -30,6 +30,10 @@ function fixture() {
   mkdirSync(path.join(resources, "scripts"), { recursive: true });
   mkdirSync(path.join(resources, "web/dist"), { recursive: true });
   writeFileSync(path.join(resources, "scripts/codex-canvas"), "fixture");
+  writeFileSync(
+    path.join(resources, "scripts/codex_process_supervisor.py"),
+    "fixture",
+  );
   writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
   const supervisor = path.join(root, "recover_backend.py");
   writeFileSync(supervisor, "fixture");
@@ -109,7 +113,8 @@ test("only the installed Studio bundle can configure background recovery", async
 test("register and read back the exact-state launch agent without storing credentials", async () => {
   const fixtureData = fixture();
   const calls = [];
-  let registered = false;
+  const registered = new Set();
+  const paths = recoveryPaths(fixtureData.env, fixtureData.home);
   try {
     const result = await configureRecovery({
       ...fixtureData,
@@ -118,8 +123,14 @@ test("register and read back the exact-state launch agent without storing creden
       run: async (file, args) => {
         assert.equal(file, "/bin/launchctl");
         calls.push(args);
-        if (args[0] === "print" && !registered) throw new Error("absent");
-        if (args[0] === "bootstrap") registered = true;
+        if (args[0] === "print" && !registered.has(args[1]))
+          throw new Error("absent");
+        if (args[0] === "bootstrap")
+          registered.add(
+            args[2] === paths.supervisorPlist
+              ? `gui/777/${paths.supervisorLabel}`
+              : `gui/777/${paths.label}`,
+          );
       },
     });
     assert.equal(result.enabled, true);
@@ -171,6 +182,20 @@ test("supervisor mode is opt-in in the saved launchd configuration", async () =>
     const config = JSON.parse(readFileSync(result.config, "utf8"));
     assert.equal(config.supervisorEnabled, true);
     assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, undefined);
+    const supervisorPlist = JSON.parse(
+      execFileSync(
+        "/usr/bin/plutil",
+        ["-convert", "json", "-o", "-", result.supervisorPlist],
+        { encoding: "utf8" },
+      ),
+    );
+    assert.equal(supervisorPlist.KeepAlive, true);
+    assert.equal(supervisorPlist.AbandonProcessGroup, true);
+    assert.equal(supervisorPlist.Label, result.supervisorLabel);
+    assert.deepEqual(supervisorPlist.ProgramArguments.slice(-2), [
+      "--state",
+      result.state,
+    ]);
     await configureRecovery({
       ...data,
       enabled: true,
@@ -255,7 +280,7 @@ test("the hidden desktop survives crash loops and resets its recovery budget", a
   const { promisify } = await import("node:util");
   const { createServer } = await import("node:net");
   const root = path.dirname(new URL(import.meta.url).pathname);
-  const temp = mkdtempSync(path.join(tmpdir(), "studio-renderer-recovery-"));
+  const temp = mkdtempSync("/tmp/studio-renderer-recovery-");
   const port = await new Promise((resolve) => {
     const server = createServer();
     server.listen(0, "127.0.0.1", () => {
@@ -274,6 +299,7 @@ test("the hidden desktop survives crash loops and resets its recovery budget", a
         env: {
           ...process.env,
           CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),
+          CODEX_AGENTS_SUPERVISOR_MODE: "0",
           CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
           CODEX_DESKTOP_PORT: String(port),
         },
