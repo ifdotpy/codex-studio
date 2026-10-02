@@ -1,5 +1,6 @@
 """Reconcile disconnected turns before restoring confirmed completion delivery."""
 from concurrent.futures import Future
+import json
 import time
 
 from codex_native_errors import native_thread_block
@@ -283,12 +284,23 @@ def apply_result(runtime, expected, connection, server, turn, *, automatic=False
                      connectionRecovery={'turnId': turn['id'], 'outcome': outcome,
                          'at': time.time(), 'source': 'native_thread_read',
                          'previousError': expected['error']})
+        hold_operations = unresolved_completion_operations(db, agent, turn) if outcome == 'completed' else []
+        if hold_operations:
+            agent['connectionRecovery']['holdOperations'] = hold_operations
         runtime.loaded.discard(agent['id'])
         if not restart_continuation:
             settle_reconciled(agent)
         runtime.put(db, 'agents', agent)
         if restart_continuation:
             continue_interrupted(runtime, db, agent, turn)
+        elif hold_operations:
+            result_text = agent.get('lastAnswer') or 'The turn completed without final text.'
+            warning = 'Studio held follow-up work because these operation receipts remain unresolved: '
+            runtime.parent_event(db, agent, turn['id'], result_text + '\n\n' + warning
+                                 + '; '.join(item['label'] for item in hold_operations), recovery=True)
+            runtime.child_stopped_event(db, agent, 'completed', warning
+                                        + '; '.join(item['label'] for item in hold_operations),
+                                        'turn:' + str(turn['id']) + ':unresolved')
         elif outcome in {'failed', 'interrupted'} and not runtime.worker_continuation_pending(agent):
             marker = agent.get('restartRecovery') or {}
             reason = marker.get('reason') or error or agent.get('error')
@@ -310,10 +322,10 @@ def native_operations_settled(turn):
             if item.get('status') != 'declined' and type(item.get('exitCode')) is not int:
                 return False
         elif kind == 'dynamicToolCall':
-            if item.get('status') != 'completed' or item.get('success') is not True:
+            if item.get('status') != 'completed':
                 return False
         elif kind in {'mcpToolCall', 'fileChange', 'computerToolCall'}:
-            if item.get('status') != 'completed' or item.get('error'):
+            if item.get('status') not in {'completed', 'failed', 'declined'}:
                 return False
     return True
 
@@ -335,16 +347,62 @@ def can_deliver_completion(db, agent, turn):
                   (agent['id'], agent['epoch'])).fetchone():
         return False
     for table in ('runtime_tasks', 'runtime_monitors'):
-        if db.execute(f"SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=? "
-                      "AND json_extract(record,'$.status') IN ('lost','running','starting','approval') LIMIT 1",
-                      (agent['id'],)).fetchone():
+        for row in db.execute(f"SELECT record FROM {table} WHERE json_extract(record,'$.agent')=? "
+                              "AND json_extract(record,'$.status') IN ('lost','running','starting','approval')",
+                              (agent['id'],)):
+            operation = json.loads(row['record'])
+            if operation.get('turnId') in (None, turn.get('id')):
+                return False
+    for row in db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                          "AND (json_extract(record,'$.outcome')='unknown' OR "
+                          "json_extract(record,'$.stage') IN ('queued','running'))", (agent['id'],)):
+        operation = json.loads(row['record'])
+        if operation.get('turnId') in (None, turn.get('id')):
             return False
-    if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-                  "AND (json_extract(record,'$.outcome')='unknown' OR "
-                  "json_extract(record,'$.stage') IN ('queued','running')) LIMIT 1",
-                  (agent['id'],)).fetchone():
-        return False
     return True
+
+
+def unresolved_completion_operations(db, agent, turn):
+    """Name only operation receipts tied to this turn, plus legacy unscoped receipts."""
+    unresolved = []
+    for item in turn.get('items', []):
+        kind = item.get('type')
+        terminal = True
+        if kind == 'commandExecution':
+            terminal = (item.get('status') in {'completed', 'failed', 'declined'}
+                        and (item.get('status') == 'declined' or type(item.get('exitCode')) is int))
+        elif kind == 'dynamicToolCall':
+            terminal = item.get('status') == 'completed'
+        elif kind in {'mcpToolCall', 'fileChange', 'computerToolCall'}:
+            terminal = item.get('status') in {'completed', 'failed', 'declined'}
+        if kind and not terminal:
+            unresolved.append({'id': str(item.get('id') or kind), 'kind': kind,
+                               'label': str(item.get('command') or item.get('tool')
+                                            or item.get('id') or kind)})
+    for table in ('runtime_tasks', 'runtime_monitors'):
+        rows = db.execute(f"SELECT record FROM {table} WHERE json_extract(record,'$.agent')=? "
+                          "AND json_extract(record,'$.status') IN ('lost','running','starting','approval')",
+                          (agent['id'],))
+        for row in rows:
+            operation = json.loads(row['record'])
+            if operation.get('turnId') in (None, turn.get('id')):
+                unresolved.append({'id': str(operation.get('id') or table), 'kind': table,
+                                   'label': str(operation.get('command') or operation.get('tool')
+                                                or operation.get('id') or table)})
+    rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                      "AND (json_extract(record,'$.outcome')='unknown' OR "
+                      "json_extract(record,'$.stage') IN ('queued','running'))", (agent['id'],))
+    for row in rows:
+        operation = json.loads(row['record'])
+        if operation.get('turnId') in (None, turn.get('id')):
+            unresolved.append({'id': str(operation.get('id') or 'tool request'),
+                               'kind': 'tool_request',
+                               'label': str(operation.get('tool') or operation.get('id')
+                                            or 'tool request')})
+    unique = {}
+    for operation in unresolved:
+        unique[(operation['kind'], operation['id'])] = operation
+    return list(unique.values())
 
 
 def tick(runtime, agents):

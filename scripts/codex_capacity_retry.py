@@ -42,22 +42,29 @@ class CapacityRetryMixin:
         retry = a.get('capacityRetry')
         if not retry:
             return
+        terminal = False
         if retry['status'] in {'starting', 'unknown'}:
             attempt = a.get('startAttempt') or {}
             if (attempt.get('capacityRetryId') == retry['id'] and not attempt.get('submitted')
                     and not retry.get('acceptedTurnId')):
                 retry.update(status='cancelled', dueAt=None,
                              reason='The server restarted before turn submission. Automatic retry was cancelled.')
+                terminal = True
                 retry.pop('claimedAt', None)
                 # Startup interrupts active records before this recovery hook.
                 a.update(status='failed', autoWake=True, inFlight=False)
             else:
                 retry.update(status='unknown', dueAt=None,
                              reason='The server restarted. The turn outcome is unknown.')
+                terminal = True
         elif retry['status'] == 'scheduled':
             retry.update(status='cancelled', dueAt=None,
                          reason='The server restarted. Automatic retry was cancelled.')
+            terminal = True
         self.capacity_save(db, a, retry)
+        if terminal:
+            reason = retry.get('reason') or 'Automatic capacity retry was cancelled.'
+            self.permanent_worker_hold(db, a, retry['id'], 'restart-terminal', reason)
 
     def capacity_started(self, db, a, attempt, turn_id):
         retry = a.get('capacityRetry') or {}
@@ -168,6 +175,8 @@ class CapacityRetryMixin:
                     retry.update(status='cancelled', dueAt=None, reason=None)
                     self.capacity_save(db, a, retry)
                     self.put(db, 'agents', a)
+                    self.permanent_worker_hold(db, a, retry_id, 'cancelled',
+                                               'The automatic capacity retry was cancelled.')
                 return retry
             if _automatic and retry['status'] != 'scheduled':
                 return retry
@@ -235,6 +244,7 @@ class CapacityRetryMixin:
                         if str(error) == 'This retry belongs to an earlier agent state.':
                             retry.update(status='cancelled', dueAt=None, reason=str(error))
                             self.capacity_save(db, a, retry)
+                            self.permanent_worker_hold(db, a, retry_id, 'identity-changed', str(error))
                         else:
                             self.capacity_wait(db, a, retry, str(error))
                         self.put(db, 'agents', a)
