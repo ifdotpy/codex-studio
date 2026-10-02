@@ -41,7 +41,7 @@ const server = await createServer({
       },
       load(id) {
         if (id !== entry) return;
-        return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import AgentPhase from'/src/components/AgentPhase.tsx';import ChatStatus from'/src/components/ChatStatus.tsx';import{chatWaitState,chatIndicators}from'/src/components/chatStatusModel.ts';import'/src/style.css';import'/src/workspace-layout.css';
+        return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import AgentPhase from'/src/components/agents/AgentPhase.tsx';import ChatStatus from'/src/components/agents/ChatStatus.tsx';import{chatWaitState,chatIndicators}from'/src/components/chatStatusModel.ts';import'/src/style.css';import'/src/workspace-layout.css';
 const lead={id:'lead',name:'Main',rootId:'lead',source:'managed',status:'waiting',inFlight:false,epoch:2};
 window.base=lead;window.worker=i=>({...lead,id:'child-'+i,name:'Worker '+i,parentId:'lead',status:'running',inFlight:true});
 window.command=i=>({id:'cmd-'+i,agent:'lead',kind:'command',command:'npm run check '+i,status:'running',epoch:2});
