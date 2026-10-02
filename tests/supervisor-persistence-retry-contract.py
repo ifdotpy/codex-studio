@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """SQLite contention must not replay callbacks or acknowledge an uncommitted event."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import io
 import json
 from contextlib import contextmanager

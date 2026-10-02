@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """History budgets precede analytics writes and remain exact after retries."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

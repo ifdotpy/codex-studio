@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Restore an exact surviving turn behind a proven unsent local input wait."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import copy
 import importlib.util
 import json

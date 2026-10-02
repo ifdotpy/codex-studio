@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """A live source patch must also protect dispatcher frames that already run."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib
 import importlib.util
 import json
