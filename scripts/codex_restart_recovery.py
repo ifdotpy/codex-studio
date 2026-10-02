@@ -110,7 +110,7 @@ def can_continue(db, agent, turn):
     # A restart interrupts running commands by design. The agent continues and
     # checks them itself; only an input with an unknown delivery blocks it.
     marker = agent.get('restartRecovery') or {}
-    return bool(marker.get('stage') == 'pending' and marker.get('autoWake')
+    return bool(marker.get('stage') in {'pending', 'superseded'} and marker.get('autoWake')
                 and turn.get('status') == 'interrupted'
                 and marker.get('turnId') == turn.get('id')
                 and all(marker.get(key) == agent.get(key) for key in SCOPE)

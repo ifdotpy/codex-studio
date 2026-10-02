@@ -42,6 +42,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             self.runtime.supervisor_mode = os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') == '1'
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
+        self.server.supervisor_mode = self.runtime.supervisor_mode
         self.server.pending = {}
         self.server.native = native
         self.server.calls.clear()
@@ -85,9 +86,10 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual([(r[0],r[1]) for r in events], [(key,'pending')])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'queued')
 
-    def test_supervisor_restart_holds_long_active_turn_with_one_lead_event(self):
+    def test_supervisor_restart_adopts_exact_active_turn_then_delivers_completion(self):
         parent_id = self.make_worker()
         self.server.native['status']['type'] = 'active'
+        self.server.native['turns'][0]['status'] = 'inProgress'
         self.restart(supervisor=True)
         self.assertTrue(self.runtime.supervisor_mode)
         with self.runtime.lock, self.runtime.db() as db:
@@ -98,38 +100,182 @@ class RestartContract(fixture.ConnectionRecoveryContract):
 
         result = recover(self.runtime, self.key, automatic=True)
 
-        self.assertEqual(result['status'], 'unconfirmed')
+        self.assertEqual(result, {'status': 'adopted', 'turnId': 'lost-turn'})
         agent = self.runtime.agent(self.key)
-        self.assertEqual(agent['restartRecovery']['stage'], 'held')
-        self.assertIn('still active', agent['restartRecovery']['reason'])
-        self.assertFalse(agent['autoWake'])
+        self.assertEqual(agent['restartRecovery']['stage'], 'continued')
+        self.assertEqual(agent['turnId'], 'lost-turn')
+        self.assertTrue(agent['inFlight'])
+        self.assertTrue(agent['autoWake'])
+        self.assertEqual(agent['status'], 'running')
+        self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
+
+        self.server.native['turns'][0]['status'] = 'completed'
+        self.runtime.notification({'method': 'turn/completed', 'params': {'threadId': 'native-thread',
+            'turn': {'id': 'lost-turn', 'status': 'completed'}}}, 'default',
+            self.runtime.connection_ids['default'])
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'finished')
+        self.assertEqual(agent['status'], 'completed')
         with self.runtime.db() as db:
             rows = db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
                               (parent_id,)).fetchall()
         self.assertEqual(len(rows), 1)
-        self.assertIn('did not resend', json.loads(rows[0]['text'])['reason'])
         self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
 
-    def test_restart_pause_becomes_visible_hold_on_scheduler_pass(self):
+    def test_turn_finished_during_restart_uses_normal_completion_and_dispatches_pending_input(self):
         parent_id = self.make_worker()
+        with self.runtime.db() as db:
+            self.runtime.enqueue(db, self.runtime.agent(self.key, db), 'user', 'Follow-up', 'follow-up')
+        self.server.native['status']['type'] = 'idle'
+        self.server.native['turns'][0]['status'] = 'completed'
         self.restart()
-        self.update(status='paused', autoWake=False)
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='pending' WHERE id='follow-up'")
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        self.assertEqual(result['status'], 'reconciled')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'finished')
+        self.assertEqual(agent['status'], 'queued')
+        self.assertTrue(agent['autoWake'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='follow-up'").fetchone()[0],
+                             'pending')
+            rows = db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (parent_id,)).fetchone()[0]
+        self.assertEqual(rows, 1)
+        self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
+
+    def test_old_restart_turn_completion_preserves_newer_active_turn(self):
+        parent_id = self.make_worker()
+        self.server.native['status']['type'] = 'active'
+        self.server.native['turns'][0]['status'] = 'completed'
+        self.restart(supervisor=True)
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
-            agent['restartRecovery'].update(stage='pending', autoWake=True, at=time.time())
+            agent.update(status='running', autoWake=True, inFlight=True, turnId='newer-turn')
+            self.runtime.put(db, 'agents', agent)
+        self.assertEqual(self.runtime.agent(self.key)['turnId'], 'newer-turn')
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        self.assertEqual(result, {'status': 'reconciled', 'turnId': 'lost-turn', 'outcome': 'completed'})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'finished')
+        self.assertEqual(agent['turnId'], 'newer-turn')
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['inFlight'])
+        self.assertTrue(agent['autoWake'])
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (parent_id,)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
+
+    def test_completion_callback_after_restart_keeps_saved_wake_permission(self):
+        self.make_worker()
+        self.restart()
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'interrupted')
+        self.assertFalse(agent['autoWake'])
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery']['stage'] = 'superseded'
             self.runtime.put(db, 'agents', agent)
 
+        self.runtime.notification({'method': 'turn/completed', 'params': {'threadId': 'native-thread',
+            'turn': {'id': 'lost-turn', 'status': 'completed'}}}, 'default',
+            self.runtime.connection_ids['default'])
+
+        agent = self.runtime.agent(self.key)
+        self.assertNotEqual(agent['status'], 'paused')
+        self.assertTrue(agent['autoWake'])
+        self.assertEqual(agent['restartRecovery']['stage'], 'finished')
+
+    def test_unreadable_restart_turn_is_held_after_bounded_wait(self):
+        parent_id = self.make_worker()
+        self.restart()
+        self.server.read_error = RuntimeError('native read unavailable')
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery']['at'] = time.time() - 31
+            self.runtime.put(db, 'agents', agent)
+
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
         connection_recovery_tick(self.runtime, [self.runtime.agent(self.key)])
 
         agent = self.runtime.agent(self.key)
         self.assertEqual(agent['restartRecovery']['stage'], 'held')
+        self.assertIn('could not confirm', agent['restartRecovery']['reason'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                                        (parent_id,)).fetchone()[0], 1)
+
+    def test_restart_permission_recovers_paused_agent_when_epoch_stays_current(self):
+        self.make_worker()
+        self.server.native['status']['type'] = 'active'
+        self.server.native['turns'][0]['status'] = 'inProgress'
+        self.restart(supervisor=True)
+        self.update(status='paused', autoWake=False)
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(result['status'], 'adopted')
+        self.assertEqual(agent['restartRecovery']['stage'], 'continued')
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['autoWake'])
+
+    def test_restore_marked_paused_restart_superseded_but_exact_authority_recovers(self):
+        self.make_worker()
+        self.server.native['status']['type'] = 'active'
+        self.server.native['turns'][0]['status'] = 'inProgress'
+        self.restart(supervisor=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.update(status='paused', autoWake=False)
+            agent['restartRecovery']['stage'] = 'superseded'
+            self.runtime.put(db, 'agents', agent)
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        self.assertEqual(result['status'], 'adopted')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'continued')
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['autoWake'])
+
+    def test_restart_permission_reconciles_completed_agent_after_callback_paused_it(self):
+        self.make_worker()
+        self.server.native['status']['type'] = 'idle'
+        self.server.native['turns'][0]['status'] = 'completed'
+        self.restart()
+        self.update(status='paused', autoWake=False, inFlight=False, turnId=None)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery']['stage'] = 'superseded'
+            self.runtime.put(db, 'agents', agent)
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        self.assertEqual(result['status'], 'reconciled')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'finished')
+        self.assertEqual(agent['lastCompletedTurn'], 'lost-turn')
+        self.assertTrue(agent['autoWake'])
+
+    def test_later_explicit_stop_supersedes_restart_receipt_and_stays_paused(self):
+        self.make_worker()
+        self.restart()
+        self.update(status='paused', autoWake=False, inFlight=False, epoch=1)
+
+        connection_recovery_tick(self.runtime, [self.runtime.agent(self.key)])
+
+        agent = self.runtime.agent(self.key)
         self.assertEqual(agent['status'], 'paused')
         self.assertFalse(agent['autoWake'])
-        with self.runtime.db() as db:
-            rows = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='child_result'",
-                              (parent_id,)).fetchall()
-        self.assertEqual(len(rows), 1)
-        self.assertIn('kept it paused', json.loads(rows[0]['text'])['reason'])
+        self.assertEqual(agent['restartRecovery']['stage'], 'superseded')
 
     def test_disconnect_receipt_keeps_restart_continuation_permission(self):
         self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
