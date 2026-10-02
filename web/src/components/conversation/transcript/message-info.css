@@ -1,0 +1,73 @@
+.message-action-controls {
+  display: contents;
+}
+.message-action-controls[hidden] {
+  display: none;
+}
+.message-info-control {
+  color: var(--muted);
+}
+.message-info-popover {
+  max-width: calc(100vw - 16px);
+  max-height: min(640px, calc(100dvh - 24px));
+  overflow-y: auto;
+  font-family: var(--studio-font-family, var(--mantine-font-family));
+  font-size: var(--studio-main-font-size, var(--mantine-font-size-sm));
+}
+.message-info-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.message-info-popover dl {
+  margin: 12px 0 0;
+}
+.message-info-row + .message-info-row {
+  margin-top: 8px;
+}
+.message-info-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+}
+.message-info-row:has(.message-info-id) {
+  display: block;
+}
+.message-info-row dt,
+.message-info-popover p {
+  color: var(--muted);
+  font-size: var(--mantine-font-size-xs);
+}
+.message-info-row dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+.message-info-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.message-info-id code {
+  flex: 1;
+  min-width: 0;
+}
+.message-info-id button {
+  flex-shrink: 0;
+}
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .message-info-control:not([aria-expanded="true"]) {
+    opacity: 0;
+  }
+  .message:hover .message-info-control,
+  .message:focus-within .message-info-control {
+    opacity: 1;
+  }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .message-info-control,
+  .message-info-popover button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
