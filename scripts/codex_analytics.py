@@ -439,7 +439,7 @@ class AnalyticsMixin:
                 'model': a.get('model'), 'effort': a.get('effort'), 'fastMode': a.get('fastMode'),
                 'daybreakEnabled': a.get('daybreakEnabled'), 'cyberAccessProgram': a.get('cyberAccessProgram')}
 
-    def analytics_event(self, db, a, method, p, *, at=None, source='live', measurements=None):
+    def analytics_event(self, db, a, method, p, *, at=None, source='live', measurements=None, budget_capture_value=None):
         at = time.time() if at is None else at
         meta = self.analytics_agent(db, a)
         if source != 'live':
@@ -465,7 +465,8 @@ class AnalyticsMixin:
                 if known.get('accountKey') == meta['accountKey'] and known.get('cyberAccessProgram') is not None:
                     meta.update(daybreakEnabled=known.get('daybreakEnabled'),
                                 cyberAccessProgram=known['cyberAccessProgram'])
-            captured_tokens = self.analytics_budget_capture(db, a, p, at=at, source=source)
+            captured_tokens = (budget_capture_value if budget_capture_value is not None else
+                               self.analytics_budget_capture(db, a, p, at=at, source=source))
             usage = p.get('tokenUsage') or {}
             current, last = usage.get('total') or {}, usage.get('last') or {}
             # Totals identify a request across native notices and rollout records.

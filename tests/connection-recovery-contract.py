@@ -182,12 +182,17 @@ class ConnectionRecoveryContract(unittest.TestCase):
             self.runtime.put(db, 'agents', a)
             agents = self.runtime.scheduler_agents(db)
         self.assertIn(self.key, {a['id'] for a in agents})
-        submitted = []
-        with patch.object(self.runtime.recovery_pool, 'submit',
-                          side_effect=lambda *args: submitted.append(args)):
+        self.server.read_gate = threading.Event()
+        try:
             connection_recovery_tick(self.runtime, agents)
-        self.assertEqual(len(submitted), 1)
-        self.assertEqual(submitted[0][2], self.key)
+            self.assertTrue(self.server.read_entered.wait(2))
+            self.assertEqual(set(self.runtime._connection_recovery_jobs), {'default'})
+            self.assertTrue(self.runtime._connection_recovery_jobs['default'].is_alive())
+        finally:
+            self.server.read_gate.set()
+            fixture.fixture.eventually(lambda: not self.runtime._connection_recovery_busy)
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
+        self.read_calls_only()
 
     def test_completed_target_on_later_page_reconciles(self):
         self.server.native['turns'] = [

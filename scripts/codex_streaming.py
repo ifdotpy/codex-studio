@@ -80,7 +80,7 @@ class StreamBuffer:
 
     def flush_locked(self, db, *, account=None, thread_id=None, item_id=None, turn_id=None,
                      close=False, close_commands=True, force=False,
-                     supervisor_handle=None, supervisor_sequence=None):
+                     supervisor_handle=None, supervisor_sequence=None, analytics_captures=None):
         """Caller holds Runtime.lock. Commit before consuming buffered batches."""
         with self.lock:
             selected = [(key, entry, list(entry['batches'])) for key, entry in self.entries.items()
@@ -150,7 +150,11 @@ class StreamBuffer:
             params = {**batches[0][4], 'delta': delta}
             hour = int(first_at // 3600) * 3600
             synthetic_size = len(encoded(params).encode('utf-8'))
-            def capture(db):
+            def capture(db, agent=agent, method=method, params=params, first_at=first_at,
+                        batches=batches, hour=hour, synthetic_size=synthetic_size,
+                        count=count, thread=thread, item_id_value=item_id_value,
+                        stream_bytes=stream_bytes, stream_chars=stream_chars,
+                        stream_lines=stream_lines, delta=delta):
                 self.runtime.analytics_event(db, agent, method, params, at=first_at)
                 by_hour = {}
                 for batch in batches:
@@ -178,7 +182,10 @@ class StreamBuffer:
                                "AND json_extract(record,'$.finishedAt') IS NULL",
                                (count - 1, stream_bytes - len(delta.encode('utf-8')),
                                 stream_chars - len(delta), stream_lines - delta.count('\n'), analytics_key))
-            self.runtime.analytics_safe(db, capture)
+            if analytics_captures is None:
+                self.runtime.analytics_safe(db, capture)
+            else:
+                analytics_captures.append(capture)
             if stale and (method == 'item/agentMessage/delta' or not task
                           or task.get('kind') != 'command' or task.get('turnId') != turn):
                 applied.append((key, entry, len(batches), None))
@@ -210,13 +217,11 @@ class StreamBuffer:
                 agent['lastEvent'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 self.runtime.put(db, 'agents', agent)
             applied.append((key, entry, len(batches), target))
-        if applied:
-            if supervisor_handle is not None and supervisor_sequence is not None:
-                db.execute('CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor '
-                           '(handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)')
-                db.execute('INSERT INTO runtime_supervisor_cursor VALUES (?,?) '
-                           'ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)',
-                           (supervisor_handle, supervisor_sequence))
+        if supervisor_handle is not None and supervisor_sequence is not None:
+            db.execute('INSERT INTO runtime_supervisor_cursor VALUES (?,?) '
+                       'ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)',
+                       (supervisor_handle, supervisor_sequence))
+        if applied or (supervisor_handle is not None and supervisor_sequence is not None):
             db.commit()
             with self.lock:
                 for key, entry, length, target in applied:

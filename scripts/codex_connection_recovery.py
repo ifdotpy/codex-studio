@@ -1,6 +1,7 @@
 """Reconcile disconnected turns before restoring confirmed completion delivery."""
 from concurrent.futures import Future
 import json
+import threading
 import time
 
 from codex_native_errors import native_thread_block
@@ -10,9 +11,50 @@ DISCONNECT_ERRORS = frozenset({
     'Server restarted during a turn. Review history, then send a new instruction.',
 })
 RESTART_ACTIVE_HOLD_SECONDS = 30
+MAX_ACCOUNT_RECOVERIES = 8
 IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error',
             'inFlight', 'autoWake', 'startAttempt', 'accountTransferId',
-            'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery', 'restartRecovery')
+            'workspaceOperation', 'nativeThreadBlock', 'nativeFailureHold',
+            'contextRepair', 'contextRepairWait', 'connectionRecovery', 'disconnectRecovery', 'restartRecovery')
+
+
+def supervisor_identity(server):
+    """Identify the native child generation, without querying or changing it."""
+    if server is None or not getattr(server, 'supervisor_mode', False):
+        return None
+    process = getattr(server, 'proc', None)
+    root = getattr(process, 'root', None)
+    handle = getattr(process, 'handle', None)
+    generation = getattr(process, 'generation', None)
+    if root is None or not isinstance(handle, str) or type(generation) is not int or generation < 1:
+        return None
+    from pathlib import Path
+    return {'stateDir': str(Path(root).resolve()), 'handle': handle, 'generation': generation}
+
+
+def transport_turn_eligible(agent):
+    """Only a saved, exact transport-loss permission can adopt an active turn."""
+    from codex_context_repair import blocked
+    previous = agent.get('disconnectRecovery') or {}
+    attempt = agent.get('startAttempt')
+    return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
+            and not agent.get('autoWake') and agent.get('threadId') and agent.get('turnId')
+            and agent.get('error') == 'Codex disconnected. Review the transcript before resuming.'
+            and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
+            and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+            and not native_thread_block(agent)
+            and not blocked(agent)
+            and (agent.get('restartRecovery') or {}).get('stage') not in {'pending', 'superseded'}
+            and previous.get('source') != 'restart' and previous.get('autoWake')
+            and all(previous.get(field) == agent.get(field)
+                    for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
+            and agent.get('turnEpoch', agent['epoch']) == agent['epoch']
+            and (not attempt or (attempt == previous.get('startAttempt')
+                and attempt.get('id') and attempt.get('submitted') is True and not attempt.get('action')
+                and attempt.get('epoch') == agent['epoch']
+                and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+                and attempt.get('turnId') in (None, agent['turnId'])
+                and attempt.get('observedTurnId') in (None, agent['turnId']))))
 
 
 def preparation_eligible(agent):
@@ -39,7 +81,7 @@ def eligible(agent):
     restart_pending = restart_turn_pending(agent)
     marker = agent.get('restartRecovery') or {}
     stale_restart = marker.get('stage') in {'pending', 'superseded'}
-    return preparation_eligible(agent) or queued_restart_eligible(agent) or restart_pending or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
+    return preparation_eligible(agent) or queued_restart_eligible(agent) or queued_active_wait_eligible(agent) or restart_pending or transport_turn_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and not agent.get('startAttempt')
             and not stale_restart
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
@@ -98,6 +140,45 @@ def queued_restart_eligible(agent):
                 and (agent.get('contextRepair') or {}).get('phase') not in {'preparing', 'submitted', 'unknown', 'ready'})
 
 
+def queued_active_wait_eligible(agent):
+    """An unsent local wait can obscure a previously verified surviving turn."""
+    wait = agent.get('contextRepairWait') or {}
+    attempt = agent.get('startAttempt') or {}
+    marker = agent.get('restartRecovery') or {}
+    recovery = agent.get('connectionRecovery') or {}
+    repair = agent.get('contextRepair') or {}
+    scope = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
+    events = attempt.get('events')
+    repair_source = repair.get('source') or {}
+    same_repair = (repair.get('agent') == agent.get('id')
+        and all(repair_source.get(field) == scope[field] for field in ('id', 'accountKey', 'epoch'))
+        and ((repair.get('phase') == 'unchanged' and repair_source.get('threadId') == agent.get('threadId'))
+             or (repair.get('phase') == 'completed' and repair.get('newThreadId') == agent.get('threadId'))))
+    return bool(agent.get('status') == 'queued' and agent.get('autoWake') and not agent.get('inFlight')
+        and agent.get('threadId') and agent.get('turnId')
+        and agent.get('turnEpoch', agent['epoch']) == agent['epoch']
+        and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
+        and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+        and not native_thread_block(agent) and same_repair
+        and agent.get('error') == 'Context repair waits for the current agent operation'
+        and wait.get('error') == agent['error'] and wait.get('scope') == 'local'
+        and wait.get('source') == {**scope, 'attemptId': attempt.get('id')}
+        and not wait.get('action') and not wait.get('actionRequestId') and not wait.get('actionIdentity')
+        and attempt.get('id') and attempt.get('submitted') is False
+        and attempt.get('epoch') == agent['epoch']
+        and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+        and not attempt.get('activeAtReservation') and not attempt.get('action')
+        and not attempt.get('actionRequestId') and not attempt.get('actionIdentity')
+        and not attempt.get('turnId') and not attempt.get('observedTurnId')
+        and isinstance(events, list) and 0 < len(events) <= 32
+        and all(isinstance(event, str) and event for event in events)
+        and len(events) == len(set(events)) and wait.get('events') == events
+        and marker.get('stage') == 'continued' and marker.get('outcome') == 'active' and marker.get('autoWake')
+        and all(marker.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
+        and recovery.get('source') == 'native_thread_read' and recovery.get('outcome') == 'active'
+        and recovery.get('automatic') is True and recovery.get('turnId') == agent['turnId'])
+
+
 def recover(runtime, key, *, automatic=False):
     with runtime.lock, runtime.db() as db:
         agent = runtime.checked_actor(db, key)
@@ -107,6 +188,19 @@ def recover(runtime, key, *, automatic=False):
         account = agent.get('accountKey', 'default')
         if automatic and runtime.accounts.get(account).get('disconnected'):
             return {'status': 'superseded'}
+        queued_active_wait = queued_active_wait_eligible(agent)
+        if queued_active_wait:
+            server = runtime.servers.get(account)
+            connection = runtime.connection_ids.get(account)
+            return_args = (runtime, expected, connection, server)
+        previous = agent.get('disconnectRecovery') or {}
+        prior_supervisor = previous.get('supervisor')
+        if (not prior_supervisor and previous.get('connectionId')
+                and runtime.connection_ids.get(account) == previous['connectionId']):
+            # Older receipts can still identify their retained account transport.
+            prior_supervisor = supervisor_identity(runtime.servers.get(account))
+    if queued_active_wait:
+        return recover_queued_active_wait(*return_args)
     server = None
     connection = None
     pending_restart = restart_turn_pending(agent)
@@ -124,6 +218,32 @@ def recover(runtime, key, *, automatic=False):
             raise ValueError('Native thread identity changed')
         marker = agent.get('restartRecovery') or {}
         pending_restart = restart_turn_pending(agent)
+        if (automatic and not pending_restart and transport_turn_eligible(agent)
+                and thread.get('status', {}).get('type') == 'active'
+                and not thread.get('status', {}).get('activeFlags')):
+            if not prior_supervisor or supervisor_identity(server) != prior_supervisor:
+                return record_check(runtime, expected, connection, server, 'active')
+            page = server.call('thread/turns/list', {'threadId': agent['threadId'], 'limit': 1,
+                               'sortDirection': 'desc', 'itemsView': 'full'}, timeout=5)
+            turn = next(iter(page.get('data') or []), None)
+            thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
+            if thread.get('id') != agent['threadId']:
+                raise ValueError('Native thread identity changed')
+            if (thread.get('status', {}).get('type') == 'active'
+                    and not thread.get('status', {}).get('activeFlags')
+                    and turn and turn.get('id') == agent['turnId']
+                    and turn.get('status') in {'inProgress', 'running'}):
+                result = Future()
+                def adopt():
+                    try:
+                        result.set_result(adopt_transport_turn(runtime, expected, connection,
+                                                              server, turn, prior_supervisor))
+                    except Exception as error:
+                        result.set_exception(error)
+                server.after_events(adopt)
+                return result.result(timeout=10)
+            return record_check(runtime, expected, connection, server,
+                                thread.get('status', {}).get('type'))
         if (not pending_restart and thread.get('status', {}).get('type') not in {'idle', 'notLoaded'}):
             return record_check(runtime, expected, connection, server, thread.get('status', {}).get('type'))
         from codex_turn_recovery import read_native_turn
@@ -199,6 +319,131 @@ def recover(runtime, key, *, automatic=False):
                         }
                         runtime.put(db, 'agents', agent)
         return {'status': 'unconfirmed', 'error': str(error)}
+
+
+def recover_queued_active_wait(runtime, expected, connection, server):
+    """Use the current transport only; never attach, resume, or submit input."""
+    from codex_native_tools import account_reserved
+    account = expected.get('accountKey') or 'default'
+    with runtime.lock:
+        native_identity = supervisor_identity(server)
+        if (runtime.closed or server is None or getattr(server, 'closed', False)
+                or native_identity is None or not runtime.connection_current(account, connection)
+                or account_reserved(runtime, account) or runtime.accounts.get(account).get('disconnected')):
+            return {'status': 'unconfirmed'}
+    try:
+        observed = []
+        for _ in range(2):
+            thread = server.call('thread/read', {'threadId': expected['threadId'], 'includeTurns': False}, timeout=5)['thread']
+            if thread.get('id') != expected['threadId']:
+                return {'status': 'unconfirmed'}
+            status = thread.get('status') or {}
+            if status.get('activeFlags') or status.get('type') not in {'active', 'idle', 'notLoaded'}:
+                return {'status': 'unconfirmed'}
+            page = server.call('thread/turns/list', {'threadId': expected['threadId'], 'limit': 1,
+                               'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=5)
+            turn = next(iter(page.get('data') or []), None)
+            if not turn or turn.get('id') != expected['turnId']:
+                return {'status': 'unconfirmed'}
+            observed.append((status.get('type'), turn.get('status')))
+        if observed[0] != observed[1]:
+            return {'status': 'unconfirmed'}
+        native_state, outcome = observed[-1]
+        active = native_state == 'active' and outcome in {'inProgress', 'running'}
+        terminal = native_state in {'idle', 'notLoaded'} and outcome in {'completed', 'failed', 'interrupted'}
+        if not active and not terminal:
+            return {'status': 'unconfirmed'}
+        full_turn = None
+        if terminal:
+            from codex_turn_recovery import read_native_turn
+            full_turn = read_native_turn(server, expected['threadId'], expected['turnId'])
+            if not full_turn or full_turn.get('id') != expected['turnId'] or full_turn.get('status') != outcome:
+                return {'status': 'unconfirmed'}
+            thread = server.call('thread/read', {'threadId': expected['threadId'], 'includeTurns': False}, timeout=5)['thread']
+            status = thread.get('status') or {}
+            page = server.call('thread/turns/list', {'threadId': expected['threadId'], 'limit': 1,
+                               'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=5)
+            latest = next(iter(page.get('data') or []), None)
+            if (thread.get('id') != expected['threadId'] or status.get('activeFlags')
+                    or status.get('type') != native_state or not latest
+                    or latest.get('id') != expected['turnId'] or latest.get('status') != outcome):
+                return {'status': 'unconfirmed'}
+        result = Future()
+        def apply():
+            try:
+                with runtime.lock:
+                    with runtime.db() as db:
+                        if (not current(runtime, db, expected, connection, server)
+                                or supervisor_identity(server) != native_identity or account_reserved(runtime, account)
+                                or runtime.accounts.get(account).get('disconnected')):
+                            result.set_result({'status': 'superseded'})
+                            return
+                        agent = runtime.agent(expected['id'], db)
+                        if db.execute("SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+                                "AND json_extract(record,'$.status')='pending' AND "
+                                "(json_extract(record,'$.turnId') IS NULL OR json_extract(record,'$.turnId')=?) LIMIT 1",
+                                (agent['id'], expected['turnId'])).fetchone():
+                            result.set_result({'status': 'unconfirmed'})
+                            return
+                        for event_id in agent['startAttempt']['events']:
+                            row = db.execute('SELECT agent,epoch,status,turn_id FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+                            if not row or tuple(row) != (agent['id'], agent['epoch'], 'pending', None):
+                                result.set_result({'status': 'unconfirmed'})
+                                return
+                        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                                      "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
+                                      (agent['id'], agent['epoch'])).fetchone():
+                            result.set_result({'status': 'unconfirmed'})
+                            return
+                        wait = agent.pop('contextRepairWait')
+                        attempt = agent.pop('startAttempt')
+                        agent['lastContextRepairWait'] = {**wait, 'status': 'superseded',
+                            'reason': 'The exact native turn was confirmed', 'finishedAt': time.time()}
+                        agent.update(status='running', inFlight=True, error=None)
+                        agent['connectionRecovery'] = {**agent['connectionRecovery'], 'at': time.time(),
+                            'supervisor': native_identity, 'queuedInputPreserved': True,
+                            'attemptId': attempt['id'], 'eventIds': list(attempt['events'])}
+                        runtime.loaded.add(agent['id'])
+                        runtime.put(db, 'agents', agent)
+                        identity = {field: agent.get(field) for field in
+                                    ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'startAttempt')}
+                    # Commit the unsent wait receipt before terminal callbacks.
+                    # Keep dispatch outside this lock until the old turn settles.
+                    value = (runtime.apply_turn_recovery(identity, connection, native_state, full_turn)
+                             if terminal else {'status': 'adopted', 'turnId': expected['turnId']})
+                runtime.changed.set()
+                result.set_result(value)
+            except Exception as error:
+                result.set_exception(error)
+        server.after_events(apply)
+        return result.result(timeout=10)
+    except Exception as error:
+        return {'status': 'unconfirmed', 'error': str(error)}
+
+
+def adopt_transport_turn(runtime, expected, connection, server, turn, prior_supervisor):
+    with runtime.lock, runtime.db() as db:
+        if not current(runtime, db, expected, connection, server):
+            return {'status': 'superseded'}
+        agent = runtime.agent(expected['id'], db)
+        if (not transport_turn_eligible(agent)
+                or runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected')
+                or supervisor_identity(server) != prior_supervisor):
+            return {'status': 'superseded'}
+        if (unresolved_turn_receipts(db, agent, turn['id'])
+                or db.execute("SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+                    "AND json_extract(record,'$.status')='pending' AND "
+                    "(json_extract(record,'$.turnId') IS NULL OR json_extract(record,'$.turnId')=?) LIMIT 1",
+                    (agent['id'], turn['id'])).fetchone()):
+            return {'status': 'unconfirmed'}
+        agent.update(status='running', autoWake=True, inFlight=True, error=None)
+        agent['connectionRecovery'] = {'source': 'native_thread_read', 'at': time.time(),
+            'turnId': turn['id'], 'outcome': 'active', 'automatic': True,
+            'previousError': expected['error'], 'supervisor': prior_supervisor}
+        runtime.loaded.add(agent['id'])
+        runtime.put(db, 'agents', agent)
+    runtime.changed.set()
+    return {'status': 'adopted', 'turnId': turn['id']}
 
 
 def adopt_restart_turn(runtime, expected, connection, server, turn):
@@ -535,26 +780,30 @@ def can_deliver_completion(db, agent, turn):
                    ('epoch', 'accountKey', 'threadId', 'turnId'))
             or agent.get('turnEpoch', agent['epoch']) != agent['epoch']):
         return False
+    return not unresolved_turn_receipts(db, agent, turn.get('id'))
+
+
+def unresolved_turn_receipts(db, agent, turn_id):
     # A completed model turn does not settle a lost process or tool mutation.
     # Pending input remains pending; no uncertain input is replayed.
     if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
                   "AND status IN ('reserved','dispatching','uncertain') LIMIT 1",
                   (agent['id'], agent['epoch'])).fetchone():
-        return False
+        return True
     for table in ('runtime_tasks', 'runtime_monitors'):
         for row in db.execute(f"SELECT record FROM {table} WHERE json_extract(record,'$.agent')=? "
                               "AND json_extract(record,'$.status') IN ('lost','running','starting','approval')",
                               (agent['id'],)):
             operation = json.loads(row['record'])
-            if operation.get('turnId') in (None, turn.get('id')):
-                return False
+            if operation.get('turnId') in (None, turn_id):
+                return True
     for row in db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
                           "AND (json_extract(record,'$.outcome')='unknown' OR "
                           "json_extract(record,'$.stage') IN ('queued','running'))", (agent['id'],)):
         operation = json.loads(row['record'])
-        if operation.get('turnId') in (None, turn.get('id')):
-            return False
-    return True
+        if operation.get('turnId') in (None, turn_id):
+            return True
+    return False
 
 
 def unresolved_completion_operations(db, agent, turn):
@@ -601,9 +850,13 @@ def unresolved_completion_operations(db, agent, turn):
 
 
 def tick(runtime, agents):
-    """One bounded read job; failed checks back off without blocking the scheduler."""
+    """One read job per account; a stalled account does not consume another's slot."""
     with runtime.lock:
-        if runtime.closed or getattr(runtime, '_connection_recovery_busy', False):
+        if runtime.closed:
+            return
+        jobs = runtime.__dict__.setdefault('_connection_recovery_jobs', {})
+        # A live update can leave one reader on the old shared executor.
+        if getattr(runtime, '_connection_recovery_busy', False) and not jobs:
             return
         checks = runtime.__dict__.setdefault('_connection_recovery_checks', {})
         now = time.time()
@@ -653,21 +906,32 @@ def tick(runtime, agents):
                         continue
             if not eligible(agent):
                 continue
-            if runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected'):
+            account = agent.get('accountKey', 'default')
+            if account in jobs or runtime.accounts.get(account).get('disconnected'):
                 continue
             identity = tuple(agent.get(field) for field in ('id', 'epoch', 'accountKey', 'threadId', 'turnId'))
+            disconnect = agent.get('disconnectRecovery') or {}
+            identity += (disconnect.get('connectionId'), disconnect.get('at'), marker.get('at'))
             previous = checks.get(identity, {})
             if previous.get('nextAt', 0) <= now:
-                candidates.append((previous.get('at', 0), identity, agent['id']))
+                candidates.append((previous.get('at', 0), identity, agent['id'], account))
         if not candidates:
             return
-        _, identity, key = min(candidates, key=lambda candidate: candidate[0])
-        runtime._connection_recovery_busy = True
-        try:
-            runtime.recovery_pool.submit(run, runtime, key, identity)
-        except Exception:
-            runtime._connection_recovery_busy = False
-            raise
+        for _, identity, key, account in sorted(candidates, key=lambda candidate: candidate[0]):
+            if len(jobs) >= MAX_ACCOUNT_RECOVERIES:
+                break
+            if account in jobs:
+                continue
+            worker = threading.Thread(target=run, args=(runtime, key, identity),
+                                      name='studio-connection-recovery-' + account[:12], daemon=True)
+            jobs[account] = worker
+            runtime._connection_recovery_busy = True
+            try:
+                worker.start()
+            except Exception:
+                jobs.pop(account, None)
+                runtime._connection_recovery_busy = bool(jobs)
+                raise
 
 
 def run(runtime, key, identity):
@@ -678,13 +942,69 @@ def run(runtime, key, identity):
     finally:
         with runtime.lock:
             checks = runtime.__dict__.setdefault('_connection_recovery_checks', {})
-            failures = min(checks.get(identity, {}).get('failures', 0) + 1, 6)
-            delay = min(300, 15 * 2 ** (failures - 1))
+            restored = result.get('status') in {'adopted', 'reconciled', 'input_restored'}
+            failures = 0 if restored else min(checks.get(identity, {}).get('failures', 0) + 1, 6)
+            delay = 0 if restored else min(300, 15 * 2 ** (failures - 1))
             now = time.time()
             checks[identity] = {**result, 'at': now, 'nextAt': now + delay, 'failures': failures}
             # Keep recent diagnostics without retaining every historical epoch.
             if len(checks) > 256:
                 for old in sorted(checks, key=lambda key: checks[key]['at'])[:-256]:
                     checks.pop(old)
-            runtime._connection_recovery_busy = False
+            jobs = runtime.__dict__.setdefault('_connection_recovery_jobs', {})
+            jobs.pop(identity[2] or 'default', None)
+            runtime._connection_recovery_busy = bool(jobs)
             runtime.changed.set()
+
+
+class ConnectionRecovery:
+    """Check durable recovery work independently of the dispatch scheduler."""
+    def __init__(self, runtime, interval=2):
+        self.runtime = runtime
+        self.interval = interval
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='studio-connection-recovery', daemon=True)
+
+    def run(self):
+        while not self.stop.wait(self.interval) and not self.runtime.closed:
+            # A recovery timer must not join a queue behind a long runtime write.
+            if not self.runtime.lock.acquire(blocking=False):
+                continue
+            try:
+                with self.runtime.read_db() as db:
+                    agents = self.runtime.scheduler_agents(db)
+                tick(self.runtime, agents)
+            except Exception as error:
+                self.runtime._connection_recovery_error = {'at': time.time(), 'error': str(error)[:300]}
+            finally:
+                self.runtime.lock.release()
+
+    def close(self):
+        self.stop.set()
+        if self.thread is not threading.current_thread():
+            self.thread.join()
+
+
+_START_LOCK = threading.Lock()
+
+
+def start(runtime, *, interval=2):
+    with _START_LOCK:
+        manager = getattr(runtime, '_connection_recovery_service', None)
+        if manager is None:
+            manager = runtime._connection_recovery_service = ConnectionRecovery(runtime, interval)
+            manager.thread.start()
+        return manager
+
+
+def close(runtime):
+    manager = getattr(runtime, '_connection_recovery_service', None)
+    if manager is not None:
+        manager.close()
+    # Runtime.close sets closed and closes native transports before releasing its
+    # lease. Account readers must finish before another runtime owns that state.
+    with runtime.lock:
+        workers = list(getattr(runtime, '_connection_recovery_jobs', {}).values())
+    for worker in workers:
+        if worker is not threading.current_thread():
+            worker.join()

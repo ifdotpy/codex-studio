@@ -53,15 +53,15 @@ async function deliver(doc: any) {
     return intentionResult(value);
   try {
     const { workspaceId } = await syncDatabase();
-    const identity = await syncApi<{ workspaceId: string }>(
-      "/api/sync/identity",
-    );
+    const [identity, session] = await Promise.all([
+      syncApi<{ workspaceId: string }>("/api/sync/identity"),
+      syncApi<{ token: string }>("/api/session"),
+    ]);
     if (identity.workspaceId !== workspaceId)
       throw new ApiError(
         "The server workspace changed. Reload before sending.",
         409,
       );
-    const session = await syncApi<{ token: string }>("/api/session");
     setToken(session.token);
     // Claim the current content before HTTP. Cancellation uses the same atomic
     // update and can succeed only before this request starts.
