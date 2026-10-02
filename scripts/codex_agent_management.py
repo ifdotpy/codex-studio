@@ -9,13 +9,13 @@ from pathlib import Path
 def management_tools(tool, text):
     return [tool('orchestration_agent_manage',
         'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. '
-        'archive hides an inactive worker and removes its clean Studio worktree after saving an archive ref; it reports why a worktree stays. '
+        'archive hides an inactive worker and removes its clean Studio worktree after saving an archive ref; it reports why a worktree stays. A missing folder saves its branch ref when possible. '
         'archive_finished archives finished descendants with safe worktrees and reports freed bytes and kept workers. '
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore recreates a removed worktree and returns an archived worker paused; use orchestration_send to resume. '
         'list and list_archived are paged and include cached worktree disk use. inspect includes a worker size and team total. '
-        'maintenance_report lists old archived or deleted worktrees without removal. '
+        'maintenance_report lists old archived or deleted worktrees and workers with a missing folder; it does not remove worktrees. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
         'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
         'Only the lead may archive, restore, recover, reset tools, or emit an event.',
@@ -176,6 +176,47 @@ def _worktree_registration(repo, root):
                  and Path(item['worktree']).resolve() == Path(root).resolve()), None)
 
 
+def _branch_commit(repo, branch):
+    if not branch:
+        return None
+    branch = branch.removeprefix('refs/heads/')
+    if not branch or branch.startswith('-') or '\0' in branch:
+        return None
+    try:
+        return _git(repo, 'rev-parse', '--verify', 'refs/heads/' + branch + '^{commit}').stdout.decode().strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _save_archive_ref(repo, agent_id, head):
+    ref = 'refs/codex-agents/archive/' + agent_id
+    try:
+        previous = _git(repo, 'rev-parse', '--verify', ref + '^{commit}').stdout.decode().strip()
+    except subprocess.CalledProcessError:
+        previous = None
+    if previous and previous != head:
+        history = 'refs/codex-agents/archive-history/' + agent_id + '/' + previous
+        _git(repo, 'update-ref', history, previous)
+    _git(repo, 'update-ref', ref, head)
+
+
+def _prune_missing_registration(repo, root):
+    """Prune only repository metadata after confirming the target path is absent."""
+    root = Path(root)
+    if root.exists() or root.is_symlink():
+        return False
+    _git(repo, 'worktree', 'prune', '--expire=now')
+    return True
+
+
+def _worker_worktree_root(agent_id, cwd):
+    path = Path(cwd).resolve()
+    roots = [p for p in (path, *path.parents)
+             if p.name == agent_id and p.parent.name == 'codex-agents'
+             and p.parent.parent.name == '.worktrees']
+    return roots[0] if len(roots) == 1 else None
+
+
 def _worktree_check(rt, actor_id, agent_id, epoch):
     """Use one safety check for archive, bulk archive, and maintenance reports."""
     with rt.lock, rt.db() as db:
@@ -187,12 +228,9 @@ def _worktree_check(rt, actor_id, agent_id, epoch):
         if not a.get('worktreeReady'):
             return None, 'no registered worker worktree'
         cwd = Path(a['cwd']).resolve()
-        roots = [p for p in (cwd, *cwd.parents)
-                 if p.name == agent_id and p.parent.name == 'codex-agents'
-                 and p.parent.parent.name == '.worktrees']
-        if len(roots) != 1:
+        root = _worker_worktree_root(agent_id, cwd)
+        if root is None:
             return None, 'worker path is outside the Studio worktree folder'
-        root = roots[0]
         repo = root.parent.parent.parent
         relative = cwd.relative_to(root)
         if any(other['id'] != agent_id and other.get('worktreeReady')
@@ -206,11 +244,26 @@ def _worktree_check(rt, actor_id, agent_id, epoch):
         entries = _worktree_entries(repo)
         entry = next((item for item in entries if item.get('worktree')
                       and Path(item['worktree']).resolve() == root), None)
-        if not entry:
-            return None, 'worktree registration is missing'
         if any(item.get('worktree') and Path(item['worktree']).resolve() != root
                and Path(item['worktree']).resolve().is_relative_to(root) for item in entries):
             return None, 'another registered worktree is nested inside this path'
+        if not root.exists() and not root.is_symlink():
+            candidates = list(dict.fromkeys((
+                value.removeprefix('refs/heads/') for value in
+                ((entry or {}).get('branch', ''), a.get('branch', ''), 'codex-agent/' + agent_id)
+                if value)))
+            branch = candidates[0] if candidates else None
+            head = None
+            for candidate in candidates:
+                head = _branch_commit(repo, candidate)
+                if head:
+                    branch = candidate
+                    break
+            return {'root': str(root), 'repo': str(repo), 'relative': str(relative),
+                    'branch': branch, 'head': head, 'missing': True,
+                    'identity': identity}, None
+        if not entry:
+            return None, 'worktree registration is missing'
         if _git(root, 'status', '--porcelain', '--untracked-files=normal').stdout:
             return None, 'tracked or untracked files have changes'
         head = _git(root, 'rev-parse', 'HEAD').stdout.decode().strip()
@@ -229,14 +282,26 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
         _authorize(rt, db, actor_id, epoch, current)
         saved = current.get('worktreeCleanup')
         if not current.get('worktreeReady') and current.get('cleanedWorktree'):
-            return {'state': 'removed', 'bytes': current['cleanedWorktree'].get('bytes')}
+            cleaned = current['cleanedWorktree']
+            if cleaned.get('missing'):
+                return {'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
+            return {'state': 'removed', 'bytes': cleaned.get('bytes')}
         if not current.get('worktreeReady'):
             return {'state': 'none', 'bytes': 0}
     if saved and not Path(saved['root']).exists():
         try:
-            ref = _git(saved['repo'], 'rev-parse', '--verify',
-                       'refs/codex-agents/archive/' + agent_id).stdout.decode().strip()
-            if _worktree_registration(saved['repo'], saved['root']) is None and ref == saved['head']:
+            try:
+                ref = _git(saved['repo'], 'rev-parse', '--verify',
+                           'refs/codex-agents/archive/' + agent_id).stdout.decode().strip()
+            except subprocess.CalledProcessError:
+                ref = None
+            missing_recovery = bool(saved.get('missing'))
+            if (missing_recovery or (_worktree_registration(saved['repo'], saved['root']) is None
+                                     and ref == saved['head'])):
+                if saved.get('missing') and saved.get('head') and ref != saved['head']:
+                    _save_archive_ref(saved['repo'], agent_id, saved['head'])
+                if saved.get('missing'):
+                    _prune_missing_registration(saved['repo'], saved['root'])
                 with rt.lock, rt.db() as db:
                     a = rt.agent(agent_id, db)
                     _authorize(rt, db, actor_id, epoch, a)
@@ -244,8 +309,15 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
                         raise ValueError('Worker changed during cleanup recovery')
                     a.update(cwd=str(Path(saved['repo']) / saved['relative']), worktreeReady=False)
                     a.pop('worktreeCleanup', None)
-                    a['cleanedWorktree'] = saved
+                    a['cleanedWorktree'] = ({**saved, 'bytes': 0,
+                                             'note': ('worktree folder missing; branch saved to archive ref'
+                                                      if saved.get('head') else 'worktree folder missing; nothing to save')}
+                                            if saved.get('missing') else saved)
                     rt.put(db, 'agents', a)
+                if saved.get('missing'):
+                    reason = ('worktree folder missing; branch saved to archive ref'
+                              if saved.get('head') else 'worktree folder missing; nothing to save')
+                    return {'state': 'missing', 'reason': reason, 'bytes': 0}
                 return {'state': 'removed', 'bytes': saved.get('bytes')}
         except (OSError, subprocess.SubprocessError):
             pass
@@ -264,6 +336,27 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
         a['worktreeCleanup'] = info
         rt.put(db, 'agents', a)
     root, repo = info['root'], info['repo']
+    if info.get('missing'):
+        reason = 'worktree folder missing; nothing to save'
+        try:
+            if info.get('head'):
+                _save_archive_ref(repo, agent_id, info['head'])
+                reason = 'worktree folder missing; branch saved to archive ref'
+            _prune_missing_registration(repo, root)
+        except (OSError, subprocess.SubprocessError) as error:
+            reason = ('worktree folder missing; branch exists but archive ref or prune failed: '
+                      + str(error)[:120]) if info.get('head') else (
+                          'worktree folder missing; nothing to save; prune failed: ' + str(error)[:120])
+        with rt.lock, rt.db() as db:
+            a = rt.agent(agent_id, db)
+            if not a.get('worktreeCleanup') or any(a['worktreeCleanup'].get(k) != info[k] for k in info):
+                raise ValueError('Worker changed while recording its missing worktree')
+            a.update(cwd=str(Path(repo) / info['relative']), worktreeReady=False)
+            a['cleanedWorktree'] = {**a['worktreeCleanup'], 'bytes': 0, 'missing': True,
+                                    'note': reason}
+            a.pop('worktreeCleanup', None)
+            rt.put(db, 'agents', a)
+        return {'state': 'missing', 'reason': reason, 'bytes': 0}
     try:
         # du can be slow on Chromium trees. A timeout leaves the byte count unknown.
         try:
@@ -529,6 +622,8 @@ def _archive_finished(rt, actor_id, epoch):
                     result['unknownBytes'] += 1
                 else:
                     result['freedBytes'] += cleanup['bytes']
+            elif cleanup['state'] == 'missing':
+                result.setdefault('notes', []).append({'id': a['id'], 'reason': cleanup['reason']})
             elif cleanup['state'] != 'none':
                 result['kept'].append({'id': a['id'], 'reason': cleanup['reason']})
         else:
@@ -539,10 +634,20 @@ def _archive_finished(rt, actor_id, epoch):
 def worktree_maintenance_report(rt, actor_id, epoch=None):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
-        agents = [a['id'] for a in rt.records(db, 'agents') if a['rootId'] == actor['rootId']
-                  and a['id'] != actor_id and a.get('deletedAt') and a.get('worktreeReady')]
-    return [{'id': key, 'reason': _worktree_check(rt, actor_id, key, epoch)[1] or 'removable'}
-            for key in agents]
+        agents = [a for a in rt.records(db, 'agents') if a['rootId'] == actor['rootId']
+                  and a['id'] != actor_id and a.get('worktreeReady')]
+    report = []
+    for agent in agents:
+        key = agent['id']
+        root = _worker_worktree_root(key, agent.get('cwd', ''))
+        folder_missing = root is not None and not root.exists() and not root.is_symlink()
+        if not agent.get('deletedAt') and not folder_missing:
+            continue
+        info, reason = _worktree_check(rt, actor_id, key, epoch)
+        report.append({'id': key, 'reason': reason or
+                       ('worktree folder missing' if info and info.get('missing') else 'removable'),
+                       'folderMissing': folder_missing})
+    return report
 
 
 def _restore_worktree(info):
@@ -668,9 +773,13 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 archived_agent = _brief(target)
             else:
                 cleaned = target.get('cleanedWorktree') if not target.get('worktreeReady') else None
+                worktree = ({'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
+                            if cleaned and cleaned.get('missing') else
+                            {'state': 'removed', 'bytes': cleaned.get('bytes')}
+                            if cleaned else
+                            {'state': 'kept', 'reason': 'already archived', 'bytes': 0})
                 return {'status': 'archived', 'agent': _brief(target), 'replayed': True,
-                        'worktree': ({'state': 'removed', 'bytes': cleaned.get('bytes')}
-                                     if cleaned else {'state': 'kept', 'reason': 'already archived', 'bytes': 0})}
+                        'worktree': worktree}
         if action == 'restore':
             if not archived:
                 return {'status': 'not_archived', 'agent': _brief(target)}
@@ -680,8 +789,17 @@ def manage_agent(rt, actor_id, args, epoch=None):
             if parent.get('deletedAt'):
                 raise ValueError('Restore the parent first')
             restore_info = target.get('cleanedWorktree')
+            if restore_info and restore_info.get('missing') and not restore_info.get('head'):
+                return {'status': 'blocked',
+                        'reason': 'The worktree folder and branch are missing; no verified ref can restore it'}
             if target.get('worktreeCleanup'):
                 return {'status': 'blocked', 'reason': 'Worktree removal is incomplete; inspect its saved path'}
+            if target.get('worktreeReady'):
+                root = _worker_worktree_root(target['id'], target.get('cwd', ''))
+                if (root is None or not root.is_dir() or root.is_symlink()
+                        or not Path(target.get('cwd', '')).is_dir()):
+                    return {'status': 'blocked',
+                            'reason': 'The recorded worktree folder is missing and has no verified restore ref'}
             if not restore_info:
                 target.pop('deletedAt', None)
                 target.pop('agentArchive', None)
@@ -737,6 +855,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
         reason, restored_branch = _restore_worktree(restore_info)
         if reason:
             return {'status': 'blocked', 'reason': reason}
+        if not (Path(restore_info['root']) / restore_info['relative']).is_dir():
+            return {'status': 'blocked', 'reason': 'The restored worktree does not contain the saved worker path'}
         with rt.lock, rt.db() as db:
             target = rt.agent(args.get('agent_id'), db)
             _authorize(rt, db, actor_id, epoch, target)

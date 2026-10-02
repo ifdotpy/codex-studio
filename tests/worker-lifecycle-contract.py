@@ -2,6 +2,7 @@
 """Named event waits and archive transitions through the real Runtime caller."""
 import importlib.util
 from pathlib import Path
+import shutil
 import unittest
 
 spec = importlib.util.spec_from_file_location('lifecycle_fixture', Path(__file__).with_name('workspace-contract.py'))
@@ -191,8 +192,9 @@ class LifecycleContract(unittest.TestCase):
         self.git(self.project, 'commit', '-qm', 'base')
         commit = self.git(self.project, 'rev-parse', 'HEAD')
         lead = self.lead()
-        for dirty in (False, True):
-            worker = self.worker(lead, 'Dirty' if dirty else 'Clean')
+        for mode in ('clean', 'dirty', 'missing'):
+            dirty = mode == 'dirty'
+            worker = self.worker(lead, mode.title())
             path = self.project / '.worktrees' / 'codex-agents' / worker['id']
             path.parent.mkdir(parents=True, exist_ok=True)
             self.git(self.project, 'worktree', 'add', '-q', '-b', 'worker-' + worker['id'], str(path), 'main')
@@ -202,6 +204,8 @@ class LifecycleContract(unittest.TestCase):
             self.action(worker, task, 'submit', result='Done', checks='Checked', revision=commit)
             if dirty:
                 (path / 'untracked.txt').write_text('keep me\n')
+            if mode == 'missing':
+                shutil.rmtree(path)
             result = self.runtime.work_action(lead['id'], {'action': 'accept', 'task_id': task['id'],
                                                               'result': 'Reviewed'}, 'accept-' + worker['id'],
                                               actor=lead['id'])
@@ -215,8 +219,13 @@ class LifecycleContract(unittest.TestCase):
             else:
                 self.assertFalse(path.exists())
                 self.assertEqual(self.events(worker, 'work_decision'), [])
-                ref = self.git(self.project, 'rev-parse', 'refs/codex-agents/archive/' + worker['id'])
-                self.assertEqual(ref, commit)
+                if mode == 'missing':
+                    self.assertEqual(result['archive']['worktree']['state'], 'missing')
+                    self.assertEqual(result['archive']['worktree']['reason'],
+                                     'worktree folder missing; branch saved to archive ref')
+                else:
+                    ref = self.git(self.project, 'rev-parse', 'refs/codex-agents/archive/' + worker['id'])
+                    self.assertEqual(ref, commit)
             replay = self.runtime.work_action(lead['id'], {'action': 'accept', 'task_id': task['id'],
                                                               'result': 'Reviewed'}, 'accept-' + worker['id'],
                                               actor=lead['id'])

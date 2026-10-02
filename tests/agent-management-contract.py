@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -269,6 +270,86 @@ class RealWorktreeContract(Contract):
         self.assertEqual(self.git('rev-parse', 'HEAD', cwd=path), head)
         self.assertFalse((path / 'build' / 'cache').exists())
 
+    def test_missing_worktree_archives_branch_and_prunes_registration(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        sibling = self.checkout('sibling')
+        head = self.git('rev-parse', 'HEAD', cwd=path)
+        shutil.rmtree(path)
+        result = self.call('archive')
+        self.assertEqual(result['status'], 'archived')
+        self.assertEqual(result['worktree']['state'], 'missing')
+        self.assertEqual(result['worktree']['reason'], 'worktree folder missing; branch saved to archive ref')
+        self.assertEqual(self.git('rev-parse', 'refs/codex-agents/archive/worker'), head)
+        self.assertEqual(self.git('rev-parse', 'refs/heads/codex-agent/worker'), head)
+        self.assertTrue(sibling.is_dir())
+        self.assertIn(str(sibling.resolve()), self.git('worktree', 'list', '--porcelain'))
+        self.assertNotIn(str(path), self.git('worktree', 'list', '--porcelain'))
+        with self.rt.db() as db:
+            agent = self.rt.agent('worker', db)
+            self.assertFalse(agent['worktreeReady'])
+            self.assertTrue(agent['cleanedWorktree']['missing'])
+        restored = self.call('restore')
+        self.assertEqual(restored['status'], 'restored')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=path), head)
+
+    def test_missing_worktree_without_branch_archives_with_no_save_note(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        shutil.rmtree(path)
+        self.git('update-ref', '-d', 'refs/heads/codex-agent/worker')
+        result = self.call('archive')
+        self.assertEqual(result['status'], 'archived')
+        self.assertEqual(result['worktree']['state'], 'missing')
+        self.assertEqual(result['worktree']['reason'], 'worktree folder missing; nothing to save')
+        self.assertNotIn('refs/codex-agents/archive/worker', self.git('show-ref'))
+        self.assertNotIn(str(path), self.git('worktree', 'list', '--porcelain'))
+        restored = self.call('restore')
+        self.assertEqual(restored['status'], 'blocked')
+        self.assertIn('no verified ref', restored['reason'])
+        self.assertFalse(path.exists())
+
+    def test_restore_refuses_archived_missing_worktree_without_saved_evidence(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        shutil.rmtree(path)
+        self.worker(deletedAt=1, agentArchive={'at': 1, 'epoch': 1}, worktreeReady=True)
+        result = self.call('restore')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('no verified restore ref', result['reason'])
+        with self.rt.db() as db:
+            self.assertEqual(self.rt.agent('worker', db)['deletedAt'], 1)
+
+    def test_maintenance_report_lists_live_worker_with_missing_folder(self):
+        path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        shutil.rmtree(path)
+        report = self.call('maintenance_report')['worktrees']
+        self.assertIn({'id': 'worker', 'reason': 'worktree folder missing', 'folderMissing': True}, report)
+
+    def test_bulk_archives_mix_of_missing_present_and_blocked_worktrees(self):
+        missing = self.checkout('missing')
+        present = self.checkout('present')
+        active = self.checkout('active')
+        shutil.rmtree(missing)
+        self.git('update-ref', '-d', 'refs/heads/codex-agent/missing')
+        with self.rt.db() as db:
+            row = self.rt.agent('active', db)
+            row.update(status='completed', inFlight=True)
+            self.rt.put(db, 'agents', row)
+        result = self.call('archive_finished')
+        self.assertEqual(result['archived'], 3)
+        self.assertEqual(result['notes'], [{'id': 'missing', 'reason': 'worktree folder missing; nothing to save'}])
+        self.assertFalse(present.exists())
+        self.assertTrue(active.exists())
+        self.assertTrue(any(item['id'] == 'active' and 'active_turn' in item['reason']
+                            for item in result['kept']))
+
+    def test_pruning_missing_worktree_does_not_remove_existing_folder_or_branch(self):
+        missing = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        existing = self.checkout('existing')
+        branch_head = self.git('rev-parse', 'refs/heads/codex-agent/existing')
+        shutil.rmtree(missing)
+        self.call('archive')
+        self.assertTrue(existing.is_dir())
+        self.assertEqual(self.git('rev-parse', 'refs/heads/codex-agent/existing'), branch_head)
+
     def test_dirty_and_untracked_worktrees_stay_with_exact_reason(self):
         path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
         (path / 'tracked.txt').write_text('changed\n')
@@ -310,7 +391,7 @@ class RealWorktreeContract(Contract):
         self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
         self.worker(inFlight=False, deletedAt=1)
         report = self.call('maintenance_report')['worktrees']
-        self.assertEqual(report, [{'id': 'worker', 'reason': 'removable'}])
+        self.assertEqual(report, [{'id': 'worker', 'reason': 'removable', 'folderMissing': False}])
         self.assertTrue((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
 
     def test_bulk_archives_clean_worktree_with_unknown_receipt(self):
