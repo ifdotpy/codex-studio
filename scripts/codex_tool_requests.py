@@ -290,6 +290,10 @@ class RequestMixin:
                           "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args),
                           "timing": {"reservationBeganAt": reservation_started,
                                      "reservationLockedAt": reservation_locked}}
+                from codex_connection_recovery import supervisor_identity
+                native_identity = supervisor_identity(getattr(self, "servers", {}).get(account_key))
+                if native_identity is not None:
+                    record["supervisor"] = native_identity
                 received = message.get("_studioReceivedAt")
                 if type(received) in (int, float) and math.isfinite(received):
                     record["wireReceivedAt"] = received

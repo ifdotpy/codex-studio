@@ -237,9 +237,6 @@ def scope(db, site, *, strict=None):
 
 def diagnostics():
     """Copy contention counters and active transaction references without SQL."""
-    import itertools
-    import sys
-
     with _LOCK:
         def summary(item):
             values = sorted(item.get("_durationSamplesMs", ()))
@@ -257,101 +254,19 @@ def diagnostics():
                 site: summary(item) if isinstance(item, dict) else item
                 for site, item in sorted(value["sites"].items())}
 
-    # Frame references identify live transaction handles, not exclusive writers.
-    # Do not hold the counter lock while reading another thread's frames.
-    active = {}
-    names = {thread.ident: thread.name for thread in threading.enumerate()
-             if thread.ident is not None}
-    current_thread = threading.get_ident()
-    scanned_frames = 0
-    scanned_locals = 0
-    scanned_threads = 0
-    truncated = False
-    frames = sys._current_frames()
-    try:
-        for thread_id, frame in frames.items():
-            if scanned_threads >= 256 or scanned_frames >= 4096 or scanned_locals >= 65536:
-                truncated = True
-                break
-            scanned_threads += 1
-            if thread_id == current_thread:
-                frame = frame.f_back  # Exclude handles copied into this diagnostic.
-            depth = 0
-            while frame is not None:
-                if depth >= 64 or scanned_frames >= 4096 or scanned_locals >= 65536:
-                    truncated = True
-                    break
-                depth += 1
-                scanned_frames += 1
-                frame_locals = frame.f_locals
-                if len(frame_locals) > 256:
-                    truncated = True
-                local_values = tuple(itertools.islice(frame_locals.values(), 256))
-                for index, db in enumerate(local_values):
-                    if index >= 256 or scanned_locals >= 65536:
-                        truncated = True
-                        break
-                    scanned_locals += 1
-                    if not isinstance(db, sqlite3.Connection):
-                        continue
-                    try:
-                        if not sqlite3.Connection.in_transaction.__get__(db):
-                            continue
-                        try:
-                            attributes = object.__getattribute__(db, "__dict__")
-                        except AttributeError:
-                            attributes = {}
-                        started = attributes.get("_codex_transaction_started")
-                        site = (attributes.get("_codex_transaction_site")
-                                or attributes.get("_codex_scope_site")
-                                or attributes.get("_codex_site") or "sqlite.connect")
-                        if not sqlite3.Connection.in_transaction.__get__(db):
-                            continue
-                    except sqlite3.Error:
-                        continue  # The connection can close during the snapshot.
-                    key = id(db)
-                    entry = active.get(key)
-                    if entry is None:
-                        if len(active) >= 64:
-                            truncated = True
-                            continue
-                        valid_started = (type(started) in (int, float)
-                                         and math.isfinite(started))
-                        entry = {"site": site[:160] if isinstance(site, str) else "sqlite.connect",
-                                 "startedAtMonotonic": started if valid_started else None,
-                                 "durationMs": round(max(0, _clock() - started) * 1000, 3)
-                                 if valid_started else None, "threads": []}
-                        active[key] = entry
-                    references = entry["threads"]
-                    reference = next((item for item in references
-                                      if item["threadId"] == thread_id), None)
-                    if reference is None:
-                        if len(references) >= 4:
-                            truncated = True
-                            continue
-                        name = names.get(thread_id, "unknown")
-                        reference = {"threadId": thread_id,
-                                     "threadName": name[:120] if isinstance(name, str) else "unknown",
-                                     "frames": []}
-                        references.append(reference)
-                    location = {"file": frame.f_code.co_filename[-320:],
-                                "function": frame.f_code.co_name[:120], "line": frame.f_lineno}
-                    if location not in reference["frames"]:
-                        if len(reference["frames"]) < 6:
-                            reference["frames"].append(location)
-                        else:
-                            truncated = True
-                frame = frame.f_back
-    finally:
-        # Frames retain all their locals until these references are released.
-        frames.clear()
-        frame = None
-        frame_locals = None
-        local_values = None
-        db = None
-    result["activeTransactions"] = list(active.values())
-    result["activeTransactionScan"] = {"threads": scanned_threads, "frames": scanned_frames,
-                                     "locals": scanned_locals, "truncated": truncated}
+    # Only the connection owner reads SQLite state. Inspect owner notifications
+    # and code locations, never another thread's connection or frame locals.
+    from codex_sqlite_traces import active_transactions
+    entries = active_transactions()
+    result["activeTransactions"] = [
+        {"site": entry["site"], "startedAtMonotonic": entry["startedAtMonotonic"],
+         "durationMs": entry["durationMs"], "threads": [{
+             "threadId": entry["threadId"], "threadName": entry["threadName"],
+             "frames": entry["frames"]}]}
+        for entry in entries[:64]]
+    result["activeTransactionScan"] = {"threads": len({entry["threadId"] for entry in entries}),
+                                     "frames": sum(len(entry["frames"]) for entry in entries),
+                                     "locals": 0, "truncated": len(entries) > 64}
     from codex_sqlite_traces import history
     result["slowTransactions"] = history()
     return result

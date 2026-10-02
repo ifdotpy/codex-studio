@@ -3,7 +3,6 @@ import copy
 import json
 import os
 from pathlib import Path
-import sqlite3
 import sys
 import tempfile
 import threading
@@ -78,7 +77,10 @@ def begin_transaction(db, started, site, statement):
                  "startedAt": _wall_clock(), "observations": [], "originRecorded": True}
         db._codex_transaction_trace = entry
         if len(_ACTIVE) < ACTIVE_LIMIT:
-            _ACTIVE[entry["id"]] = (weakref.ref(db), entry)
+            def discarded(_reference, transaction_id=entry["id"]):
+                with _LOCK:
+                    _ACTIVE.pop(transaction_id, None)
+            _ACTIVE[entry["id"]] = (weakref.ref(db, discarded), entry)
         else:
             _UNTRACKED_STARTS += 1
 
@@ -114,6 +116,23 @@ def history():
                 "journal": dict(_JOURNAL), "activeTracking": {
                     "tracked": len(_ACTIVE), "limit": ACTIVE_LIMIT,
                     "untrackedStarts": _UNTRACKED_STARTS}}
+
+
+def active_transactions():
+    """Copy owner evidence without inspecting another thread's SQLite connection."""
+    with _LOCK:
+        entries = [copy.deepcopy(entry) for _, entry in _ACTIVE.values()]
+    now = _clock()
+    frames = sys._current_frames()
+    try:
+        for entry in entries:
+            entry["durationMs"] = round(max(0, now - entry["startedAtMonotonic"]) * 1000, 3)
+            entry["frames"] = _frames(frames.get(entry["threadId"]))
+    finally:
+        frames.clear()
+        frames = None
+    with _LOCK:
+        return [entry for entry in entries if entry["id"] in _ACTIVE]
 
 
 def _archive_previous(path):
@@ -156,20 +175,7 @@ def transaction_watchdog(root):
         active = []
         thread_frames = None
         try:
-            for reference, entry in candidates:
-                db = reference()
-                if db is None:
-                    with _LOCK:
-                        _ACTIVE.pop(entry["id"], None)
-                    continue
-                try:
-                    held = sqlite3.Connection.in_transaction.__get__(db)
-                except sqlite3.Error:
-                    held = False
-                if not held:
-                    with _LOCK:
-                        _ACTIVE.pop(entry["id"], None)
-                    continue
+            for _, entry in candidates:
                 duration = max(0, _clock() - entry["startedAtMonotonic"]) * 1000
                 if duration < SLOW_MS:
                     continue
@@ -189,7 +195,6 @@ def transaction_watchdog(root):
             if thread_frames is not None:
                 thread_frames.clear()
             thread_frames = None
-            db = None
         root = Path(root)
         with _LOCK:
             marker = (str(root), _REVISION, tuple(row["id"] for row in active))

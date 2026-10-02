@@ -959,6 +959,7 @@ class ProcessProxy:
         self.last_durable_ms = result["durableMs"]
         if result.get("remoteId") is not None and isinstance(request.get("id"), int):
             self.remote_to_local[result["remoteId"]] = request["id"]
+        return result
 
     def _operation_identity(self, method, params, request):
         stable = None

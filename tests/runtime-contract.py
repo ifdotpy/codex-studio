@@ -877,10 +877,17 @@ class RuntimeContract(unittest.TestCase):
             'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
         eventually(lambda: len(self.runtime.snapshot()['agents']) == 2)
         child = next(a for a in self.runtime.snapshot()['agents'] if a['id'] != lead['id'])
-        self.runtime.server.request({'id': 102, 'method': 'item/tool/call', 'params': {
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running'
+                   and self.runtime.agent(child['id']).get('turnId'))
+        child = self.runtime.agent(child['id'])
+        message = {'id': 102, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'stop-one', 'tool': 'orchestration_interrupt',
-            'arguments': {'agent_id': child['id']}}})
-        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'paused')
+            'arguments': {'agent_id': child['id']}}}
+        key = self.runtime.tool_request_key(message)
+        self.runtime.server.request(message)
+        eventually(lambda: (self.runtime.tool_request(key) or {}).get('outcome') == 'applied')
+        self.assertGreater(self.runtime.agent(child['id'])['epoch'], child['epoch'])
+        self.assertEqual(self.runtime.agent(child['id'])['status'], 'paused')
         self.assertEqual(self.runtime.agent(child['id'])['error'], 'Stopped by agent ' + lead['name'])
 
     def test_forty_children_respect_limit_and_wake_finished_parent(self):

@@ -696,6 +696,9 @@ class ProcessSupervisorContract(unittest.TestCase):
             message['_studioDispatchedAt'] = started_at
             runtime.notification(message, 'default', None)
             runtime.commit_supervisor_event('baseline', message, index + 1, 'default', None)
+            # The unbatched baseline needs a consumer barrier for the bounded
+            # asynchronous analytics queue. Overflow has a separate contract.
+            self.assertTrue(runtime._analytics_capture_idle.wait(5))
             baseline_delays.append((started_at - baseline_at) * 1000)
             baseline_durations.append((time.time() - started_at) * 1000)
         terminal = {'method': 'item/completed', 'params': {'threadId': 'thread', 'turnId': 'burst-turn',
@@ -754,6 +757,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         item = json.loads(row['record'])
         self.assertEqual(json.loads(item['text'])['aggregatedOutput'],
                          ''.join(f'{index},' for index in range(count)))
+        self.assertTrue(runtime._analytics_capture_idle.wait(5))
         with runtime.db() as db:
             total = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                'WHERE agent=? AND method=?',

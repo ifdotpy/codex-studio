@@ -134,7 +134,8 @@ def verify_real_transactions(path):
         assert reference["threadName"] == owner.name
         assert {item["function"] for item in reference["frames"]} >= {"hold", "writer"}
         for item in reference["frames"]:
-            assert item["file"].endswith(Path(__file__).name)
+            if item["function"] in {"hold", "writer"}:
+                assert item["file"].endswith(Path(__file__).name)
             assert isinstance(item["line"], int) and item["line"] > 0
         reads = [entry for entry in entries if entry["site"] == "contract.read_transaction"]
         assert len(reads) == 1, "an explicit read transaction must be identified as a transaction"
@@ -163,7 +164,7 @@ def verify_real_transactions(path):
 
 
 def verify_bounded_snapshot():
-    connections = [sqlite3.connect(":memory:") for _ in range(70)]
+    connections = [connect(":memory:", site="contract.bounded_owner") for _ in range(70)]
     try:
         for db in connections:
             db.execute("BEGIN")
@@ -171,16 +172,16 @@ def verify_bounded_snapshot():
         values["private_sql"] = "THIS_IS_NOT_PUBLIC_FRAME_DATA"
         frame = SimpleNamespace(f_locals=values, f_back=None, f_lineno=123,
                                 f_code=SimpleNamespace(co_filename="x" * 1000, co_name="y" * 1000))
-        with patch.object(sys, "_current_frames", lambda: {987654321: frame}):
+        with patch.object(sys, "_current_frames", lambda: {threading.get_ident(): frame}):
             snapshot = diagnostics()
         assert len(snapshot["activeTransactions"]) == 64
         assert snapshot["activeTransactionScan"]["truncated"] is True
         assert "THIS_IS_NOT_PUBLIC_FRAME_DATA" not in json.dumps(snapshot)
         for entry in snapshot["activeTransactions"]:
-            assert entry["durationMs"] is None and entry["startedAtMonotonic"] is None
+            assert entry["durationMs"] >= 0 and entry["startedAtMonotonic"] is not None
             reference = entry["threads"][0]
-            assert reference["threadName"] == "unknown"
-            assert len(reference["frames"][0]["file"]) == 320
+            assert reference["threadName"] == threading.current_thread().name
+            assert len(reference["frames"][0]["file"]) == 160
             assert len(reference["frames"][0]["function"]) == 120
     finally:
         for db in connections:

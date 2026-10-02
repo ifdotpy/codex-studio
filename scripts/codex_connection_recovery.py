@@ -180,6 +180,10 @@ def queued_active_wait_eligible(agent):
 
 
 def recover(runtime, key, *, automatic=False):
+    from codex_tool_response_recovery import recover as recover_tool_response
+    delivered = recover_tool_response(runtime, key)
+    if delivered.get('status') == 'tool_response_delivered':
+        return delivered
     with runtime.lock, runtime.db() as db:
         agent = runtime.checked_actor(db, key)
         if runtime.closed or not eligible(agent):
@@ -974,6 +978,8 @@ class ConnectionRecovery:
                 with self.runtime.read_db() as db:
                     agents = self.runtime.scheduler_agents(db)
                 tick(self.runtime, agents)
+                from codex_tool_response_recovery import tick as tool_response_tick
+                tool_response_tick(self.runtime, agents)
             except Exception as error:
                 self.runtime._connection_recovery_error = {'at': time.time(), 'error': str(error)[:300]}
             finally:
@@ -1004,7 +1010,8 @@ def close(runtime):
     # Runtime.close sets closed and closes native transports before releasing its
     # lease. Account readers must finish before another runtime owns that state.
     with runtime.lock:
-        workers = list(getattr(runtime, '_connection_recovery_jobs', {}).values())
+        workers = [*getattr(runtime, '_connection_recovery_jobs', {}).values(),
+                   *getattr(runtime, '_tool_response_recovery_jobs', {}).values()]
     for worker in workers:
         if worker is not threading.current_thread():
             worker.join()

@@ -449,8 +449,7 @@ class AppServer:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
             if self.supervisor_mode:
-                self.proc.send_write(value, operation_id=operation_id)
-                return
+                return self.proc.send_write(value, operation_id=operation_id)
             text = json.dumps(value) + "\n"
             try:
                 fd = self.proc.stdin.fileno()
@@ -2558,7 +2557,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
 
-    def reply(self, message, account_key="default", connection_id=None):
+    def reply(self, message, account_key="default", connection_id=None, *, operation_id=None):
         # Never deliver an old approval or tool result to a replacement process.
         server = self.servers.get(account_key)
         if not self.connection_current(account_key, connection_id):
@@ -2567,9 +2566,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if connection_id is not None:
                 raise RuntimeError("The account connection is not ready")
             server = self.connect(account_key)
-        server.write(message)
+        rpc_id = message.get("id")
+        if (operation_id is None and "method" not in message
+                and isinstance(rpc_id, str) and rpc_id.startswith("claude:")):
+            try:
+                canonical = str(uuid.UUID(rpc_id[7:])) == rpc_id[7:]
+            except ValueError:
+                canonical = False
+            if canonical:
+                from codex_tool_response_recovery import response_operation_id
+                operation_id = response_operation_id(self, account_key, rpc_id)
+        if operation_id is None:
+            written = server.write(message)
+        else:
+            written = server.write(message, operation_id=operation_id)
         from codex_token_rate import token_rates
         token_rates(self).request_finished(account_key, connection_id, message.get("id"), time.time())
+        return written
 
     def disconnected(self, account_key="default", connection_id=None):
         from codex_connection_recovery import supervisor_identity
@@ -5444,11 +5457,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.put(db, "tasks", task)
                 a["lastCompletedTurn"] = turn.get("id")
                 a["lastCompletedTurnStatus"] = turn.get("status")
+                a["lastCompletedTurnError"] = turn.get("error")
                 a["turnId"] = None
                 a["activity"] = None
                 a["activeTools"] = []
                 a["inFlight"] = False
-                a["error"] = turn.get("error")
+                if not (not a["autoWake"] and a.get("turnEpoch", a["epoch"]) < a["epoch"]
+                        and a.get("error")):
+                    a["error"] = turn.get("error")
                 if turn.get("status") == "failed":
                     a["nativeFailureHold"] = True
                 a["status"] = ("completed" if turn.get("status") == "completed" else
@@ -5549,7 +5565,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             executor = (self.recovery_pool if name in {"orchestration_request", "orchestration_status", "orchestration_peers"}
                         else self.coordination_pool if name in {"orchestration_spawn", "orchestration_send", "orchestration_message", "orchestration_chat_read", "orchestration_title", "orchestration_complaint", "orchestration_task"}
                         else self.tool_pool)
-            executor.submit(self.dynamic, message, account_key, connection_id)
+            try:
+                future = executor.submit(self.dynamic, message, account_key, connection_id)
+            except Exception as error:
+                self.dynamic_response_failure(message, account_key, connection_id, error)
+            else:
+                future.add_done_callback(lambda completed: self.dynamic_completion(
+                    message, account_key, connection_id, completed))
             return
         if message["method"] not in SUPPORTED_REQUESTS:
             self.reply({"id": message["id"], "error": {"code": -32601,
@@ -5584,6 +5606,76 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a:
                 a["status"] = "approval"
                 self.put(db, "agents", a)
+
+    def dynamic_completion(self, message, account_key, connection_id, future):
+        try:
+            error = future.exception()
+        except Exception as error:
+            self.dynamic_response_failure(message, account_key, connection_id, error)
+            return
+        if error is not None:
+            self.dynamic_response_failure(message, account_key, connection_id, error)
+
+    def dynamic_response_failure(self, message, account_key, connection_id, error):
+        """Answer a failed handler from evidence without running it again."""
+        diagnostic = {"event": "tool_response_handler_failed", "at": time.time(),
+            "rpcId": message.get("id"), "accountKey": account_key,
+            "connectionId": connection_id, "errorType": type(error).__name__}
+        try:
+            if self.closed or not self.connection_current(account_key, connection_id):
+                return
+            key = self.tool_request_key(message, account_key)
+            diagnostic["requestId"] = key
+            try:
+                with self.read_db() as db:
+                    saved = self.tool_result(db, key)
+                    if saved is None:
+                        receipt = self.tool_request(key, db)
+                        saved = receipt.get("result") if receipt else None
+            except Exception:
+                saved = None
+            result = saved if isinstance(saved, dict) else {
+                "success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
+                    "requestId": key, "outcome": "unknown",
+                    "recovery": "Read orchestration_request with this requestId. Do not repeat the mutation with a new id."})}]}
+            from codex_connection_recovery import supervisor_identity
+            from codex_tool_response_recovery import response_operation_id
+            identity = supervisor_identity(self.servers.get(account_key))
+            if identity is not None:
+                # An accepted write may have reached the native child. Never
+                # replace its response with a different failure payload.
+                if identity["stateDir"] != str(self.root.resolve()):
+                    return
+                db = sqlite3.connect((self.root / "supervisor.sqlite3").as_uri() + "?mode=ro",
+                                     uri=True, timeout=.05)
+                try:
+                    handle = db.execute("SELECT generation,closed_at FROM handles WHERE id=?",
+                                        (identity["handle"],)).fetchone()
+                    if not handle or handle[0] != identity["generation"] or handle[1] is not None:
+                        return
+                    accepted = db.execute("SELECT 1 FROM operations WHERE handle=? AND native_id=? LIMIT 1",
+                                          (identity["handle"], message["id"])).fetchone()
+                    if accepted:
+                        diagnostic["nativeAccepted"] = True
+                        return
+                finally:
+                    db.close()
+            operation_id = response_operation_id(self, account_key, message["id"])
+            response = {"id": message["id"], "result": result}
+            if operation_id is None:
+                self.reply(response, account_key, connection_id)
+            else:
+                self.reply(response, account_key, connection_id, operation_id=operation_id)
+        except Exception as failure:
+            diagnostic["responseErrorType"] = type(failure).__name__
+        finally:
+            try:
+                path = self.root / "runtime-errors.log"
+                with path.open("a", encoding="utf-8") as log:
+                    log.write(json.dumps(diagnostic) + "\n")
+                path.chmod(0o600)
+            except OSError:
+                pass
 
     def spawn_agents(self, actor, args, key):
         """Commit the entire batch, initial events, and receipt together."""
@@ -5936,32 +6028,72 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     ).fetchone()[0])
                     if not saved.get("success"):
                         result = saved
-        if claimed:
-            receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
-            result = receipt.get("result") or result
-        if a is not None:
-            with self.lock:
-                mode_actor = self.agent(a["id"])
-                mode_epoch = [mode_actor.get("threadId"), mode_actor.get("compactions", 0)]
-                result = self.model_tool_result(a["id"], key, result)
-            with self.lock, self.db() as db:
-                self.analytics_safe(db, self.analytics_dynamic, a, p, result)
-        try:
-            self.reply({"id": message["id"], "result": result}, account_key, connection_id)
-            if a is not None:
-                self.confirm_model_tool_result(a["id"], key, result, mode_epoch)
-        except Exception as error:
-            # Execution receipts remain authoritative. Never replay a mutation
-            # because its response write failed. Record identities, not content.
-            diagnostic = {"event": "tool_response_delivery_failed", "at": time.time(),
+        def response_error(event, error, phase):
+            diagnostic = {"event": event, "phase": phase, "at": time.time(),
                           "callId": p.get("callId"), "requestId": message.get("id"),
                           "threadId": p.get("threadId"), "accountKey": account_key,
                           "connectionId": connection_id, "errorType": type(error).__name__,
                           "errno": getattr(error, "errno", None)}
-            path = self.root / "runtime-errors.log"
-            with path.open("a", encoding="utf-8") as log:
-                log.write(json.dumps(diagnostic) + "\n")
-            path.chmod(0o600)
+            try:
+                path = self.root / "runtime-errors.log"
+                with path.open("a", encoding="utf-8") as log:
+                    log.write(json.dumps(diagnostic) + "\n")
+                path.chmod(0o600)
+            except OSError:
+                pass  # Diagnostics cannot prevent the exact saved response.
+
+        if claimed:
+            try:
+                receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
+                result = receipt.get("result") or result
+            except Exception as error:
+                response_error("tool_response_preparation_failed", error, "receipt")
+                try:
+                    with self.read_db() as db:
+                        saved = self.tool_result(db, key)
+                except Exception:
+                    saved = None
+                # A failed metadata write does not invalidate the committed
+                # result. Missing evidence remains unknown and is never replayed.
+                result = saved if isinstance(saved, dict) else {
+                    "success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
+                        "requestId": key, "outcome": "unknown",
+                        "recovery": "Read orchestration_request with this requestId. Do not repeat the mutation with a new id."})}]}
+
+        saved_result = copy.deepcopy(result)
+        mode_epoch, response_phase = None, "projection"
+        try:
+            if a is not None:
+                with self.lock:
+                    mode_actor = self.agent(a["id"])
+                    mode_epoch = [mode_actor.get("threadId"), mode_actor.get("compactions", 0)]
+                    result = self.model_tool_result(a["id"], key, copy.deepcopy(saved_result))
+                response_phase = "analytics"
+                with self.lock, self.db() as db:
+                    self.analytics_safe(db, self.analytics_dynamic, a, p, result)
+        except Exception as error:
+            # The completion is durable. Optional response preparation must not
+            # leave a native tool waiting or execute the operation a second time.
+            result, mode_epoch = saved_result, None
+            response_error("tool_response_preparation_failed", error, response_phase)
+        try:
+            from codex_tool_response_recovery import response_operation_id
+            operation_id = response_operation_id(self, account_key, message["id"])
+            response = {"id": message["id"], "result": result}
+            if operation_id is None:
+                self.reply(response, account_key, connection_id)
+            else:
+                self.reply(response, account_key, connection_id, operation_id=operation_id)
+        except Exception as error:
+            # Preserve the receipt and the original connection guard. A failed
+            # response write does not authorize another operation or connection.
+            response_error("tool_response_delivery_failed", error, "write")
+            return
+        if a is not None and mode_epoch is not None:
+            try:
+                self.confirm_model_tool_result(a["id"], key, result, mode_epoch)
+            except Exception as error:
+                response_error("tool_response_confirmation_failed", error, "confirmation")
 
     @staticmethod
     def unanswered_complaints(db, lead_id):
