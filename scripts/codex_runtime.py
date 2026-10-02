@@ -321,7 +321,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_commit=None, supervisor_event_applied=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None):
         import queue
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -379,6 +379,9 @@ class AppServer:
             self.proc = attach(root, supervisor_handle, command, env, stderr_sink=self.log.write)
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
+            self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
+            if supervisor_reattached:
+                supervisor_reattached(self.supervisor_resumed)
         else:
             self.proc = subprocess.Popen(
                 command, env=env,
@@ -1363,10 +1366,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 recover_safety_restart(self, db, a)
                 self.put(db, "agents", a)
             for task in active_task_records(db):
+                owner = self.agent(task.get("agent"), db) if task.get("agent") else None
+                task["reattachRecovery"] = {"accountKey": (owner or {}).get("accountKey", "default"),
+                    "epoch": (owner or {}).get("epoch"), "status": task.get("status"),
+                    "error": task.get("error"), "finished": task.get("finished")}
                 task.update(status="lost", finished=time.time(), error="Server restarted. Tool outcome unknown.")
                 self.put(db, "tasks", task)
             for m in active_monitors(db):
                 if m["status"] in {"running", "approval", "starting"}:
+                    owner = self.agent(m.get("agent"), db) if m.get("agent") else None
+                    m["reattachRecovery"] = {"accountKey": (owner or {}).get("accountKey", "default"),
+                        "epoch": (owner or {}).get("epoch"), "status": m.get("status"),
+                        "error": m.get("error"), "finished": m.get("finished")}
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
             for r in self.records(db, "requests"):
@@ -1986,7 +1997,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   supervisor_commit=lambda message, sequence: self.commit_supervisor_event(
                                                       "account:" + account_key, message, sequence, account_key, connection_id),
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
-                                                      "account:" + account_key, sequence))
+                                                      "account:" + account_key, sequence),
+                                                  supervisor_reattached=lambda resumed: self.supervisor_reattached(
+                                                      account_key, connection_id, resumed))
                             if selected:
                                 server.native_binary = selected
                         else:
@@ -2000,6 +2013,56 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self)
+
+    def supervisor_reattached(self, account_key, connection_id, resumed):
+        """Restore only work whose native child was proven to survive this restart."""
+        if not resumed or not self.connection_current(account_key, connection_id):
+            return
+        now = time.time()
+        with self.lock, self.db() as db:
+            for agent in self.records(db, "agents"):
+                if agent.get("accountKey", "default") != account_key or agent.get("deletedAt"):
+                    continue
+                marker = agent.get("restartRecovery") or {}
+                disconnect = agent.get("disconnectRecovery") or {}
+                recovery = marker if marker.get("stage") == "pending" else disconnect
+                has_restart_receipt = (recovery is marker and marker.get("autoWake"))
+                has_disconnect_receipt = (recovery is disconnect and disconnect.get("autoWake"))
+                if ((has_restart_receipt or has_disconnect_receipt)
+                        and recovery.get("turnId") and recovery.get("epoch") == agent.get("epoch")
+                        and recovery.get("accountKey", "default") == account_key
+                        and recovery.get("threadId") == agent.get("threadId")
+                        and agent.get("status") == "interrupted"):
+                    agent.update(status="running", autoWake=True, inFlight=True,
+                                 turnId=recovery["turnId"], error=None)
+                    if has_restart_receipt:
+                        marker.update(stage="reattached", reattachedAt=now)
+                    self.put(db, "agents", agent)
+            for table in ("tasks", "monitors"):
+                for row in db.execute(f"SELECT record FROM runtime_{table}").fetchall():
+                    record = json.loads(row[0])
+                    receipt = record.get("reattachRecovery") or {}
+                    if (receipt.get("accountKey") != account_key
+                            or receipt.get("status") not in {"running", "starting", "approval"}):
+                        continue
+                    owner = self.agent(record.get("agent"), db) if record.get("agent") else None
+                    if (not owner or owner.get("accountKey", "default") != account_key
+                            or owner.get("epoch") != receipt.get("epoch")
+                            or owner.get("deletedAt")):
+                        continue
+                    record.update(status=receipt["status"], error=receipt.get("error"))
+                    if receipt.get("finished") is None:
+                        record.pop("finished", None)
+                    else:
+                        record["finished"] = receipt["finished"]
+                    record.pop("reattachRecovery", None)
+                    self.put(db, table, record)
+                    if table == "monitors":
+                        db.execute("UPDATE runtime_events SET status='cancelled',error=? "
+                                   "WHERE id=? AND status='pending' AND json_extract(text,'$.status')='lost'",
+                                   ("Native command reattached; discard the provisional disconnect notice.",
+                                    "monitor:" + record["id"]))
+            self.changed.set()
 
     def connection_current(self, account_key, connection_id):
         return connection_id is None or (
@@ -2080,11 +2143,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
             for task in active_task_records(db):
-                if task.get("agent") in ids:
+                if task.get("agent") in ids and task.get("status") in {"running", "starting", "approval"}:
+                    task["reattachRecovery"] = {"accountKey": account_key,
+                        "epoch": self.agent(task["agent"], db).get("epoch"),
+                        "status": task.get("status"), "error": task.get("error"),
+                        "finished": task.get("finished")}
                     task.update(status="lost", finished=time.time(), error="Codex disconnected. Tool outcome unknown.")
                     self.put(db, "tasks", task)
             for monitor in active_monitors(db):
                 if monitor.get("agent") in ids and monitor["status"] in {"running", "starting", "approval"}:
+                    monitor["reattachRecovery"] = {"accountKey": account_key,
+                        "epoch": self.agent(monitor["agent"], db).get("epoch"),
+                        "status": monitor.get("status"), "error": monitor.get("error"),
+                        "finished": monitor.get("finished")}
                     monitor.update(status="lost", finished=time.time(), error="Codex disconnected. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", monitor)
                     self._monitor_exit_event(db, self.agent(monitor["agent"], db), monitor)
@@ -4536,7 +4607,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                               else (p.get('turn') or {}).get('id') if method == 'turn/started'
                               else None)
             restart_event = (method in {'turn/started', 'turn/completed'}
-                and native_turn_id and restart.get('stage') in {'pending', 'continued', 'superseded'}
+                and native_turn_id and restart.get('stage') in {'pending', 'continued', 'superseded', 'reattached'}
                 and restart.get('autoWake') and restart.get('turnId') == native_turn_id
                 and (a.get('disconnectRecovery') or {}).get('source') == 'restart'
                 and restart.get('epoch') == a.get('epoch')
@@ -4858,7 +4929,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         from codex_agent_management import parked_after_turn
                         parked_after_turn(a)
                         restart = a.get('restartRecovery') or {}
-                        if restart.get('turnId') == turn.get('id') and restart.get('stage') == 'continued':
+                        if restart.get('turnId') == turn.get('id') and restart.get('stage') in {'continued', 'reattached'}:
                             restart.update(stage='finished', reconciledAt=time.time(),
                                            outcome=turn.get('status'))
                         self.put(db, "agents", a)
@@ -4946,7 +5017,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
             restart = a.get('restartRecovery') or {}
             if (method == 'turn/completed' and restart.get('turnId') == (p.get('turn') or {}).get('id')
-                    and restart.get('stage') == 'continued'):
+                    and restart.get('stage') in {'continued', 'reattached'}):
                 restart.update(stage='finished', reconciledAt=time.time(),
                                outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:

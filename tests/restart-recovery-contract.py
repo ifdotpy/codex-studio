@@ -122,6 +122,70 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(len(rows), 1)
         self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
 
+    def test_only_exact_live_reattach_restores_turn_monitors_and_background_tasks(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tasks', {'id':'active-task','agent':self.key,'epoch':self.a['epoch'],
+                'turnId':'lost-turn','kind':'command','status':'running','processId':'child-process'})
+            self.runtime.put(db, 'monitors', {'id':'active-monitor','agent':self.key,'epoch':self.a['epoch'],
+                'turnId':'lost-turn','status':'running','operation':{'accountKey':'default'}})
+        agent = self.restart(supervisor=True)
+        self.assertEqual(agent['status'], 'interrupted')
+        def record(table, key):
+            with self.runtime.db() as db:
+                return json.loads(db.execute(f'SELECT record FROM runtime_{table} WHERE id=?',
+                                             (key,)).fetchone()[0])
+        self.assertEqual(record('monitors','active-monitor')['status'], 'lost')
+        self.assertEqual(record('tasks','active-task')['status'], 'lost')
+
+        self.runtime.supervisor_reattached('default', self.runtime.connection_ids['default'], False)
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'interrupted')
+        self.assertEqual(record('monitors','active-monitor')['status'], 'lost')
+        self.assertEqual(record('tasks','active-task')['status'], 'lost')
+
+        self.runtime.supervisor_reattached('default', self.runtime.connection_ids['default'], True)
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['inFlight'])
+        self.assertEqual(agent['turnId'], 'lost-turn')
+        self.assertEqual(agent['restartRecovery']['stage'], 'reattached')
+        self.assertEqual(record('monitors','active-monitor')['status'], 'running')
+        self.assertEqual(record('tasks','active-task')['status'], 'running')
+        self.assertFalse(any(method in {'turn/start','turn/resume'} for method, _ in self.server.calls))
+
+    def test_restart_uncertainty_hold_is_reserved_for_unconfirmed_native_identity(self):
+        self.restart()
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery']['at'] = time.time() - 31
+            self.runtime.put(db, 'agents', agent)
+        self.server.read_error = RuntimeError('native read unavailable')
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'unconfirmed')
+        connection_recovery_tick(self.runtime, [self.runtime.agent(self.key)])
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'held')
+        self.assertIn('could not confirm', self.runtime.agent(self.key)['restartRecovery']['reason'])
+
+    def test_codex_disconnected_notice_is_cleared_only_after_same_child_reattach(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        connection = self.runtime.connection_ids['default']
+        self.runtime.disconnected('default', connection)
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'interrupted')
+        self.assertIn('Codex disconnected', agent['error'])
+
+        self.runtime.supervisor_reattached('default', connection, False)
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'interrupted')
+        replacement = 'reattached-connection'
+        self.runtime.connection_ids['default'] = replacement
+        self.runtime.offline_accounts.discard('default')
+        self.runtime.supervisor_reattached('default', replacement, True)
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['inFlight'])
+        self.assertEqual(agent['turnId'], 'lost-turn')
+        self.assertIsNone(agent['error'])
+
     def test_turn_finished_during_restart_uses_normal_completion_and_dispatches_pending_input(self):
         parent_id = self.make_worker()
         with self.runtime.db() as db:
