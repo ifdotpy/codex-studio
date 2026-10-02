@@ -103,6 +103,21 @@ class LiveUpdateContract(unittest.TestCase):
             update.apply(self.runtime)
         self.assertEqual(self.snapshot(), before)
 
+    def test_reviewed_previous_terminal_connect_is_accepted_without_reconnection(self):
+        module = sys.modules["codex_terminals"]
+        previous = subprocess.check_output(
+            ["git", "show", "a1001dc:scripts/codex_terminals.py"], cwd=ROOT)
+        old, _ = source_function(previous, ("TerminalManager", "connect"), vars(module))
+        current = module.TerminalManager.connect
+        current.__code__, current.__defaults__, current.__kwdefaults__ = (
+            old.__code__, old.__defaults__, old.__kwdefaults__)
+        with patch.object(codex_runtime.subprocess, "Popen",
+                          side_effect=AssertionError("An update must preserve native work")):
+            self.assertEqual(update.apply(self.runtime)["status"], "applied")
+        spec = next(item for item in update.SOURCES["codex_terminals"]["functions"]
+                    if item["path"] == ["TerminalManager", "connect"])
+        self.assertEqual(signature(current), spec["after"])
+
     def test_unreviewed_source_hash_rejects_before_any_code_changes(self):
         before = self.snapshot()
         with patch.dict(update.SOURCES["codex_rules"], sha256="0" * 64):
