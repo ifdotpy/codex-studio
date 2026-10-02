@@ -371,7 +371,7 @@ export default function App() {
       new Map((data?.runtime.events || []).map((event) => [event.id, event])),
     [data?.runtime.events],
   );
-  useChatPrefetch(data, opened, workspaceId);
+  const prepareChat = useChatPrefetch(data, opened, workspaceId);
   useEffect(() => {
     if (tasksOpen) setTasksRendered(true);
     if (workspaceOpen) setWorkspaceRendered(true);
@@ -566,6 +566,7 @@ export default function App() {
     [opened, setDrafts],
   );
   const open = (id: string, messageId?: string) => {
+    prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
       messageId
@@ -1428,6 +1429,7 @@ export default function App() {
         opened={opened}
         lead={lead}
         open={open}
+        prepareChat={prepareChat}
         newChat={(path, folder) => void newChat(path, folder)}
         newSharedChat={(path) => setSharedCreate({ path })}
         addProject={() => {

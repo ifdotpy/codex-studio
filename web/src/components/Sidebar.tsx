@@ -51,6 +51,7 @@ type Props = {
   opened: string | null;
   lead?: Agent;
   open: (id: string) => void;
+  prepareChat?: (id: string) => void;
   newChat: (path?: string, folder?: string) => void;
   newSharedChat?: (path?: string) => void;
   addProject: () => void;
@@ -548,6 +549,9 @@ export default function Sidebar(p: Props) {
           aria-description="Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works."
           className="chat-row"
           data-chat={row.id}
+          onPointerEnter={() => p.prepareChat?.(row.id)}
+          onFocus={() => p.prepareChat?.(row.id)}
+          onPointerDown={() => p.prepareChat?.(row.id)}
           onClick={() => p.open(row.id)}
           aria-current={p.opened === row.id}
         >

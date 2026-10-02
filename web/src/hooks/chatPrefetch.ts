@@ -1,12 +1,16 @@
-import { useEffect, useRef } from "react";
-import { prefetchTranscript, watchSyncInvalidations } from "../sync/client";
+import { useCallback, useEffect, useRef } from "react";
+import {
+  prefetchTranscript,
+  watchSyncInvalidations,
+  watchTranscriptRevisions,
+} from "../sync/client";
 import { peekTranscript } from "../sync/transcriptCache";
 import { prefetchProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 
-// Two background slots share history and progress work. Each slot has at most
-// two requests; the selected chat keeps its independent foreground reads.
+// Two background slots share history and progress work. A completed prefetch
+// releases its projection and holds no per-chat stream.
 export function useChatPrefetch(
   data: Snapshot | null,
   opened: string | null,
@@ -14,11 +18,17 @@ export function useChatPrefetch(
 ) {
   const current = useRef({ data, opened });
   current.current = { data, opened };
+  const control = useRef<{
+    request: (id: string) => void;
+    changed: () => void;
+  } | null>(null);
   useEffect(() => {
     if (!workspaceId) return;
     let stopped = false;
     let active = 0;
     let readyChat: string | null = null;
+    let preferred: string | null = null;
+    let revisions: Record<string, number> | null = null;
     const readyAt = Date.now() + 1000;
     const running = new Set<string>();
     const checked = new Map<string, { version: string; at: number }>();
@@ -54,78 +64,58 @@ export function useChatPrefetch(
       const now = Date.now();
       const pool = data.threads.filter(
         (agent) =>
-          agent.source === "managed" &&
-          agent.id !== opened &&
-          !agent.archived &&
-          (agent.isLead || (!!root && agent.rootId === root)),
+          agent.source === "managed" && agent.id !== opened && !agent.archived,
+      );
+      const ranked = [...pool].sort(
+        (a, b) =>
+          Number(b.id === preferred) - Number(a.id === preferred) ||
+          Number(!!b.pinned) - Number(!!a.pinned) ||
+          Number(!!root && b.rootId === root) -
+            Number(!!root && a.rootId === root) ||
+          Number(!!b.isLead) - Number(!!a.isLead) ||
+          Number(!!b.inFlight) - Number(!!a.inFlight) ||
+          Number(b.updated || b.created) - Number(a.updated || a.created),
       );
       const mobile = window.matchMedia("(max-width: 760px)").matches;
       const historyTargets = mobile
-        ? new Set(
-            [...pool]
-              .sort(
-                (a, b) =>
-                  Number(!!b.isLead) - Number(!!a.isLead) ||
-                  Number(!!root && b.rootId === root) -
-                    Number(!!root && a.rootId === root) ||
-                  Number(!!b.inFlight) - Number(!!a.inFlight) ||
-                  b.created - a.created,
-              )
-              .slice(0, 2)
-              .map((agent) => agent.id),
-          )
+        ? new Set(ranked.slice(0, 2).map((agent) => agent.id))
         : null;
-      // Reserve one of the 32 cache entries for the selected chat. History still
-      // covers the full pool, while progress warms the nearest switch targets.
+      // Progress files have no transcript revision. Keep their separate checks
+      // limited to the nearest switch targets instead of every worker.
       const progressTargets = new Set(
-        [...pool]
-          .sort(
-            (a, b) =>
-              Number(!!b.isLead) - Number(!!a.isLead) ||
-              Number(!!root && b.rootId === root) -
-                Number(!!root && a.rootId === root) ||
-              Number(!!b.inFlight) - Number(!!a.inFlight) ||
-              b.created - a.created,
-          )
-          .slice(0, 31)
-          .map((agent) => agent.id),
+        ranked.slice(0, 31).map((agent) => agent.id),
       );
-      const candidates = pool
-        .map((agent) => {
-          const version = JSON.stringify(agent);
-          const previous = checked.get(agent.id);
-          const interval = agent.inFlight ? 5000 : 60000;
-          const historyAt = Math.max(
-            failed.get(agent.id) || 0,
-            previous
-              ? previous.at + (version !== previous.version ? 3000 : interval)
-              : 0,
-          );
-          const progressAt = progressTargets.has(agent.id)
-            ? Math.max(
-                progressFailed.get(agent.id) || 0,
-                (progressChecked.get(agent.id) || 0) + interval,
-              )
-            : Infinity;
-          return {
-            agent,
-            version,
-            previous,
-            historyAt:
-              historyTargets && !historyTargets.has(agent.id)
-                ? Infinity
-                : historyAt,
-            progressAt,
-          };
-        })
-        .sort(
-          (a, b) =>
-            Number(progressTargets.has(b.agent.id)) -
-              Number(progressTargets.has(a.agent.id)) ||
-            Number(!!b.agent.isLead) - Number(!!a.agent.isLead) ||
-            (a.previous?.at || 0) - (b.previous?.at || 0) ||
-            b.agent.created - a.agent.created,
+      const candidates = ranked.map((agent) => {
+        const version = revisions
+          ? String(revisions[agent.id] ?? 0)
+          : JSON.stringify(agent);
+        const previous = checked.get(agent.id);
+        const interval = agent.inFlight ? 5000 : 60000;
+        const changed = previous?.version !== version;
+        const historyAt = Math.max(
+          failed.get(agent.id) || 0,
+          !previous || changed
+            ? 0
+            : revisions
+              ? Infinity
+              : previous.at + interval,
         );
+        const progressAt = progressTargets.has(agent.id)
+          ? Math.max(
+              progressFailed.get(agent.id) || 0,
+              (progressChecked.get(agent.id) || 0) + interval,
+            )
+          : Infinity;
+        return {
+          agent,
+          version,
+          historyAt:
+            historyTargets && !historyTargets.has(agent.id)
+              ? Infinity
+              : historyAt,
+          progressAt,
+        };
+      });
       for (const { agent, version, historyAt, progressAt } of candidates) {
         if (active >= 2) break;
         if (running.has(agent.id) || Math.min(historyAt, progressAt) > now)
@@ -134,15 +124,22 @@ export function useChatPrefetch(
         running.add(agent.id);
         const historyDue = historyAt <= now;
         const progressDue = progressAt <= now;
-        void Promise.allSettled([
-          historyDue
-            ? prefetchTranscript(workspaceId, agent.id)
-            : Promise.resolve(null),
-          progressDue
-            ? prefetchProgress(data.stateDir, agent.id)
-            : Promise.resolve(null),
-        ])
+        void (async () => {
+          // Keep at most one request in each background slot.
+          const [history] = await Promise.allSettled([
+            historyDue
+              ? prefetchTranscript(workspaceId, agent.id)
+              : Promise.resolve(null),
+          ]);
+          const [progress] = await Promise.allSettled([
+            progressDue
+              ? prefetchProgress(data.stateDir, agent.id)
+              : Promise.resolve(null),
+          ]);
+          return [history, progress] as const;
+        })()
           .then(([history, progress]) => {
+            if (stopped) return;
             if (historyDue) {
               if (history.status === "fulfilled" && history.value) {
                 checked.set(agent.id, { version, at: Date.now() });
@@ -163,7 +160,7 @@ export function useChatPrefetch(
           .finally(() => {
             active--;
             running.delete(agent.id);
-            schedule(150);
+            schedule(50);
           });
       }
       const eligible = new Set(data.threads.map((agent) => agent.id));
@@ -174,19 +171,49 @@ export function useChatPrefetch(
         const due = candidates
           .filter(({ agent }) => !running.has(agent.id))
           .map(({ historyAt, progressAt }) => Math.min(historyAt, progressAt));
-        // File edits need no transcript event. One timer still refreshes them at
-        // the same 5-second active and 60-second idle cadence.
-        schedule(Math.max(150, Math.min(60000, ...due.map((at) => at - now))));
+        schedule(Math.max(50, Math.min(60000, ...due.map((at) => at - now))));
       }
     };
+    const request = (id: string) => {
+      if (current.current.opened === id) return;
+      preferred = id;
+      const previous = checked.get(id);
+      // Rehydrate an evicted chat before a pointer click or keyboard activation.
+      // Coalesce repeated pointer/focus events for the same fresh page.
+      if (
+        !peekTranscript(workspaceId, id) ||
+        !previous ||
+        Date.now() - previous.at > 1000
+      )
+        checked.delete(id);
+      progressChecked.delete(id);
+      schedule(0);
+    };
+    control.current = { request, changed: () => schedule(0) };
     schedule(1000);
-    const stopInvalidations = watchSyncInvalidations("state", pump);
-    const stopResume = onResume(pump);
+    const stopRevisions = watchTranscriptRevisions(workspaceId, (next) => {
+      revisions = next;
+      schedule(0);
+    });
+    const stopInvalidations = watchSyncInvalidations("state", () =>
+      schedule(0),
+    );
+    const stopResume = onResume(() => {
+      // The resumed stream reports changed revisions. Keep idle chat checks.
+      if (!revisions) checked.clear();
+      schedule(0);
+    });
     return () => {
       stopped = true;
+      control.current = null;
       clearTimeout(timer);
+      stopRevisions();
       stopInvalidations();
       stopResume();
     };
   }, [workspaceId, data?.stateDir]);
+  useEffect(() => {
+    control.current?.changed();
+  }, [data, opened]);
+  return useCallback((id: string) => control.current?.request(id), []);
 }

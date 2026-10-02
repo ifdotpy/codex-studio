@@ -16,11 +16,15 @@ const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
 const legacySync = process.env.LEGACY_SYNC === "1";
 const dir = await mkdtemp(join(tmpdir(), "studio-chat-prefetch-"));
 const fixture = spawn(
-  "python3",
+  process.env.PYTHON_BIN || "python3",
   ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
   {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(dir, "board"),
+      TOKEN_RATE_WORKER_COUNT: "1",
+    },
   },
 );
 let log = "",
@@ -167,6 +171,15 @@ try {
       url.searchParams.get("scope") === "state:entities:v1"
     ) {
       entityStreams.push(route);
+      return;
+    }
+    if (
+      url.pathname === "/api/sync/stream" &&
+      url.searchParams.get("scope")?.startsWith("transcript:")
+    ) {
+      // Keep the initial transcript blocked through both its pull and push paths.
+      // The real shared workspace stream still carries compact revision hints.
+      held.push(route);
       return;
     }
     if (url.pathname === "/api/search")
@@ -358,10 +371,34 @@ try {
   // A real shared SSE invalidation announces a newer B while the reader stays in A.
   values.set(b.id, { seq: 301, data: payload(b, "B-newest") });
   agents.find((agent) => agent.id === b.id).updated = Date.now();
+  const backgroundUpdateAt = Date.now();
   await invalidate("Prefetch background update");
   await until(
     () => reads.some((read) => read.id === b.id && read.seq === 301),
     "B must refresh in the background after the shared invalidation",
+  );
+  const backgroundUpdateMs = Date.now() - backgroundUpdateAt;
+  assert.ok(
+    backgroundUpdateMs < 1500,
+    `A changed background chat must refresh before the old polling delay: ${backgroundUpdateMs} ms`,
+  );
+  const bReads = reads.filter((read) => read.id === b.id).length;
+  await page.waitForTimeout(5500);
+  assert.equal(
+    reads.filter((read) => read.id === b.id).length,
+    bReads,
+    "Stable chat revisions do not trigger periodic history pulls",
+  );
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    ),
+  );
+  await page.waitForTimeout(750);
+  assert.equal(
+    reads.filter((read) => read.id === b.id).length,
+    bReads,
+    "Resume keeps unchanged chat revisions instead of pulling every history again",
   );
   assert.equal(await selected(), a.name);
   await until(
@@ -609,6 +646,7 @@ try {
       browser: browserType === webkit ? "WebKit" : "Chromium",
       legacySync,
       neverOpenedSwitchMs: coldCached,
+      backgroundUpdateMs,
       revisitA,
       revisitB,
       olderReturn,

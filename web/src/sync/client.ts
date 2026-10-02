@@ -189,6 +189,52 @@ async function pull(
 }
 // All projections and drafts share one stream with scope-aware callbacks.
 // A background PWA must not retain one HTTP connection per conversation.
+type TranscriptRevisions = {
+  workspaceId: string;
+  revisions: Record<string, number> | null;
+};
+let latestTranscriptRevisions: TranscriptRevisions | undefined;
+const revisionListeners = new Set<(value: TranscriptRevisions) => void>();
+function receiveTranscriptRevisions(value: {
+  workspaceId?: string;
+  transcriptRevisions?: Record<string, number>;
+}) {
+  const revisions = value.transcriptRevisions;
+  if (
+    revisions &&
+    (typeof revisions !== "object" ||
+      Array.isArray(revisions) ||
+      Object.entries(revisions).some(
+        ([id, revision]) =>
+          !id ||
+          id.length >= 300 ||
+          !Number.isSafeInteger(revision) ||
+          revision < 0,
+      ))
+  )
+    return;
+  latestTranscriptRevisions = {
+    workspaceId: value.workspaceId!,
+    revisions: revisions ?? null,
+  };
+  for (const listener of revisionListeners) listener(latestTranscriptRevisions);
+}
+/** Use the existing workspace stream to identify chats that need a fresh page. */
+export function watchTranscriptRevisions(
+  workspaceId: string,
+  accept: (revisions: Record<string, number> | null) => void,
+) {
+  const listener = (value: TranscriptRevisions) => {
+    if (value.workspaceId === workspaceId) accept(value.revisions);
+  };
+  revisionListeners.add(listener);
+  if (latestTranscriptRevisions) listener(latestTranscriptRevisions);
+  const stop = watchSyncInvalidations("state", () => {});
+  return () => {
+    revisionListeners.delete(listener);
+    stop();
+  };
+}
 const invalidations = new Map<() => void, string>();
 let stopInvalidations: (() => void) | undefined;
 let changeStreamSupport: Promise<boolean> | undefined;
@@ -508,11 +554,15 @@ export function watchSyncInvalidations(
         lastGenerations = current;
         notify(changed);
       };
-      const applyGenerationState = (value: {
-        protocol?: number;
-        workspaceId?: string;
-        generations?: Record<string, number>;
-      }) => {
+      const applyGenerationState = (
+        value: {
+          protocol?: number;
+          workspaceId?: string;
+          generations?: Record<string, number>;
+          transcriptRevisions?: Record<string, number>;
+        },
+        acceptRevisions = true,
+      ) => {
         const generations = value?.generations;
         const expected = ["drafts", "state", "transcripts"];
         const valid =
@@ -544,6 +594,7 @@ export function watchSyncInvalidations(
         }
         lastWorkspaceId = value.workspaceId;
         applyGenerations(generations!);
+        if (acceptRevisions) receiveTranscriptRevisions(value);
         return true;
       };
       const broadcast = (message: Record<string, unknown>) => {
@@ -585,7 +636,15 @@ export function watchSyncInvalidations(
       };
       const publishHeartbeat = () => {
         if (!isOwner || stopped || !available()) return;
-        broadcast({ kind: "heartbeat", generations: lastGenerations });
+        broadcast({
+          kind: "heartbeat",
+          generations: lastGenerations,
+          ...(latestTranscriptRevisions &&
+          latestTranscriptRevisions.workspaceId === workspaceId &&
+          latestTranscriptRevisions.revisions
+            ? { transcriptRevisions: latestTranscriptRevisions.revisions }
+            : {}),
+        });
       };
       const closeSource = () => {
         if (source) clearWorkspaceTokenRates();
@@ -740,7 +799,7 @@ export function watchSyncInvalidations(
           return;
         }
         if (message.kind === "heartbeat") {
-          if (message.generations) applyGenerationState(message);
+          if (message.generations) applyGenerationState(message, false);
           return;
         }
         if (message.kind === "invalidate") {

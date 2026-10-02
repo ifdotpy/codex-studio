@@ -6,8 +6,8 @@ const entries = new Map<
   { value: CachedTranscript; size: number; itemIndexes: Map<string, number> }
 >();
 const listeners = new Map<string, Set<(entry: CachedTranscript) => void>>();
-const maxEntries = 32;
-const maxSize = 24 * 1024 * 1024;
+const maxEntries = 256;
+const maxSize = 64 * 1024 * 1024;
 let size = 0;
 const keyOf = (workspaceId: string, id: string) => `${workspaceId}:${id}`;
 

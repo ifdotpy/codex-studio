@@ -590,9 +590,93 @@ try {
     "Failures release their transport slots for later chats",
   );
 
+  // The shared coordinator carries compact revisions through the real channel.
+  await second.evaluate((workspace) => {
+    window.revisionHints = [];
+    window.stopHints = client.watchTranscriptRevisions(workspace, (value) =>
+      revisionHints.push(value),
+    );
+  }, workspaceId);
+  await until(
+    () => streams.size === 1,
+    "Revision hints reuse one workspace stream",
+  );
+  const hint = async (workspace, revisions) => {
+    await second.evaluate(
+      ({ workspace, revisions, channelWorkspace }) => {
+        const channel = new BroadcastChannel(
+          `codex-sync-${location.origin}-${channelWorkspace}`,
+        );
+        channel.postMessage({
+          protocol: 2,
+          kind: "generations",
+          workspaceId: workspace,
+          generations: { state: 1, transcripts: 1, drafts: 0 },
+          transcriptRevisions: revisions,
+        });
+        channel.close();
+      },
+      { workspace, revisions, channelWorkspace: workspaceId },
+    );
+    await delay(100);
+  };
+  await hint("c".repeat(32), { a: 99 });
+  assert.deepEqual(
+    await second.evaluate(() => revisionHints),
+    [],
+    "Foreign workspace hints are rejected",
+  );
+  await hint(workspaceId, { a: 7 });
+  assert.deepEqual(await second.evaluate(() => revisionHints.at(-1)), { a: 7 });
+  await second.evaluate((workspace) => {
+    const channel = new BroadcastChannel(
+      `codex-sync-${location.origin}-${workspace}`,
+    );
+    channel.postMessage({
+      protocol: 2,
+      kind: "heartbeat",
+      workspaceId: workspace,
+      generations: { state: 1, transcripts: 1, drafts: 0 },
+    });
+    channel.close();
+  }, workspaceId);
+  await delay(100);
+  assert.deepEqual(
+    await second.evaluate(() => revisionHints.at(-1)),
+    { a: 7 },
+    "An older tab heartbeat cannot clear current server revisions",
+  );
+  await hint(workspaceId, { a: -1 });
+  assert.deepEqual(
+    await second.evaluate(() => revisionHints.at(-1)),
+    { a: 7 },
+    "Malformed revisions cannot replace valid hints",
+  );
+  await second.evaluate(() => stopHints());
+  await until(
+    () => streams.size === 0,
+    "Revision hint disposal releases its shared stream",
+  );
+
   // The memory view is bounded; evicted chats remain in IndexedDB.
   await second.evaluate((workspace) => {
-    for (let i = 0; i < 40; i++)
+    for (let i = 0; i < 64; i++)
+      cache.cacheTranscript(workspace, `memory-${i}`, {
+        id: `transcript:memory-${i}`,
+        seq: 100 + i,
+        payload: "{}",
+      });
+  }, workspaceId);
+  assert.equal(
+    await second.evaluate(
+      (workspace) => !!cache.peekTranscript(workspace, "memory-0"),
+      workspaceId,
+    ),
+    true,
+    "Warming a full team retains its first chat for immediate switches",
+  );
+  await second.evaluate((workspace) => {
+    for (let i = 64; i < 320; i++)
       cache.cacheTranscript(workspace, `memory-${i}`, {
         id: `transcript:memory-${i}`,
         seq: 100 + i,

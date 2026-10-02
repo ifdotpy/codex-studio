@@ -87,9 +87,28 @@ class SyncStore:
                         db.execute('UPDATE sync_generation SET value=value+1 WHERE id=1')
                     self._observed_state_signature = current
         generation = self.generation()
+        revisions = self.transcript_revisions(generation)
         return {"protocol": 2, **self.identity(), "generations": {
             "state": generation, "transcripts": generation,
-            "drafts": self.draft_sequence()}}
+            "drafts": self.draft_sequence()},
+            **({"transcriptRevisions": revisions} if revisions is not None else {})}
+
+    def transcript_revisions(self, generation):
+        """Read compact chat revisions once per committed database change."""
+        with self._version_lock:
+            cached = getattr(self, '_transcript_revisions_cache', None)
+            if cached is not None and cached[0] == generation:
+                return cached[1]
+            try:
+                rows = self._version_reader.execute(
+                    "SELECT a.id,COALESCE(r.revision,0) FROM runtime_agents a "
+                    "LEFT JOIN runtime_transcript_revisions r ON r.agent=a.id",
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+            revisions = {agent: int(revision) for agent, revision in rows}
+            self._transcript_revisions_cache = (generation, revisions)
+            return revisions
 
     def entity_sequence(self):
         from codex_sync_entities import max_seq
