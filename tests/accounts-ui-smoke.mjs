@@ -609,11 +609,52 @@ try {
 
   if (process.env.SETTINGS_BENCHMARK) {
     const benchAgent = agents.find((agent) => agent.id === "claude-chat");
-    await page
-      .getByRole("button", { name: "Chat settings", exact: true })
-      .waitFor();
+    const studioSettingsButton = page.locator("#studio-settings-toggle");
+    await studioSettingsButton.waitFor();
+    const studioSettings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    const openedAt = performance.now();
+    const openMs = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const started = performance.now();
+          const panel = () =>
+            document.querySelector('[data-testid="studio-settings"]');
+          const observer = new MutationObserver(() => {
+            if (!panel()) return;
+            observer.disconnect();
+            resolve(performance.now() - started);
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+          document.querySelector("#studio-settings-toggle").click();
+          if (panel()) {
+            observer.disconnect();
+            resolve(performance.now() - started);
+          }
+        }),
+    );
+    await studioSettings.waitFor({ state: "visible" });
+    const roundedOpenMs = Number(openMs.toFixed(1));
+    const appearanceTab = studioSettings.getByRole("tab", {
+      name: "Appearance",
+      exact: true,
+    });
+    await appearanceTab.waitFor();
+    await appearanceTab.click();
+    await studioSettings
+      .getByRole("region", { name: "Theme", exact: true })
+      .waitFor();
+    console.log(`PERF studio-settings-open-ms=${roundedOpenMs}`);
+    await studioSettings.screenshot({
+      path: join(evidence, "studio-settings-appearance-1440.png"),
+      animations: "disabled",
+    });
+    await studioSettings
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await studioSettings.waitFor({ state: "hidden" });
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
@@ -626,15 +667,12 @@ try {
       exact: true,
     });
     await claude.getByLabel("Permission mode", { exact: true }).waitFor();
-    await settings.getByLabel("Appearance", { exact: true }).waitFor();
     await page.waitForFunction(
       () =>
         document
           .querySelector('[aria-label="Claude settings"]')
           ?.getAttribute("aria-busy") === "false",
     );
-    const openMs = Number((performance.now() - openedAt).toFixed(1));
-    console.log(`PERF settings-open-ms=${openMs}`);
     await page.screenshot({
       path: join(evidence, "chat-settings-1440.png"),
       animations: "disabled",
@@ -704,7 +742,7 @@ try {
     await claude
       .getByLabel("Auto-compact token limit", { exact: true })
       .fill("250000");
-    await settings.getByLabel("Appearance", { exact: true }).focus();
+    await settings.getByLabel("Permission mode", { exact: true }).focus();
     assert.ok((await saveResponse).ok());
     await claude.getByText("Saved", { exact: true }).waitFor();
     const finalSettings = bodies
@@ -763,8 +801,8 @@ try {
       "A rejected setting must retry with its saved request identity",
     );
     assert.ok(
-      openMs < 150,
-      `Panel open was ${openMs} ms, expected under 150 ms`,
+      roundedOpenMs < 150,
+      `Studio settings open was ${roundedOpenMs} ms, expected under 150 ms`,
     );
     assert.ok(
       saveMs < 300,
