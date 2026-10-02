@@ -204,9 +204,22 @@ class CapacityContract(unittest.TestCase):
 
     def test_restart_cancels_unsent_timer_but_keeps_manual_action(self):
         retry = self.fail()
+        with self.runtime.db() as db:
+            receipt = db.execute("SELECT id,turn_id FROM runtime_events WHERE agent=? "
+                                 "AND status='delivered' ORDER BY created LIMIT 1", (self.key,)).fetchone()
+        self.assertIsNotNone(receipt)
         self.runtime.close()
         self.runtime = Runtime(self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
+        original_call = self.server.call
+        def exact_native_history(method, params, timeout=60):
+            if method == 'thread/read':
+                return {'thread': {'id': params['threadId'], 'status': {'type': 'idle'}}}
+            if method == 'thread/turns/list':
+                return {'data': [{'id': receipt['turn_id'],
+                                  'clientUserMessageId': receipt['id']}], 'nextCursor': None}
+            return original_call(method, params, timeout)
+        self.server.call = exact_native_history
         self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')
         self.server.seq = 100  # Native turn identities do not restart with the process.
         self.retry(retry)

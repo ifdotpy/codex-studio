@@ -4195,6 +4195,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if (a.get("isLead") or not a.get("parentId") or a.get("deletedAt")
                 or a.get("agentArchive")):
             return None
+        if status == "failed" and hasattr(self, "release_failed_work"):
+            # Task release and the terminal lead event share this transaction.
+            self.release_failed_work(db, self.records(db, "agents"), force=True)
         task_rows = db.execute(
             "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
