@@ -14,7 +14,7 @@ import uuid
 import shutil
 from pathlib import Path
 
-from codex_agent_management import management_tools, manage_agent, _worktree_check
+from codex_agent_management import management_tools, manage_agent, _worker_worktree_root, _worktree_check
 
 
 def text_field(value, name, maximum=32000, empty=False):
@@ -192,8 +192,11 @@ class WorkMixin:
         if owner.get('agentArchive'):
             if owner['agentArchive'].get('reason') == 'Accepted task result is on main':
                 cleaned = owner.get('cleanedWorktree')
-                return {'status': 'archived', 'worktree': {'state': 'removed',
-                        'bytes': cleaned.get('bytes')} if cleaned else {'state': 'none', 'bytes': 0}}
+                worktree = ({'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
+                            if cleaned and cleaned.get('missing') else
+                            {'state': 'removed', 'bytes': cleaned.get('bytes')}
+                            if cleaned else {'state': 'none', 'bytes': 0})
+                return {'status': 'archived', 'worktree': worktree}
             return {'status': 'kept', 'reason': 'The owner was archived for another reason'}
         if owner.get('deletedAt'):
             return {'status': 'kept', 'reason': 'The owner is already removed'}
@@ -202,7 +205,13 @@ class WorkMixin:
             return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
         try:
             cwd = Path(owner['cwd']).resolve()
-            repo = subprocess.run(['git', '-C', str(cwd), 'rev-parse', '--show-toplevel'],
+            repo_path = cwd
+            if not cwd.exists():
+                worktree_root = _worker_worktree_root(owner_id, cwd)
+                if worktree_root is None:
+                    raise ValueError('The saved worker path is outside its Studio worktree')
+                repo_path = worktree_root.parent.parent.parent
+            repo = subprocess.run(['git', '-C', str(repo_path), 'rev-parse', '--show-toplevel'],
                                   check=True, capture_output=True, timeout=30).stdout.decode().strip()
             submitted = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
                                         revision + '^{commit}'], check=True, capture_output=True,
