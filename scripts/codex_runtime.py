@@ -771,17 +771,25 @@ class AppServer:
         return False
 
     def coalesce_supervisor_deltas(self, message):
-        """Commit adjacent unread text fragments with all their journal receipts."""
+        """Commit adjacent unread deltas with all their journal receipts."""
         params = message.get("params")
         first = message.get("_studioSupervisorSequence")
-        if (message.get("method") != "item/agentMessage/delta" or "id" in message
-                or not isinstance(params, dict) or not isinstance(params.get("delta"), str)
+        method = message.get("method")
+        field = "deltaBase64" if method == "command/exec/outputDelta" else "delta"
+        if (method not in {"item/agentMessage/delta", "item/commandExecution/outputDelta",
+                           "command/exec/outputDelta"}
+                or "id" in message
+                or not isinstance(params, dict) or not isinstance(params.get(field), str)
                 or not self.supervisor_commit or not self.supervisor_event_applied
                 or self.supervisor_event_applied(first)):
             return
-        identity = {k: v for k, v in params.items() if k != "delta"}
+        identity = {k: v for k, v in params.items() if k != field}
         samples, sequences = [params], [first]
-        size = len(params["delta"])
+        decode = (lambda value: base64.b64decode(value, validate=True)) if field == "deltaBase64" else None
+        try:
+            size = len(decode(params[field])) if decode else len(params[field])
+        except (ValueError, TypeError):
+            return
         with self.callback_lock:
             # Validate the batch before removing entries. The producer uses the
             # same callback lock; this dispatcher is the only consumer.
@@ -793,16 +801,26 @@ class AppServer:
                     next_sequence = following.get("_studioSupervisorSequence") if isinstance(following, dict) else None
                     if (callback != self.notification or not isinstance(following, dict)
                             or "id" in following or following.get("method") != message["method"]
-                            or not isinstance(next_params, dict) or not isinstance(next_params.get("delta"), str)
+                            or not isinstance(next_params, dict) or not isinstance(next_params.get(field), str)
                             or type(next_sequence) is not int or next_sequence <= sequences[-1]
-                            or {k: v for k, v in next_params.items() if k != "delta"} != identity):
+                            or {k: v for k, v in next_params.items() if k != field} != identity):
+                        break
+                    try:
+                        next_size = len(decode(next_params[field])) if decode else len(next_params[field])
+                    except (ValueError, TypeError):
+                        break
+                    if size + next_size > 65536:
                         break
                     samples.append(next_params)
                     sequences.append(next_sequence)
-                    size += len(next_params["delta"])
+                    size += next_size
             if len(samples) == 1:
                 return
-            joined = {**params, "delta": "".join(p["delta"] for p in samples)}
+            if decode:
+                joined_value = base64.b64encode(b"".join(decode(p[field]) for p in samples)).decode("ascii")
+            else:
+                joined_value = "".join(p[field] for p in samples)
+            joined = {**params, field: joined_value}
             self.proc.register_event_batch(sequences)
             for _ in samples[1:]:
                 self.callbacks.get_nowait()
