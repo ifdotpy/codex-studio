@@ -47,6 +47,65 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(self.server.calls, [])
         self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
 
+    def active_survivor(self):
+        self.server.supervisor_mode = True
+        self.authorize()
+        self.a = self.update(restartRecovery={**self.a['disconnectRecovery'], 'stage': 'pending'})
+        self.server.native['status'] = {'type': 'active'}
+        self.server.native['turns'][0]['status'] = 'inProgress'
+
+    def test_exact_surviving_restart_turn_restores_orchestration_permission(self):
+        self.active_survivor()
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'active_restored', result)
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['status'], 'running')
+        self.assertTrue(actor['autoWake'])
+        self.assertTrue(actor['inFlight'])
+        self.assertEqual(actor['turnId'], 'lost-turn')
+        self.assertIsNone(actor['error'])
+        self.assertIn(self.key, self.runtime.loaded)
+        self.read_calls_only()
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+
+    def test_active_restart_restoration_rejects_unknown_turn_and_old_permission(self):
+        for change in ({'epoch': -1}, {'accountKey': 'other'}, {'threadId': 'other'}, {'turnId': 'other'}, {'autoWake': False}):
+            with self.subTest(change=change):
+                self.active_survivor()
+                self.a = self.update(restartRecovery={**self.a['restartRecovery'], **change})
+                before = self.runtime.agent(self.key)
+                before.pop('connectionCheck', None)
+                self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+                self.only_connection_check_changed(before)
+        self.active_survivor()
+        self.server.native['turns'][0]['id'] = 'another-turn'
+        before = self.runtime.agent(self.key)
+        before.pop('connectionCheck', None)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.only_connection_check_changed(before)
+
+    def test_active_restart_restore_does_not_bypass_a_new_stop(self):
+        self.active_survivor()
+        def stopped(callback):
+            self.runtime.stop(self.key, descendants=False)
+            callback()
+        with patch.object(self.server, 'after_events', side_effect=stopped):
+            self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['status'], 'paused')
+        self.assertFalse(actor['autoWake'])
+        self.assertEqual(actor['error'], 'Stopped by user')
+
+    def test_active_restart_restore_requires_supervisor_and_native_active_turn(self):
+        self.active_survivor()
+        self.server.supervisor_mode = False
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+        self.active_survivor()
+        self.server.native['turns'][0]['status'] = 'completed'
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+
     def test_unsent_recovery_retains_unknown_input_and_explicit_stops(self):
         changes = [{'submitted': True}, {'observedTurnId': 'native-turn'}, {'epoch': -1}, {'accountKey': 'other'}]
         for change in changes:
