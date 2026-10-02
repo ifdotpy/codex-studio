@@ -132,7 +132,7 @@ class PricingSessionCostContract(unittest.TestCase):
                 db.execute("INSERT INTO analytics_usage VALUES (?,?, 'lead','lead','thread',?,1,?)",
                            (seq, response, response, json.dumps(usage)))
         reader = SessionCostReader(db_path, FixedPricing())
-        value = reader.snapshot("lead")
+        value = reader.snapshot("lead", wait=True)
         self.assertEqual(value["pricedSamples"], 2)
         self.assertAlmostEqual(value["totalUSD"], .0002)
         db = reader._connect()
@@ -171,7 +171,7 @@ class PricingSessionCostContract(unittest.TestCase):
         db.commit()
         db.close()
         FixedPricing.missing_refreshes = 0
-        value = SessionCostReader(db_path, FixedPricing()).snapshot("worker-unknown")
+        value = SessionCostReader(db_path, FixedPricing()).snapshot("worker-unknown", wait=True)
         self.assertEqual(FixedPricing.missing_refreshes, 1)
         self.assertEqual(value["pricedSamples"], 3)
         self.assertIn("openai", value["breakdown"]["providers"])
@@ -191,7 +191,12 @@ class PricingSessionCostContract(unittest.TestCase):
             thread.start()
             try:
                 endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=worker-claude"
-                response = json.load(urlopen(endpoint, timeout=4))
+                deadline = time.monotonic() + 3
+                while True:
+                    response = json.load(urlopen(endpoint, timeout=1))
+                    if response["pricingState"] == "ready" or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
                 self.assertEqual(response["rootId"], "lead")
                 self.assertAlmostEqual(response["totalUSD"], value["totalUSD"])
             finally:
@@ -246,7 +251,7 @@ class PricingSessionCostContract(unittest.TestCase):
             lock=threading.RLock(),
         )
         value = SessionCostReader(db_path, FixedPricing(), accounts=accounts,
-                                  state_root=self.root).snapshot("worker")
+                                  state_root=self.root).snapshot("worker", wait=True)
         self.assertIn("anthropic", value["breakdown"]["providers"])
         self.assertIn("openai", value["breakdown"]["providers"])
         self.assertEqual(value["pricedSamples"], 5)
@@ -269,7 +274,12 @@ class PricingSessionCostContract(unittest.TestCase):
             thread.start()
             try:
                 endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=new-chat"
-                response = json.load(urlopen(endpoint, timeout=4))
+                deadline = time.monotonic() + 3
+                while True:
+                    response = json.load(urlopen(endpoint, timeout=1))
+                    if response["pricingState"] == "ready" or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
                 self.assertEqual(response["rootId"], "new-chat")
                 self.assertEqual(response["pricingState"], "ready")
                 self.assertEqual(response["pricedSamples"], 0)
@@ -290,7 +300,7 @@ class PricingSessionCostContract(unittest.TestCase):
         db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
         db.commit()
         db.close()
-        result = SessionCostReader(db_path, LoadingPricing()).snapshot("lead")
+        result = SessionCostReader(db_path, LoadingPricing()).snapshot("lead", wait=True)
         self.assertEqual(result["pricingState"], "loading")
         self.assertIsNone(result["totalUSD"])
         self.assertEqual(result["unknownModels"], [])
@@ -335,7 +345,7 @@ class PricingSessionCostContract(unittest.TestCase):
                        (seq, record["agentId"], "lead", "native", turn, seq, json.dumps(record)))
         db.commit()
         db.close()
-        result = SessionCostReader(db_path, FixedPricing()).snapshot("lead")
+        result = SessionCostReader(db_path, FixedPricing()).snapshot("lead", wait=True)
         self.assertEqual(result["pricedSamples"], 2)
         self.assertEqual(result["unknownModels"], ["gpt-5.6-luna"])
         self.assertEqual(result["totalUSD"], price_usage(catalog(), "openai", "gpt-6-luna", {
@@ -357,7 +367,7 @@ class PricingSessionCostContract(unittest.TestCase):
         db.close()
         clock = [100.0]
         reader = SessionCostReader(db_path, FixedPricing(), clock=lambda: clock[0])
-        first = reader.snapshot("lead")
+        first = reader.snapshot("lead", wait=True)
         db = sqlite3.connect(db_path)
         db.execute("INSERT INTO analytics_usage VALUES (1,'lead','lead','thread','turn',1,?)",
                    (json.dumps({"responseId": "new", "model": "gpt-6-luna", "delta": {
@@ -368,8 +378,8 @@ class PricingSessionCostContract(unittest.TestCase):
         clock[0] += 29
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(reader, "_compute", wraps=reader._compute) as compute:
-                stale = reader.snapshot("lead")
-                again = reader.snapshot("lead")
+                stale = reader.snapshot("lead", wait=True)
+                again = reader.snapshot("lead", wait=True)
                 self.assertEqual(stale["cacheAgeSeconds"], 29)
                 self.assertTrue(stale["refreshing"])
                 self.assertEqual(again["cacheAgeSeconds"], 29)
@@ -377,13 +387,13 @@ class PricingSessionCostContract(unittest.TestCase):
                 worker.assert_called_once()
                 compute.assert_not_called()
         reader._background_refresh("lead", "lead")
-        updated = reader.snapshot("lead")
+        updated = reader.snapshot("lead", wait=True)
         self.assertEqual(updated["pricedSamples"], 1)
         self.assertEqual(updated["cacheAgeSeconds"], 0)
         clock[0] += 60
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(reader, "_compute", wraps=reader._compute) as compute:
-                unchanged = reader.snapshot("lead")
+                unchanged = reader.snapshot("lead", wait=True)
                 self.assertEqual(unchanged["cacheAgeSeconds"], 60)
                 self.assertFalse(unchanged["refreshing"])
                 worker.assert_not_called()
@@ -397,7 +407,7 @@ class PricingSessionCostContract(unittest.TestCase):
         db.close()
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(reader, "_compute", wraps=reader._compute) as compute:
-                unchanged = reader.snapshot("lead")
+                unchanged = reader.snapshot("lead", wait=True)
                 self.assertFalse(unchanged["refreshing"])
                 worker.assert_not_called()
                 compute.assert_not_called()
@@ -409,17 +419,17 @@ class PricingSessionCostContract(unittest.TestCase):
         db.commit()
         db.close()
         with patch("codex_session_costs.threading.Thread") as worker:
-            changed = reader.snapshot("lead")
+            changed = reader.snapshot("lead", wait=True)
             self.assertTrue(changed["refreshing"])
             worker.assert_called_once()
         reader._background_refresh("lead", "lead")
-        changed = reader.snapshot("lead")
+        changed = reader.snapshot("lead", wait=True)
         self.assertEqual(changed["totalUSD"], updated["totalUSD"] * 2)
 
         restarted = SessionCostReader(db_path, FixedPricing(), state_root=self.root, clock=lambda: clock[0])
         with patch("codex_session_costs.threading.Thread") as worker:
             with patch.object(restarted, "_compute", wraps=restarted._compute) as compute:
-                restored = restarted.snapshot("lead")
+                restored = restarted.snapshot("lead", wait=True)
                 self.assertEqual(restored["totalUSD"], changed["totalUSD"])
                 self.assertEqual(restored["cacheAgeSeconds"], 0)
                 self.assertFalse(restored["refreshing"])
@@ -432,7 +442,7 @@ class PricingSessionCostContract(unittest.TestCase):
         db.commit()
         db.close()
         for index in range(18):
-            reader.snapshot("root-" + str(index))
+            reader.snapshot("root-" + str(index), wait=True)
         self.assertLessEqual(len(reader.cache), 16)
 
     def test_session_cost_pricing_change_invalidates_unchanged_usage(self):
@@ -458,14 +468,14 @@ class PricingSessionCostContract(unittest.TestCase):
                 pass
         pricing = MutablePricing()
         reader = SessionCostReader(db_path, pricing, state_root=self.root)
-        initial = reader.snapshot("lead")
+        initial = reader.snapshot("lead", wait=True)
         pricing.value["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]["input"] = 0.2
         with patch("codex_session_costs.threading.Thread") as worker:
-            stale = reader.snapshot("lead")
+            stale = reader.snapshot("lead", wait=True)
             self.assertTrue(stale["refreshing"])
             worker.assert_called_once()
         reader._background_refresh("lead", "lead")
-        refreshed = reader.snapshot("lead")
+        refreshed = reader.snapshot("lead", wait=True)
         self.assertEqual(refreshed["totalUSD"], initial["totalUSD"] * 2)
 
     def test_session_cost_concurrent_cold_requests_share_one_compute(self):
@@ -490,7 +500,7 @@ class PricingSessionCostContract(unittest.TestCase):
             return original(agent_id, root)
         results = []
         with patch.object(reader, "_compute", side_effect=slow_compute):
-            workers = [threading.Thread(target=lambda: results.append(reader.snapshot("lead")))
+            workers = [threading.Thread(target=lambda: results.append(reader.snapshot("lead", wait=True)))
                        for _ in range(8)]
             for worker in workers:
                 worker.start()
@@ -504,6 +514,95 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertEqual(calls, [("lead", "lead")])
         self.assertEqual(len(results), 8)
         self.assertTrue(all(value["rootId"] == "lead" for value in results))
+
+    def test_cold_http_cost_returns_pending_without_waiting_for_history(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+        """)
+        for root in ("lead", "other"):
+            db.execute("INSERT INTO analytics_agents VALUES (?,?)", (root, json.dumps({"rootId": root})))
+        usage = {"inputTokens": 1000, "cachedInputTokens": 0, "cacheWriteInputTokens": 0, "outputTokens": 0}
+        record = {"agentId": "lead", "threadId": "thread", "turnId": "turn",
+                  "responseId": "response", "model": "gpt-6-luna", "delta": usage}
+        db.execute("INSERT INTO analytics_usage VALUES (1,'lead','lead','thread','turn',1,?)", (json.dumps(record),))
+        db.commit()
+        db.close()
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        original = SessionCostReader._compute
+        def slow_compute(reader, agent_id, root):
+            calls.append(root)
+            entered.set()
+            if not release.wait(4):
+                raise RuntimeError("The fixture did not release the history read")
+            return original(reader, agent_id, root)
+        canvas = Canvas(self.root)
+        canvas.runtime = types.SimpleNamespace(lock=threading.RLock())
+        with patch("codex_pricing.PricingCatalog", return_value=FixedPricing()), patch.object(
+                SessionCostReader, "_compute", slow_compute):
+            server = make_server(canvas)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            def read(root):
+                endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent={root}"
+                return json.load(urlopen(endpoint, timeout=1))
+            try:
+                # These HTTP requests must finish while the history read stays blocked.
+                for _ in range(8):
+                    value = read("lead")
+                    self.assertEqual(value["pricingState"], "loading")
+                    self.assertIsNone(value["totalUSD"])
+                self.assertTrue(entered.wait(1))
+                self.assertEqual(read("other")["pricingState"], "loading")
+                self.assertEqual(calls, ["lead"], "Only one heavy history job runs across chats")
+                release.set()
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    value = read("lead")
+                    if value["pricingState"] == "ready":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(value["pricingState"], "ready")
+                self.assertEqual(value["pricedSamples"], 1)
+                self.assertEqual(value["totalUSD"], price_usage(catalog(), "openai", "gpt-6-luna", usage)[0])
+                self.assertEqual(calls, ["lead"])
+            finally:
+                release.set()
+                server.shutdown()
+                thread.join()
+                server.server_close()
+
+    def test_failed_cold_cost_remains_an_error_and_can_recover(self):
+        db_path = self.root / "canvas.sqlite3"
+        db = sqlite3.connect(db_path)
+        db.executescript("""
+          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
+        """)
+        db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
+        db.commit()
+        db.close()
+        reader = SessionCostReader(db_path, FixedPricing())
+        with patch.object(reader, "_compute", side_effect=ValueError("Invalid cost data")):
+            self.assertEqual(reader.snapshot("lead")["pricingState"], "loading")
+            deadline = time.monotonic() + 2
+            while reader.refreshing and time.monotonic() < deadline:
+                time.sleep(0.005)
+            with self.assertRaisesRegex(ValueError, "Invalid cost data"):
+                reader.snapshot("lead")
+            while reader.refreshing and time.monotonic() < deadline:
+                time.sleep(0.005)
+        with self.assertRaisesRegex(ValueError, "Invalid cost data"):
+            reader.snapshot("lead")
+        deadline = time.monotonic() + 2
+        while reader.refreshing and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(reader.snapshot("lead")["pricingState"], "ready")
 
     def test_failed_catalog_refresh_keeps_last_good_copy(self):
         path = self.root / "model-pricing" / "models-dev-v1.json"

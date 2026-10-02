@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 
-from codex_catalog import CatalogPending, CatalogUnavailable
-from codex_worker_accounts import resolve
+from codex_catalog import CatalogPending, CatalogUnavailable, DISPLAY_READ
+from codex_worker_accounts import catalog, resolve
 
 
 class Accounts:
@@ -86,6 +86,46 @@ class WorkerAccountsContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'first pending.*second offline'):
             resolve(rt, {'rootId': 'lead', 'accountKey': 'first'},
                     {'model': 'gpt-6-luna'})
+
+    def test_display_partial_marks_only_pending_accounts(self):
+        rt = Runtime({'first': CatalogPending('first pending')})
+        display = DISPLAY_READ.set(True)
+        try:
+            value = catalog(rt, 'first')
+        finally:
+            DISPLAY_READ.reset(display)
+        self.assertTrue(value['catalogPending'])
+        self.assertEqual(value['data'][0]['model'], 'gpt-6-luna')
+        self.assertEqual(value['unavailableAccounts'], [
+            {'accountKey': 'first', 'error': 'first pending', 'catalogPending': True}])
+        rt = Runtime({'first': CatalogUnavailable('first unavailable')})
+        display = DISPLAY_READ.set(True)
+        try:
+            value = catalog(rt, 'first')
+        finally:
+            DISPLAY_READ.reset(display)
+        self.assertNotIn('catalogPending', value)
+        self.assertNotIn('catalogPending', value['unavailableAccounts'][0])
+
+    def test_display_all_pending_remains_distinct_from_unavailable_and_admission(self):
+        rt = Runtime({'first': CatalogPending('first pending'),
+                      'second': CatalogUnavailable('second unavailable')})
+        display = DISPLAY_READ.set(True)
+        try:
+            with self.assertRaises(CatalogPending):
+                catalog(rt, 'first')
+        finally:
+            DISPLAY_READ.reset(display)
+        with self.assertRaises(ValueError):
+            catalog(rt, 'first')
+        rt = Runtime({'first': CatalogUnavailable('first unavailable'),
+                      'second': CatalogUnavailable('second unavailable')})
+        display = DISPLAY_READ.set(True)
+        try:
+            with self.assertRaises(ValueError):
+                catalog(rt, 'first')
+        finally:
+            DISPLAY_READ.reset(display)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   prefetchTranscript,
+  TRANSCRIPT_PREFETCH_LIMIT,
   watchSyncInvalidations,
   watchTranscriptRevisions,
 } from "../sync/client";
@@ -9,7 +10,7 @@ import { prefetchProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
 
-// Two background slots share history and progress work. A completed prefetch
+// One background slot shares history and progress work. A completed prefetch
 // releases its projection and holds no per-chat stream.
 export function useChatPrefetch(
   data: Snapshot | null,
@@ -117,7 +118,7 @@ export function useChatPrefetch(
         };
       });
       for (const { agent, version, historyAt, progressAt } of candidates) {
-        if (active >= 2) break;
+        if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
         if (running.has(agent.id) || Math.min(historyAt, progressAt) > now)
           continue;
         active++;
@@ -167,7 +168,7 @@ export function useChatPrefetch(
       for (const records of [checked, progressChecked, failed, progressFailed])
         for (const id of records.keys())
           if (!eligible.has(id)) records.delete(id);
-      if (active < 2) {
+      if (active < TRANSCRIPT_PREFETCH_LIMIT) {
         const due = candidates
           .filter(({ agent }) => !running.has(agent.id))
           .map(({ historyAt, progressAt }) => Math.min(historyAt, progressAt));

@@ -84,21 +84,31 @@ def resolve(runtime, parent, data, *, catalogs=None):
 
 def catalog(runtime, parent_account):
     """Return selectable models in the same account order used by spawn."""
+    from codex_catalog import DISPLAY_READ
+
     models, seen, unavailable = [], set(), []
+    pending = False
     for key in account_order(runtime, parent_account):
         account = runtime.accounts.get(key)
         try:
             value = runtime.catalog(key)
         except (CatalogPending, CatalogUnavailable, ValueError, RuntimeError) as error:
-            unavailable.append({'accountKey': key, 'error': str(error)})
+            item = {'accountKey': key, 'error': str(error)}
+            if DISPLAY_READ.get() and isinstance(error, CatalogPending):
+                item['catalogPending'] = True
+                pending = True
+            unavailable.append(item)
             continue
         for row in value.get('data', []):
             if row.get('model') and not row.get('hidden') and row['model'] not in seen:
                 seen.add(row['model'])
                 models.append({**row, 'accountKey': key, 'provider': account.get('provider', 'codex')})
     if not models:
+        if pending:
+            raise CatalogPending('Model catalog is pending; no worker model catalog is available yet')
         raise ValueError('No worker model catalog is available')
-    return {'data': models, 'unavailableAccounts': unavailable}
+    return {'data': models, 'unavailableAccounts': unavailable,
+            **({'catalogPending': True} if pending else {})}
 
 
 def selected_account(runtime, value):

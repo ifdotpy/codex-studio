@@ -120,7 +120,7 @@ class ModelCatalogCache:
             result = stale
         if waiting is not None:
             try:
-                result = copy.deepcopy(waiting.result(self.wait_seconds))
+                result = copy.deepcopy(waiting.result(0 if stale_ok else self.wait_seconds))
             except concurrent.futures.TimeoutError as error:
                 raise CatalogPending(
                     "Model catalog is pending; no workers were created. "

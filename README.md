@@ -271,11 +271,12 @@ Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. Mobile sync uses separate event streams for
-entity state, drafts, and open transcripts.
+histories through its existing API. One shared event stream tells visible windows
+when entity state, drafts, or open transcripts need an update.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
-The current chat loads first. At most two background histories load at once.
+The current chat loads first. One background history loads at a time.
+This leaves connections available for messages and other active requests.
 A ready history appears immediately on selection, including its saved scroll position.
 After a network change or a return to Studio, sync replaces the old connection.
 A cached workspace cannot send drafts to a different workspace before verification.

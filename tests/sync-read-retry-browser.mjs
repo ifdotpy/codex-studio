@@ -43,7 +43,14 @@ server.middlewares.stack.unshift({
       json({
         workspaceId: kind === "workspace" ? "f".repeat(32) : workspaceId,
         documents: [
-          { id: scope, seq: 1, payload: JSON.stringify({ items: [] }) },
+          {
+            id: scope,
+            seq: 1,
+            payload:
+              kind === "decode" && count === 1
+                ? "invalid-json"
+                : JSON.stringify({ items: [] }),
+          },
         ],
         checkpoint: { seq: 1 },
       });
@@ -149,6 +156,32 @@ try {
     assert.ok(await page.evaluate(() => !window.states.includes("live")));
     await page.evaluate(() => window.stop());
   }
+  await page.evaluate(() => {
+    window.states = [];
+    window.stop = window.client.subscribeProjection(
+      "transcript:decode",
+      () => {},
+      (error) => window.states.push(error ? String(error) : "live"),
+    );
+  });
+  await page.waitForFunction(() =>
+    window.states.some((state) => state !== "live"),
+  );
+  for (const response of streams)
+    response.write(
+      `data: ${JSON.stringify({
+        protocol: 2,
+        workspaceId,
+        generations: { state: 2, drafts: 2, transcripts: 2 },
+      })}\n\n`,
+    );
+  await page.waitForFunction(() => window.states.at(-1) === "live");
+  assert.equal(
+    attempts.get("decode"),
+    2,
+    "A new stream hint must recover a malformed projection response.",
+  );
+  await page.evaluate(() => window.stop());
   assert.deepEqual(errors, []);
   console.log("sync read retry browser contract passed");
 } finally {

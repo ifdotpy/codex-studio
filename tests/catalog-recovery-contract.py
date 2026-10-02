@@ -72,6 +72,37 @@ class CatalogCacheContract(unittest.TestCase):
         self.assertEqual(self.read(), CATALOG)
         self.assertEqual(len(self.server.requests), 1)
 
+    def test_cold_display_returns_pending_without_waiting_and_reuses_late_reply(self):
+        self.cache.wait_seconds = 5
+        def display():
+            return self.cache.read('a', self.server, 'one', lambda: self.current, stale_ok=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            calls = [pool.submit(display) for _ in range(8)]
+            try:
+                for call in calls:
+                    with self.assertRaises(CatalogPending):
+                        call.result(1)
+                self.assertEqual(len(self.server.requests), 1)
+            finally:
+                if self.server.requests and not self.server.requests[0].done():
+                    self.server.requests[0].set_result(CATALOG)
+        self.assertEqual(display(), CATALOG)
+        self.assertEqual(len(self.server.requests), 1)
+
+    def test_cold_display_does_not_shorten_admission_wait(self):
+        self.cache.wait_seconds = 5
+        with self.assertRaises(CatalogPending):
+            self.cache.read('a', self.server, 'one', lambda: self.current, stale_ok=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            admission = pool.submit(self.read)
+            try:
+                with self.assertRaises(concurrent.futures.TimeoutError):
+                    admission.result(.05)
+            finally:
+                self.server.requests[0].set_result(CATALOG)
+            self.assertEqual(admission.result(1), CATALOG)
+        self.assertEqual(len(self.server.requests), 1)
+
     def test_expired_catalog_serves_display_at_once_but_not_admission(self):
         self.warm()
         self.now += 301
@@ -247,7 +278,7 @@ class CatalogRuntimeContract(unittest.TestCase):
         self.temp.cleanup()
 
     def test_pending_metadata_creates_no_worker_and_late_success_reuses_catalog(self):
-        spec = {"name": "One", "prompt": "Check one"}
+        spec = {"name": "One", "prompt": "Check one", "account_key": "default"}
         before = self.runtime.team(self.lead["id"])["agents"]
         with self.assertRaises(CatalogPending):
             self.runtime.create(spec, self.lead["id"], defer=True)

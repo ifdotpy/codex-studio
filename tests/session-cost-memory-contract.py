@@ -33,14 +33,14 @@ def worker(db_path, state_root, name, expected_samples):
     clock = [time.time()]
     reader = SessionCostReader(db_path, FixedPricing(), state_root=state_root, clock=lambda: clock[0])
     started = time.perf_counter()
-    result = reader.snapshot("lead")
+    result = reader.snapshot("lead", wait=True)
     cold = time.perf_counter() - started
     started = time.perf_counter()
-    warm = reader.snapshot("lead")
+    warm = reader.snapshot("lead", wait=True)
     warm_elapsed = time.perf_counter() - started
     clock[0] += 31
     started = time.perf_counter()
-    unchanged = reader.snapshot("lead")
+    unchanged = reader.snapshot("lead", wait=True)
     unchanged_elapsed = time.perf_counter() - started
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform != "darwin":

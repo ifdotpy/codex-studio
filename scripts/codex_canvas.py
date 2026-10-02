@@ -1315,7 +1315,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 if path.path == "/api/models" and canvas.runtime:
                     query = parse_qs(path.query)
                     account = query.get("account_key", ["default"])[0]
-                    from codex_catalog import DISPLAY_READ
+                    from codex_catalog import CatalogPending, DISPLAY_READ
                     # A settings list may show an expired catalog while it refreshes.
                     display = DISPLAY_READ.set(True)
                     try:
@@ -1323,6 +1323,8 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             from codex_worker_accounts import catalog
                             return self.send(catalog(canvas.runtime, account))
                         return self.send(canvas.runtime.catalog(account))
+                    except CatalogPending as error:
+                        return self.send({"error": str(error), "catalogPending": True}, 400)
                     finally:
                         DISPLAY_READ.reset(display)
                 if path.path == "/api/import" and canvas.runtime:

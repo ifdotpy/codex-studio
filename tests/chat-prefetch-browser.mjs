@@ -188,7 +188,7 @@ try {
       client.prefetchTranscript(workspace, "b"),
     ];
   }, workspaceId);
-  await until(() => running === 2, "Two background transfers can run");
+  await until(() => running === 1, "One background transfer can run");
   assert.equal(streams.size, 0, "Background prefetch holds no live stream");
   assert.equal(
     await page.evaluate(
@@ -206,14 +206,14 @@ try {
       ),
     );
   });
-  assert.equal(running, 2, "Foreground joins the same in-flight chat transfer");
+  assert.equal(running, 1, "Foreground joins the same in-flight chat transfer");
   await until(
     () => streams.size === 1,
     "Foreground opens one transcript stream",
   );
   releaseA();
   releaseB();
-  assert.deepEqual(await page.evaluate(() => Promise.all(jobs)), [true, true]);
+  assert.deepEqual(await page.evaluate(() => Promise.all(jobs)), [true, false]);
   await page.waitForFunction(
     () => values.at(-1)?.items[0].body === "revision 2",
   );
@@ -223,8 +223,8 @@ try {
     "Foreground release also closes its shared socket",
   );
   assert.ok(
-    maximum <= 2,
-    "Background transport has at most two active requests",
+    maximum <= 1,
+    "Background transport has at most one active request per renderer",
   );
 
   assert.deepEqual(

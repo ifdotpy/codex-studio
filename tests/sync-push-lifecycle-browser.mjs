@@ -87,7 +87,7 @@ try {
     );
   });
   await waitFor(() => streams.size === 1);
-  for (const response of streams) response.write("event: reset\ndata: {}\n\n");
+  for (const response of streams) response.end();
   await waitFor(() => streams.size === 0);
   await page.evaluate(() => window.stopPush());
   const beforeRetry = opened;
@@ -95,7 +95,7 @@ try {
   assert.equal(
     opened,
     beforeRetry,
-    "A disposed subscription must cancel reset retries.",
+    "A disposed subscription must cancel reconnect attempts.",
   );
 
   await page.evaluate(() => {

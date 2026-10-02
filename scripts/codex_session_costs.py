@@ -221,7 +221,8 @@ class SessionCostReader:
 
     def _start_refresh(self, agent_id, root):
         with self.lock:
-            if root in self.refreshing:
+            # Heavy history reads share one worker across all chats.
+            if self.refreshing:
                 return False
             self.refreshing.add(root)
         try:
@@ -236,13 +237,20 @@ class SessionCostReader:
     def _background_refresh(self, agent_id, root):
         try:
             self._compute_shared(agent_id, root, refresh=True)
-        except Exception:
-            pass
+            with self.lock:
+                self.__dict__.setdefault("refresh_errors", OrderedDict()).pop(root, None)
+        except Exception as error:
+            with self.lock:
+                errors = self.__dict__.setdefault("refresh_errors", OrderedDict())
+                errors[root] = error
+                errors.move_to_end(root)
+                while len(errors) > self.CACHE_ROOTS:
+                    errors.popitem(last=False)
         finally:
             with self.lock:
                 self.refreshing.discard(root)
 
-    def snapshot(self, agent_id):
+    def snapshot(self, agent_id, *, wait=False):
         db = self._connect()
         try:
             db.execute("BEGIN")
@@ -286,6 +294,16 @@ class SessionCostReader:
             with self.lock:
                 refreshing = started or root in self.refreshing
             return {**result, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
+        if not wait:
+            with self.lock:
+                error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
+            self._start_refresh(agent_id, root)
+            if error is not None:
+                raise error
+            return {"rootId": root, "totalUSD": None, "pricedSamples": 0,
+                    "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
+                    "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
+                    "refreshing": True, "method": "Calculating the session estimate."}
         result = self._compute_shared(agent_id, root)
         return {**result, "cacheAgeSeconds": 0, "refreshing": False}
 
