@@ -101,7 +101,9 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='o6-',dir='/tmp')
         self.root=Path(self.temp.name).resolve()
         self.binary=self.root/'fake-native'
-        self.binary.write_text(FAKE_NATIVE)
+        # The Apple developer launcher adds SDK environment variables. Use the
+        # test interpreter so a fixture exec preserves its accepted environment.
+        self.binary.write_text(FAKE_NATIVE.replace('#!/usr/bin/env python3', '#!' + sys.executable, 1))
         self.binary.chmod(0o700)
         self.release=self.root/'release'
         self.pid_file=self.root/'native.pid'
@@ -452,6 +454,65 @@ class ProcessSupervisorContract(unittest.TestCase):
         second = self.server()
         self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
+    def test_closed_legacy_launch_starts_new_generation_without_replaying_receipts(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        first.wait(first.submit('model/list', {}, operation_id='retained-operation'), timeout=2)
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        self.restart_supervisor()
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        with patch.object(process_supervisor, 'process_launch_environment',
+                          side_effect=AssertionError('A closed child has no launch environment')):
+            second = self.server()
+        self.assertEqual(second.proc.generation, 2)
+        self.assertNotEqual(int(self.pid_file.read_text()), old_pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        duplicate = second.proc.call('write', operationId='retained-operation', nativeId=50,
+                                     message={'id': 50, 'method': 'model/list', 'params': {}})
+        self.assertTrue(duplicate['duplicate'])
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM operations WHERE operation_id='retained-operation'").fetchone()[0], 1)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 2)
+        self.assertEqual(operations.count('model/list'), 2)
+        self.assertNotIn('turn/start', operations)
+
+    def test_closed_legacy_launch_without_recovery_proof_is_rejected(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        self.restart_supervisor()
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            db.execute('DELETE FROM degraded_handles')
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        with self.assertRaisesRegex(RuntimeError, 'native outcome remains unknown'):
+            self.server()
+        self.assertEqual(int(self.pid_file.read_text()), old_pid)
+
+    def test_closed_recovery_proof_cannot_replace_a_still_live_child(self):
+        first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            started = db.execute('SELECT start_time FROM child_identities').fetchone()[0]
+            db.execute('UPDATE handles SET closed_at=?', (time.time(),))
+            db.execute('INSERT INTO degraded_handles VALUES (?,?,?,?)',
+                       ('account:default', old_pid, started, time.time()))
+        isolated = process_supervisor.Supervisor(self.root)
+        with self.assertRaisesRegex(RuntimeError, 'native outcome remains unknown'):
+            isolated.open_handle('account:default', [str(self.binary)], dict(os.environ), None)
+        self.assertEqual(process_start_time(old_pid), started)
+        self.assertEqual(isolated.children, {})
 
     def test_account_and_terminal_roots_share_the_state_supervisor(self):
         roots = [self.root/'account-servers'/'claude-local',

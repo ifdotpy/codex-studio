@@ -85,6 +85,20 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(actor['status'], 'queued')
         self.assertEqual(self.server.calls, [])
 
+    def test_closed_supervisor_recovery_restores_only_proven_unsent_input(self):
+        error = 'Cannot verify the existing supervisor child; native outcome remains unknown'
+        self.unsent_transport_failure(error)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'input_restored')
+        self.assertEqual(self.server.calls, [])
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_events')
+        self.unsent_transport_failure(error)
+        self.update(startAttempt={**self.a['startAttempt'], 'submitted': True})
+        before = self.runtime.agent(self.key)
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
+        self.assertEqual(self.runtime.agent(self.key), before)
+        self.assertEqual(self.server.calls, [])
+
     def queued_restart_wait(self):
         self.authorize()
         self.a = self.update(autoWake=True, status='queued')

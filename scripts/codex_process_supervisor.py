@@ -349,10 +349,16 @@ class Supervisor:
             with self.journal.db() as db:
                 saved = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
                 if saved:
-                    orphan = db.execute("SELECT 1 FROM degraded_handles WHERE handle=?", (handle,)).fetchone()
-                    if (saved["signature"] != signature or saved["closed_at"] is None
-                            or self.recovery.get("blocked")):
+                    if saved["closed_at"] is None or self.recovery.get("blocked"):
                         raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
+                    if saved["signature"] != signature:
+                        proof = db.execute(
+                            "SELECT c.start_time FROM degraded_handles d "
+                            "JOIN child_identities c ON c.handle=d.handle "
+                            "WHERE d.handle=? AND d.prior_pid=? AND c.pid=d.prior_pid "
+                            "AND c.start_time=d.start_time", (handle, saved["pid"])).fetchone()
+                        if not proof or process_start_matches(saved["pid"], proof[0], allow_legacy=True):
+                            raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
                     recovered = True
                 else:
                     db.execute("INSERT INTO handles(id,signature,pid,created) VALUES (?,?,0,?)",
@@ -372,9 +378,9 @@ class Supervisor:
                 proc.wait(timeout=2)
                 raise RuntimeError("Cannot prove the native child process identity")
             with self.journal.db() as db:
-                db.execute("UPDATE handles SET pid=?,rpc_sequence=0,"
+                db.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,"
                            "generation=generation+1,init_result=NULL,"
-                           "closed_at=NULL,closed_reason=NULL WHERE id=?", (proc.pid, handle))
+                           "closed_at=NULL,closed_reason=NULL WHERE id=?", (proc.pid, signature, handle))
                 db.execute("INSERT INTO child_identities VALUES (?,?,?,?) ON CONFLICT(handle) DO UPDATE SET "
                            "pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time",
                            (handle, proc.pid, proc.pid, started))
@@ -717,16 +723,18 @@ def native_launch_environment(root, handle, command, env, cwd):
     path = Path(root) / 'supervisor.sqlite3'
     db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True)
     try:
-        saved = db.execute('SELECT h.signature,h.pid,c.pid,c.start_time FROM handles h '
+        saved = db.execute('SELECT h.signature,h.pid,c.pid,c.start_time,h.closed_at FROM handles h '
                            'LEFT JOIN child_identities c ON c.handle=h.id WHERE h.id=?',
                            (handle,)).fetchone()
     finally:
         db.close()
-    if not saved or Supervisor.signature(command, clean, cwd) == saved[0]:
+    if not saved or saved[4] is not None or Supervisor.signature(command, clean, cwd) == saved[0]:
+        # A closed generation has no environment to inspect. The supervisor
+        # validates its durable recovery proof before accepting a new launch.
         return clean
     # Older supervisors hash the backend ID into the launch. Keep their exact
     # accepted signature, but only for the same verified native configuration.
-    _, pid, identity_pid, started = saved
+    _, pid, identity_pid, started, _ = saved
     if not started or pid != identity_pid or not process_start_matches(pid, started, allow_legacy=True):
         raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
     original = process_launch_environment(pid)
