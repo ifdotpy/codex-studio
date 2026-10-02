@@ -352,6 +352,7 @@ class AppServer:
         self.notification, self.request, self.died = notification, request, died
         self.supervisor_commit = supervisor_commit
         self.supervisor_event_applied = supervisor_event_applied
+        self.supervisor_reattach_future = None
         self.lock = threading.RLock()
         self.write_lock = threading.RLock()
         self.pending = {}
@@ -389,10 +390,16 @@ class AppServer:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
             if supervisor_reattached:
+                self.supervisor_reattach_future = concurrent.futures.Future()
+                def restore(_message):
+                    try:
+                        self.persistence_retry(lambda: supervisor_reattached(self.supervisor_resumed))
+                    except Exception as error:
+                        self.supervisor_reattach_future.set_exception(error)
+                        raise
+                    self.supervisor_reattach_future.set_result(None)
                 # Restore before native events, outside the startup gate.
-                self.callbacks.put((lambda _: self.persistence_retry(
-                    lambda: supervisor_reattached(self.supervisor_resumed)),
-                    {"_studioReattachBarrier": True}))
+                self.callbacks.put((restore, {"_studioReattachBarrier": True}))
         else:
             self.proc = subprocess.Popen(
                 command, env=env,
@@ -428,6 +435,9 @@ class AppServer:
             self.write({"method": "initialized"}, operation_id=initialized_operation)
         except Exception:
             self.close()
+            barrier = self.supervisor_reattach_future
+            if barrier is not None and barrier.done():
+                barrier.result()
             raise
 
     def write(self, value, operation_id=None):
@@ -2196,7 +2206,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None):
         now = time.time()
-        with self.lock, self.db() as db:
+        with self.notification_db() as db:
+            if self.closed:
+                return
             for agent in self.records(db, "agents"):
                 marker = agent.get("restartRecovery") or {}
                 if (agent.get("accountKey", "default") != account_key or agent.get("deletedAt")
@@ -2221,11 +2233,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         for account in accounts:
             try:
-                # AppServer's open receipt is available synchronously, before its
-                # journal reader starts replaying buffered notifications.
-                self.connect(account)
+                server = self.connect(account)
             except Exception as error:
                 self._record_supervisor_restore(account, "not_restored", "account_handle_open_failed",
+                                                type(error).__name__)
+                continue
+            barrier = getattr(server, "supervisor_reattach_future", None)
+            if barrier is None:
+                continue
+            try:
+                # Connect has released start_lock. The callback can take the writer.
+                barrier.result(timeout=65)
+            except concurrent.futures.TimeoutError as error:
+                if not barrier.done():
+                    raise RuntimeError("Supervisor restore did not finish before startup") from error
+                self._record_supervisor_restore(account, "not_restored", "account_restore_failed",
+                                                type(error).__name__)
+            except Exception as error:
+                self._record_supervisor_restore(account, "not_restored", "account_restore_failed",
                                                 type(error).__name__)
 
     def connection_current(self, account_key, connection_id):
@@ -3636,13 +3661,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
                 db.commit()
-                try:
-                    submitted = self.submit_reserved(server, method, params)
-                except Exception as error:
-                    if "outcome unknown" in str(error):
-                        raise PreparationPending(operation["future"]) from error
-                    operation["future"].set_exception(error)
-                    raise
+            # The native writer can wait for its account pipe or supervisor.
+            # Retain this agent's preparation guard, without blocking other chats.
+            try:
+                submitted = self.submit_reserved(server, method, params,
+                    operation_id="prepare:" + a["id"] + ":" + operation["id"])
+            except Exception as error:
+                if "outcome unknown" in str(error):
+                    raise PreparationPending(operation["future"]) from error
+                operation["future"].set_exception(error)
+                raise
             if timing is not None:
                 timing["threadSubmittedAt"] = time.monotonic_ns()
             # Thread receipts gate every start. Keep them out of the notification
@@ -3795,17 +3823,35 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         observations.append(f"{waited_ms}ms:unknown")
 
     def ensure_dispatch_indexes(self, db):
-        if self.__dict__.get("_dispatch_indexes_ready"):
+        if (self.__dict__.get("_dispatch_indexes_ready")
+                and self.__dict__.get("_dispatch_busy_input_index_ready")):
             return False
         db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_dispatch_active ON runtime_agents("
                    "json_extract(record,'$.rootId')) WHERE "
                    "json_extract(record,'$.inFlight')=1 OR "
                    "json_extract(record,'$.status') IN ('running','starting','approval')")
+        db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_dispatch_busy_input ON runtime_agents("
+                   "json_extract(record,'$.rootId')) WHERE "
+                   "json_extract(record,'$.startAttempt.activeAtReservation')=1")
         db.execute("CREATE INDEX IF NOT EXISTS runtime_agent_dispatch_workspace ON runtime_agents("
                    "json_extract(record,'$.cwd')) WHERE "
                    "json_type(record,'$.workspaceOperation')='text' AND "
                    "json_extract(record,'$.workspaceOperation')!=''")
         return True
+
+    def dispatch_active_slots(self, db):
+        """A busy input keeps its slot until its exact native receipt settles."""
+        return [{"id": row[0], "rootId": row[1]} for row in db.execute(
+            "SELECT id,json_extract(record,'$.rootId') FROM runtime_agents "
+            "WHERE json_extract(record,'$.inFlight')=1 "
+            "OR json_extract(record,'$.status') IN ('running','starting','approval') "
+            "UNION SELECT id,json_extract(record,'$.rootId') FROM runtime_agents "
+            "WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1 "
+            "AND EXISTS (SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input "
+            "JOIN runtime_events AS event ON event.id=input.value "
+            "WHERE event.agent=runtime_agents.id "
+            "AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') "
+            "AND event.status IN ('reserved','dispatching','uncertain'))")]
 
     @contextmanager
     def dispatch_lock(self, observations=None):
@@ -3840,8 +3886,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 return 0
             reserved_count = 0
+            indexes_created = self.ensure_dispatch_indexes(db)
             if current_agents is None:
-                indexes_created = self.ensure_dispatch_indexes(db)
                 if fast_event_ids:
                     fast_marks["fastIndexesReadyAt"] = time.monotonic_ns()
                 from codex_team_isolation import cancel_pending
@@ -3852,10 +3898,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agents = [a for a in agents if a is not None]
                 if fast_event_ids:
                     fast_marks["fastAgentLoadedAt"] = time.monotonic_ns()
-                active = [{"rootId": row[0]} for row in db.execute(
-                    "SELECT json_extract(record,'$.rootId') FROM runtime_agents "
-                    "WHERE json_extract(record,'$.inFlight')=1 "
-                    "OR json_extract(record,'$.status') IN ('running','starting','approval')")]
+                active = self.dispatch_active_slots(db)
                 if fast_event_ids:
                     fast_marks["fastActiveScanAt"] = time.monotonic_ns()
                 reserved_cwds = {str(Path(row[0]).resolve()) for row in db.execute(
@@ -3882,7 +3925,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 reserved_cwds = {
                     str(Path(a["cwd"]).resolve()) for a in agents if a.get("workspaceOperation")
                 }
-                active = [a for a in agents if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}]
+                active = self.dispatch_active_slots(db)
             from codex_context_repair import blocked as context_repair_blocked
             candidates = sorted(
                 (
@@ -4060,6 +4103,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.mark_event_timings(db, fast_event_ids, fast_marks)
         if indexes_created:
             self._dispatch_indexes_ready = True
+            self._dispatch_busy_input_index_ready = True
         return reserved_count
     def start(self, a, rows):
         began_at = time.monotonic_ns()

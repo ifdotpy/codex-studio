@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restart preserves admitted work without replaying unknown operations."""
 import copy
+import concurrent.futures
 import importlib.util
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -215,6 +217,28 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(agent['supervisorRestore']['status'], 'not_restored')
         self.assertEqual(agent['supervisorRestore']['reason'], 'account_handle_open_failed')
         self.assertEqual(agent['restartRecovery']['stage'], 'pending')
+
+    def test_startup_timeout_closes_runtime_without_cancelling_restore_or_exposing_api(self):
+        self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')
+        self.runtime.close()
+        pending = concurrent.futures.Future()
+        observed = []
+        def connect(runtime, _account):
+            observed.append(runtime)
+            return SimpleNamespace(supervisor_reattach_future=pending)
+        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}), \
+                patch.object(fixture.Runtime, 'connect', connect), \
+                patch.object(pending, 'result', side_effect=concurrent.futures.TimeoutError):
+            with self.assertRaisesRegex(RuntimeError, 'restore did not finish before startup'):
+                fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.assertEqual(len(observed), 1)
+        self.assertTrue(observed[0].closed)
+        self.assertFalse(pending.done())
+        self.assertFalse(pending.cancelled())
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'interrupted')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
 
     def test_reattach_rechecks_connection_and_close_after_runtime_lock_wait(self):
         for change in ('connection', 'closed'):

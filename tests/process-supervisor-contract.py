@@ -66,8 +66,11 @@ for line in sys.stdin:
         result={'turn':{'id':'turn','status':'completed'}}
     elif method == 'longTurn':
         params=request.get('params',{})
-        print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':params['threadId'],'turnId':'long-turn','itemId':'long-item','delta':'buffered-'} }),flush=True)
         Path(os.environ['FAKE_PHASE_ONE']).touch()
+        release=Path(os.environ['FAKE_RELEASE'])
+        deadline=time.time()+10
+        while not release.exists() and time.time()<deadline: time.sleep(.01)
+        print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':params['threadId'],'turnId':'long-turn','itemId':'long-item','delta':'buffered-'} }),flush=True)
         finish=Path(os.environ['FAKE_FINISH'])
         deadline=time.time()+10
         while not finish.exists() and time.time()<deadline: time.sleep(.01)
@@ -270,7 +273,40 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.release.touch()
         wait_for(lambda: self._journal_method_count('item/agentMessage/delta') == 1)
 
-        second = Runtime(self.root, AppServer)
+        entered, release_restore, constructed = threading.Event(), threading.Event(), threading.Event()
+        observed, result, errors = [], [], []
+        original_restore = Runtime.supervisor_reattached
+        def restore(runtime, *args):
+            observed.append(runtime)
+            entered.set()
+            if not release_restore.wait(4):
+                raise RuntimeError('The fixture restore gate timed out')
+            return original_restore(runtime, *args)
+        def construct():
+            try:
+                with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+                    result.append(Runtime(self.root, AppServer))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                constructed.set()
+        with patch.object(Runtime, 'supervisor_reattached', restore):
+            worker = threading.Thread(target=construct)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertFalse(constructed.wait(.1), 'Runtime must restore before exposing the API')
+                for lock in (observed[0].lock, observed[0].start_lock):
+                    self.assertTrue(lock.acquire(timeout=1), 'Startup restore must wait outside both locks')
+                    lock.release()
+            finally:
+                release_restore.set()
+                worker.join(5)
+                if result:
+                    self.addCleanup(result[0].close)
+        self.assertTrue(constructed.is_set())
+        self.assertEqual(errors, [])
+        second = result[0]
         self.addCleanup(second.close)
         with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
             replacement = second.connect()
@@ -371,6 +407,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             self.assertEqual(errors, [])
             second = result[0]
             self.servers.append(second)
+            self.assertFalse(second.supervisor_reattach_future.done())
             second.call('burst', {'itemId': 'reattach-order'}, timeout=3)
             self.assertEqual(observed, [])
             gate.release()
@@ -378,6 +415,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             while len(observed) < 2 and time.monotonic() < deadline:
                 time.sleep(.01)
             self.assertEqual(observed[0], ('restore', True))
+            self.assertIsNone(second.supervisor_reattach_future.result(timeout=1))
             self.assertTrue(any(kind == 'native' for kind, _ in observed[1:]))
             self.assertEqual(int(self.pid_file.read_text()), native_pid)
         finally:
@@ -394,6 +432,35 @@ class ProcessSupervisorContract(unittest.TestCase):
             return sum(json.loads(row[0]).get('method') == method for row in rows)
         except sqlite3.OperationalError:
             return 0
+
+    def test_reattach_future_preserves_original_failure_and_holds_native_callbacks(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        gate = threading.Event()
+        failure = OSError('The fixture restore failed')
+        observed = []
+        def restore(_resumed):
+            if not gate.wait(3):
+                raise RuntimeError('The fixture restore gate timed out')
+            raise failure
+        second = AppServer(self.root, observed.append, lambda _: None, lambda: None,
+                           supervisor_handle='account:default', supervisor_reattached=restore)
+        self.servers.append(second)
+        try:
+            second.call('burst', {'itemId': 'failed-restore'}, timeout=3)
+            self.assertEqual(observed, [])
+            gate.set()
+            with self.assertRaises(OSError) as result:
+                second.supervisor_reattach_future.result(timeout=3)
+            self.assertIs(result.exception, failure)
+            wait_for(lambda: second.dispatcher_done.is_set())
+            self.assertEqual(observed, [])
+            self.assertIn(str(failure), second.transport_error)
+            self.assertEqual(int(self.pid_file.read_text()), native_pid)
+            self.assertGreater(self._journal_method_count('item/agentMessage/delta'), 0)
+        finally:
+            gate.set()
 
     @staticmethod
     def _stored_runtime_item(runtime, agent_id, suffix):

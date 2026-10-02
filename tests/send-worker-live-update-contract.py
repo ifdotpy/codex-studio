@@ -290,6 +290,54 @@ def cold_recovery_case():
             close_fixture(runtime, dispatch)
 
 
+def installed_baseline_case():
+    update = reviewed_patch()
+    baseline = subprocess.check_output(
+        ['git', 'show', 'a1001dc:scripts/codex_runtime.py'], cwd=ROOT)
+    with tempfile.TemporaryDirectory(prefix='studio-installed-baseline-patch-') as directory:
+        runtime = fixture.QuietRuntime(Path(directory), server_factory=lambda *args: None)
+        agent, dispatch, _, _, _ = native_fixture(runtime, directory)
+        try:
+            # Simulate the exact installed revision while retaining live objects.
+            for item in update.SOURCES['codex_runtime']['functions']:
+                owner, current = update._target(codex_runtime, item['path'])
+                try:
+                    old, _ = source_function(baseline, item['path'], vars(codex_runtime),
+                                              allow_contextmanager=True)
+                except RuntimeError as error:
+                    if str(error) != 'Unknown source structure':
+                        raise
+                    if current is not None:
+                        delattr(owner, item['path'][-1])
+                    continue
+                actual = getattr(current, '__wrapped__', current) if item['manager'] else current
+                actual.__code__, actual.__defaults__, actual.__kwdefaults__ = (
+                    old.__code__, old.__defaults__, old.__kwdefaults__)
+            identities = runtime.server, runtime.connection_ids, dispatch.server.proc
+            update.apply(runtime)
+            with runtime.lock, runtime.db() as db:
+                latest = runtime.agent(agent['id'], db)
+                latest.update(status='paused', autoWake=False, inFlight=False, turnId=None,
+                              startAttempt={'id': 'existing-attempt', 'epoch': latest['epoch'],
+                                            'activeAtReservation': True, 'events': ['exact-input']})
+                runtime.put(db, 'agents', latest)
+                runtime.enqueue(db, latest, 'user', 'Unresolved native input', 'exact-input')
+                db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='exact-input'")
+                runtime.ensure_dispatch_indexes(db)
+            with runtime.read_db() as db:
+                slots = runtime.dispatch_active_slots(db)
+            assert slots == [{'id': agent['id'], 'rootId': agent['rootId']}], slots
+            assert runtime.delivery_receipt('exact-input')['status'] == 'uncertain'
+            update.apply(runtime)
+            assert runtime.server is identities[0]
+            assert runtime.connection_ids is identities[1]
+            assert dispatch.server.proc is identities[2]
+            print(json.dumps({'status': 'pass', 'case': 'installed-baseline',
+                              'unknownInputPreserved': True, 'slotHeld': True}))
+        finally:
+            close_fixture(runtime, dispatch)
+
+
 class SendWorkerLiveUpdate(unittest.TestCase):
     def run_case(self, name):
         result = subprocess.run([sys.executable, '-B', str(Path(__file__).resolve()), '--child', name],
@@ -308,10 +356,14 @@ class SendWorkerLiveUpdate(unittest.TestCase):
     def test_cold_recovery_timer_uses_maintained_module_globals(self):
         self.run_case('cold-recovery')
 
+    def test_installed_baseline_adds_capacity_helper_without_replacing_native_objects(self):
+        self.run_case('installed-baseline')
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--child':
         {'active-frame': active_frame_case, 'unknown-signature': unknown_signature_case,
-         'cold-recovery': cold_recovery_case}[sys.argv[2]]()
+         'cold-recovery': cold_recovery_case,
+         'installed-baseline': installed_baseline_case}[sys.argv[2]]()
     else:
         unittest.main()
