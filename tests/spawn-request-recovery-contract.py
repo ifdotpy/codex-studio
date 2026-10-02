@@ -48,6 +48,34 @@ class SpawnRequestRecovery(unittest.TestCase):
     def request(self, action='get', request_id='batch-1'):
         return self.runtime.request_action(self.actor['id'], {'action': action, 'request_id': request_id})
 
+    def test_stopped_and_old_turn_calls_are_proved_not_applied(self):
+        for call, change, text in [
+                ('stopped-read', {'autoWake': False}, 'Agent is stopped or unknown'),
+                ('old-turn-read', {'autoWake': True, 'turnId': 'new-turn'}, 'earlier turn')]:
+            with self.subTest(call=call):
+                self.actor = self.agent_update(self.actor, autoWake=True, turnId='lead-turn-1')
+                message = self.message(call, tool='orchestration_watch', args={})
+                self.agent_update(self.actor, **change)
+                with patch.object(self.runtime, 'rules') as read:
+                    self.runtime.dynamic(message)
+                    read.assert_not_called()
+                receipt = self.request(request_id=call)
+                self.assertEqual((receipt['stage'], receipt['outcome']), ('failed', 'not_applied'))
+                self.assertIn(text, receipt['result']['contentItems'][0]['text'])
+                self.actor = self.agent_update(self.actor, autoWake=True, turnId='lead-turn-1')
+                with patch.object(self.runtime, 'rules') as read:
+                    self.runtime.dynamic(message)
+                    read.assert_not_called()
+                self.assertEqual(self.request(request_id=call)['result'], receipt['result'])
+
+    def test_a_handler_failure_keeps_its_unknown_outcome(self):
+        message = self.message('uncertain-read', tool='orchestration_watch', args={})
+        with patch.object(self.runtime, 'rules', side_effect=RuntimeError('Response lost')) as read:
+            self.runtime.dynamic(message)
+            read.assert_called_once()
+        receipt = self.request(request_id='uncertain-read')
+        self.assertEqual((receipt['stage'], receipt['outcome']), ('failed', 'unknown'))
+
     def test_stable_id_replay_across_new_call_and_turn_preserves_exact_batch(self):
         self.runtime.dynamic(self.message())
         original = self.response('spawn-1')

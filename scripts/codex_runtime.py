@@ -5193,8 +5193,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     result = resolve_result(self.root, previous[0])
                 a = self.tool_request_actor(db, p.get("threadId"), account_key)
             if result is None and a and p.get("turnId") and p["turnId"] != a.get("turnId"):
+                request_outcome = "not_applied"
                 raise ValueError("This tool call belongs to an earlier turn")
             if result is None and (not a or not a["autoWake"]):
+                request_outcome = "not_applied"
                 raise ValueError("Agent is stopped or unknown")
             if result is None:
                 args = p.get("arguments", {})
