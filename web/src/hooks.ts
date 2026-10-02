@@ -4,7 +4,14 @@ import {
   trimTranscriptPageCache,
 } from "./transcriptPageBounds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { syncApi as api, errorText, setToken, saved, save } from "./api";
+import {
+  syncApi as api,
+  ApiError,
+  errorText,
+  setToken,
+  saved,
+  save,
+} from "./api";
 import {
   refreshProjection,
   subscribeProjection,
@@ -101,36 +108,69 @@ export function useSnapshot() {
   const replicated = useRef(false);
   const sessionToken = useRef("");
   const legacyFallback = useRef(false);
-  const refresh = useCallback(async (credentialsOnly = replicated.current) => {
-    const request = ++generation.current;
-    try {
-      const session = await api<{ token: string }>("/api/session");
-      if (request !== generation.current) return;
-      sessionToken.current = session.token;
-      setToken(session.token);
-      setData((old) =>
-        old && old.token !== session.token
-          ? { ...old, token: session.token }
-          : old,
-      );
-      if (!credentialsOnly) {
-        try {
-          await refreshProjection("state");
-        } catch (projectionError) {
-          // A renderer can update before the server patch. Keep the previous
-          // snapshot route as a first-load fallback until entity sync exists.
-          if (replicated.current) throw projectionError;
-          const legacy = await api<Snapshot>("/api/state?view=chat");
-          if (request !== generation.current) return;
-          setData({ ...legacy, token: session.token });
+  const credentialRetry = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const credentialFailures = useRef(0);
+  const refresh = useCallback(
+    async (credentialsOnly = replicated.current): Promise<void> => {
+      clearTimeout(credentialRetry.current);
+      credentialRetry.current = undefined;
+      const request = ++generation.current;
+      try {
+        const session = await api<{ token: string }>("/api/session");
+        if (request !== generation.current) return;
+        sessionToken.current = session.token;
+        setToken(session.token);
+        setData((old) =>
+          old && old.token !== session.token
+            ? { ...old, token: session.token }
+            : old,
+        );
+        if (!credentialsOnly) {
+          try {
+            await refreshProjection("state");
+          } catch (projectionError) {
+            // A renderer can update before the server patch. Keep the previous
+            // snapshot route as a first-load fallback until entity sync exists.
+            if (replicated.current) throw projectionError;
+            const legacy = await api<Snapshot>("/api/state?view=chat");
+            if (request !== generation.current) return;
+            setData({ ...legacy, token: session.token });
+          }
+        }
+        if (request !== generation.current) return;
+        credentialFailures.current = 0;
+        setError("");
+      } catch (e) {
+        if (request !== generation.current) return;
+        setError(errorText(e));
+        // Retry this read without waiting for the healthy 30-second poll. Writes
+        // retain their own receipt rules and never use this retry.
+        const transient =
+          e instanceof TypeError ||
+          (e instanceof ApiError &&
+            ((e.status >= 500 && e.status < 600) ||
+              [408, 429].includes(e.status)));
+        if (transient && !document.hidden && navigator.onLine !== false) {
+          const delay = Math.min(
+            500 * 2 ** Math.min(credentialFailures.current++, 4),
+            8000,
+          );
+          credentialRetry.current = setTimeout(() => {
+            credentialRetry.current = undefined;
+            if (
+              request === generation.current &&
+              !document.hidden &&
+              navigator.onLine !== false
+            )
+              void refresh(credentialsOnly);
+          }, delay);
         }
       }
-      setError("");
-    } catch (e) {
-      if (request !== generation.current) return;
-      setError(errorText(e));
-    }
-  }, []);
+    },
+    [],
+  );
   useEffect(() => {
     let stopped = false,
       polling = false;
@@ -164,7 +204,10 @@ export function useSnapshot() {
     void poll();
     return () => {
       stopped = true;
+      generation.current++;
       clearTimeout(timer);
+      clearTimeout(credentialRetry.current);
+      credentialRetry.current = undefined;
       stopResume();
       window.removeEventListener("offline", offline);
     };
