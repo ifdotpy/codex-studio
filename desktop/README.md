@@ -4,7 +4,7 @@ The Electron app opens the existing React workspace. The Python backend owns age
 
 ## Start
 
-Requirements: macOS on Apple silicon, Node.js 22 or later, Python 3.11 or later, and the installed Codex CLI with its existing sign-in.
+Requirements: macOS on Apple silicon, Node.js 22.15 or later, Python 3.11 or later, and the installed Codex CLI with its existing sign-in.
 
 From `desktop/`:
 
@@ -108,10 +108,10 @@ The [Electron security guide](https://www.electronjs.org/docs/latest/tutorial/se
 
 ```sh
 npm test
-npm run test:package
+TMPDIR=/tmp npm run test:package
 ```
 
-`test:package` requires a current package. It starts that exact `.app`, verifies its bundled backend path, and checks backend survival after app exit.
+`test:package` requires a current package. It starts that exact `.app`, verifies its bundled backend path, and checks backend survival after app exit. On macOS, the short temporary path keeps the backend's Unix socket path within the platform limit.
 
 The source suite starts the real Python backend with an isolated database. It races two launchers, checks attachment and state ownership, runs hidden Electron windows, checks native access and navigation boundaries, and confirms that the backend survives app exit. It does not start a model request. Test windows remain hidden; input uses the renderer protocol, not operating-system input.
 
