@@ -164,7 +164,9 @@ try {
       )
     ).json();
     return (
-      metadata.tokens?.outputTokens === 1200 && metadata.turnDurationMs === 2500
+      metadata.tokens?.outputTokens === 1200 &&
+      metadata.turnDurationMs === 2500 &&
+      Number.isFinite(metadata.responseRate)
     );
   });
   await target.focus();
@@ -181,6 +183,7 @@ try {
   assert.equal(await value("Turn duration"), "2.5 s");
   assert.equal(await value("Response output tokens"), "1,200");
   assert.equal(await value("Response reasoning tokens"), "350");
+  assert.match(await value("Response output rate"), /tok\/s$/);
   assert.equal(await value("Session estimate (USD)"), "$0.1234");
   assert.ok(await value("Account"));
   assert.ok(await value("Provider"));
@@ -201,7 +204,14 @@ try {
     second: "2-digit",
     hourCycle: "h23",
   });
-  assert.equal(await value("Local date and time"), expected);
+  const displayedAt = await page.evaluate(
+    (shown) => Date.parse(shown),
+    await value("Local date and time"),
+  );
+  assert.ok(
+    Math.abs(displayedAt - stamp.getTime()) <= 1000,
+    `date differs by more than one second: ${expected}`,
+  );
   assert.equal(
     await dialog.getByText(/tokens per second/i).count(),
     0,

@@ -2042,6 +2042,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise RuntimeError("The account connection is not ready")
             server = self.connect(account_key)
         server.write(message)
+        from codex_token_rate import token_rates
+        token_rates(self).request_finished(account_key, connection_id, message.get("id"), time.time())
 
     def disconnected(self, account_key="default", connection_id=None):
         with self.lock, self.db() as db:
@@ -4413,6 +4415,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.touch_ui(a["id"])
 
     def notification(self, message, account_key="default", connection_id=None):
+        token_rate_received_at = time.time()
         if "_studioDispatchedAt" in message:
             self.__dict__.setdefault("_callback_db", threading.local()).reuse = True
         if not self.connection_current(account_key, connection_id):
@@ -4431,8 +4434,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if consume_native_notification(self, message, account_key, connection_id):
             return
         from codex_token_rate import token_rates
+        from codex_token_rate import event_time as token_rate_event_time
+        token_rate_at = token_rate_event_time(message, method) or token_rate_received_at
         if method in {'item/agentMessage/delta', 'item/reasoning/textDelta'}:
-            token_rates(self).stream(method, p, account_key, connection_id)
+            token_rates(self).stream(method, p, account_key, connection_id, token_rate_at)
         if method in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
             from codex_streaming import StreamBuffer
             stream = getattr(self, '_stream_buffer', None)
@@ -4945,7 +4950,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 restart.update(stage='finished', reconciledAt=time.time(),
                                outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
-                token_rates(self).observe(a, method, p, account_key, connection_id)
+                token_rates(self).observe(a, method, p, account_key, connection_id, token_rate_at)
             self.put(db, "agents", a)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.
@@ -4964,8 +4969,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
 
     def request(self, message, account_key="default", connection_id=None):
+        token_rate_received_at = time.time()
         if not self.connection_current(account_key, connection_id):
             return
+        params = message.get("params") or {}
+        thread_id = params.get("threadId")
+        if thread_id and message.get("method") != "currentTime/read":
+            from codex_token_rate import token_rates, event_time as token_rate_event_time
+            token_rates(self).request_started(account_key, connection_id, thread_id,
+                                              message.get("id"), token_rate_event_time(message, message.get("method")) or token_rate_received_at)
         if message["method"] == "currentTime/read":
             self.reply({"id": message["id"], "result": {"currentTimeAt": int(time.time())}}, account_key, connection_id)
             return

@@ -67,4 +67,10 @@ def message_info(runtime, agent, item_id, turn_id=None, thread=None):
         if response:
             result['model'] = response.get('model') or result.get('model')
             result['tokens'] = response.get('requestUsage') or response.get('last')
+            response_id = response.get('responseId')
+            rates = runtime.__dict__.get('_token_rates')
+            if response_id and rates:
+                sample = rates.response_rate(agent, thread, turn_id, response_id)
+                if sample:
+                    result['responseRate'] = sample['rate']
     return {key: value for key, value in result.items() if value is not None}

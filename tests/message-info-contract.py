@@ -2,9 +2,12 @@
 """Message metadata reads preserve exact source identities and never write state."""
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from codex_token_rate import TokenRates
 
 spec = importlib.util.spec_from_file_location('analytics_fixture', Path(__file__).with_name('analytics-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -47,6 +50,16 @@ class MessageInfoContract(unittest.TestCase):
         self.assertEqual(result['accountLabel'], 'Codex')
         self.assertEqual(result['turnDurationMs'], 2500)
         self.assertEqual(result['tokens'], {'outputTokens': 40, 'reasoningOutputTokens': 10})
+        rates = TokenRates(lambda: 0)
+        actor = {'id': self.agent['id'], 'threadId': self.agent['threadId'], 'inFlight': True}
+        rates.observe(actor, 'turn/started', {'turn': {'id': self.agent['turnId']}},
+                      'default', 'connection', 100)
+        rates.observe(actor, 'thread/tokenUsage/updated', {
+            'turnId': self.agent['turnId'], 'responseId': 'response-one',
+            'tokenUsage': {'last': {'outputTokens': 40}, 'total': {'outputTokens': 40}},
+        }, 'default', 'connection', 102)
+        self.runtime._token_rates = rates
+        self.assertEqual(self.info()['responseRate'], 20)
         self.assertEqual(result['at'], 101)
         with self.runtime.analytics_read_connection() as db:
             self.assertEqual(before, list(db.execute('SELECT id,record FROM analytics_turns')))
