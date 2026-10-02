@@ -99,6 +99,11 @@ class WorkspaceMixin:
                     or "Workspace operation interrupted. Inspect files before continuing.",
                 )
                 self.put(db, "agents", a)
+                self.permanent_worker_hold(
+                    db, a, operation["id"], "recovery-required",
+                    operation.get("error") or a.get("error")
+                    or "Workspace operation recovery is required.",
+                )
             elif a.get("workspaceOperation") in {"checkpoint", "capture"}:
                 a.update(workspaceOperation=None,
                          checkpointError="Server restarted before checkpoint capture finished")
@@ -112,6 +117,10 @@ class WorkspaceMixin:
                     error="Workspace operation interrupted. Inspect files before continuing.",
                 )
                 self.put(db, "agents", a)
+                self.permanent_worker_hold(
+                    db, a, "workspace:" + str(a.get("workspaceOperation")),
+                    "restart-held", a["error"],
+                )
         self.capability_cache = {}
 
     @staticmethod
@@ -246,6 +255,10 @@ class WorkspaceMixin:
                     error=message,
                 )
                 self.put(db, "agents", agent)
+                self.permanent_worker_hold(
+                    db, agent, operation_id, "recovery-required",
+                    str(error) or message,
+                )
         except Exception:
             # The original failure remains visible. The prepared operation and
             # agent marker already provide a durable hold if this write fails.
@@ -1090,6 +1103,10 @@ class WorkspaceMixin:
                     operation = self._workspace_operation(db, operation_id)
                     operation.update(phase="completed", result=result, updated=time.time())
                     self._put_workspace_operation(db, operation)
+                    self.permanent_worker_hold(
+                        db, current, operation_id, "restore-completed-paused",
+                        "Workspace restored. The worker is paused and needs a new instruction.",
+                    )
                     db.execute(
                         "UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'",
                         (key,),

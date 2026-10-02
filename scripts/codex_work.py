@@ -124,7 +124,7 @@ class WorkMixin:
                 owner = self.agent(work['owner'], db)
                 if not owner.get('deletedAt'):
                     decision = work['decisions'][-1]
-                    self.enqueue(db, owner, 'work_decision', json.dumps({
+                    self.enqueue_recovery_event(db, owner, 'work_decision', json.dumps({
                         'task': work['id'], 'decision': 'accept', 'reason': decision['reason']}),
                         'work-decision:' + work['id'] + ':' + str(work['version'] - 1))
         return result
@@ -731,7 +731,7 @@ class WorkMixin:
                 w["results"].append(result)
                 w["status"] = "review"
                 if actor != a["rootId"]:
-                    self.enqueue(
+                    self.enqueue_recovery_event(
                         db,
                         self.agent(a["rootId"], db),
                         "work_review",
@@ -762,7 +762,7 @@ class WorkMixin:
                 owner = json.loads(owner_row[0]) if owner_row else None
                 if (owner and not owner.get("deletedAt")
                         and owner.get("status") not in {"completed", "failed"}):
-                    self.enqueue(db, owner, "work_decision", json.dumps(
+                    self.enqueue_recovery_event(db, owner, "work_decision", json.dumps(
                         {"task": w["id"], "decision": "cancel", "reason": reason}),
                         "work-decision:" + w["id"] + ":cancel")
             elif action in {"accept", "reject"}:
@@ -792,7 +792,7 @@ class WorkMixin:
                             "work-result:" + w["results"][-1]["id"], a["rootId"]))
                 if (w.get('owner') and w['owner'] != actor
                         and (action == 'reject' or w['owner'] == a['rootId'])):
-                    self.enqueue(
+                    self.enqueue_recovery_event(
                         db,
                         self.agent(w["owner"], db),
                         "work_decision",
@@ -862,7 +862,7 @@ class WorkMixin:
             self.put(db, "work", w)
             lead = self.agent(w["rootId"], db)
             if not lead.get("deletedAt"):
-                self.enqueue(db, lead, "work_released",
+                self.enqueue_recovery_event(db, lead, "work_released",
                              json.dumps({"task": w["id"], "title": w["title"], "agent": owner,
                                          "reason": reason}, ensure_ascii=False),
                              "work-released:" + w["id"] + ":" + str(w["version"]))

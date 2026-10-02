@@ -108,6 +108,72 @@ class ConnectionRecoveryContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 1)
 
+    def test_completed_turn_delivers_result_with_old_receipts_and_holds_unknown_current_work(self):
+        parent = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': ''}, draft=True, defer=True)
+        self.update(parent['id'], status='idle', autoWake=True)
+        worker = self.runtime.create({'name': 'Worker', 'cwd': self.temp.name, 'prompt': 'Do work'},
+                                     parent=parent['id'], defer=True)
+        self.key = worker['id']
+        self.disconnect(self.key, parentId=parent['id'], rootId=parent['id'], isLead=False,
+                        disconnectRecovery={'epoch': self.runtime.agent(self.key)['epoch'],
+                            'accountKey': self.runtime.agent(self.key).get('accountKey', 'default'),
+                            'threadId': 'native-thread', 'turnId': 'lost-turn', 'autoWake': True})
+        self.server.native['turns'][0]['items'] = [
+            {'id': 'answer', 'type': 'agentMessage', 'text': 'Final answer', 'phase': 'final_answer'},
+            {'id': 'rejected-tool', 'type': 'dynamicToolCall', 'status': 'completed', 'success': False,
+             'tool': 'orchestration_work_action'},
+            {'id': 'still-running', 'type': 'commandExecution', 'status': 'inProgress',
+             'command': 'long-running command'},
+        ]
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'monitors', {'id': 'old-monitor', 'agent': self.key,
+                'turnId': 'older-turn', 'status': 'lost', 'command': 'old command'})
+            self.runtime.put(db, 'tasks', {'id': 'old-task', 'agent': self.key,
+                'turnId': 'older-turn', 'status': 'lost', 'command': 'old task'})
+        items = list(self.server.native['turns'][0]['items'])
+        state = self.runtime.root
+        runtime_type = type(self.runtime)
+        self.runtime.close()
+        self.runtime = runtime_type(state, fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.server = self.runtime.connect()
+        self.server.native = {'id': 'native-thread', 'status': {'type': 'idle'},
+                              'turns': [{'id': 'lost-turn', 'status': 'completed',
+                                         'items': items}]}
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'reconciled')
+        worker = self.runtime.agent(self.key)
+        self.assertEqual(worker['lastAnswer'], 'Final answer')
+        self.assertFalse(worker['autoWake'])
+        self.assertEqual(worker['connectionRecovery']['holdOperations'][0]['id'], 'still-running')
+        self.assertEqual(worker['connectionRecovery']['holdOperations'][0]['label'], 'long-running command')
+        with self.runtime.db() as db:
+            rows = [dict(row) for row in db.execute(
+                "SELECT * FROM runtime_events WHERE agent=? AND kind='child_result' ORDER BY created",
+                (parent['id'],))]
+        self.assertEqual(len(rows), 2)
+        self.assertIn('Final answer', rows[0]['text'])
+        self.assertIn('unresolved', rows[0]['text'])
+
+    def test_confirmed_tool_rejection_and_older_lost_monitor_do_not_block_completion(self):
+        self.disconnect(self.key, disconnectRecovery={
+            'epoch': self.a['epoch'], 'accountKey': self.a.get('accountKey', 'default'),
+            'threadId': 'native-thread', 'turnId': 'lost-turn', 'autoWake': True})
+        self.server.native['turns'][0]['items'] = [
+            {'id': 'answer', 'type': 'agentMessage', 'text': 'Delivered answer', 'phase': 'final_answer'},
+            {'id': 'rejected', 'type': 'dynamicToolCall', 'status': 'completed',
+             'success': False, 'tool': 'orchestration_work_action'},
+        ]
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'monitors', {'id': 'older-monitor', 'agent': self.key,
+                'turnId': 'previous-turn', 'status': 'lost', 'command': 'old monitor'})
+        result = recover(self.runtime, self.key, automatic=True)
+        self.assertEqual(result['status'], 'reconciled')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['lastAnswer'], 'Delivered answer')
+        self.assertTrue(agent['autoWake'])
+        self.assertNotIn('holdOperations', agent['connectionRecovery'])
+
     def test_scheduler_roster_reaches_interrupted_disconnect_recovery(self):
         from unittest.mock import patch
         with self.runtime.lock, self.runtime.db() as db:
@@ -195,7 +261,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
             {'id': 'question-output', 'type': 'agentMessage', 'text': 'Question',
              'questions': [{'title': 'Do not create a user request'}], 'phase': 'commentary'},
         ])
-        tables = ('runtime_events', 'runtime_event_meta', 'runtime_tasks', 'runtime_monitors',
+        tables = ('runtime_tasks', 'runtime_monitors',
                   'runtime_requests', 'runtime_tool_requests', 'runtime_checkpoints')
         def stored():
             with self.runtime.db() as db:
@@ -203,9 +269,14 @@ class ConnectionRecoveryContract(unittest.TestCase):
                         for table in tables if db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone()}
         before = stored()
         self.server.calls.clear()
-        self.assertEqual(recover(self.runtime, self.key)['status'], 'reconciled')
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result['status'], 'reconciled', result)
         self.assertEqual(stored(), before)
-        self.assertEqual(self.runtime.agent(parent['id']), parent)
+        self.assertEqual(self.runtime.agent(parent['id'])['status'], 'queued')
+        with self.runtime.db() as db:
+            result_events = db.execute("SELECT count(*) FROM runtime_events WHERE agent=? "
+                                        "AND kind='child_result'", (parent['id'],)).fetchone()[0]
+        self.assertEqual(result_events, 2)
         self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
         self.read_calls_only()
 

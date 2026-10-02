@@ -1306,9 +1306,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.setup_work(db)
             for agent_id, marker in held_restart_stops:
                 agent = self.agent(agent_id, db)
-                self.child_stopped_event(db, agent, agent.get("status", "interrupted"),
+                self.permanent_worker_hold(
+                    db, agent, "restart:" + str(marker or "held"), "held",
                     (agent.get("restartRecovery") or {}).get("reason") or agent.get("error")
-                    or "Restart recovery held this worker.", "restart:" + str(marker or "held"))
+                    or "Restart recovery held this worker.",
+                )
             startup_memory_mark("work-setup")
             from codex_payloads import ensure_payload_schema
             ensure_payload_schema(db)
@@ -4156,13 +4158,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "start:" + str(attempt["id"]))
         self.changed.set()
 
-    def parent_event(self, db, a, event_id, text):
-        if a.get("parentId") and a["autoWake"]:
+    def parent_event(self, db, a, event_id, text, *, recovery=False):
+        if a.get("parentId") and (a["autoWake"] or recovery):
             if a.get("deletedAt") or a.get("status") == "failed":
                 self.release_failed_work(db, self.records(db, "agents"), force=True)
             parent = self.agent(a["parentId"], db)
             key = "child:" + a["id"] + ":" + event_id
-            self.enqueue(db, parent, "child_result", json.dumps({"agent_id": a["id"],
+            self.enqueue_recovery_event(db, parent, "child_result", json.dumps({"agent_id": a["id"],
                 "name": a["name"], "status": a["status"], "cwd": a["cwd"],
                 "branch": a.get("branch"), "result": text}, ensure_ascii=False), key)
 
@@ -4171,16 +4173,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if (a.get("isLead") or not a.get("parentId") or a.get("deletedAt")
                 or a.get("agentArchive")):
             return None
-        task_row = db.execute(
-            "SELECT id,EXISTS(SELECT 1 FROM json_each(runtime_work.record,'$.results') "
-            "WHERE json_extract(json_each.value,'$.agent')=?) AS submitted "
-            "FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+        task_rows = db.execute(
+            "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
-            "ORDER BY json_extract(record,'$.updated') DESC LIMIT 1",
-            (a["id"], a["id"], a["rootId"]),
-        ).fetchone()
-        task_id = task_row["id"] if task_row else None
-        result_submitted = bool(task_row["submitted"]) if task_row else False
+            "AND json_extract(record,'$.status') IN ('ready','running','blocked','review') "
+            "ORDER BY json_extract(record,'$.updated') DESC",
+            (a["id"], a["rootId"]),
+        ).fetchall()
+        assignments = []
+        for row in task_rows:
+            work = json.loads(row["record"])
+            decisions = work.get("decisions", [])
+            latest = decisions[-1] if decisions else None
+            current_result = work.get("results", [])[-1] if work.get("results") else None
+            current_assignment_result = bool(current_result and current_result.get("agent") == a["id"])
+            undecided = bool(current_assignment_result and work.get("status") == "review"
+                             and (not latest or latest.get("resultId") != current_result.get("id")))
+            assignments.append({
+                "task_id": row["id"], "status": work.get("status"),
+                "current_result_id": current_result.get("id") if current_result else None,
+                "latest_decision": latest.get("decision") if latest else None,
+                "result_submitted": undecided,
+                "needs_resubmission": bool(current_assignment_result and latest
+                                            and latest.get("decision") == "reject"
+                                            and latest.get("resultId") == (current_result or {}).get("id")),
+            })
+        task_id = assignments[0]["task_id"] if assignments else None
+        result_submitted = any(item["result_submitted"] for item in assignments)
         activity = a.get("activity") or {}
         last_activity = (activity.get("at") or a.get("lastEvent") or a.get("lastUpdated")
                          or a.get("created"))
@@ -4188,15 +4207,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         payload = {
             "agent_id": a["id"], "name": a["name"], "status": status,
             "reason": reason, "result": reason_text, "last_activity": last_activity,
-            "task_id": task_id, "result_submitted": result_submitted,
+            "task_id": task_id, "tasks": assignments, "result_submitted": result_submitted,
             "next_step": "send" if status == "paused" else "recover",
             "requested_by_lead": bool(requested_by_lead),
             "cwd": a["cwd"], "branch": a.get("branch"),
         }
         parent = self.agent(a["parentId"], db)
         event_id = "child-stop:" + a["id"] + ":" + str(a.get("epoch", 0)) + ":" + str(marker or "stop")
-        self.enqueue(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
+        self.enqueue_recovery_event(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
         return event_id
+
+    def permanent_worker_hold(self, db, a, operation_id, transition, reason):
+        """Save one lead event when an operation removes automatic continuation."""
+        if a.get("isLead") or not a.get("parentId"):
+            return None
+        return self.child_stopped_event(
+            db, a, a.get("status", "interrupted"), reason,
+            "hold:" + str(operation_id) + ":" + str(transition),
+        )
 
     @staticmethod
     def worker_continuation_pending(a):
@@ -5939,6 +5967,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "id": key,
                 "agent": a["id"],
                 "epoch": a["epoch"],
+                "turnId": a.get("turnId"),
                 "command": command,
                 "cwd": a["cwd"],
                 "timeout_ms": timeout,
