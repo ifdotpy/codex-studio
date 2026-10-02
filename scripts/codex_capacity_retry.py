@@ -58,9 +58,13 @@ class CapacityRetryMixin:
                              reason='The server restarted. The turn outcome is unknown.')
                 terminal = True
         elif retry['status'] == 'scheduled':
-            retry.update(status='cancelled', dueAt=None,
-                         reason='The server restarted. Automatic retry was cancelled.')
-            terminal = True
+            # Keep the exact task claim bound to its scheduled continuation.
+            # capacity_retry validates these claims again before submission.
+            if not retry.get('taskClaims') or not self.continuation_work_claims_valid(
+                    db, a, retry.get('taskClaims', [])):
+                retry.update(status='cancelled', dueAt=None,
+                             reason='The server restarted. Automatic retry was cancelled.')
+                terminal = True
         self.capacity_save(db, a, retry)
         if terminal:
             reason = retry.get('reason') or 'Automatic capacity retry was cancelled.'
@@ -109,6 +113,7 @@ class CapacityRetryMixin:
                      dueAt=time.time() + delays[count] if count < len(delays) else None,
                      attempt=count + 1, maxAttempts=len(delays),
                      cwd=a['cwd'], settings=self.preparation_settings(a))
+        retry['taskClaims'] = self.continuation_work_claims(db, a)
         a['capacityRetry'] = retry
         self.capacity_save(db, a, retry)
 
@@ -181,6 +186,13 @@ class CapacityRetryMixin:
             if _automatic and retry['status'] != 'scheduled':
                 return retry
             if retry.get('claimedAt') or retry['status'] not in {'scheduled', 'cancelled', 'exhausted'}:
+                return retry
+            if not self.continuation_work_claims_valid(db, a, retry.get('taskClaims', [])):
+                retry.update(status='cancelled', dueAt=None,
+                             reason='The assigned task changed before automatic continuation.')
+                self.capacity_save(db, a, retry)
+                self.put(db, 'agents', a)
+                self.permanent_worker_hold(db, a, retry_id, 'task-changed', retry['reason'])
                 return retry
             self.capacity_check(db, a, retry)
             if a.get('pendingSettings'):

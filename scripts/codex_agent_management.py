@@ -577,25 +577,44 @@ def reviewer_result_delivered(rt, db, parent_id, event_id):
 
 
 def _archive_reviewer(rt, lead_id, parent_id, child_id, event_id):
-    with rt.lock, rt.db() as db:
-        event = db.execute('SELECT status FROM runtime_events WHERE id=? AND agent=?',
-                           (event_id, parent_id)).fetchone()
-        child = rt.agent(child_id, db)
-        if (not event or event['status'] != 'delivered'
-                or child.get('reviewArchiveScheduled') != event_id):
+    delay = 1
+    while not rt.closed:
+        with rt.lock, rt.db() as db:
+            event = db.execute('SELECT status FROM runtime_events WHERE id=? AND agent=?',
+                               (event_id, parent_id)).fetchone()
+            child = rt.agent(child_id, db)
+            if (not event or event['status'] != 'delivered'
+                    or child.get('reviewArchiveScheduled') != event_id):
+                return
+        try:
+            outcome = manage_agent(rt, lead_id, {'action': 'archive', 'agent_id': child_id,
+                                                 'reason': 'Reviewer result delivered to parent'})
+            blockers = outcome.get('blockers') or []
+            error = None if outcome['status'] == 'archived' else str(blockers or outcome.get('status'))[:180]
+            retryable = bool(blockers)
+        except Exception as caught:
+            outcome = {}
+            error = str(caught)[:180]
+            retryable = False
+        if outcome.get('status') == 'archived':
             return
-    try:
-        outcome = manage_agent(rt, lead_id, {'action': 'archive', 'agent_id': child_id,
-                                             'reason': 'Reviewer result delivered to parent'})
-        error = None if outcome['status'] == 'archived' else str(outcome.get('blockers'))[:180]
-    except Exception as caught:
-        error = str(caught)[:180]
-    if error:
         with rt.lock, rt.db() as db:
             child = rt.agent(child_id, db)
+            if child.get('reviewArchiveScheduled') != event_id:
+                return
             child['reviewArchiveError'] = error
-            child.pop('reviewArchiveScheduled', None)
+            if not retryable:
+                child.pop('reviewArchiveScheduled', None)
+            else:
+                attempts = child.get('reviewArchiveAttempts', 0) + 1
+                child['reviewArchiveAttempts'] = attempts
+                child['reviewArchiveNextAt'] = time.time() + delay
             rt.put(db, 'agents', child)
+        if not retryable:
+            return
+        rt.changed.wait(delay)
+        rt.changed.clear()
+        delay = min(60, delay * 2)
 
 
 def _archive_finished(rt, actor_id, epoch):

@@ -832,13 +832,34 @@ def _terminal_native_item(item):
     return True
 
 
-def _callback_barrier(server):
-    drained = concurrent.futures.Future()
-    server.after_events(lambda: drained.set_result(None))
-    try:
-        drained.result(WAIT_SECONDS)
-    except concurrent.futures.TimeoutError as cause:
-        raise _waiting('Context repair waits for native notification delivery', 'native') from cause
+def _reconcile_thread_receipts(rt, op, native, attempt_id):
+    """Use exact native state and this thread's durable terminal receipt."""
+    turn_id = native.get('repairTerminalTurnId')
+    deadline = time.monotonic() + WAIT_SECONDS
+    while True:
+        with rt.lock, rt.db() as db:
+            current = _current(rt, db, op)
+            attempt = current.get('startAttempt') or {}
+            unsubmitted_attempt = bool(attempt_id and attempt.get('id') == attempt_id
+                                       and attempt.get('submitted') is False
+                                       and not attempt.get('turnId'))
+            if (current.get('inFlight') or current.get('turnId')) and not unsubmitted_attempt:
+                error = _waiting('Context repair waits for the current thread terminal receipt', 'native')
+            elif (turn_id and not db.execute(
+                    'SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                    (current['id'] + ':' + turn_id,)).fetchone()):
+                error = _waiting('Context repair waits for the exact terminal callback receipt', 'native')
+            else:
+                try:
+                    _local_idle(rt, db, current, attempt_id)
+                    return
+                except ValueError as caught:
+                    if not isinstance(getattr(caught, 'contextRepairWait', None), dict):
+                        raise
+                    error = caught
+        if time.monotonic() >= deadline:
+            raise error
+        rt.changed.wait(min(.1, max(0, deadline - time.monotonic())))
 
 
 def _native_items(server, tid, turn_id, deadline=None):
@@ -1069,11 +1090,27 @@ def _defer_context(rt, db, a, error, *, historical=False):
         db.execute("UPDATE runtime_events SET status='pending',error=NULL WHERE id=?", (row['id'],))
     previous = a.get('contextRepairWait') or a.get('lastContextRepairWait') or {}
     checks = previous.get('checks', 0) + 1 if previous.get('source') == _identity(a) else 1
+    first_at = previous.get('firstAt') if previous.get('source') == _identity(a) else None
+    first_at = first_at or previous.get('at') or time.time()
     delay = min(60, 2 ** min(checks - 1, 6)) if detail.get('scope') == 'native' else 1
-    a['contextRepairWait'] = {'source': _identity(a), 'events': list(ids), 'action': action,
+    wait = {'source': _identity(a), 'events': list(ids), 'action': action,
         'actionRequestId': attempt.get('actionRequestId'), 'actionIdentity': attempt.get('actionIdentity'),
         'error': str(error), 'scope': detail.get('scope', 'local'), 'at': time.time(),
+        'firstAt': first_at,
         'nextCheckAt': time.time() + delay, 'checks': checks, 'historicalFailureRecovered': historical}
+    notification_wait = str(error).startswith((
+        'Context repair waits for native notification delivery',
+        'Context repair waits for the exact terminal callback receipt'))
+    if notification_wait and checks >= 5 and a.get('parentId'):
+        event_id = 'context-repair-escalation:' + a['id'] + ':' + str(attempt['id'])
+        lead = rt.agent(a['rootId'], db)
+        payload = {'agentId': a['id'], 'name': a.get('name'), 'threadId': a.get('threadId'),
+                   'status': 'queued', 'reason': str(error), 'checks': checks,
+                   'waitSeconds': round(time.time() - first_at, 1)}
+        rt.enqueue_recovery_event(db, lead, 'context_repair_wait',
+                                  json.dumps(payload, ensure_ascii=False), event_id)
+        wait['escalationEventId'] = event_id
+    a['contextRepairWait'] = wait
     a.update(status='queued', inFlight=False, error=str(error))
     if attempt.get('actionRequestId'):
         db.execute("UPDATE runtime_native_action_receipts SET outcome=? WHERE id=? AND json_extract(receipt,'$.attemptId')=?",
@@ -1315,8 +1352,6 @@ def repair_before_start(rt, agent):
             if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
                 if _optional_monitor_repair(rt, db, current):
                     return current
-        if (agent.get('contextRepair') or {}).get('phase') in {'unchanged', 'completed'}:
-            _callback_barrier(rt.connect(agent.get('accountKey', 'default')))
         return _repair(rt, agent['id'], _attempt(agent))
     except ValueError as error:
         if isinstance(getattr(error, 'contextRepairWait', None), dict):
@@ -1369,8 +1404,8 @@ def _repair(rt, key, attempt_id):
     try:
         server = rt.connect(a.get('accountKey', 'default'))
         op['connectionId'] = rt.connection_ids.get(a.get('accountKey', 'default'))
-        _callback_barrier(server)
         native = _native_idle(server, a['threadId'], _unresolved_tool_receipts(rt, a), inherited_empty=True)
+        _reconcile_thread_receipts(rt, op, native, attempt_id)
         # Native regular items flush before the terminal marker. Require that
         # exact saved marker below; unloading here could close a later resume.
         with rt.lock, rt.db() as db:

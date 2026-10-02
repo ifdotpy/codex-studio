@@ -89,6 +89,10 @@ class ContextRepair(unittest.TestCase):
                       'turn_id': 'turn', 'agent': self.a['id'], 'epoch': self.a['epoch'],
                       'status': 'delivered', 'created': 1, 'error': None}
         with self.runtime.db() as db:
+            # The fixture's fake native thread has already delivered this
+            # terminal notification to Runtime before context repair starts.
+            db.execute('INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)',
+                       (self.a['id'] + ':turn',))
             db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
                        tuple(self.event[k] for k in ('id','agent','kind','text','status','created','epoch','turn_id','error')))
         message = {'type': 'message', 'role': 'user', 'id':'message-event',

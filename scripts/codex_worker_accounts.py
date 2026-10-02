@@ -48,9 +48,18 @@ def resolve(runtime, parent, data, *, catalogs=None):
         candidates = [key for key in candidates
                       if runtime.accounts.get(key).get('provider', 'codex') == provider]
     catalogs = {} if catalogs is None else catalogs
+    unavailable = []
     for key in candidates:
         if key not in catalogs:
-            catalogs[key] = runtime.catalog(key)
+            try:
+                catalogs[key] = runtime.catalog(key)
+            except (CatalogPending, CatalogUnavailable) as error:
+                # An explicitly selected account is an instruction, not a
+                # preference. Do not silently move its request elsewhere.
+                if explicit is not None:
+                    raise
+                unavailable.append({'accountKey': key, 'error': str(error)})
+                continue
         catalog = catalogs[key]
         if any(model in (row.get('model'), row.get('resolvedModel')) and not row.get('hidden')
                for row in catalog.get('data', [])):
@@ -64,8 +73,13 @@ def resolve(runtime, parent, data, *, catalogs=None):
                 label = f"{label} ({row['resolvedModel']})"
             if label and not row.get('hidden') and label not in names:
                 names.append(label)
-    raise ValueError('This model is not available for the selected worker accounts'
-                     + ('. Available: ' + ', '.join(names[:40]) if names else ''))
+    message = 'This model is not available for the selected worker accounts'
+    if names:
+        message += '. Available: ' + ', '.join(names[:40])
+    if unavailable:
+        message += '. Unavailable accounts: ' + '; '.join(
+            f"{item['accountKey']}: {item['error']}" for item in unavailable)
+    raise ValueError(message)
 
 
 def catalog(runtime, parent_account):

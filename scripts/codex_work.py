@@ -14,7 +14,8 @@ import uuid
 import shutil
 from pathlib import Path
 
-from codex_agent_management import management_tools, manage_agent, _worker_worktree_root, _worktree_check
+from codex_agent_management import (management_tools, manage_agent, _archive_reviewer,
+                                    _worker_worktree_root, _worktree_check)
 
 
 def text_field(value, name, maximum=32000, empty=False):
@@ -91,8 +92,6 @@ class WorkMixin:
             self._archive_work_result(data.get('task_id'), result['results'][-1]['id'])
         if data.get('action') != 'accept' or result.get('status') != 'accepted':
             return result
-        if 'archive' in result:
-            return result
         lock = self.__dict__.setdefault('_accepted_archive_lock', threading.RLock())
         with lock:
             return self._finish_accepted_action(agent_id, result, key, epoch)
@@ -102,7 +101,8 @@ class WorkMixin:
             stored = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
             prior = json.loads(stored[0]).get('archive') if stored else None
         try:
-            archive = prior or self._archive_accepted_owner(agent_id, result, epoch)
+            archive = (prior if prior and not prior.get('retryable')
+                       else self._archive_accepted_owner(agent_id, result, epoch))
         except Exception as error:
             archive = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
         with self.lock, self.db() as db:
@@ -112,14 +112,27 @@ class WorkMixin:
             work = json.loads(row[0])
             if work['status'] != 'accepted':
                 raise ValueError('Accepted work item changed during archive check')
-            if not work.get('archive'):
+            if not work.get('archive') or work['archive'].get('retryable'):
                 work['archive'] = archive
-                self.put(db, 'work', work)
+            if archive.get('retryable'):
+                intent = work.get('archiveIntent') or {}
+                if not intent or intent.get('status') != 'pending':
+                    result_id = (work.get('decisions') or [{}])[-1].get('resultId', 'accepted')
+                    intent = {'id': work['id'] + ':' + str(result_id), 'status': 'pending',
+                              'owner': work.get('owner'), 'attempts': 0, 'created': time.time()}
+                work['archiveIntent'] = intent
+            elif work.get('archiveIntent'):
+                work['archiveIntent'].update(status='complete' if archive.get('status') == 'archived'
+                                             else 'terminal', updated=time.time(), outcome=archive)
+            self.put(db, 'work', work)
             result['archive'] = work['archive']
+            result['archivePending'] = bool(work.get('archiveIntent', {}).get('status') == 'pending')
+            intent_id = (work.get('archiveIntent') or {}).get('id') if result['archivePending'] else None
             if key:
                 db.execute('UPDATE runtime_operation_receipts SET result=? WHERE id=?',
                            (json.dumps(result), key))
-            if (result['archive']['status'] != 'archived' and work.get('owner')
+            if (result['archive']['status'] != 'archived' and not result.get('archivePending')
+                    and work.get('owner')
                     and work['owner'] != work['rootId']):
                 owner = self.agent(work['owner'], db)
                 if not owner.get('deletedAt'):
@@ -127,7 +140,73 @@ class WorkMixin:
                     self.enqueue_recovery_event(db, owner, 'work_decision', json.dumps({
                         'task': work['id'], 'decision': 'accept', 'reason': decision['reason']}),
                         'work-decision:' + work['id'] + ':' + str(work['version'] - 1))
+        if intent_id:
+            self._queue_accepted_archive(result['id'], intent_id)
         return result
+
+    def _queue_accepted_archive(self, task_id, intent_id):
+        with self.lock:
+            running = self.__dict__.setdefault('_accepted_archive_running', set())
+            key = (task_id, intent_id)
+            if key in running or self.closed:
+                return
+            running.add(key)
+        self.delivery_executor().submit(self._run_accepted_archive, task_id, intent_id)
+
+    def _run_accepted_archive(self, task_id, intent_id):
+        delay = 1
+        key = (task_id, intent_id)
+        try:
+            while not self.closed:
+                with self.lock, self.db() as db:
+                    row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+                    if not row:
+                        return
+                    work = json.loads(row[0])
+                    intent = work.get('archiveIntent') or {}
+                    if intent.get('id') != intent_id or intent.get('status') != 'pending':
+                        return
+                    owner = self.agent(work['owner'], db) if work.get('owner') else None
+                    root = self.agent(work['rootId'], db)
+                    if work.get('status') != 'accepted' or not owner or owner.get('deletedAt'):
+                        intent.update(status='terminal', updated=time.time(),
+                                      outcome={'status': 'kept', 'reason': 'The accepted task owner changed'})
+                        work['archiveIntent'] = intent
+                        self.put(db, 'work', work)
+                        return
+                    snapshot = work
+                    actor_epoch = root['epoch']
+                try:
+                    outcome = self._archive_accepted_owner(work['rootId'], snapshot, actor_epoch)
+                except Exception as error:
+                    outcome = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
+                with self.lock, self.db() as db:
+                    row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+                    if not row:
+                        return
+                    current = json.loads(row[0])
+                    intent = current.get('archiveIntent') or {}
+                    if intent.get('id') != intent_id or intent.get('status') != 'pending':
+                        return
+                    current['archive'] = outcome
+                    if outcome.get('retryable'):
+                        attempts = intent.get('attempts', 0) + 1
+                        delay = min(60, 2 ** min(attempts, 6))
+                        intent.update(attempts=attempts, nextAttemptAt=time.time() + delay,
+                                      lastOutcome=outcome, updated=time.time())
+                        current['archiveIntent'] = intent
+                    else:
+                        intent.update(status='complete' if outcome.get('status') == 'archived' else 'terminal',
+                                      updated=time.time(), outcome=outcome)
+                        current['archiveIntent'] = intent
+                    self.put(db, 'work', current)
+                if not outcome.get('retryable'):
+                    return
+                self.changed.wait(delay)
+                self.changed.clear()
+        finally:
+            with self.lock:
+                self.__dict__.setdefault('_accepted_archive_running', set()).discard(key)
 
     def _archive_work_result(self, task_id, result_id):
         """Write the committed result once, then return its stable absolute path."""
@@ -188,7 +267,8 @@ class WorkMixin:
                 "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled')",
                 (owner_id,))]
         if open_tasks:
-            return {'status': 'kept', 'reason': 'The owner has another open task', 'tasks': open_tasks[:20]}
+            return {'status': 'kept', 'reason': 'The owner has another open task',
+                    'tasks': open_tasks[:20], 'retryable': True}
         if owner.get('agentArchive'):
             if owner['agentArchive'].get('reason') == 'Accepted task result is on main':
                 cleaned = owner.get('cleanedWorktree')
@@ -228,7 +308,11 @@ class WorkMixin:
         if owner.get('worktreeReady'):
             _, reason = _worktree_check(self, agent_id, owner_id, epoch)
             if reason:
-                return {'status': 'kept', 'reason': reason}
+                retryable = any(value in reason for value in (
+                    'active_turn', 'workspace_operation', 'thread_preparation', 'descendants',
+                    'input_delivery', 'monitors', 'background_tasks', 'questions',
+                    'assigned_work', 'tool_requests'))
+                return {'status': 'kept', 'reason': reason, 'retryable': retryable}
         try:
             archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
                                                       'reason': 'Accepted task result is on main'}, epoch)
@@ -236,7 +320,8 @@ class WorkMixin:
             return {'status': 'kept', 'reason': str(error)[:180]}
         if archived['status'] != 'archived':
             blockers = archived.get('blockers') or []
-            return {'status': 'kept', 'reason': ', '.join(item['kind'] for item in blockers) or archived['status']}
+            return {'status': 'kept', 'reason': ', '.join(item['kind'] for item in blockers) or archived['status'],
+                    'retryable': bool(blockers)}
         cleanup = archived.get('worktree') or {}
         if cleanup.get('state') == 'kept':
             return {'status': 'archived', 'worktree': cleanup,
@@ -274,6 +359,17 @@ class WorkMixin:
             db.execute("CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY)")
         if phase not in {"dropping", "complete"} and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone():
             self.setup_search_rows(db)
+        for row in db.execute(
+                "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.archiveIntent.status')='pending'"):
+            intent = json.loads(row['record']).get('archiveIntent') or {}
+            if intent.get('id'):
+                self._queue_accepted_archive(row['id'], intent['id'])
+        for row in db.execute(
+                "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"):
+            child = json.loads(row['record'])
+            self.delivery_executor().submit(
+                _archive_reviewer, self, child['rootId'], child.get('parentId'),
+                child['id'], child['reviewArchiveScheduled'])
 
     def setup_search_rows(self, db):
         # FTS UNINDEXED columns cannot support an equality lookup. Keep the
@@ -843,6 +939,7 @@ class WorkMixin:
                       else a.get("error") or "The worker failed")
             for a in agents
             if a.get("parentId") and (a.get("deletedAt") or a.get("status") == "failed")
+            and (a.get("deletedAt") or not self._work_continuation_pending(a))
         }
         if not gone:
             return []
@@ -868,6 +965,50 @@ class WorkMixin:
                              "work-released:" + w["id"] + ":" + str(w["version"]))
             released.append(w["id"])
         return released
+
+    @staticmethod
+    def _work_continuation_pending(agent):
+        """Keep a task claim while its exact automatic continuation can still run."""
+        if not agent.get("autoWake") or agent.get("deletedAt"):
+            return False
+        account = agent.get("accountKey", "default")
+        thread = agent.get("threadId")
+        epoch = agent.get("epoch")
+        last_turn = agent.get("lastCompletedTurn")
+        capacity = agent.get("capacityRetry") or {}
+        usage = agent.get("usageResume") or {}
+        restart = agent.get("restartRecovery") or {}
+
+        def matches(record, statuses, turn_field):
+            return (record.get("status") in statuses
+                    and record.get("accountKey", "default") == account
+                    and record.get("threadId") == thread and bool(thread)
+                    and record.get("epoch") == epoch
+                    and record.get(turn_field) == last_turn and bool(last_turn))
+
+        return (matches(capacity, {"scheduled", "starting", "unknown"}, "turnId")
+                or matches(usage, {"scheduled", "started", "unknown"}, "turnId")
+                or (restart.get("stage") == "pending" and restart.get("autoWake")
+                    and restart.get("accountKey", "default") == account
+                    and restart.get("threadId") == thread and bool(thread)
+                    and restart.get("epoch") == epoch))
+
+    @staticmethod
+    def continuation_work_claims(db, agent):
+        rows = db.execute(
+            "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') ORDER BY id",
+            (agent['id'],)).fetchall()
+        return [row['id'] for row in rows]
+
+    @staticmethod
+    def continuation_work_claims_valid(db, agent, claims):
+        rows = db.execute(
+            "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND json_extract(record,'$.rootId')=? "
+            "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled')",
+            (agent['id'], agent['rootId'])).fetchall()
+        return {row['id'] for row in rows} == set(claims)
 
     @staticmethod
     def work_view(w, works):

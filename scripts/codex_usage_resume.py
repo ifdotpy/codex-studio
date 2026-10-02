@@ -258,6 +258,7 @@ class UsageResumeMixin:
             return
         auth_attempt = max(0, int(agent.get('authResumeAttempt', 0))) if _auth_error(error, agent.get('provider')) else 0
         resume = self.usage_resume_record(agent, turn['id'], error, auth_attempt=auth_attempt)
+        resume['taskClaims'] = self.continuation_work_claims(db, agent)
         self.usage_resume_save(db, agent, resume)
         if resume.get('cause') == 'auth':
             agent['authResumeAttempt'] = auth_attempt + 1
@@ -379,6 +380,12 @@ class UsageResumeMixin:
                             or agent.get('lastCompletedTurn') != resume['turnId'] or not agent.get('nativeFailureHold')):
                         self.usage_resume_cancel(db, agent, 'The failed turn or chat state changed before automatic resume.')
                         self.put(db, 'agents', agent)
+                        continue
+                    if not self.continuation_work_claims_valid(db, agent, resume.get('taskClaims', [])):
+                        reason = 'The assigned task changed before automatic continuation.'
+                        self.usage_resume_cancel(db, agent, reason)
+                        self.put(db, 'agents', agent)
+                        self.permanent_worker_hold(db, agent, resume['id'], 'task-changed', reason)
                         continue
                     auth_recovered = resume.get('cause') == 'auth' and auth_proofs.get(resume['id'], False)
                     if not (auth_recovered if resume.get('cause') == 'auth' else allowed):

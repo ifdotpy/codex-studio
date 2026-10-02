@@ -17,6 +17,34 @@ from codex_account_transfer import transfer_store
 
 
 class ContextWait(f.NativeActionRepair):
+    def test_persistent_native_wait_escalates_once_to_lead(self):
+        rt = self.runtime
+        worker = rt.create({'name':'Repair wait worker', 'cwd':str(self.root),
+            'prompt':'Keep the exact accepted input.', 'id':'a8ffea2c-7e91-4e6f-8790-20b6ed9372e1'},
+            parent=self.a['id'], defer=True)
+        message_id = 'repair-escalation-input'
+        rt.send(worker['id'], 'Keep this exact input.', message_id=message_id)
+        error = ValueError('Context repair waits for native notification delivery')
+        with rt.lock, rt.db() as db:
+            worker = rt.agent(worker['id'], db)
+            attempt = {'id':'repair-escalation-attempt', 'events':[message_id],
+                'epoch':worker['epoch'], 'accountKey':worker['accountKey'], 'submitted':False}
+            worker['startAttempt'] = attempt
+            error.contextRepairWait = {'scope':'native', 'source':repair._identity(worker)}
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id=?", (message_id,))
+            for _ in range(7):
+                self.assertTrue(repair._defer_context(rt, db, worker, error))
+                worker = rt.agent(worker['id'], db)
+
+            wait = worker['contextRepairWait']
+            expected_id = 'context-repair-escalation:' + worker['id'] + ':' + attempt['id']
+            self.assertEqual(wait['escalationEventId'], expected_id)
+            rows = db.execute('SELECT id,status,text FROM runtime_events WHERE id=?',
+                (expected_id,)).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertIn('"checks": 5', rows[0]['text'])
+            self.assertEqual(rows[0]['status'], 'pending')
+
     def test_transfer_retires_cancelled_wait_after_user_pause_without_replay(self):
         rt = self.runtime
         transfer_store(rt)
@@ -202,6 +230,9 @@ class ContextWait(f.NativeActionRepair):
             {'type':'event_msg','payload':{'type':'turn_aborted','turn_id':'other-turn'}},
         ])
         self.write_records()
+        with self.runtime.db() as db:
+            db.execute('INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)',
+                       (self.a['id'] + ':other-turn',))
         a = self.runtime.agent(self.a['id'])
         attempt = copy.deepcopy(a['startAttempt'])
         wait = copy.deepcopy(a['contextRepairWait'])
@@ -674,7 +705,7 @@ class ContextWait(f.NativeActionRepair):
                  'uncertain',2,self.a['epoch'],None,'Codex app-server is offline') for i in range(count)]
         with self.runtime.db() as db:
             db.executemany('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',rows)
-            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',(self.a['id']+':turn',))
+            db.execute('INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)',(self.a['id']+':turn',))
         self.records[-1]['payload']['completed_at'] = 3
         self.write_records()
         return rows
@@ -726,7 +757,7 @@ class ContextWait(f.NativeActionRepair):
         with self.runtime.db() as db:
             db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(self.event['id'],json.dumps({'modelEventProjection':1})))
             db.execute('DELETE FROM runtime_completed_turns')
-        with self.assertRaisesRegex(ValueError,'later confirmed native terminal'):
+        with self.assertRaisesRegex(ValueError,'exact terminal callback receipt'):
             repair.repair_idle(self.runtime,a['id'])
         with self.runtime.db() as db:
             db.execute('INSERT INTO runtime_completed_turns VALUES (?)',(a['id']+':turn',))
