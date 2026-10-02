@@ -66,6 +66,23 @@ function recoveryPreference(env = process.env) {
     throw error;
   }
 }
+function supervisorPreference(env = process.env) {
+  if (env.CODEX_AGENTS_SUPERVISOR_MODE !== undefined)
+    return env.CODEX_AGENTS_SUPERVISOR_MODE === "1";
+  const { config } = recoveryPaths(env);
+  try {
+    const saved = JSON.parse(fs.readFileSync(config, "utf8"));
+    if (
+      saved.supervisorEnabled !== undefined &&
+      typeof saved.supervisorEnabled !== "boolean"
+    )
+      throw new Error("The saved supervisor setting is invalid.");
+    return saved.supervisorEnabled === true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
 function xml(value) {
   return String(value).replace(
     /[&<>"']/g,
@@ -167,12 +184,23 @@ async function configureRecovery({
     fs.accessSync(filename, fs.constants.R_OK);
   const environment = {};
   for (const key of restartKeys)
-    if (launchEnv[key] !== undefined) environment[key] = launchEnv[key];
+    if (key !== "CODEX_AGENTS_SUPERVISOR_MODE" && launchEnv[key] !== undefined)
+      environment[key] = launchEnv[key];
   environment.PATH = `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`;
+  let saved = {};
+  try {
+    saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const supervisorEnabled =
+    launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === undefined
+      ? saved.supervisorEnabled === true
+      : launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1";
   atomicJSON(files.config, {
     version: 1,
     enabled: true,
-    supervisorEnabled: launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1",
+    supervisorEnabled,
     stateDir: files.state,
     resources: path.resolve(resources),
     python,
@@ -224,6 +252,7 @@ module.exports = {
   atomicJSON,
   configureRecovery,
   recoveryPreference,
+  supervisorPreference,
   recoveryPaths,
   launchAgent,
   isInstalledApplication,

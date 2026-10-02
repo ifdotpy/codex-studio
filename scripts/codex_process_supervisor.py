@@ -24,6 +24,7 @@ import time
 import uuid
 
 PROTOCOL = 1
+MAX_STDERR_EVENT_BYTES = 256 * 1024
 HANDLE_LIMIT = 256 * 1024 * 1024
 SOCKET_TIMEOUT = 10
 
@@ -77,7 +78,8 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS handles(
                     id TEXT PRIMARY KEY, signature TEXT NOT NULL, pid INTEGER NOT NULL,
                     sequence INTEGER NOT NULL DEFAULT 0, acknowledged INTEGER NOT NULL DEFAULT 0,
-                    rpc_sequence INTEGER NOT NULL DEFAULT 0, init_result TEXT, created REAL NOT NULL);
+                    rpc_sequence INTEGER NOT NULL DEFAULT 0, init_result TEXT, created REAL NOT NULL,
+                    closed_at REAL, closed_reason TEXT);
                 CREATE TABLE IF NOT EXISTS operations(
                     handle TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL,
                     native_id INTEGER, accepted REAL NOT NULL,
@@ -95,10 +97,15 @@ class Journal:
                     outcome TEXT NOT NULL, detail TEXT);
                 CREATE TABLE IF NOT EXISTS supervisor_state(
                     key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS degraded_handles(
+            CREATE TABLE IF NOT EXISTS degraded_handles(
                     handle TEXT PRIMARY KEY, prior_pid INTEGER NOT NULL,
                     start_time TEXT NOT NULL, recovered_at REAL NOT NULL);
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(handles)")}
+            if "closed_at" not in columns:
+                db.execute("ALTER TABLE handles ADD COLUMN closed_at REAL")
+            if "closed_reason" not in columns:
+                db.execute("ALTER TABLE handles ADD COLUMN closed_reason TEXT")
 
     @contextmanager
     def db(self):
@@ -125,6 +132,49 @@ class Journal:
 def process_start_time(pid):
     if type(pid) is not int or pid < 1:
         return None
+    import sys
+    if sys.platform == "darwin":
+        import ctypes
+
+        class ProcBsdInfo(ctypes.Structure):
+            _fields_ = [
+                ("flags", ctypes.c_uint32), ("status", ctypes.c_uint32),
+                ("exit_status", ctypes.c_uint32), ("pid", ctypes.c_uint32),
+                ("ppid", ctypes.c_uint32), ("uid", ctypes.c_uint32),
+                ("gid", ctypes.c_uint32), ("ruid", ctypes.c_uint32),
+                ("rgid", ctypes.c_uint32), ("svuid", ctypes.c_uint32),
+                ("svgid", ctypes.c_uint32), ("reserved", ctypes.c_uint32),
+                ("command", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
+                ("open_files", ctypes.c_uint32), ("pgid", ctypes.c_uint32),
+                ("job_count", ctypes.c_uint32), ("tty_device", ctypes.c_uint32),
+                ("tty_pgid", ctypes.c_uint32), ("nice", ctypes.c_int32),
+                ("start_seconds", ctypes.c_uint64), ("start_microseconds", ctypes.c_uint64),
+            ]
+
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                        ctypes.c_void_p, ctypes.c_int]
+        library.proc_pidinfo.restype = ctypes.c_int
+        info = ProcBsdInfo()
+        size = ctypes.sizeof(info)
+        read = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), size)
+        if read == 0 and ctypes.get_errno() == 3:  # ESRCH
+            return None
+        if read != size or info.pid != pid:
+            error = ctypes.get_errno()
+            raise RuntimeError(f"Cannot verify process identity for PID {pid}: libproc returned {error}")
+        try:
+            state = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "stat="],
+                                            text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+        except subprocess.CalledProcessError as error:
+            if error.returncode == 1:
+                return None
+            raise RuntimeError(f"Cannot verify process state for PID {pid}") from error
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"Cannot verify process state for PID {pid}") from error
+        if info.status == 5 or state.startswith("Z"):  # SZOMB
+            return None
+        return f"{info.start_seconds}.{info.start_microseconds:06d}"
     try:
         value = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart="],
                                         text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
@@ -137,6 +187,20 @@ def process_start_time(pid):
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"Cannot verify process identity for PID {pid}") from error
     return value if value and not state.startswith("Z") else None
+
+
+def process_start_matches(pid, expected, *, allow_legacy=False):
+    actual = process_start_time(pid)
+    if actual == expected:
+        return True
+    if not allow_legacy or actual is None:
+        return False
+    try:
+        legacy = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart="],
+                                        text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return legacy == expected
 
 
 class Child:
@@ -199,8 +263,9 @@ class Child:
 
     def read_stderr(self):
         try:
+            stream = getattr(self.process.stderr, "buffer", self.process.stderr)
             while True:
-                data = self.process.stderr.read(65536)
+                data = stream.read1(65536)
                 if not data:
                     return
                 text = data.decode("utf-8", "replace") if isinstance(data, bytes) else data
@@ -272,10 +337,11 @@ class Supervisor:
                 return child, True
             recovered = False
             with self.journal.db() as db:
-                saved = db.execute("SELECT signature,pid FROM handles WHERE id=?", (handle,)).fetchone()
+                saved = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
                 if saved:
                     orphan = db.execute("SELECT 1 FROM degraded_handles WHERE handle=?", (handle,)).fetchone()
-                    if saved["signature"] != signature or not orphan or self.recovery.get("blocked"):
+                    if (saved["signature"] != signature or saved["closed_at"] is None
+                            or self.recovery.get("blocked")):
                         raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
                     recovered = True
                 else:
@@ -297,6 +363,7 @@ class Supervisor:
                 raise RuntimeError("Cannot prove the native child process identity")
             with self.journal.db() as db:
                 db.execute("UPDATE handles SET pid=? WHERE id=?", (proc.pid, handle))
+                db.execute("UPDATE handles SET closed_at=NULL,closed_reason=NULL WHERE id=?", (handle,))
                 db.execute("INSERT INTO child_identities VALUES (?,?,?,?) ON CONFLICT(handle) DO UPDATE SET "
                            "pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time",
                            (handle, proc.pid, proc.pid, started))
@@ -311,7 +378,7 @@ class Supervisor:
         if request.get("action") == "health":
             with self.journal.db() as db:
                 handles = []
-                for row in db.execute("SELECT id,sequence,acknowledged,pid FROM handles"):
+                for row in db.execute("SELECT id,sequence,acknowledged,pid FROM handles WHERE closed_at IS NULL"):
                     child = self.children.get(row["id"])
                     handles.append({"id": row["id"], "pid": row["pid"],
                         "sequence": row["sequence"], "acknowledged": row["acknowledged"],
@@ -424,27 +491,37 @@ class Supervisor:
 
     def recover_orphaned_children(self):
         with self.journal.db() as db:
-            handles = list(db.execute("SELECT id FROM handles"))
-            identities = {row["handle"]: dict(row) for row in db.execute("SELECT * FROM child_identities")}
+            handles = list(db.execute("SELECT id,pid FROM handles WHERE closed_at IS NULL"))
+            identities = {row["handle"]: dict(row) for row in db.execute(
+                "SELECT c.* FROM child_identities c JOIN handles h ON h.id=c.handle WHERE h.closed_at IS NULL")}
         if not handles:
             return
-        self.recovery = {"degraded": True, "fallbackReady": False, "blocked": None,
-                         "notice": "The process supervisor restarted; native work is using recovery."}
+        self.recovery = {"degraded": False, "fallbackReady": False, "blocked": None}
         if len(identities) != len(handles):
             self.recovery["blocked"] = "A native child is missing its recorded PID and start time"
         for row in handles:
             handle = row["id"]
             identity = identities.get(handle)
             if not identity:
+                with self.journal.db() as db:
+                    reason = "Native child PID and start time were not recorded"
+                    db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
+                               (time.time(), reason, handle))
+                    db.execute("INSERT INTO recovery_events(at,handle,pid,start_time,outcome,detail) "
+                               "VALUES (?,?,?,?,?,?)",
+                               (time.time(), handle, row["pid"], "", "missing-identity", reason))
                 continue
             pid, pgid, expected = identity["pid"], identity["pgid"], identity["start_time"]
             actual = process_start_time(pid)
             if actual is None:
-                outcome, detail = "already-exited", None
+                outcome, detail = "already-exited", "Native child was no longer running when the supervisor recovered"
             elif actual != expected:
                 outcome, detail = "identity-mismatch", "PID belongs to a different process start time"
-                self.recovery["blocked"] = f"Cannot prove ownership of child PID {pid}; no signal was sent"
             else:
+                self.recovery.update(
+                    degraded=True,
+                    notice="The process supervisor restarted; native work is using recovery.",
+                )
                 try:
                     os.killpg(pgid, signal.SIGTERM)
                     deadline = time.monotonic() + 1.5
@@ -475,10 +552,13 @@ class Supervisor:
             with self.journal.db() as db:
                 db.execute("INSERT INTO recovery_events(at,handle,pid,start_time,outcome,detail) "
                            "VALUES (?,?,?,?,?,?)", (time.time(), handle, pid, expected, outcome, detail))
+                reason = detail or "Native child stopped while the supervisor was unavailable"
+                db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
+                           (time.time(), reason, handle))
                 if outcome in {"already-exited", "terminated", "killed"}:
                     db.execute("INSERT OR REPLACE INTO degraded_handles VALUES (?,?,?,?)",
                                (handle, pid, expected, time.time()))
-        if self.recovery["blocked"] is None:
+        if self.recovery["degraded"] and self.recovery["blocked"] is None:
             self.recovery["fallbackReady"] = True
         with self.journal.db() as db:
             db.execute("INSERT INTO supervisor_state VALUES ('recovery',?) "
@@ -634,7 +714,7 @@ def native_launch_environment(root, handle, command, env, cwd):
     # Older supervisors hash the backend ID into the launch. Keep their exact
     # accepted signature, but only for the same verified native configuration.
     _, pid, identity_pid, started = saved
-    if not started or pid != identity_pid or process_start_time(pid) != started:
+    if not started or pid != identity_pid or not process_start_matches(pid, started, allow_legacy=True):
         raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
     original = process_launch_environment(pid)
     if Supervisor.signature(command, original, cwd) != saved[0]:
@@ -643,23 +723,25 @@ def native_launch_environment(root, handle, command, env, cwd):
     comparable = dict(original)
     comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
     if (comparable != clean or Supervisor.signature(command, original, cwd) != saved[0]
-            or process_start_time(pid) != started):
+            or not process_start_matches(pid, started, allow_legacy=True)):
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
     return original
 
 
 class ProcessProxy:
     """Popen-shaped transport consumed by codex_runtime.AppServer."""
-    def __init__(self, root, handle, command, env, cwd):
+    def __init__(self, root, handle, command, env, cwd, stderr_sink):
         self.root = Path(root).resolve()
         self.handle = handle
         self.backend_id = os.environ.setdefault("CODEX_AGENTS_BACKEND_ID", str(uuid.uuid4()))
         self.socket = _connect(self.root / "supervisor.sock")
         self.reader = self.socket.makefile("r", encoding="utf-8")
         self.write_lock = threading.Lock()
+        self.event_lock = threading.RLock()
         self.request_id = 0
         self.stdout = _Stdout(self)
         self.stderr = None
+        self.stderr_sink = stderr_sink
         self.stdin = _Input(self)
         self._returncode = None
         self.detached = False
@@ -700,21 +782,33 @@ class ProcessProxy:
             result = self.call("next", cursor=self.read_cursor)
             event = result["event"]
             if event:
-                self.read_cursor = self.sequence = event["sequence"]
-                payload = json.loads(event["payload"])
-                if event["kind"] == "stdout":
-                    if "method" not in payload and isinstance(payload.get("id"), int):
-                        local_id = self.remote_to_local.get(payload["id"])
-                        if local_id is None:
-                            payload = {**payload, "id": "supervisor-orphan-" + str(payload["id"])}
-                        else:
-                            payload = {**payload, "id": local_id}
-                    return event["sequence"], json.dumps(payload) + "\n"
-                if event["kind"] == "exit":
-                    self._returncode = payload.get("returnCode")
+                with self.event_lock:
+                    if self.detached:
+                        return None
+                    self.read_cursor = self.sequence = event["sequence"]
+                    payload = json.loads(event["payload"])
+                    if event["kind"] == "stdout":
+                        if "method" not in payload and isinstance(payload.get("id"), int):
+                            local_id = self.remote_to_local.get(payload["id"])
+                            if local_id is None:
+                                payload = {**payload, "id": "supervisor-orphan-" + str(payload["id"])}
+                            else:
+                                payload = {**payload, "id": local_id}
+                        return event["sequence"], json.dumps(payload) + "\n"
+                    if event["kind"] == "exit":
+                        self._returncode = payload.get("returnCode")
+                        self.ack(event["sequence"])
+                        return None
+                    if event["kind"] == "stderr":
+                        data = payload.get("data")
+                        if not isinstance(data, str) or len(data.encode("utf-8")) > MAX_STDERR_EVENT_BYTES:
+                            raise RuntimeError("Supervisor stderr event exceeds its size limit")
+                        if not callable(self.stderr_sink):
+                            raise RuntimeError("Supervisor stderr event has no AppServer log sink")
+                        # Keep stderr on the existing journal path. ACK only after
+                        # the bounded RotatingLog accepts the complete payload.
+                        self.stderr_sink(data)
                     self.ack(event["sequence"])
-                    return None
-                self.ack(event["sequence"])
             if result["returnCode"] is not None and event is None:
                 self._returncode = result["returnCode"]
                 return None
@@ -822,19 +916,20 @@ class ProcessProxy:
         self.detach()
 
     def detach(self):
-        if self.detached:
-            return
-        self.detached = True
-        try:
-            self.call("detach")
-        except Exception:
-            pass
-        try:
-            self.socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        self.reader.close()
-        self.socket.close()
+        with self.event_lock:
+            if self.detached:
+                return
+            self.detached = True
+            try:
+                self.call("detach")
+            except Exception:
+                pass
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.reader.close()
+            self.socket.close()
 
 
 class _Stdout:
@@ -858,13 +953,13 @@ class _Stdout:
         raise OSError("Supervisor output is a message channel")
 
 
-def attach(root, handle, command, env, cwd=None):
+def attach(root, handle, command, env, cwd=None, *, stderr_sink=None):
     if os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") != "1":
         return None
     # Account and terminal roots own local logs and sessions. The backend's
     # state directory owns the one supervisor socket and its durable journal.
     state_root = os.environ.get("CODEX_AGENTS_STATE_DIR") or root
-    return ProcessProxy(state_root, handle, command, env, cwd)
+    return ProcessProxy(state_root, handle, command, env, cwd, stderr_sink)
 
 
 def status(root):

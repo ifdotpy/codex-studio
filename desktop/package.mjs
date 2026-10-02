@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.dirname(fileURLToPath(import.meta.url));
+const packageOutput = path.resolve(
+  process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
+);
 const identity = signingIdentity();
 await access(path.join(root, "../web/dist/index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
@@ -74,7 +77,7 @@ try {
     platform: "darwin",
     arch: "arm64",
     electronVersion: "44.2.0",
-    out: path.join(root, "dist"),
+    out: packageOutput,
     overwrite: true,
     asar: true,
     prune: true,

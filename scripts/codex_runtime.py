@@ -323,6 +323,24 @@ class AppServer:
 
     def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_commit=None, supervisor_event_applied=None):
         import queue
+        self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+        recovery_config = next(
+            (parent / "background-recovery.json" for parent in (root, *root.parents)
+             if (parent / "background-recovery.json").is_file()),
+            root.parent / "background-recovery.json",
+        )
+        try:
+            saved_supervisor = json.loads(recovery_config.read_text()).get("supervisorEnabled") is True
+        except FileNotFoundError:
+            saved_supervisor = False
+        except (OSError, ValueError) as error:
+            raise RuntimeError(f"Cannot verify the saved supervisor setting: {error}") from error
+        if (saved_supervisor and not self.supervisor_mode
+                and os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") != "1"):
+            raise RuntimeError(
+                "Supervisor mode is enabled in background-recovery.json, but this backend did not start in supervisor mode. "
+                "AppServers were not started; restart through the supervisor recovery service."
+            )
         self.notification, self.request, self.died = notification, request, died
         self.supervisor_commit = supervisor_commit
         self.supervisor_event_applied = supervisor_event_applied
@@ -354,12 +372,11 @@ class AppServer:
         if provider == "claude":
             from codex_claude import transport
             command, env = transport(root, provider_options) if provider_options else transport(root)
-        self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         if self.supervisor_mode:
             if not supervisor_handle:
                 raise RuntimeError("Supervisor mode requires a stable native-process handle")
             from codex_process_supervisor import attach
-            self.proc = attach(root, supervisor_handle, command, env)
+            self.proc = attach(root, supervisor_handle, command, env, stderr_sink=self.log.write)
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
         else:

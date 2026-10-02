@@ -1101,6 +1101,20 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 if path.path == "/api/desktop":
                     from codex_native_runtime import status as native_runtime_status
                     from codex_browser import diagnostics as browser_diagnostics
+                    try:
+                        saved_recovery = json.loads(
+                            (Path(canvas.root) / "background-recovery.json").read_text()
+                        )
+                    except FileNotFoundError:
+                        saved_recovery = {}
+                    supervisor_required = saved_recovery.get("supervisorEnabled") is True
+                    supervisor_error = (
+                        "Supervisor mode is enabled in background-recovery.json, but this backend did not start in supervisor mode. AppServers are not being started; restart through the supervisor recovery service."
+                        if supervisor_required
+                        and os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") != "1"
+                        and os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") != "1"
+                        else None
+                    )
                     supervisor_status = None
                     if (os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
                             or (Path(canvas.root) / "supervisor.sock").exists()):
@@ -1128,6 +1142,8 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             "publicOrigin": remote.origin(),
                             "pid": os.getpid(),
                             "supervisorMode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
+                            "supervisorRequired": supervisor_required,
+                            "supervisorError": supervisor_error,
                             "supervisor": supervisor_status,
                             "supervisorFallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
                             "supervisorNotice": ("The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted."
