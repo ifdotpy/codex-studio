@@ -211,6 +211,55 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.native.close_count, 0)
         self.assertFalse(tools.needs_refresh(self.rt.agent("chat-1"), NEW))
 
+    def test_supervisor_catalog_change_keeps_the_account_connected(self):
+        self.native.supervisor_mode = True
+        before = self.rt.path.read_bytes()
+        result = tools.refresh_account(self.rt)
+        self.assertEqual(result["status"], "waiting", result)
+        self.assertEqual(self.native.close_count, 0)
+        self.assertIs(self.rt.servers["default"], self.native)
+        self.assertEqual(self.rt.connection_ids["default"], "connection-1")
+        self.assertEqual(self.rt.path.read_bytes(), before)
+        self.assertFalse(tools.account_reserved(self.rt, "default"))
+        tools.assert_connect_allowed(self.rt, "default")
+        self.assertFalse(any(method == "thread/fork" for method, _ in self.native.calls))
+        self.assertTrue(tools.needs_refresh(self.rt.agent("chat-1"), NEW))
+
+    def test_supervisor_header_growth_does_not_submit_a_fork(self):
+        self.native.supervisor_mode = True
+        result = tools.refresh_account(self.rt, tools_for_agent=lambda _: OLD * 20)
+        self.assertEqual(result["status"], "waiting", result)
+        self.assertFalse(self.native.forks)
+        self.assertEqual(self.native.close_count, 0)
+        self.assertFalse(tools.account_reserved(self.rt, "default"))
+
+    def test_supervisor_current_catalog_marks_current_without_recycle(self):
+        self.native.supervisor_mode = True
+        tools.replace_header(self.rt.path, "thread-1", NEW, lambda _: None)
+        result = tools.refresh_account(self.rt)
+        self.assertEqual(result["status"], "completed", result)
+        self.assertEqual(self.native.close_count, 0)
+        self.assertIs(self.rt.servers["default"], self.native)
+        self.assertFalse(tools.needs_refresh(self.rt.agent("chat-1"), NEW))
+
+    def test_deferred_supervisor_refresh_allows_existing_catalog_continuation(self):
+        self.native.supervisor_mode = True
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent("chat-1", db)
+            agent.update(status="queued", autoWake=True)
+            self.rt.put(db, "agents", agent)
+            db.execute("INSERT INTO runtime_events VALUES ('pending','chat-1','pending')")
+            self.assertFalse(tools.gate(self.rt, db, agent, NEW))
+        tools.wait_updates(self.rt)
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent("chat-1", db)
+            self.assertTrue(tools.gate(self.rt, db, agent, NEW))
+            self.assertFalse(agent.get("error"))
+            self.assertNotIn("nativeToolUpdate", agent)
+            self.assertEqual(db.execute("SELECT status FROM runtime_events").fetchone()[0], "pending")
+        self.assertEqual(self.native.close_count, 0)
+        self.assertIs(self.rt.servers["default"], self.native)
+
     def test_active_studio_agent_blocks_before_native_calls(self):
         self.change_agent(inFlight=True, status="running")
         result = tools.refresh_account(self.rt)

@@ -437,6 +437,12 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                     changed = metadata["payload"].get("dynamic_tools", []) != catalog(definitions)
                     ticket = None
                     if changed:
+                        # Supervisor v1 close only detaches the backend. Keep
+                        # the current process and catalog until idle recycle
+                        # is supported, as with native binary replacement.
+                        if getattr(server, "supervisor_mode", False):
+                            return {**operation, "status": "waiting",
+                                    "reason": "Native tool replacement is deferred while supervisor mode is enabled"}
                         first, replacement, _ = _header(path, agent["threadId"])
                         replacement["payload"]["dynamic_tools"] = catalog(definitions)
                         required = len((json.dumps(replacement, ensure_ascii=False, separators=(",", ":")) + "\n").encode())

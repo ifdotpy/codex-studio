@@ -152,7 +152,10 @@ output with pipe backpressure; diagnostics identify the affected handle and
 state. The UI shows that output has paused. The overall database page limit is
 256 MiB, including retained operation receipts. Native binary replacement is
 deferred while supervisor mode is on; v1 keeps the current child identity until
-fallback or a planned idle cutover. Active-handle supervisor code replacement
+fallback or a planned idle cutover. Native tool catalog replacement
+also stays deferred when it requires stopping the child. Existing chats continue
+with their current catalog; an unchanged native catalog can still be confirmed.
+Active-handle supervisor code replacement
 is deferred to v2.
 
 No application can guarantee zero data loss after physical storage failure.
