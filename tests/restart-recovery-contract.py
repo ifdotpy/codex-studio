@@ -7,6 +7,7 @@ import os
 import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 import unittest
@@ -152,6 +153,47 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(record('monitors','active-monitor')['status'], 'running')
         self.assertEqual(record('tasks','active-task')['status'], 'running')
         self.assertFalse(any(method in {'turn/start','turn/resume'} for method, _ in self.server.calls))
+
+    def test_reattach_rechecks_connection_and_close_after_runtime_lock_wait(self):
+        for change in ('connection', 'closed'):
+            with self.subTest(change=change):
+                expected = self.restart(supervisor=True)
+                connection = self.runtime.connection_ids['default']
+                checked = threading.Event()
+                finished = threading.Event()
+                original = self.runtime.connection_current
+                errors = []
+
+                def observe(account, identity):
+                    value = original(account, identity)
+                    checked.set()
+                    return value
+
+                def restore():
+                    try:
+                        self.runtime.supervisor_reattached('default', connection, True)
+                    except Exception as error:
+                        errors.append(error)
+                    finally:
+                        finished.set()
+
+                with patch.object(self.runtime, 'connection_current', side_effect=observe):
+                    with self.runtime.lock:
+                        worker = threading.Thread(target=restore)
+                        worker.start()
+                        self.assertTrue(checked.wait(2))
+                        if change == 'connection':
+                            self.runtime.connection_ids['default'] = 'replacement-connection'
+                        else:
+                            self.runtime.closed = True
+                    try:
+                        self.assertTrue(finished.wait(2))
+                        self.assertEqual(errors, [])
+                        self.assertEqual(self.runtime.agent(self.key), expected)
+                    finally:
+                        self.runtime.closed = False
+                        self.runtime.connection_ids['default'] = connection
+                        worker.join(timeout=2)
 
     def test_restart_uncertainty_hold_is_reserved_for_unconfirmed_native_identity(self):
         self.restart()

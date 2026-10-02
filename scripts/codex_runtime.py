@@ -389,7 +389,10 @@ class AppServer:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
             if supervisor_reattached:
-                supervisor_reattached(self.supervisor_resumed)
+                # Restore before native events, outside the startup gate.
+                self.callbacks.put((lambda _: self.persistence_retry(
+                    lambda: supervisor_reattached(self.supervisor_resumed)),
+                    {"_studioReattachBarrier": True}))
         else:
             self.proc = subprocess.Popen(
                 command, env=env,
@@ -2112,7 +2115,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not resumed or not self.connection_current(account_key, connection_id):
             return
         now = time.time()
-        with self.lock, self.db() as db:
+        with self.notification_db() as db:
+            if self.closed or not self.connection_current(account_key, connection_id):
+                return
             for agent in self.records(db, "agents"):
                 if agent.get("accountKey", "default") != account_key or agent.get("deletedAt"):
                     continue
