@@ -8,6 +8,7 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,9 @@ spec=importlib.util.spec_from_file_location('account_fixture',Path(__file__).wit
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 import codex_claude
 from codex_accounts import AccountStore
+from codex_native_errors import NativeRpcError
+from codex_runtime import PreparationPending
+from codex_connection_recovery import recover, preparation_eligible
 
 AUTH={'status':'ready','accountId':'claude:test@example.test','email':'test@example.test','plan':'max','_credentialIdentity':'claude:test@example.test'}
 
@@ -41,6 +45,155 @@ class ClaudeProvider(unittest.TestCase):
         self.installed=patch('codex_claude.installed',return_value='/fake/claude');self.installed.start();self.addCleanup(self.installed.stop)
         self.runtime=f.ControlledRuntime(self.root/'state',MonitorServer);self.addCleanup(self.runtime.close)
         self.runtime.accounts.discover()
+
+    def busy_resume(self, *, message='Claude is still working', code=-32000,
+                    read_thread=None, read_gate=None, stale=False, read_error=None):
+        agent = self.runtime.new_lead({'cwd': str(self.root), 'account_key': 'claude-local'})
+        agent = self.runtime.prepare(agent)
+        self.runtime.loaded.discard(agent['id'])
+        server = self.runtime.servers['claude-local']
+        original = server.call
+
+        def call(method, params, timeout=60):
+            if method == 'thread/resume':
+                server.calls.append((method, params))
+                if stale:
+                    with self.runtime.lock, self.runtime.db() as db:
+                        current = self.runtime.agent(agent['id'], db)
+                        current['epoch'] += 1
+                        self.runtime.put(db, 'agents', current)
+                raise NativeRpcError({'code': code, 'message': message})
+            if method == 'thread/read':
+                server.calls.append((method, params))
+                if read_gate is not None:
+                    read_gate.wait(5)
+                if read_error:
+                    raise read_error
+                return {'thread': {'id': read_thread or agent['threadId']},
+                        'model': 'default', 'approvalPolicy': 'on-request'}
+            return original(method, params, timeout)
+
+        server.call = call
+        return agent, server
+
+    def test_busy_resume_reattaches_and_delivers_the_original_input_once(self):
+        agent, server = self.busy_resume()
+        self.runtime.send(agent['id'], 'Continue the saved task', 'busy-resume-input')
+        self.runtime.dispatch()
+        f.f.eventually(lambda: self.runtime.delivery_receipt('busy-resume-input')['status'] == 'delivered')
+        self.runtime.dispatch()
+        calls = [(m, p) for m, p in server.calls if m in {'thread/resume', 'thread/read', 'turn/start'}]
+        self.assertEqual([m for m, _ in calls], ['thread/resume', 'thread/read', 'turn/start'])
+        self.assertEqual(calls[1][1], {'threadId': agent['threadId'], 'includeTurns': False})
+        self.assertEqual(calls[2][1]['clientUserMessageId'], 'busy-resume-input')
+        self.assertEqual(self.runtime.agent(agent['id'])['threadId'], agent['threadId'])
+        self.assertFalse(any(m in {'turn/interrupt', 'thread/unsubscribe'} for m, _ in server.calls))
+
+    def test_other_resume_rejections_do_not_use_a_read(self):
+        for message, code in [('Claude is still working', -32600), ('Different failure', -32000)]:
+            with self.subTest(message=message, code=code):
+                agent, server = self.busy_resume(message=message, code=code)
+                with self.assertRaises(NativeRpcError):
+                    self.runtime.prepare(agent)
+                self.assertFalse(any(m == 'thread/read' for m, _ in server.calls))
+                self.assertNotIn(agent['id'], self.runtime.loaded)
+
+    def test_busy_resume_from_a_stale_epoch_cannot_reattach(self):
+        agent, server = self.busy_resume(stale=True)
+        with self.assertRaises(NativeRpcError):
+            self.runtime.prepare(agent)
+        self.assertFalse(any(m == 'thread/read' for m, _ in server.calls))
+        self.assertNotIn(agent['id'], self.runtime.loaded)
+
+    def test_busy_resume_read_requires_the_exact_thread_identity(self):
+        agent, server = self.busy_resume(read_thread='another-thread')
+        with self.assertRaisesRegex(RuntimeError, 'different thread identity; outcome unknown'):
+            self.runtime.prepare(agent)
+        self.assertEqual(sum(m == 'thread/read' for m, _ in server.calls), 1)
+        self.assertNotIn(agent['id'], self.runtime.loaded)
+        self.assertFalse(any(m == 'turn/start' for m, _ in server.calls))
+
+    def test_busy_resume_waits_for_the_read_receipt_without_resubmission(self):
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        agent, server = self.busy_resume(read_gate=gate)
+        self.runtime.preparation_wait_seconds = .02
+        with self.assertRaises(PreparationPending) as pending:
+            self.runtime.prepare(agent)
+        self.assertNotIn(agent['id'], self.runtime.loaded)
+        with self.assertRaises(PreparationPending):
+            self.runtime.prepare(agent)
+        gate.set()
+        self.assertEqual(pending.exception.future.result(3)['threadId'], agent['threadId'])
+        self.assertEqual(sum(m == 'thread/read' for m, _ in server.calls), 1)
+        self.assertEqual(sum(m == 'thread/resume' for m, _ in server.calls), 1)
+
+    def test_busy_resume_read_failure_remains_visible(self):
+        agent, server = self.busy_resume(read_error=NativeRpcError({'code': -32000,
+                                                                  'message': 'Claude is still working'}))
+        with self.assertRaises(NativeRpcError):
+            self.runtime.prepare(agent)
+        self.assertEqual(sum(m == 'thread/read' for m, _ in server.calls), 1)
+        self.assertNotIn(agent['id'], self.runtime.loaded)
+
+    def test_reattach_preserves_context_for_both_bridge_versions(self):
+        for current_bridge in (False, True):
+            with self.subTest(current_bridge=current_bridge):
+                agent, server = self.busy_resume()
+                if current_bridge:
+                    old_call = server.call
+                    def call(method, params, timeout=60):
+                        if method == 'thread/resume':
+                            server.calls.append((method, params))
+                            return {'thread': {'id': agent['threadId']}, 'model': 'default', 'reattached': True}
+                        return old_call(method, params, timeout)
+                    server.call = call
+                previous = agent['preparedContext']
+                guidance = '[Studio role skill: fixture]\nSource: fixture\nNEW ROLE POLICY\n[End Studio role skill]'
+                with patch.object(self.runtime, 'role_guidance', return_value=guidance):
+                    self.runtime.prepare(agent)
+                    with self.runtime.lock, self.runtime.db() as db:
+                        current = self.runtime.agent(agent['id'], db)
+                        self.assertEqual(current['preparedContext'], previous)
+                        self.assertIn('NEW ROLE POLICY', self.runtime.model_turn_context(db, current, 'context-probe'))
+
+    def test_saved_busy_preparation_restores_only_the_unsent_input(self):
+        agent, server = self.busy_resume()
+        self.runtime.send(agent['id'], 'The original task', 'saved-busy-input')
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(agent['id'], db)
+            attempt = {'id': 'saved-attempt', 'submitted': False, 'epoch': agent['epoch'],
+                       'accountKey': agent['accountKey'], 'activeAtReservation': False,
+                       'events': ['saved-busy-input']}
+            agent.update(status='failed', inFlight=False, turnId=None, startAttempt=attempt,
+                         error='{"code": -32000, "message": "Claude is still working"}')
+            self.runtime.put(db, 'agents', agent)
+        self.assertTrue(preparation_eligible(agent))
+        for field, value in [('provider', 'codex'), ('threadId', None), ('autoWake', False),
+                             ('inFlight', True), ('nativeFailureHold', {'reason': 'review'})]:
+            self.assertFalse(preparation_eligible({**agent, field: value}), field)
+        self.assertFalse(preparation_eligible({**agent, 'startAttempt': {**attempt, 'submitted': True}}))
+        self.assertEqual(recover(self.runtime, agent['id'])['status'], 'input_restored')
+        self.assertEqual(recover(self.runtime, agent['id'])['status'], 'superseded')
+        self.runtime.dispatch()
+        f.f.eventually(lambda: self.runtime.delivery_receipt('saved-busy-input')['status'] == 'delivered')
+        starts = [p for m, p in server.calls if m == 'turn/start']
+        self.assertEqual([p['clientUserMessageId'] for p in starts], ['saved-busy-input'])
+
+    def test_saved_busy_preparation_keeps_an_uncertain_input_reserved(self):
+        agent, server = self.busy_resume()
+        self.runtime.send(agent['id'], 'An uncertain task', 'uncertain-busy-input')
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(agent['id'], db)
+            agent.update(status='failed', inFlight=False, turnId=None,
+                error='{"code": -32000, "message": "Claude is still working"}',
+                startAttempt={'id': 'saved-attempt', 'submitted': False, 'epoch': agent['epoch'],
+                    'accountKey': agent['accountKey'], 'events': ['uncertain-busy-input']})
+            self.runtime.put(db, 'agents', agent)
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='uncertain-busy-input'")
+        self.assertEqual(recover(self.runtime, agent['id'])['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.delivery_receipt('uncertain-busy-input')['status'], 'uncertain')
+        self.assertFalse(any(m == 'turn/start' for m, _ in server.calls))
 
     def test_subscription_identity_and_provider_selection(self):
         account=self.runtime.accounts.get('claude-local')

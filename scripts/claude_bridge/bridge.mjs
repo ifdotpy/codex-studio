@@ -1239,15 +1239,18 @@ async function handle(method, p) {
       };
     }
     const s = await session(p.threadId);
+    let reattached = false;
     if (method === "thread/resume") {
       const active = queries.get(s.id);
-      if (active?.turn || active?.tasks.size)
-        throw new Error("Claude is still working");
-      active?.input.close();
-      active?.q?.close();
-      queries.delete(s.id);
-      Object.assign(s, p);
-      await persist(s);
+      // Reattach to a live query without changing its settings or background work.
+      // turn/start already steers its current turn or queues the next input.
+      if (!active?.turn && !active?.tasks.size) {
+        active?.input.close();
+        active?.q?.close();
+        queries.delete(s.id);
+        Object.assign(s, p);
+        await persist(s);
+      } else reattached = true;
     }
     const includeTurns =
       method === "thread/read"
@@ -1259,6 +1262,7 @@ async function handle(method, p) {
       sandbox: null,
       approvalPolicy: s.approvalPolicy ?? null,
       activePermissionProfile: s.activePermissionProfile ?? null,
+      ...(reattached ? { reattached: true } : {}),
     };
   }
   if (method === "thread/unsubscribe") {

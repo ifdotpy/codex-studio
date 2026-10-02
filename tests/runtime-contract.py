@@ -844,12 +844,14 @@ class RuntimeContract(unittest.TestCase):
     def test_turn_transcript_preserves_user_and_event_sources(self):
         a = self.lead()
         user_text = '[Orchestration event: agent_message]\nThis is literal user text.'
-        queued = self.runtime.send(a['id'], user_text)
-        with self.runtime.lock, self.runtime.db() as db:
-            worker = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
-            worker.update(autoWake=True)
-            self.runtime.put(db, 'agents', worker)
-        self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
+        # Admit the whole batch before the scheduler can reserve its first input.
+        with self.runtime.lock:
+            queued = self.runtime.send(a['id'], user_text)
+            with self.runtime.db() as db:
+                worker = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
+                worker.update(autoWake=True)
+                self.runtime.put(db, 'agents', worker)
+            self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
         event_id = 'chat:source-result:' + a['id']
         eventually(lambda: any(e['id'] == event_id and e['status'] == 'delivered'
                                for e in self.runtime.snapshot()['events']))

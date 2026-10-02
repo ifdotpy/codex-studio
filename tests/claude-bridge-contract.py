@@ -302,6 +302,57 @@ class Bridge(unittest.TestCase):
             time.sleep(.1)
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
 
+    def test_resume_keeps_the_current_turn_and_delivers_one_steer(self):
+        first = self.turn('steer', 'first')['turn']['id']
+        resumed = self.call('thread/resume', {'threadId': self.thread, 'excludeTurns': True,
+                                            'model': 'reject-model', 'approvalPolicy': 'never'})
+        self.assertEqual(resumed['thread']['id'], self.thread)
+        self.assertEqual(resumed['thread']['turns'], [])
+        self.assertEqual(resumed['model'], 'default')
+        self.assertTrue(resumed['reattached'])
+        self.assertNotEqual(resumed['approvalPolicy'], 'never')
+        params = {'threadId': self.thread, 'clientUserMessageId': 'next',
+                  'input': [{'type': 'text', 'text': 'replacement'}]}
+        self.assertEqual(self.call('turn/start', params)['turn']['id'], first)
+        self.assertEqual(self.call('turn/start', params)['turn']['id'], first)
+        (self.root / '.release-steer').write_text('done')
+        self.assertEqual(self.completed()['id'], first)
+        self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)
+        self.assertFalse((self.root / '.query-closes').exists())
+        history = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})
+        self.assertEqual(len(history['thread']['turns']), 1)
+        users = [i for i in history['thread']['turns'][0]['items'] if i['type'] == 'userMessage']
+        self.assertEqual([i['id'] for i in users], ['first', 'next'])
+
+    def test_resume_preserves_background_task_and_accepts_the_next_turn_once(self):
+        self.turn('background-hold', 'first')
+        self.completed()
+        state = self.call('claude/state', {'threadId': self.thread})
+        self.assertEqual(len(state['tasks']), 1)
+        resumed = self.call('thread/resume', {'threadId': self.thread, 'excludeTurns': True})
+        self.assertTrue(resumed['reattached'])
+        self.assertEqual(self.call('claude/state', {'threadId': self.thread})['tasks'], state['tasks'])
+        params = {'threadId': self.thread, 'clientUserMessageId': 'next',
+                  'input': [{'type': 'text', 'text': 'hello'}]}
+        second = self.call('turn/start', params)['turn']['id']
+        self.assertEqual(self.call('turn/start', params)['turn']['id'], second)
+        self.assertFalse((self.root / '.query-closes').exists())
+        (self.root / '.release-background').write_text('done')
+        self.assertEqual(self.completed()['id'], second)
+        self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)
+
+    def test_idle_resume_applies_settings_and_replaces_only_the_idle_query(self):
+        self.turn('hello', 'first')
+        self.completed()
+        resumed = self.call('thread/resume', {'threadId': self.thread, 'model': 'sonnet'})
+        self.assertEqual(resumed['model'], 'sonnet')
+        self.assertNotIn('reattached', resumed)
+        self.assertTrue((self.root / '.query-closes').exists())
+        self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
+        self.turn('hello', 'next')
+        self.completed()
+        self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 2)
+
     def test_rejected_claude_rate_limit_has_verified_error_kind_and_reset(self):
         self.turn('claude-limit', 'limit')
         failed = self.completed()

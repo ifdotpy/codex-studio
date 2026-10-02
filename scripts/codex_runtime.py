@@ -3974,7 +3974,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if completion.done():
             return
         try:
-            result = future.result()
+            try:
+                result = future.result()
+            except NativeRpcError as error:
+                # Older live Claude bridges reject resume during background work.
+                # Read that exact thread instead. Do not restart it or submit input here.
+                if (operation["method"] != "thread/resume" or operation.get("claudeReadSubmitted")
+                        or error.code != -32000 or not isinstance(error.error, dict)
+                        or error.error.get("message") != "Claude is still working"):
+                    raise
+                with self.lock:
+                    a = self.agent(operation["agent"])
+                    if (a.get("provider") != "claude" or operation.get("unloaded")
+                            or not self.operation_current(a, operation) or a["cwd"] != operation["cwd"]
+                            or self.preparation_settings(a) != operation["settings"]
+                            or a.get("prepareAttempt") != operation["id"]
+                            or a["threadId"] != operation["threadId"]):
+                        raise
+                    server = self.servers[operation["accountKey"]]
+                operation["claudeReadSubmitted"] = True
+                submitted = self.submit_reserved(server, "thread/read",
+                    {"threadId": operation["threadId"], "includeTurns": False},
+                    operation_id="prepare-read:" + operation["agent"] + ":" + operation["id"])
+                getattr(server, "on_result_now", server.on_result)(submitted,
+                    lambda ready: self.preparation_executor().submit(self.prepared_result, operation, ready))
+                return
             thread_id = result.get("thread", {}).get("id")
             if not isinstance(thread_id, str) or not thread_id:
                 raise RuntimeError("Thread preparation returned no thread identity; outcome unknown")
@@ -3992,8 +4016,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          if operation["method"] == "thread/start" else a["model"]),
                          sandbox=result.get("sandbox"), approvalPolicy=result.get("approvalPolicy"),
                          profile=result.get("activePermissionProfile"))
-                a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
-                                        "versions": operation.get("contextVersions", {})}
+                if not (a.get("provider") == "claude"
+                        and (operation.get("claudeReadSubmitted") or result.get("reattached") is True)):
+                    a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
+                                            "versions": operation.get("contextVersions", {})}
                 if a.get("nativeRelease"):
                     a["nativeRelease"].update(phase="resumed", resumedAt=time.time(), resetPending=False)
                 if operation["method"] == "thread/start" and operation.get("toolCatalog") is not None:

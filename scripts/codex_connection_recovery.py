@@ -59,16 +59,22 @@ def transport_turn_eligible(agent):
 
 def preparation_eligible(agent):
     attempt = agent.get('startAttempt') or {}
+    busy_claude = False
+    if agent.get('provider') == 'claude' and agent.get('threadId') and isinstance(agent.get('error'), str):
+        try:
+            busy_claude = json.loads(agent['error']) == {'code': -32000, 'message': 'Claude is still working'}
+        except (ValueError, TypeError):
+            pass
     return bool(agent.get('status') == 'failed' and agent.get('autoWake')
                 and not agent.get('inFlight') and not agent.get('turnId')
                 and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
                 and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
                 and not native_thread_block(agent)
                 and isinstance(agent.get('error'), str)
-                and agent['error'] in {'AF_UNIX path too long', '[Errno 2] No such file or directory',
+                and (busy_claude or agent['error'] in {'AF_UNIX path too long', '[Errno 2] No such file or directory',
                     'Cannot verify the existing supervisor child; native outcome remains unknown',
                     'Supervisor native launch settings changed; existing work was preserved',
-                    'Supervisor open failed: Supervisor handle exists with an incompatible or stopped child'}
+                    'Supervisor open failed: Supervisor handle exists with an incompatible or stopped child'})
                 and attempt.get('id') and attempt.get('submitted') is False
                 and attempt.get('epoch') == agent.get('epoch')
                 and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
