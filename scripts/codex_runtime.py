@@ -399,12 +399,14 @@ class AppServer:
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
         try:
+            handle = getattr(self.proc, "handle", None)
+            initialized_operation = "initialized:" + handle if handle is not None else None
             if getattr(self.proc, "initialize_result", None) is not None:
                 self.initialize_result = self.proc.initialize_result
             else:
                 self.initialize_result = self.call("initialize", {"clientInfo": {"name": "codex_agents_canvas",
                     "version": "1.0.0"}, "capabilities": {"experimentalApi": True}})
-                self.write({"method": "initialized"})
+            self.write({"method": "initialized"}, operation_id=initialized_operation)
         except Exception:
             self.close()
             raise

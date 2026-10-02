@@ -28,13 +28,18 @@ from pathlib import Path
 Path(os.environ['FAKE_NATIVE_PID']).write_text(str(os.getpid()))
 for line in sys.stdin:
     request=json.loads(line)
-    if 'id' not in request: continue
     method=request.get('method')
     if not method: continue
     with open(os.environ['FAKE_NATIVE_OPS'],'a') as log: log.write(json.dumps({'method':method,'params':request.get('params')})+'\n')
+    if method == 'initialized':
+        Path(os.environ['FAKE_NATIVE_INITIALIZED']).touch()
+        continue
+    if 'id' not in request: continue
     if method == 'initialize':
         result={'userAgent':'fake-model/1.0.0'}
     elif method == 'model/list':
+        if not Path(os.environ['FAKE_NATIVE_INITIALIZED']).exists():
+            continue
         result={'data':[{'model':'fake'}]}
     elif method == 'burst':
         for delta in ['a', 'b', 'c', 'd', 'e', 'f']:
@@ -107,6 +112,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             'CODEX_BIN':str(self.binary),
             'FAKE_NATIVE_PID':str(self.pid_file),
             'FAKE_NATIVE_OPS':str(self.root/'native-ops.jsonl'),
+            'FAKE_NATIVE_INITIALIZED':str(self.root/'native-initialized'),
             'FAKE_RELEASE':str(self.release),
         })
         self.env_patch.start()
@@ -215,6 +221,54 @@ class ProcessSupervisorContract(unittest.TestCase):
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
+
+    def test_reattach_completes_initialized_if_backend_dies_after_initialize_result(self):
+        crash = "\n".join([
+            "import os,sys",
+            "from pathlib import Path",
+            "sys.path.insert(0,sys.argv[1]+'/scripts')",
+            "from codex_runtime import AppServer",
+            "original=AppServer.write",
+            "def crash_before_initialized(self,value,operation_id=None):",
+            "    if value.get('method')=='initialized': os._exit(73)",
+            "    return original(self,value,operation_id=operation_id)",
+            "AppServer.write=crash_before_initialized",
+            "AppServer(Path(sys.argv[2]),lambda _:None,lambda _:None,lambda:None,",
+            "          executable=os.environ['CODEX_BIN'],supervisor_handle='account:default')",
+        ])
+        crashed = subprocess.run([sys.executable, '-B', '-c', crash, str(ROOT), str(self.root)],
+                                 env=os.environ.copy(), timeout=10, check=False)
+        self.assertEqual(crashed.returncode, 73)
+        wait_for(self._initialize_result_saved)
+        self.assertFalse(self._operation_accepted('initialized:account:default'))
+
+        second = self.server()
+        self.assertEqual(second.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertEqual(operations.count('initialized'), 1)
+        self.assertTrue(self._operation_accepted('initialized:account:default'))
+        second.close()
+        third = self.server()
+        self.assertEqual(third.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertEqual(operations.count('initialized'), 1)
+
+    def _initialize_result_saved(self):
+        try:
+            with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+                row = db.execute("SELECT init_result FROM handles WHERE id='account:default'").fetchone()
+            return bool(row and row[0])
+        except sqlite3.OperationalError:
+            return False
+
+    def _operation_accepted(self, operation_id):
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            return db.execute('SELECT 1 FROM operations WHERE handle=? AND operation_id=?',
+                              ('account:default', operation_id)).fetchone() is not None
 
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
