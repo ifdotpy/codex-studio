@@ -427,6 +427,7 @@ python3 -B tests/role-skills-contract.py
 python3 -B tests/turn-start-contract.py
 python3 -B tests/prepare-steer-contract.py
 python3 -B tests/monitor-lifecycle-contract.py
+python3 -B tests/worker-lifecycle-scenarios-11-14.py
 python3 -B tests/harness-response-contract.py
 python3 -B tests/protocol-reader-contract.py
 python3 -B tests/catalog-recovery-contract.py

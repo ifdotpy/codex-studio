@@ -489,11 +489,16 @@ def _park_action(rt, actor_id, args, epoch):
                 return rt.save_receipt(db, request_key, signature, {**fired, 'replayed': True})
             woken = []
             for target in rt.records(db, 'agents'):
+                park = target.get('parkReceipt') or {}
                 if (target['rootId'] != actor['rootId'] or target.get('deletedAt')
-                        or target.get('parkedEvent') != name):
+                        or target.get('parkedEvent') != name
+                        or park.get('event') != name
+                        or park.get('epoch') != target.get('epoch')
+                        or park.get('sequence') != target.get('parkSequence')):
                     continue
                 target.pop('parkedEvent', None)
                 target.pop('parkAfterTurn', None)
+                target.pop('parkReceipt', None)
                 target['autoWake'] = True
                 if target['status'] == 'parked':
                     target['status'] = 'queued'
@@ -529,12 +534,17 @@ def _park_action(rt, actor_id, args, epoch):
                 target.update(autoWake=False, status='parked')
             target['parkSequence'] = target.get('parkSequence', 0) + 1
             target['parkedEvent'] = name
+            target['parkReceipt'] = {
+                'event': name, 'epoch': target['epoch'],
+                'sequence': target['parkSequence'],
+            }
             rt.put(db, 'agents', target)
             return {'status': target['status'], 'agent': _brief(target)}
         if not target.get('parkedEvent'):
             return {'status': target['status'], 'agent': _brief(target), 'replayed': True}
         old = target.pop('parkedEvent')
         target.pop('parkAfterTurn', None)
+        target.pop('parkReceipt', None)
         target['autoWake'] = True
         if target['status'] == 'parked':
             target['status'] = 'queued'
