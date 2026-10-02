@@ -146,6 +146,33 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.read_calls_only()
         self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'superseded')
 
+    def test_supervisor_failure_reads_prior_turn_before_restoring_unsent_input(self):
+        self.queued_restart_wait()
+        self.update(status='failed', contextRepairWait=None,
+            error='Cannot verify the existing supervisor child; native outcome remains unknown')
+        attempt = dict(self.a['startAttempt'])
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'reconciled')
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['startAttempt'], attempt)
+        self.assertEqual(actor['status'], 'queued')
+        self.assertIsNone(actor['error'])
+        self.assertIsNone(actor['turnId'])
+        self.assertEqual(actor['restartRecovery']['stage'], 'finished')
+        self.read_calls_only()
+
+    def test_supervisor_failure_retains_prior_turn_when_native_check_is_unconfirmed(self):
+        self.queued_restart_wait()
+        self.update(status='failed', contextRepairWait=None,
+            error='Cannot verify the existing supervisor child; native outcome remains unknown')
+        self.server.native['status']['type'] = 'active'
+        attempt = dict(self.a['startAttempt'])
+        self.assertEqual(recover(self.runtime, self.key, automatic=True)['status'], 'unconfirmed')
+        actor = self.runtime.agent(self.key)
+        self.assertEqual(actor['status'], 'failed')
+        self.assertEqual(actor['turnId'], self.a['turnId'])
+        self.assertEqual(actor['startAttempt'], attempt)
+        self.read_calls_only()
+
     def test_queued_restart_wait_retains_unknown_input_and_active_turn(self):
         from codex_context_repair import claim_context_wait
         self.queued_restart_wait()

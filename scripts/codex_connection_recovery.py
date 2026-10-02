@@ -51,20 +51,23 @@ def queued_restart_eligible(agent):
               'The native session was active at the last check. Your message remains queued.'}
     source = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
     source['attemptId'] = attempt.get('id')
-    return bool(agent.get('status') == 'queued' and agent.get('autoWake')
+    supervisor_wait = (agent.get('status') == 'failed' and not wait
+                      and agent.get('error') == 'Cannot verify the existing supervisor child; native outcome remains unknown')
+    context_wait = (agent.get('status') == 'queued' and isinstance(agent.get('error'), str)
+                    and agent['error'] in errors
+                    and wait.get('error') == agent['error']
+                    and wait.get('scope') in {'local', 'native'} and wait.get('source') == source
+                    and wait.get('events') == attempt.get('events') and not wait.get('action'))
+    return bool((supervisor_wait or context_wait) and agent.get('autoWake')
                 and not agent.get('inFlight') and not agent.get('deletedAt')
                 and not agent.get('nativeFailureHold') and not native_thread_block(agent)
                 and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
                 and agent.get('threadId') and marker.get('turnId')
                 and agent.get('turnId') in (None, marker['turnId'])
-                and isinstance(agent.get('error'), str) and agent['error'] in errors
-                and wait.get('error') == agent['error']
-                and wait.get('scope') in {'local', 'native'} and wait.get('source') == source
                 and attempt.get('id') and attempt.get('submitted') is False
                 and attempt.get('epoch') == agent.get('epoch')
                 and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
-                and attempt.get('events') and wait.get('events') == attempt.get('events')
-                and not attempt.get('action') and not wait.get('action')
+                and attempt.get('events') and not attempt.get('action')
                 and not attempt.get('activeAtReservation')
                 and not attempt.get('turnId') and not attempt.get('observedTurnId')
                 and marker.get('stage') == 'pending' and marker.get('autoWake')
@@ -153,6 +156,10 @@ def restore_queued_restart(runtime, expected, connection, server, turn):
         agent['connectionRecovery'] = {'source': 'native_thread_read', 'at': time.time(),
             'turnId': turn['id'], 'outcome': outcome, 'queuedInputPreserved': True,
             'previousError': agent['error']}
+        if (agent.get('status') == 'failed'
+                and agent['error'] == 'Cannot verify the existing supervisor child; native outcome remains unknown'
+                and outcome != 'failed'):
+            agent.update(status='queued', error=None)
         if outcome == 'failed':
             agent.update(status='failed', error=turn.get('error') or {'message': 'Codex ended this turn with an error.'},
                          autoWake=False, nativeFailureHold=True)
