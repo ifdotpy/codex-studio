@@ -1756,6 +1756,8 @@ def main():
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
     def terminate(_signal, _frame):
+        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, terminate)
     runtime = None
