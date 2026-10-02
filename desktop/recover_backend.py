@@ -122,7 +122,7 @@ def launch_environment(config, state, supervisor_fallback=False):
 
 
 def supervisor_tick(config, state, child=None):
-    """Start or validate the stable process owner before any backend starts."""
+    """Probe the separately supervised owner without taking over its lifecycle."""
     if config.get("supervisorEnabled") is not True:
         return child, "disabled"
     script = Path(config["resources"]) / "scripts/codex_process_supervisor.py"
@@ -140,13 +140,9 @@ def supervisor_tick(config, state, child=None):
             return child, "supervisor degraded"
         return child, "supervisor ready"
     except (OSError, subprocess.SubprocessError):
-        if child is not None and child.poll() is None:
-            return child, "supervisor starting"
-    with (state / "supervisor.log").open("ab", buffering=0) as log:
-        child = subprocess.Popen([config["python"], "-B", str(script), "--state", str(state)], cwd=Path.home(),
-            env=launch_environment(config, state), stdin=subprocess.DEVNULL,
-            stdout=log, stderr=log, start_new_session=True)
-    return child, "supervisor starting"
+        # A failed probe does not prove that the owner is dead. The dedicated
+        # supervisor LaunchAgent owns restart and keeps recovery probes passive.
+        return child, "supervisor starting"
 
 
 def tick(config, state, child=None, supervisor_fallback=False):

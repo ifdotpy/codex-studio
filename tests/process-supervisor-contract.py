@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import sqlite3
 import subprocess
 import sys
@@ -132,6 +133,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.supervisor_log_stream=self.supervisor_log.open('w')
         self.supervisor=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/codex_process_supervisor.py'),
             '--state',str(self.root)],stdout=subprocess.DEVNULL,stderr=self.supervisor_log_stream)
+        self.extra_supervisors=[]
         self.addCleanup(self.cleanup)
         try: wait_for(lambda: status(self.root))
         except Exception:
@@ -149,6 +151,12 @@ class ProcessSupervisorContract(unittest.TestCase):
         if getattr(self,'supervisor',None) and self.supervisor.poll() is None:
             self.supervisor.terminate()
             self.supervisor.wait(timeout=5)
+        for process in getattr(self,'extra_supervisors',[]):
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            if process.stderr:
+                process.stderr.close()
         if getattr(self,'supervisor_log_stream',None): self.supervisor_log_stream.close()
         if getattr(self,'pid_file',None) and self.pid_file.exists():
             try: os.kill(int(self.pid_file.read_text()),signal.SIGKILL)
@@ -818,6 +826,43 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(row[0],'already-exited')
         self.assertIn('no longer running',row[1])
         self.assertIn('no longer running',reason)
+
+    def test_launch_agent_waits_for_legacy_owner_then_recovers_its_live_child(self):
+        os.environ['FAKE_STAY_ALIVE']='1'
+        server=self.server('account:handoff-child')
+        server.call('model/list',{})
+        child_pid=int(self.pid_file.read_text())
+        legacy_owner=self.supervisor
+        legacy_pid=legacy_owner.pid
+        waiter=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/codex_process_supervisor.py'),
+            '--state',str(self.root),'--wait-for-lease'],stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,text=True)
+        self.extra_supervisors.append(waiter)
+        deadline=time.monotonic()+5
+        wait_message=''
+        while time.monotonic()<deadline and f'supervisor waiting for owner {legacy_pid}' not in wait_message:
+            if waiter.poll() is not None:
+                self.fail(f'waiting owner exited early: {wait_message}{waiter.stderr.read()}')
+            readable,_,_=select.select([waiter.stderr],[],[],.05)
+            if readable:
+                wait_message+=waiter.stderr.readline()
+        self.assertIn(f'supervisor waiting for owner {legacy_pid}',wait_message)
+        time.sleep(.25)
+        self.assertIsNone(waiter.poll())
+        readable,_,_=select.select([waiter.stderr],[],[],0)
+        self.assertFalse(readable,'waiting owner logged more than once')
+        self.assertEqual(status(self.root)['handles'][0]['pid'],child_pid)
+
+        server.close()
+        legacy_owner.kill()
+        legacy_owner.wait(timeout=5)
+        self.supervisor=waiter
+        recovered=wait_for(lambda: status(self.root),timeout=8)
+        self.assertTrue(recovered['recovery']['degraded'])
+        self.assertTrue(recovered['recovery']['fallbackReady'])
+        wait_for(lambda: process_start_time(child_pid) is None)
+        self.assertIsNone(waiter.poll())
+        os.environ.pop('FAKE_STAY_ALIVE',None)
 
     def test_supervisor_sigkill_terminates_verified_live_child_group(self):
         os.environ['FAKE_STAY_ALIVE']='1'

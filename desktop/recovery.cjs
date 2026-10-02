@@ -55,6 +55,12 @@ function recoveryPaths(env = process.env, home = os.homedir()) {
       "Library/LaunchAgents",
       `local.codex.agents.recovery.${suffix}.plist`,
     ),
+    supervisorLabel: `local.codex.agents.supervisor.${suffix}`,
+    supervisorPlist: path.join(
+      home,
+      "Library/LaunchAgents",
+      `local.codex.agents.supervisor.${suffix}.plist`,
+    ),
   };
 }
 function recoveryPreference(env = process.env) {
@@ -110,6 +116,128 @@ function launchAgent({ label, python, supervisor, config, state }) {
 <key>StandardErrorPath</key><string>${xml(path.join(state, "background-recovery.log"))}</string>
 </dict></plist>\n`;
 }
+function supervisorLaunchAgent({ label, python, supervisor, state }) {
+  const args = [python, "-B", supervisor, "--state", state, "--wait-for-lease"];
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
+<key>Label</key><string>${xml(label)}</string>
+<key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>LimitLoadToSessionType</key><string>Aqua</string>
+<key>AbandonProcessGroup</key><true/>
+<key>StandardOutPath</key><string>${xml(path.join(state, "supervisor.log"))}</string>
+<key>StandardErrorPath</key><string>${xml(path.join(state, "supervisor.log"))}</string>
+</dict></plist>\n`;
+}
+async function assertRecoveryBootoutSafe({
+  serviceInfo,
+  files,
+  python,
+  resources,
+  run,
+}) {
+  const serviceOutput =
+    typeof serviceInfo?.stdout === "string" ? serviceInfo.stdout : "";
+  const jobPid = Number(serviceOutput.match(/^\s*pid\s*=\s*(\d+)\s*$/m)?.[1]);
+  if (!Number.isSafeInteger(jobPid) || jobPid <= 0) return;
+
+  let owner;
+  try {
+    owner = JSON.parse(
+      fs.readFileSync(path.join(files.state, "supervisor.lock"), "utf8"),
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw new Error(
+      `Cannot verify the legacy supervisor owner before stopping recovery: ${error.message}`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    typeof owner.startTime !== "string"
+  )
+    throw new Error(
+      "Cannot verify the legacy supervisor identity before stopping recovery.",
+    );
+  let parentOutput;
+  try {
+    const result = await run("/bin/ps", [
+      "-p",
+      String(owner.pid),
+      "-o",
+      "ppid=",
+    ]);
+    parentOutput = typeof result?.stdout === "string" ? result.stdout : "";
+  } catch (error) {
+    if (error.code === 1 && !String(error.stdout || "").trim()) return;
+    throw new Error(
+      `Cannot verify whether the legacy supervisor belongs to recovery: ${error.message}`,
+    );
+  }
+  if (!parentOutput.trim()) return;
+  if (!Number.isSafeInteger(Number(parentOutput.trim())))
+    throw new Error(
+      "Cannot verify the legacy supervisor parent process before stopping recovery.",
+    );
+  if (Number(parentOutput.trim()) !== jobPid) return;
+
+  let health;
+  try {
+    const script = path.resolve(
+      resources,
+      "scripts/codex_process_supervisor.py",
+    );
+    const result = await run(python, [
+      "-B",
+      script,
+      "--status-json",
+      "--state",
+      files.state,
+    ]);
+    health = JSON.parse(result?.stdout || "");
+  } catch (error) {
+    throw new Error(
+      `Cannot safely stop the recovery LaunchAgent while its legacy supervisor is live: ${error.message}`,
+    );
+  }
+  if (!Array.isArray(health.handles))
+    throw new Error(
+      "Cannot safely stop the recovery LaunchAgent while its legacy supervisor status is unavailable.",
+    );
+  if (health.handles.length > 0)
+    throw new Error(
+      `Cannot stop the recovery LaunchAgent while legacy supervisor pid ${owner.pid} owns ${health.handles.length} live handle(s). Wait for the owner to exit or all handles to close.`,
+    );
+}
+async function ensureSupervisorAgent({ files, python, resources, uid, run }) {
+  const script = path.resolve(resources, "scripts/codex_process_supervisor.py");
+  fs.accessSync(script, fs.constants.R_OK);
+  fs.mkdirSync(path.dirname(files.supervisorPlist), { recursive: true });
+  const nextPlist = supervisorLaunchAgent({
+    label: files.supervisorLabel,
+    python,
+    supervisor: script,
+    state: files.state,
+  });
+  const temporary = `${files.supervisorPlist}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, nextPlist, { mode: 0o600 });
+  fs.renameSync(temporary, files.supervisorPlist);
+
+  const domain = `gui/${uid}`;
+  const service = `${domain}/${files.supervisorLabel}`;
+  let registered = true;
+  try {
+    await run("/bin/launchctl", ["print", service]);
+  } catch {
+    registered = false;
+  }
+  // Never unload or kickstart the owner: its child pipes carry live work.
+  if (!registered)
+    await run("/bin/launchctl", ["bootstrap", domain, files.supervisorPlist]);
+  await run("/bin/launchctl", ["print", service]);
+}
 function isInstalledApplication(applicationPath) {
   return (
     typeof applicationPath === "string" &&
@@ -141,29 +269,6 @@ async function configureRecovery({
   const files = recoveryPaths(env, home);
   const domain = `gui/${uid}`;
   const service = `${domain}/${files.label}`;
-  if (!enabled) {
-    let saved = {};
-    try {
-      saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    atomicJSON(files.config, {
-      ...saved,
-      version: 1,
-      stateDir: files.state,
-      enabled: false,
-    });
-    try {
-      await run("/bin/launchctl", ["print", service]);
-    } catch {
-      fs.rmSync(files.plist, { force: true });
-      return { enabled: false, ...files };
-    }
-    await run("/bin/launchctl", ["bootout", service]);
-    fs.rmSync(files.plist, { force: true });
-    return { enabled: false, ...files };
-  }
   const authoritative =
     restartEnvironment && typeof restartEnvironment === "object";
   const launchEnv = { ...env };
@@ -174,7 +279,59 @@ async function configureRecovery({
         launchEnv[key] = restartEnvironment[key];
     }
   }
-  const python = executable("python3", launchEnv);
+  let saved = {};
+  try {
+    saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (
+    saved.supervisorEnabled !== undefined &&
+    typeof saved.supervisorEnabled !== "boolean"
+  )
+    throw new Error("The saved supervisor setting is invalid.");
+  const supervisorEnabled =
+    launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === undefined
+      ? saved.supervisorEnabled === true
+      : launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1";
+  const python =
+    enabled || supervisorEnabled ? executable("python3", launchEnv) : null;
+  const safetyPython = python || executable("python3", launchEnv);
+  if (supervisorEnabled)
+    await ensureSupervisorAgent({ files, python, resources, uid, run });
+  if (!enabled) {
+    let serviceInfo;
+    try {
+      serviceInfo = await run("/bin/launchctl", ["print", service]);
+    } catch {
+      atomicJSON(files.config, {
+        ...saved,
+        version: 1,
+        stateDir: files.state,
+        enabled: false,
+        supervisorEnabled,
+      });
+      fs.rmSync(files.plist, { force: true });
+      return { enabled: false, ...files };
+    }
+    await assertRecoveryBootoutSafe({
+      serviceInfo,
+      files,
+      python: safetyPython,
+      resources,
+      run,
+    });
+    atomicJSON(files.config, {
+      ...saved,
+      version: 1,
+      stateDir: files.state,
+      enabled: false,
+      supervisorEnabled,
+    });
+    await run("/bin/launchctl", ["bootout", service]);
+    fs.rmSync(files.plist, { force: true });
+    return { enabled: false, ...files };
+  }
   const codex = executable("codex", launchEnv);
   for (const filename of [
     supervisor,
@@ -187,17 +344,7 @@ async function configureRecovery({
     if (key !== "CODEX_AGENTS_SUPERVISOR_MODE" && launchEnv[key] !== undefined)
       environment[key] = launchEnv[key];
   environment.PATH = `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`;
-  let saved = {};
-  try {
-    saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  const supervisorEnabled =
-    launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === undefined
-      ? saved.supervisorEnabled === true
-      : launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1";
-  atomicJSON(files.config, {
+  const config = {
     version: 1,
     enabled: true,
     supervisorEnabled,
@@ -210,8 +357,7 @@ async function configureRecovery({
     unsetEnvironment: restartKeys.filter(
       (key) => environment[key] === undefined,
     ),
-  });
-  fs.mkdirSync(path.dirname(files.plist), { recursive: true });
+  };
   let previousPlist;
   try {
     previousPlist = fs.readFileSync(files.plist, "utf8");
@@ -223,22 +369,30 @@ async function configureRecovery({
     python,
     supervisor: path.resolve(supervisor),
   });
-  const temporary = `${files.plist}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, nextPlist, { mode: 0o600 });
-  fs.renameSync(temporary, files.plist);
+  let serviceInfo;
   let registered = true;
   try {
-    await run("/bin/launchctl", ["print", service]);
+    serviceInfo = await run("/bin/launchctl", ["print", service]);
   } catch {
     registered = false;
   }
-  if (
-    registered &&
-    previousPlist !== undefined &&
-    previousPlist !== nextPlist
-  ) {
-    // Restart only the supervisor when an application or Python path changes.
-    // The detached backend keeps its authoritative lease and active work.
+  const restartRecovery =
+    registered && previousPlist !== undefined && previousPlist !== nextPlist;
+  if (restartRecovery)
+    await assertRecoveryBootoutSafe({
+      serviceInfo,
+      files,
+      python: safetyPython,
+      resources,
+      run,
+    });
+  atomicJSON(files.config, config);
+  fs.mkdirSync(path.dirname(files.plist), { recursive: true });
+  const temporary = `${files.plist}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, nextPlist, { mode: 0o600 });
+  fs.renameSync(temporary, files.plist);
+  if (restartRecovery) {
+    // Restart only recovery after proving it does not own live supervisor work.
     await run("/bin/launchctl", ["bootout", service]);
     registered = false;
   }
@@ -255,6 +409,7 @@ module.exports = {
   supervisorPreference,
   recoveryPaths,
   launchAgent,
+  supervisorLaunchAgent,
   isInstalledApplication,
   recoveryStatusLabel,
 };

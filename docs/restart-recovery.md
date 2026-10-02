@@ -114,16 +114,26 @@ is deferred to v2.
 
 1. Install the desktop build containing `scripts/codex_process_supervisor.py`.
    Existing launchd recovery configuration remains off for supervisor mode by
-   default. The recovery LaunchAgent starts the supervisor as a detached child
-   and validates it before launching the backend. The child has its own session,
-   so backend SIGTERM does not stop it.
+   default. When enabled, the desktop installs a dedicated
+   `local.codex.agents.supervisor.<state-hash>` LaunchAgent before launching or
+   attaching the backend. The recovery job uses a separate
+   `local.codex.agents.recovery.<state-hash>` label and only probes supervisor
+   health. A failed or timed out probe does not start a competing owner. The
+   supervisor service uses `KeepAlive` and `AbandonProcessGroup`; desktop quit,
+   backend restart, or recovery-job rewrite and kickstart do not unload or
+   restart it. The LaunchAgent starts its supervisor with `--wait-for-lease`.
+   If a legacy recovery-started owner still holds the lease, the new instance
+   stays alive, logs `supervisor waiting for owner <pid>` once, and takes over
+   after that owner exits. It then runs the normal identity-checked child cleanup
+   and single fallback-generation recovery.
 2. Choose one idle boundary: stop admitting new work and wait for turns, monitors,
    background tasks, and user terminals to finish. The first installation cannot
    transfer existing in-process pipes, so this is the one planned interruption.
 3. Set `CODEX_AGENTS_SUPERVISOR_MODE=1` in the environment used by the desktop,
    then restart the desktop recovery configuration. `desktop/recovery.cjs` writes
-   the mode into the existing launchd config and `desktop/recover_backend.py`
-   starts and preflights the supervisor before any backend. Verify that
+   the mode into the recovery config and installs the independent supervisor
+   LaunchAgent. `desktop/recover_backend.py` probes the supervisor before any
+   backend starts but never takes ownership of its lifecycle. Verify that
    `/api/desktop` reports protocol 1 and an empty supervisor handle list.
 4. At the planned idle boundary, run
    `scripts/restart-backend-v2.sh --initial-cutover` with the same state directory
@@ -132,7 +142,26 @@ is deferred to v2.
    For later backend-only restarts, omit `--initial-cutover`. Do not unload the
    recovery LaunchAgent or terminate the supervisor.
 
-The supervisor survives backend restarts, not host reboots. It records its PID
+### Migrate an install with a legacy recovery-started owner
+
+Install the new build and leave the existing recovery job and its supervisor
+running. Desktop startup bootstraps the independent supervisor LaunchAgent; its
+instance waits on the lease held by the legacy owner. The legacy owner hands
+over when it exits, including at the next reboot/login or a planned stop. The
+waiting LaunchAgent then checks the recorded child identities and performs the
+existing crash-recovery cleanup before it accepts backend connections.
+
+The legacy supervisor can still be torn down when launchd rewrites or boots out
+the recovery job that started it. Do not disable, rewrite, or boot out that job
+while its supervisor owns live handles. `desktop/recovery.cjs` checks the
+recovery job PID, supervisor parent PID, and supervisor status before a restart
+or bootout, and refuses the operation while that legacy owner has live handles.
+Wait for the legacy owner to exit or its handles to close, then retry the
+recovery-job change. The supervisor LaunchAgent remains loaded and takes the
+lease when it becomes available.
+
+The supervisor LaunchAgent survives desktop quits, recovery-job restarts, and
+backend restarts, and starts at login after a host reboot. It records its PID
 and start time, plus each native child's PID, process group, and start time.
 After supervisor death, recovery verifies these identities. It sends TERM, then
 KILL after 1.5 seconds, only to a process group whose PID and start time still

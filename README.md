@@ -435,6 +435,7 @@ python3 -B tests/native-binary-contract.py
 python3 -B tests/native-runtime-updates-contract.py
 python3 -B tests/process-supervisor-contract.py
 python3 -B tests/upgrade-contract.py
+node desktop/supervisor-independence-test.mjs
 python3 -B tests/model-catalog-reader-contract.py
 python3 -B tests/tool-request-contract.py
 python3 -B tests/spawn-request-recovery-contract.py

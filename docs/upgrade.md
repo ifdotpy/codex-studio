@@ -205,9 +205,29 @@ Its first cutover needs one planned interruption at an idle boundary because
 existing in-process pipes cannot transfer to it. Install the matching desktop
 package, set `CODEX_AGENTS_SUPERVISOR_MODE=1` through the desktop recovery
 configuration, and use the documented `scripts/restart-backend-v2.sh
---initial-cutover` procedure. Verify supervisor protocol and empty handles in
-`/api/desktop` and `/api/diagnostics`. Do not enable it by changing an ad hoc
-shell environment while the desktop continues to launch the old backend.
+--initial-cutover` procedure. Desktop startup installs a separate
+`local.codex.agents.supervisor.<state-hash>` LaunchAgent before it starts or
+attaches a backend. The recovery job has its own label and only probes the
+supervisor. It does not start or stop an independent owner when a probe fails.
+Its LaunchAgent instance waits quietly for a legacy recovery-started owner to
+release the state lease, logs the owner PID once, then takes over and performs
+identity-checked crash recovery.
+
+For an install that already has a supervisor started by the recovery job,
+install the new build and leave the old owner and recovery job running. The new
+supervisor LaunchAgent waits for that owner to exit; the next reboot/login or a
+planned stop hands the lease to the waiting instance. The old owner can still be
+stopped by rewriting or booting out the recovery job that started it. Do not
+disable, rewrite, or boot out that recovery job while its supervisor owns live
+handles. `desktop/recovery.cjs` checks the recovery-job PID and supervisor
+status, and refuses a recovery-job restart or bootout while those legacy handles
+are live. Wait for the legacy owner to exit or its handles to close before
+retrying. Rewriting, disabling, or kickstarting recovery after handoff does not
+unload the independent supervisor LaunchAgent. Do not unload or kickstart the
+supervisor service while it owns handles. Verify supervisor protocol and empty
+handles in `/api/desktop` and `/api/diagnostics` at the initial idle cutover.
+Do not enable it by changing an ad hoc shell environment while the desktop
+continues to launch the old backend.
 
 ## Rollback and recovery
 

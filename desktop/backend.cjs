@@ -304,9 +304,6 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       throw new Error(
         "Supervisor mode is enabled but its packaged script is missing.",
       );
-    const log = path.join(canonicalState, "supervisor.log");
-    const fd = fs.openSync(log, "a", 0o600);
-    let started = false;
     const deadline = Date.now() + 10000;
     let lastError;
     while (Date.now() < deadline) {
@@ -324,36 +321,9 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         break;
       } catch (error) {
         lastError = error;
-        if (!started) {
-          started = true;
-          let child;
-          try {
-            // The supervisor's state-directory lease elects one owner when the
-            // desktop and LaunchAgent both start it during the same recovery.
-            child = spawn(
-              python,
-              ["-B", supervisor, "--state", canonicalState],
-              {
-                cwd: os.homedir(),
-                detached: true,
-                stdio: ["ignore", fd, fd],
-                env: {
-                  ...env,
-                  CODEX_AGENTS_STATE_DIR: canonicalState,
-                  CODEX_AGENTS_SUPERVISOR_MODE: "1",
-                },
-              },
-            );
-            child.on("error", () => {});
-            child.unref();
-          } catch (spawnError) {
-            lastError = spawnError;
-          }
-        }
         await sleep(100);
       }
     }
-    fs.closeSync(fd);
     if (lastError) {
       throw new Error(
         `Supervisor mode is enabled but no compatible supervisor is ready for ${canonicalState}. The backend was not started: ${lastError.message}`,

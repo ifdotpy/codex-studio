@@ -19,6 +19,7 @@ import socket
 import socketserver
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -325,7 +326,7 @@ class Supervisor:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.socket_path = self.root / "supervisor.sock"
-        self.journal = Journal(self.root)
+        self.journal = None
         self.children = {}
         self.lock = threading.RLock()
         self.owner = None
@@ -338,6 +339,8 @@ class Supervisor:
         return hashlib.sha256(content.encode()).hexdigest()
 
     def open_handle(self, handle, command, env, cwd):
+        if self.journal is None:
+            self.journal = Journal(self.root)
         signature = self.signature(command, env, cwd)
         with self.lock:
             child = self.children.get(handle)
@@ -473,26 +476,51 @@ class Supervisor:
             return {"detached": True}
         raise ValueError("Unknown supervisor action")
 
-    def serve(self):
+    def serve(self, wait_for_lease=False):
         self.lease = (self.root / "supervisor.lock").open("a+")
-        try:
-            fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as error:
-            raise RuntimeError("Another supervisor owns this state directory") from error
-        self.lease.seek(0)
-        prior = self.lease.read().strip()
-        previous_identity = None
-        if prior:
+        announced_wait = False
+        while True:
             try:
-                previous_identity = json.loads(prior)
-                old_pid = previous_identity["pid"]
-                old_start = previous_identity["startTime"]
-                current_start = process_start_time(old_pid)
-            except (ValueError, KeyError, TypeError) as error:
-                raise RuntimeError("The previous supervisor lease identity is invalid") from error
-            if current_start == old_start:
-                raise RuntimeError("The previous supervisor process is still alive")
-            self.recover_orphaned_children()
+                fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if not wait_for_lease:
+                    raise RuntimeError("Another supervisor owns this state directory") from error
+                if not announced_wait:
+                    self.lease.seek(0)
+                    try:
+                        owner_pid = json.loads(self.lease.read()).get("pid")
+                    except (ValueError, AttributeError):
+                        owner_pid = None
+                    if isinstance(owner_pid, int) and owner_pid > 0:
+                        print(f"supervisor waiting for owner {owner_pid}", file=sys.stderr, flush=True)
+                        announced_wait = True
+                time.sleep(.1)
+                continue
+
+            self.lease.seek(0)
+            prior = self.lease.read().strip()
+            previous_identity = None
+            if prior:
+                try:
+                    previous_identity = json.loads(prior)
+                    old_pid = previous_identity["pid"]
+                    old_start = previous_identity["startTime"]
+                    current_start = process_start_time(old_pid)
+                except (ValueError, KeyError, TypeError) as error:
+                    raise RuntimeError("The previous supervisor lease identity is invalid") from error
+                if current_start == old_start:
+                    if not wait_for_lease:
+                        raise RuntimeError("The previous supervisor process is still alive")
+                    if not announced_wait:
+                        print(f"supervisor waiting for owner {old_pid}", file=sys.stderr, flush=True)
+                        announced_wait = True
+                    fcntl.flock(self.lease, fcntl.LOCK_UN)
+                    time.sleep(.1)
+                    continue
+            self.journal = Journal(self.root)
+            if prior:
+                self.recover_orphaned_children()
+            break
         own_start = process_start_time(os.getpid())
         if own_start is None:
             raise RuntimeError("Cannot prove the supervisor process identity")
@@ -1044,6 +1072,7 @@ def main():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--status-json", action="store_true")
     parser.add_argument("--finish-fallback", action="store_true")
+    parser.add_argument("--wait-for-lease", action="store_true")
     args = parser.parse_args()
     if args.finish_fallback:
         finish_fallback(args.state)
@@ -1054,7 +1083,7 @@ def main():
         if current.get("recovery", {}).get("degraded"):
             raise RuntimeError("Supervisor crash recovery is active; start one fallback backend generation first")
     else:
-        Supervisor(args.state).serve()
+        Supervisor(args.state).serve(wait_for_lease=args.wait_for_lease)
 
 
 if __name__ == "__main__":
