@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('connection-recovery-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
-from codex_connection_recovery import recover
+from codex_connection_recovery import recover, tick as connection_recovery_tick
 from codex_restart_recovery import capture, restore, settle_reconciled
 
 
@@ -31,11 +32,14 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             self.runtime.put(db, 'agents', parent_record)
         return parent['id']
 
-    def restart(self, **values):
+    def restart(self, *, supervisor=False, **values):
         self.update(status='running', autoWake=True, inFlight=True, error=None, **values)
         native = copy.deepcopy(self.server.native)
         self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        env = {'CODEX_AGENTS_SUPERVISOR_MODE': '1'} if supervisor else {}
+        with patch.dict(os.environ, env):
+            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+            self.runtime.supervisor_mode = os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') == '1'
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.pending = {}
@@ -80,6 +84,52 @@ class RestartContract(fixture.ConnectionRecoveryContract):
             events = db.execute("SELECT id,status FROM runtime_events WHERE id=?", (key,)).fetchall()
         self.assertEqual([(r[0],r[1]) for r in events], [(key,'pending')])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'queued')
+
+    def test_supervisor_restart_holds_long_active_turn_with_one_lead_event(self):
+        parent_id = self.make_worker()
+        self.server.native['status']['type'] = 'active'
+        self.restart(supervisor=True)
+        self.assertTrue(self.runtime.supervisor_mode)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery']['at'] = time.time() - 31
+            self.runtime.put(db, 'agents', agent)
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'pending')
+
+        result = recover(self.runtime, self.key, automatic=True)
+
+        self.assertEqual(result['status'], 'unconfirmed')
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'held')
+        self.assertIn('still active', agent['restartRecovery']['reason'])
+        self.assertFalse(agent['autoWake'])
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (parent_id,)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn('did not resend', json.loads(rows[0]['text'])['reason'])
+        self.assertFalse(any(method in {'turn/start', 'turn/resume'} for method, _ in self.server.calls))
+
+    def test_restart_pause_becomes_visible_hold_on_scheduler_pass(self):
+        parent_id = self.make_worker()
+        self.restart()
+        self.update(status='paused', autoWake=False)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['restartRecovery'].update(stage='pending', autoWake=True, at=time.time())
+            self.runtime.put(db, 'agents', agent)
+
+        connection_recovery_tick(self.runtime, [self.runtime.agent(self.key)])
+
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['restartRecovery']['stage'], 'held')
+        self.assertEqual(agent['status'], 'paused')
+        self.assertFalse(agent['autoWake'])
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (parent_id,)).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn('kept it paused', json.loads(rows[0]['text'])['reason'])
 
     def test_disconnect_receipt_keeps_restart_continuation_permission(self):
         self.update(status='running', autoWake=True, inFlight=True, turnId='lost-turn')

@@ -9,6 +9,7 @@ DISCONNECT_ERRORS = frozenset({
     'Codex disconnected. Review the transcript before resuming.',
     'Server restarted during a turn. Review history, then send a new instruction.',
 })
+RESTART_ACTIVE_HOLD_SECONDS = 30
 IDENTITY = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'status', 'error',
             'inFlight', 'autoWake', 'startAttempt', 'accountTransferId',
             'workspaceOperation', 'nativeThreadBlock', 'disconnectRecovery', 'restartRecovery')
@@ -269,8 +270,23 @@ def record_check(runtime, expected, connection, server, native_state):
             agent['connectionCheck']['turnId'] = agent['restartRecovery']['turnId']
         agent['connectionCheck'].update(at=time.time(), previousError=expected['error'],
                                          nativeState=native_state)
+        marker = agent.get('restartRecovery') or {}
+        if (native_state == 'active' and marker.get('stage') == 'pending'
+                and marker.get('autoWake') and time.time() - marker.get('at', time.time())
+                >= RESTART_ACTIVE_HOLD_SECONDS):
+            reason = ('The native turn is still active after restart. Studio did not resend its input. '
+                      'Check the existing turn before you recover this worker.')
+            _hold_restart(runtime, db, agent, marker, reason, time.time())
         runtime.put(db, 'agents', agent)
         return {'status': 'unconfirmed', 'checked': True}
+
+
+def _hold_restart(runtime, db, agent, marker, reason, now):
+    marker.update(stage='held', reason=reason, heldAt=now)
+    turn_id = marker.get('turnId') or marker.get('at')
+    runtime.item(db, agent['id'], 'restart-recovery-held:' + str(turn_id), 'system',
+                 reason, 'Restart recovery', nativeNotice='warning', turnId=marker.get('turnId'))
+    runtime.permanent_worker_hold(db, agent, 'restart:' + str(turn_id), 'held', reason)
 
 
 def apply_result(runtime, expected, connection, server, turn, *, automatic=False):
@@ -468,6 +484,35 @@ def tick(runtime, agents):
         now = time.time()
         candidates = []
         for agent in agents:
+            marker = agent.get('restartRecovery') or {}
+            check = agent.get('connectionCheck') or {}
+            active_restart_expired = (marker.get('stage') == 'pending' and marker.get('autoWake')
+                and check.get('nativeState') == 'active' and check.get('turnId') == marker.get('turnId')
+                and time.time() - marker.get('at', time.time()) >= RESTART_ACTIVE_HOLD_SECONDS)
+            paused_restart = (marker.get('stage') == 'pending' and marker.get('autoWake')
+                              and agent.get('status') == 'paused' and not agent.get('autoWake'))
+            if active_restart_expired or paused_restart:
+                with runtime.db() as db:
+                    current_agent = runtime.agent(agent['id'], db)
+                    current_marker = current_agent.get('restartRecovery') or {}
+                    current_check = current_agent.get('connectionCheck') or {}
+                    same_recovery = (current_marker.get('stage') == 'pending'
+                            and current_marker.get('autoWake')
+                            and all(current_marker.get(field) == agent.get(field)
+                                    for field in ('epoch', 'accountKey', 'threadId', 'turnId')))
+                    still_paused = (current_agent.get('status') == 'paused' and not current_agent.get('autoWake'))
+                    still_active = (current_check.get('nativeState') == 'active'
+                                    and current_check.get('turnId') == current_marker.get('turnId')
+                                    and time.time() - current_marker.get('at', time.time())
+                                    >= RESTART_ACTIVE_HOLD_SECONDS)
+                    if same_recovery and (still_paused or still_active):
+                        reason = ('The lead paused this worker after restart. Studio kept it paused.'
+                                  if still_paused else
+                                  'The native turn is still active after restart. Studio did not resend its input. '
+                                  'Check the existing turn before you recover this worker.')
+                        _hold_restart(runtime, db, current_agent, current_marker, reason, now)
+                        runtime.put(db, 'agents', current_agent)
+                        continue
             if not eligible(agent):
                 continue
             if runtime.accounts.get(agent.get('accountKey', 'default')).get('disconnected'):
