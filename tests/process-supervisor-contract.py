@@ -333,10 +333,59 @@ class ProcessSupervisorContract(unittest.TestCase):
                 supervisor_reattached=observed.append)
         try:
             self.assertTrue(second.supervisor_resumed)
+            deadline = time.monotonic() + 3
+            while not observed and time.monotonic() < deadline:
+                time.sleep(.01)
             self.assertEqual(observed, [True])
             self.assertEqual(int(self.pid_file.read_text()), native_pid)
         finally:
             second.close()
+
+    def test_reattach_barrier_does_not_block_constructor_and_precedes_native_events(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        gate = threading.Lock()
+        gate.acquire()
+        constructed = threading.Event()
+        observed, result, errors = [], [], []
+
+        def restore(resumed):
+            with gate:
+                observed.append(('restore', resumed))
+
+        def construct():
+            try:
+                result.append(AppServer(self.root, lambda _: observed.append(('native', True)),
+                    lambda _: None, lambda: None, supervisor_handle='account:default',
+                    supervisor_reattached=restore))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                constructed.set()
+
+        worker = threading.Thread(target=construct, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(constructed.wait(3), 'The constructor must not wait for the runtime restore lock')
+            self.assertEqual(errors, [])
+            second = result[0]
+            self.servers.append(second)
+            second.call('burst', {'itemId': 'reattach-order'}, timeout=3)
+            self.assertEqual(observed, [])
+            gate.release()
+            deadline = time.monotonic() + 3
+            while len(observed) < 2 and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(observed[0], ('restore', True))
+            self.assertTrue(any(kind == 'native' for kind, _ in observed[1:]))
+            self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        finally:
+            if gate.locked():
+                gate.release()
+            worker.join(timeout=4)
+            for server in result:
+                server.close()
 
     def _journal_method_count(self, method):
         try:
