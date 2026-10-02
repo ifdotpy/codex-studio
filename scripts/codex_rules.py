@@ -271,6 +271,11 @@ class RulesMixin:
                 if r["status"] != "active" or r.get("inFlight"):
                     continue
                 a = self.agent(r["agent"], db)
+                if (not a.get("deletedAt") and a.get("epoch") == r["epoch"]
+                        and self.rule_owner_recovery_pending(a, r["epoch"])):
+                    # Preserve the active watch while exact native recovery runs.
+                    # Dispatch remains blocked by the agent's recovery state.
+                    continue
                 if a.get("deletedAt") or not a["autoWake"] or a["epoch"] != r["epoch"]:
                     r.update(
                         status="paused",
@@ -324,6 +329,22 @@ class RulesMixin:
                 self.put(db, "rules", r)
         for r in launch:
             self.pool.submit(self.run_rule, r)
+
+    @staticmethod
+    def rule_owner_recovery_pending(agent, epoch):
+        restart = agent.get("restartRecovery") or {}
+        if (restart.get("stage") == "pending" and restart.get("autoWake")
+                and restart.get("epoch") == epoch
+                and all(restart.get(field) == agent.get(field)
+                        for field in ("epoch", "accountKey", "threadId"))):
+            return True
+        disconnect = agent.get("disconnectRecovery") or {}
+        return bool(disconnect.get("autoWake")
+                    and disconnect.get("epoch") == epoch
+                    and all(disconnect.get(source) == agent.get(target)
+                            for source, target in (("epoch", "epoch"),
+                                                   ("accountKey", "accountKey"),
+                                                   ("threadId", "threadId"))))
 
     def low_workers_tick(self, db, rule, lead, now):
         from codex_workspace import active_monitors

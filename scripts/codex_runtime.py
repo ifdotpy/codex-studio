@@ -1280,7 +1280,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if m["status"] in {"running", "approval", "starting"}:
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
-                    self._monitor_exit_event(db, self.agent(m["agent"], db), m)
             for r in self.records(db, "requests"):
                 if r["status"] == "answering":
                     r.update(status="uncertain", answerError="Server restarted before answer delivery completed")
@@ -1329,6 +1328,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             monitor_recovery = recover_monitor_results(self, db)
             startup_memory_mark("monitor-result-file-recovery")
             self.recover_monitor_receipts(db)
+            self.report_unresolved_rule_checks(db)
             startup_memory_mark("monitor-receipt-recovery")
         startup_memory_mark("runtime-migrations-complete")
         for key in monitor_recovery["acknowledge"]:
@@ -6289,7 +6289,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
             LEFT JOIN runtime_events e ON e.id='monitor:' || m.id
             WHERE e.id IS NULL AND json_extract(m.record,'$.status')
-                IN ('completed','failed','cancelled')"""
+                IN ('completed','failed','cancelled','lost')"""
         params = ()
         if keys is not None:
             if not keys:
@@ -6340,9 +6340,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         text = json.dumps({k: m.get(k) for k in
             ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
         event_key = "monitor:" + m["id"]
-        if db.execute("SELECT 1 FROM runtime_events WHERE id=?", (event_key,)).fetchone():
+        existing = db.execute("SELECT text,status FROM runtime_events WHERE id=?", (event_key,)).fetchone()
+        monitor_epoch = m.get("epoch")
+        if monitor_epoch is None:
+            monitor_epoch = (m.get("operation") or {}).get("epoch")
+        can_wake = (wake and monitor_epoch is not None and not a.get("deletedAt")
+                    and a.get("epoch") == monitor_epoch)
+        if existing:
+            try:
+                previous = json.loads(existing["text"])
+            except (ValueError, TypeError):
+                previous = {}
+            if previous.get("status") != "lost" or m.get("status") == "lost":
+                return False
+            if existing["status"] == "pending":
+                # The model has not received this event, so exact proof can safely
+                # replace the fallback payload under its original identity.
+                db.execute("UPDATE runtime_events SET text=? WHERE id=? AND status='pending'",
+                           (text, event_key))
+                self.changed.set()
+                return False
+            correction_key = "monitor-correction:" + m["id"]
+            correction = json.dumps({
+                "monitorId": m["id"], "corrects": event_key,
+                "message": "This exact result corrects the earlier unknown monitor outcome. Do not repeat the command.",
+                "result": json.loads(text),
+            })
+            if can_wake:
+                self.enqueue_recovery_event(db, a, "monitor_correction", correction, correction_key)
+            else:
+                db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                    (correction_key, a["id"], "monitor_correction", correction, "cancelled",
+                     time.time(), a.get("epoch", 0), None, None))
+                self.changed.set()
             return False
-        if wake and not a.get("deletedAt") and a["epoch"] == m["epoch"]:
+        if can_wake:
             self.enqueue_recovery_event(db, a, "monitor_exit", text, event_key)
             return True
         # Preserve historical receipts without continuing a previous assignment.
@@ -6350,15 +6382,42 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         db.execute(
             "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
             (event_key, a["id"], "monitor_exit", text, "cancelled", time.time(),
-             m["epoch"], None, None),
+             monitor_epoch if monitor_epoch is not None else a.get("epoch", 0), None, None),
         )
         self.changed.set()
         return True
 
+    def report_unresolved_rule_checks(self, db):
+        """Save one visible hold for each check with no exact recovered receipt."""
+        for rule in self.records(db, "rules"):
+            marker = rule.get("restartCheck")
+            if not marker or rule.get("restartHoldNotified"):
+                continue
+            actor = self.agent(rule["agent"], db)
+            if (marker.get("epoch") != rule.get("epoch")
+                    or marker.get("checks") != rule.get("checks")
+                    or marker.get("monitorId") != str(uuid.uuid5(
+                        uuid.NAMESPACE_URL, "rule:" + rule["id"] + ":" + str(rule["checks"])) )):
+                continue
+            payload = json.dumps({
+                "rule": rule["id"], "name": rule["name"],
+                "message": "The backend restarted during this check. Its outcome is unknown. The command was not repeated.",
+                "monitorId": marker["monitorId"],
+            })
+            identity = rule["id"] + ":" + str(marker["epoch"]) + ":" + str(marker["checks"])
+            for recipient in [actor] + ([self.agent(actor["parentId"], db)] if actor.get("parentId") else []):
+                key = "rule-hold:" + identity + ":" + recipient["id"]
+                db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                    (key, recipient["id"], "rule_hold", payload, "pending", time.time(),
+                     recipient.get("epoch", 0), None, None))
+            rule["restartHoldNotified"] = True
+            self.put(db, "rules", rule)
+            self.changed.set()
+
     def _finish_monitor(self, key, code, error, *, finished=None):
         with self.db() as db:
             m = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()[0])
-            if m["status"] in {"cancelled", "lost", "completed", "failed"}:
+            if m["status"] in {"cancelled", "completed", "failed"}:
                 self._monitor_exit_event(db, self.agent(m["agent"], db), m)
                 return
             cancelled = bool(m.get("cancelRequested"))
@@ -6500,7 +6559,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.capacity_reset(db, a, "The agent was stopped.")
                 self.usage_resume_cancel(db, a, "The agent was stopped.")
                 stopped_turn = a.get("turnId") or (a.get("startAttempt") or {}).get("id") or "stop"
+                cancelled_park = a.pop("parkReceipt", None)
+                a.pop("parkedEvent", None)
+                a.pop("parkAfterTurn", None)
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
+                if cancelled_park:
+                    a["cancelledPark"] = {**cancelled_park, "cancelledAtEpoch": a["epoch"]}
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
                 self.child_stopped_event(db, a, "paused", reason,

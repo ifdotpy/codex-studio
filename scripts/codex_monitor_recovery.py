@@ -132,7 +132,9 @@ def recover_monitor_results(runtime, db):
             result['warnings'].append({'file': str(path), 'error': str(error)})
             continue
         cancelled = bool(monitor.get('cancelRequested'))
-        status = 'cancelled' if cancelled else 'failed' if receipt['error'] or receipt['code'] != 0 else 'completed'
+        status = ('cancelled' if cancelled else 'failed'
+                  if receipt['error'] or receipt['code'] not in monitor.get('successExitCodes', [0])
+                  else 'completed')
         monitor.update(status=status, exitCode=receipt['code'], error=receipt['error'],
                        finished=receipt['finished'], configurationPending=False,
                        resultRecoveredAt=time.time())
