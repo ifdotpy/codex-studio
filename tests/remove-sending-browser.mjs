@@ -88,6 +88,14 @@ try {
     }
   });
   let loseResponse = true;
+  await page.addInitScript(
+    ({ stateDir, chat }) => {
+      const key = `studio-removed-messages:${JSON.stringify([stateDir, "agent", chat])}:restored`;
+      if (localStorage.getItem(key) === null)
+        localStorage.setItem(key, "invalid JSON");
+    },
+    { stateDir: initial.stateDir, chat: lead.id },
+  );
   await page.route("**/api/queue", async (route) => {
     if (route.request().method() !== "POST" || !loseResponse)
       return route.continue();

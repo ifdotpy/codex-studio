@@ -124,9 +124,23 @@ export function useRemovedMessages(
     restored: useMemo<Message[]>(() => {
       // Restored copies are display records. They never return to the outbox.
       void serialized;
-      const copies: Message[] = JSON.parse(
-        localStorage.getItem(`${storageKey}:restored`) || "[]",
-      );
+      let copies: Message[];
+      try {
+        const saved: unknown = JSON.parse(
+          localStorage.getItem(`${storageKey}:restored`) || "[]",
+        );
+        copies = Array.isArray(saved)
+          ? saved.filter(
+              (message): message is Message =>
+                message !== null &&
+                typeof message === "object" &&
+                typeof message.id === "string" &&
+                typeof message.text === "string",
+            )
+          : [];
+      } catch {
+        return [];
+      }
       return copies.map((message) => ({
         ...message,
         pending: false,

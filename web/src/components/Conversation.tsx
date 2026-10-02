@@ -341,7 +341,18 @@ export default function Conversation(p: {
   const items = useMemo(
     () =>
       [
-        ...delivery.items,
+        ...delivery.items.map((message) => {
+          if (!isSendingMessage(message)) return message;
+          // A stale receipt must not make a restored display copy send again.
+          return (
+            removed.restored.find(
+              (copy) =>
+                message.id === copy.id ||
+                (copy.clientMessageId &&
+                  copy.clientMessageId === message.clientMessageId),
+            ) || message
+          );
+        }),
         ...removed.restored.filter(
           (copy) =>
             !delivery.items.some(
