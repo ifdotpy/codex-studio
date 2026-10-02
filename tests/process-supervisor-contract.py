@@ -281,6 +281,8 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertTrue(current['inFlight'])
         self.assertEqual(current['turnId'], 'long-turn')
         self.assertNotIn('Server restarted during a turn', current.get('error') or '')
+        self.assertEqual(current['supervisorRestore']['status'], 'restored')
+        self.assertEqual(current['supervisorRestore']['reason'], 'live_handle_resumed')
         with second.db() as db:
             task = json.loads(db.execute('SELECT record FROM runtime_tasks WHERE id=?',
                                          ('background-task',)).fetchone()[0])
