@@ -1083,6 +1083,7 @@ class _RuntimeWalKeeper:
                 raise RuntimeError("Could not close the runtime SQLite WAL keeper") from self._close_error
 
 
+
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
@@ -4169,7 +4170,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "cwd": a["cwd"], "branch": a.get("branch"),
         }
         parent = self.agent(a["parentId"], db)
-        event_id = "child-stop:" + a["id"] + ":" + str(a["epoch"]) + ":" + str(marker or "stop")
+        event_id = "child-stop:" + a["id"] + ":" + str(a.get("epoch", 0)) + ":" + str(marker or "stop")
         self.enqueue(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
         return event_id
 
@@ -4347,6 +4348,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     },
                     "at": received_at,
                     "processedAt": processed_at,
+                    **({"readAt": current["readAt"]} if current.get("readAt") else {}),
                     "error": None,
                 }
                 self.store_rate_limits(account_key, value)
@@ -5305,8 +5307,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
                     return cached
                 now = time.time()
+                # Notifications refresh usage windows but omit the account ID and reset
+                # credits, so a full read is still due after ten minutes.
+                read_at = cached.get("readAt")
                 if not force and (
-                        (not cached.get("error") and cached["at"] and now - cached["at"] < 60)
+                        (not cached.get("error") and cached["at"] and now - cached["at"] < 60
+                         and read_at and now - read_at < 600)
                         or (cached.get("error") and cached.get("checkedAt")
                             and now - cached["checkedAt"] < 30)):
                     return cached
@@ -5329,11 +5335,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     current = self.rate_limits_for(account_key)
                     if connection_id is not None and (self.closed or not self.connection_current(account_key, connection_id)):
                         return current
-                    # Notifications can update this account while the read waits.
+                    # Notifications can update this account while the read waits. Their
+                    # windows are newer; the read still supplies the account fields.
                     if current is not cached and current.get("data") is not None and not current.get("error"):
-                        return current
+                        if error is not None or not isinstance(data, dict):
+                            return current
+                        live = current["data"]
+                        merged = {**data, "rateLimits": live.get("rateLimits") or data.get("rateLimits"),
+                                  "rateLimitsByLimitId": {**(data.get("rateLimitsByLimitId") or {}),
+                                                          **(live.get("rateLimitsByLimitId") or {})}}
+                        self.set_rate_limits(account_key, {**current, "data": merged,
+                                                           "readAt": time.time(), "error": None})
+                        return self.rate_limits_for(account_key)
                     if error is None:
-                        self.set_rate_limits(account_key, {"data": data, "at": time.time(), "error": None})
+                        read_at = time.time()
+                        self.set_rate_limits(account_key, {"data": data, "at": read_at,
+                                                           "readAt": read_at, "error": None})
                     elif isinstance(error, ResponseTimeout) and attempt == 0:
                         # Only this read is safe to repeat after a lost response.
                         continue

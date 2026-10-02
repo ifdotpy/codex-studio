@@ -23,7 +23,7 @@ class LimitsRefreshContracts(unittest.TestCase):
 
     def cache(self, error=None):
         value = {"data": {"accountId": "default", "old": True},
-                 "at": time.time(), "error": error}
+                 "at": time.time(), "readAt": time.time(), "error": error}
         with self.runtime.lock:
             self.runtime.set_rate_limits("default", value)
         return self.runtime.rate_limits_for()
@@ -171,6 +171,39 @@ class LimitsRefreshContracts(unittest.TestCase):
             result = self.runtime.limits()
         self.assertIsNone(result["error"])
         self.assertEqual(result["data"]["rateLimits"]["primary"]["usedPercent"], 17)
+
+    def test_notifications_do_not_hide_reset_credits_forever(self):
+        # Live 2026-10-02: notifications kept the cache fresh, so the full read
+        # never ran and the account had no reset credits or account ID.
+        self.notify()
+        server = self.runtime.connect()
+        full = {"accountId": "acct", "rateLimitResetCredits": {"availableCount": 1, "credits": []},
+                "rateLimits": {"primary": {"usedPercent": 1}}}
+        with patch.object(server, "call", return_value=full) as call:
+            result = self.runtime.limits()
+        call.assert_called_once()
+        self.assertEqual(result["data"]["accountId"], "acct")
+        self.assertEqual(result["data"]["rateLimitResetCredits"]["availableCount"], 1)
+        self.notify()
+        kept = self.runtime.rate_limits_for()
+        self.assertEqual(kept["data"]["rateLimitResetCredits"]["availableCount"], 1)
+        with patch.object(server, "call") as again:
+            self.assertEqual(self.runtime.limits()["data"]["accountId"], "acct")
+        again.assert_not_called()
+
+    def test_read_keeps_account_fields_when_notification_arrives_meanwhile(self):
+        server = self.runtime.connect()
+
+        def read(*args, **kwargs):
+            self.notify()
+            return {"accountId": "acct", "rateLimitResetCredits": {"availableCount": 2},
+                    "rateLimits": {"primary": {"usedPercent": 1}}}
+
+        with patch.object(server, "call", side_effect=read):
+            result = self.runtime.limits()
+        self.assertEqual(result["data"]["rateLimits"]["primary"]["usedPercent"], 17)
+        self.assertEqual(result["data"]["rateLimitResetCredits"]["availableCount"], 2)
+        self.assertEqual(result["data"]["accountId"], "acct")
 
     def test_other_account_notification_does_not_hide_read_failure(self):
         server = self.runtime.connect()
