@@ -141,12 +141,60 @@ try {
   assert.equal(stored.theme, "dark");
   assert.equal(stored.showMessageAvatars, true);
   assert.equal(stored.mainFontSize, 24);
+  await page.evaluate((key) => {
+    const preferences = JSON.parse(localStorage.getItem(key));
+    preferences.contentLayout = "original";
+    localStorage.setItem(key, JSON.stringify(preferences));
+  }, storageKey);
   await page.keyboard.press("Escape");
   await page.reload();
   await page.locator("#message").waitFor();
   await checkOriginal();
+  for (const width of [1440, 1920, 390]) {
+    await page.setViewportSize({ width, height: 960 });
+    const geometry = await page.evaluate(() => {
+      const messages = document
+        .querySelector("#messages .message-content")
+        .getBoundingClientRect();
+      const composer = document
+        .querySelector("#composer")
+        .getBoundingClientRect();
+      return {
+        messages: messages.width,
+        composer: composer.width,
+        viewport: innerWidth,
+        page: document.documentElement.scrollWidth,
+      };
+    });
+    assert.ok(geometry.messages <= 680, JSON.stringify(geometry));
+    assert.ok(geometry.composer <= 860, JSON.stringify(geometry));
+    assert.ok(geometry.messages > 200, JSON.stringify(geometry));
+    assert.ok(geometry.page <= geometry.viewport, JSON.stringify(geometry));
+  }
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.screenshot({ path: join(evidence, "original.png") });
   settings = await openSettings();
+  assert.equal(
+    await settings
+      .getByLabel("Chat width layout", { exact: true })
+      .inputValue(),
+    "original",
+  );
+  await settings
+    .getByLabel("Chat width layout", { exact: true })
+    .selectOption("custom");
+  assert.ok(
+    (await page
+      .locator("#messages .message-content")
+      .first()
+      .evaluate((el) => el.getBoundingClientRect().width)) > 680,
+  );
+  assert.equal(
+    await settings
+      .getByRole("slider", { name: "Transcript width" })
+      .getAttribute("aria-valuenow"),
+    "80",
+  );
   assert.equal(
     await settings
       .getByLabel("Studio text style", { exact: true })

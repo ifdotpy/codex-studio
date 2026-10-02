@@ -15,6 +15,7 @@ export type StudioFontFamily = keyof typeof fontFamilies;
 export interface StudioPreferences {
   theme: "auto" | "light" | "dark";
   typography: "original" | "custom";
+  contentLayout: "original" | "custom";
   sidebarFontSize: number;
   mainFontSize: number;
   fontFamily: StudioFontFamily;
@@ -26,6 +27,7 @@ export interface StudioPreferences {
 export const defaultStudioPreferences: StudioPreferences = {
   theme: "auto",
   typography: "custom",
+  contentLayout: "custom",
   sidebarFontSize: 14,
   mainFontSize: 14,
   fontFamily: "system",
@@ -47,6 +49,9 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     (candidate.typography !== undefined &&
       candidate.typography !== "original" &&
       candidate.typography !== "custom") ||
+    (candidate.contentLayout !== undefined &&
+      candidate.contentLayout !== "original" &&
+      candidate.contentLayout !== "custom") ||
     !Number.isInteger(candidate.sidebarFontSize) ||
     Number(candidate.sidebarFontSize) < 12 ||
     Number(candidate.sidebarFontSize) > 24 ||
@@ -66,6 +71,8 @@ export function parseStudioPreferences(value: string): StudioPreferences {
   return {
     theme: candidate.theme as StudioPreferences["theme"],
     typography: candidate.typography === "original" ? "original" : "custom",
+    contentLayout:
+      candidate.contentLayout === "original" ? "original" : "custom",
     sidebarFontSize: candidate.sidebarFontSize as number,
     mainFontSize: candidate.mainFontSize as number,
     fontFamily: candidate.fontFamily as StudioPreferences["fontFamily"],

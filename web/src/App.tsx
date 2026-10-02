@@ -252,6 +252,7 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.studioTypography = studioPreferences.typography;
+    root.dataset.studioContentLayout = studioPreferences.contentLayout;
     root.style.setProperty(
       "--studio-font-family",
       fontFamilies[studioPreferences.fontFamily].css,
@@ -2180,6 +2181,28 @@ export default function App() {
                 </section>
                 <section className="settings-group" aria-label="Column">
                   <h2>Column</h2>
+                  <div className="settings-field">
+                    <span className="settings-label">Chat width</span>
+                    <NativeSelect
+                      aria-label="Chat width layout"
+                      value={studioPreferences.contentLayout}
+                      data={[
+                        { value: "original", label: "Original width" },
+                        { value: "custom", label: "Custom width" },
+                      ]}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          contentLayout: event.currentTarget
+                            .value as StudioPreferences["contentLayout"],
+                        })
+                      }
+                    />
+                    <small>
+                      Original limits message width. Custom uses a percentage of
+                      the window.
+                    </small>
+                  </div>
                   <label className="studio-range-field">
                     <span>
                       Transcript width{" "}
@@ -2187,6 +2210,7 @@ export default function App() {
                     </span>
                     <Slider
                       thumbLabel="Transcript width"
+                      disabled={studioPreferences.contentLayout === "original"}
                       min={60}
                       max={100}
                       step={1}
