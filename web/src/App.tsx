@@ -1531,7 +1531,10 @@ export default function App() {
               mobileClient && agent?.cwd ? `${projectName} · ` : ""
             }
             onBack={
-              lead && agent?.id !== lead.id ? () => open(lead.id) : undefined
+              // Only a worker chat links back; the lead and team rooms do not.
+              lead && agent && !agent.isLead && agent.id !== lead.id
+                ? () => open(lead.id)
+                : undefined
             }
             modeControl={
               lead?.source === "managed" && !mobileClient ? (

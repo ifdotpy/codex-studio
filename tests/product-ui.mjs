@@ -156,6 +156,11 @@ try {
   await page.locator("#message").fill("Worker draft");
   await page.locator("#back-lead").click();
   assert.equal(await page.locator("#message").inputValue(), "Lead draft");
+  assert.equal(
+    await page.locator("#back-lead").count(),
+    0,
+    "The lead chat has no Back to main agent button",
+  );
   assert.equal(await page.locator("#view-toggle").count(), 0);
   assert.equal(await page.locator("[data-node]").count(), 0);
   assert.equal(await page.locator("#open-complaints").count(), 0);
