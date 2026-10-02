@@ -1,0 +1,8 @@
+/* Loaded with the component: the Messages panel styles load lazily. */
+.message-date {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}

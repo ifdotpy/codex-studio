@@ -1,4 +1,5 @@
 import { localDateTime } from "../../../local-time";
+import "./message-date.css";
 
 export type MessageDateProps = { at?: number | string | null };
 

@@ -504,13 +504,6 @@
   }
 }
 
-.message-date {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-  font-variant-numeric: tabular-nums;
-}
 .messages-chat-list .team-room-title {
   align-items: flex-start;
   flex-direction: column;
