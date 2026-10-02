@@ -240,7 +240,14 @@ try {
       ).json();
       assert.ok(
         transcript.items.some(
-          (item) => item.clientMessageId === body.id && item.text === text,
+          (item) =>
+            (item.clientMessageId === body.id && item.text === text) ||
+            // Native input batches keep each exact client identity in inputs.
+            item.inputs?.some(
+              (input) =>
+                (input.clientMessageId === body.id || input.id === body.id) &&
+                input.text === text,
+            ),
         ),
         "The accepted outbox request appears in the server transcript",
       );
@@ -328,6 +335,27 @@ try {
   const room = posts[0].room;
   const beforeRaces = posts.length;
   const pendingSessions = [];
+  assert.equal(
+    await second.evaluate(() =>
+      window.outboxModule.stopRemovedMessage("remove-before-store"),
+    ),
+    false,
+  );
+  const removedBeforeStore = await page.evaluate(
+    (room) =>
+      window.outboxModule.durableSend({
+        id: "remove-before-store",
+        room,
+        text: "Removed before the durable insert",
+      }),
+    room,
+  );
+  assert.equal(removedBeforeStore.status, "cancelled");
+  assert.equal(
+    posts.length,
+    beforeRaces,
+    "Removal before the document exists prevents a later HTTP claim.",
+  );
   holdSession = (route) => {
     pendingSessions.push(route);
   };
@@ -344,8 +372,11 @@ try {
       return !!(await db.outbox.findOne("cancel-before-post").exec());
     }),
   );
-  await second.evaluate(() =>
-    window.outboxModule.changeOutbox("cancel-before-post", "cancel"),
+  assert.equal(
+    await second.evaluate(() =>
+      window.outboxModule.stopRemovedMessage("cancel-before-post"),
+    ),
+    true,
   );
   holdSession = null;
   for (const route of pendingSessions) await route.fallback();
@@ -387,8 +418,11 @@ try {
     }
   });
   assert.match(forbidden, /Delivery may have started/);
-  await second.evaluate(() =>
-    window.outboxModule.changeOutbox("lost-response-pause", "pause"),
+  assert.equal(
+    await second.evaluate(() =>
+      window.outboxModule.stopRemovedMessage("lost-response-pause"),
+    ),
+    false,
   );
   await second.close();
   const deadline = Date.now() + 5000;
@@ -423,6 +457,44 @@ try {
   await page.locator("#message").waitFor();
   await confirmedMessage("Keep the immutable request");
   assert.deepEqual(errors, []);
+  const nativePosts = posts.length;
+  const forbiddenNativeMutations = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      ["/api/queue", "/api/stop"].includes(new URL(request.url()).pathname)
+    )
+      forbiddenNativeMutations.push(request.url());
+  });
+  await page.evaluate(
+    async ({ room, stateDir, workspaceId }) => {
+      const { removeSendingMessage } =
+        await import("/src/components/removeSendingMessages.ts");
+      await removeSendingMessage(
+        { stateDir, workspaceId },
+        {
+          chat: room,
+          message: {
+            id: `${room}:native-dispatch`,
+            clientMessageId: "native-dispatch",
+            role: "user",
+            text: "Already in native dispatch",
+            deliveryStatus: "dispatching",
+          },
+        },
+      );
+      const keys = JSON.parse(
+        localStorage.getItem(
+          `studio-removed-messages:${JSON.stringify([stateDir, "agent", room])}`,
+        ),
+      );
+      if (!keys.includes("client:native-dispatch"))
+        throw new Error("Native message was not removed.");
+    },
+    { room, stateDir: evidence, workspaceId: identity.workspaceId },
+  );
+  assert.equal(posts.length, nativePosts);
+  assert.deepEqual(forbiddenNativeMutations, []);
   console.log(
     "PASS: offline cancel, edit with attachments, existing draft guard, reload, cross-tab cancellation boundary, pause after lost response, immutable resume",
   );

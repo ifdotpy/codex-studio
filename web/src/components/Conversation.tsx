@@ -49,6 +49,10 @@ import {
   mergeQueueOrder,
 } from "./messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
+import {
+  isSendingMessage,
+  removeSendingMessage,
+} from "./removeSendingMessages";
 
 import { useConversationScroll } from "./useConversationScroll";
 import { useAttachmentDrafts } from "./useAttachmentDrafts";
@@ -335,8 +339,20 @@ export default function Conversation(p: {
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
   const items = useMemo(
-    () => delivery.items.filter((message) => !removed.hidden(message)),
-    [delivery.items, removed.hidden],
+    () =>
+      [
+        ...delivery.items,
+        ...removed.restored.filter(
+          (copy) =>
+            !delivery.items.some(
+              (message) =>
+                message.id === copy.id ||
+                (copy.clientMessageId &&
+                  copy.clientMessageId === message.clientMessageId),
+            ),
+        ),
+      ].filter((message) => !removed.hidden(message)),
+    [delivery.items, removed.hidden, removed.restored],
   );
   const promptRecall = usePromptRecall(
     `${p.data.stateDir}:${kind}:${p.id}:${historyVersion}`,
@@ -942,30 +958,53 @@ export default function Conversation(p: {
         )
       : undefined;
   const transcriptItems = useMemo(
-    () => [
-      ...items
-        .filter((item) => !queueEntry(item))
-        .map((item) =>
-          sendingEntry(item) ? { ...item, deliveryStatus: "sending" } : item,
-        ),
-      ...sending
-        .filter((entry) => !items.some((item) => sendingEntry(item) === entry))
-        .map(
-          (entry) =>
-            ({
-              id: entry.id,
-              clientMessageId: entry.id,
-              role: "user",
-              text: entry.text,
-              ...("assets" in entry ? { assets: entry.assets } : {}),
-              pending: true,
-              localDelivery: true,
-              deliveryStatus: "sending",
-            }) as Message,
-        ),
-    ],
-    [items, queue, sending, p.id],
+    () =>
+      [
+        ...items
+          .filter((item) => !queueEntry(item))
+          .map((item) =>
+            sendingEntry(item) ? { ...item, deliveryStatus: "sending" } : item,
+          ),
+        ...sending
+          .filter(
+            (entry) => !items.some((item) => sendingEntry(item) === entry),
+          )
+          .map(
+            (entry) =>
+              ({
+                id: entry.id,
+                clientMessageId: entry.id,
+                role: "user",
+                text: entry.text,
+                ...("assets" in entry ? { assets: entry.assets } : {}),
+                pending: true,
+                localDelivery: true,
+                deliveryStatus: "sending",
+              }) as Message,
+          ),
+      ].filter((message) => !removed.hidden(message)),
+    [items, queue, sending, p.id, removed.hidden],
   );
+  const [removingSending, setRemovingSending] = useState(false);
+  const removeSending = useMessageAction(async (messages: Message[]) => {
+    if (removingSending || !p.id) return;
+    setRemovingSending(true);
+    try {
+      for (const message of messages)
+        await removeSendingMessage(
+          { stateDir: p.data.stateDir, workspaceId: p.syncWorkspaceId, kind },
+          { chat: p.id, message },
+        );
+      void messageQueue.reload().catch(() => {});
+      p.notify(
+        `Removed ${messages.length} messages. Work already sent continues.`,
+      );
+    } catch (error) {
+      p.notify(errorText(error));
+    } finally {
+      setRemovingSending(false);
+    }
+  });
   const userText = (m: Message) => <div className="prose plain">{m.text}</div>;
   const editOutgoing = useMessageAction(async (entry: OutgoingMessage) => {
     if (p.getDraft(p.id || "new").trim() || assets.length)
@@ -1031,6 +1070,17 @@ export default function Conversation(p: {
           role="status"
         >
           Sending…
+          {m.role === "user" && (
+            <ActionIcon
+              size="sm"
+              aria-label="Remove sending message"
+              title="Remove from this device and stop retries. Work already sent continues."
+              disabled={removingSending}
+              onClick={() => void removeSending([m])}
+            >
+              <Trash2 size={14} />
+            </ActionIcon>
+          )}
         </span>
       )}
       {/* The main chat has two speakers; only team rooms name each sender. */}
@@ -1223,6 +1273,8 @@ export default function Conversation(p: {
       editOutgoing,
       restoreDraft,
       removeMessage,
+      removeSending,
+      removingSending,
       jumpToPrompt,
       editMessage,
       branch,
@@ -1385,6 +1437,22 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
+          {transcriptItems.some(isSendingMessage) && (
+            <Button
+              size="compact-xs"
+              loading={removingSending}
+              onClick={() =>
+                void removeSending(transcriptItems.filter(isSendingMessage))
+              }
+            >
+              Remove sending messages
+            </Button>
+          )}
+          {removed.hasRemoved && (
+            <Button size="compact-xs" onClick={() => removed.restore()}>
+              Restore removed messages
+            </Button>
+          )}
           {notice && <p className="notice">{notice}</p>}
           {historical && (
             <p className="historical-chat-note">

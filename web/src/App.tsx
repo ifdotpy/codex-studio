@@ -60,6 +60,7 @@ import {
 } from "react";
 import { api, ApiError, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
+import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import {
   defaultStudioPreferences,
   fontFamilies,
@@ -139,6 +140,7 @@ const BackgroundTasks = lazy(
 export default function App() {
   reportPromptComposerRender("app");
   const outbox = useOutbox();
+  const [removingAllSending, setRemovingAllSending] = useState(false);
   const [outgoing, setOutgoing] = useState<Record<string, OutgoingMessage>>({});
   const observedSends = useRef(new Set<string>());
   const observeSends = useCallback((ids: string[]) => {
@@ -2230,6 +2232,29 @@ export default function App() {
                 </section>
                 <section className="settings-group" aria-label="Messages">
                   <h2>Messages</h2>
+                  <Button
+                    loading={removingAllSending}
+                    onClick={async () => {
+                      if (removingAllSending) return;
+                      setRemovingAllSending(true);
+                      try {
+                        const count = await removeAllSendingMessages(
+                          { stateDir: data.stateDir, workspaceId },
+                          data,
+                          outgoingMessages,
+                        );
+                        notify(
+                          `Removed ${count} sending messages from this device. Work already sent continues.`,
+                        );
+                      } catch (error) {
+                        notify(errorText(error));
+                      } finally {
+                        setRemovingAllSending(false);
+                      }
+                    }}
+                  >
+                    Remove all sending messages
+                  </Button>
                   <label className="settings-field studio-preference-toggle">
                     <span className="settings-label">Show message avatars</span>
                     <input

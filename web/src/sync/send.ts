@@ -45,6 +45,8 @@ const intentionResult = (value: Intention) =>
     status: value.status,
     error: value.error,
   };
+const removalFence = (workspaceId: string, id: string) =>
+  `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
 async function deliver(doc: any) {
   let value: Intention = JSON.parse(doc.getLatest().payload);
   if (value.status !== "queued" || !navigator.onLine)
@@ -65,6 +67,22 @@ async function deliver(doc: any) {
     // update and can succeed only before this request starts.
     const claimed = await doc.incrementalModify((record: any) => {
       const current: Intention = JSON.parse(record.payload);
+      if (
+        current.status === "queued" &&
+        localStorage.getItem(removalFence(workspaceId, doc.id)) === "1"
+      ) {
+        const cancelled = current.attempted === false;
+        return {
+          ...record,
+          payload: JSON.stringify({
+            ...current,
+            status: cancelled ? "cancelled" : "paused",
+            ...(cancelled
+              ? { receipt: { id: doc.id, status: "cancelled" } }
+              : {}),
+          }),
+        };
+      }
       return current.status === "queued"
         ? {
             ...record,
@@ -239,7 +257,7 @@ export async function changeOutbox(
   id: string,
   action: "cancel" | "pause" | "resume",
 ) {
-  const { db } = await syncDatabase();
+  const { db, workspaceId } = await syncDatabase();
   const doc = await db.outbox.findOne(id).exec();
   if (!doc) throw new Error("This message is no longer on this device.");
   const updated = await doc.incrementalModify((record: any) => {
@@ -256,10 +274,38 @@ export async function changeOutbox(
       next.status = "cancelled";
       next.error = undefined;
       next.receipt = { id, status: "cancelled" };
-    } else next.status = action === "pause" ? "paused" : "queued";
+    } else {
+      if (action === "resume")
+        localStorage.removeItem(removalFence(workspaceId, id));
+      next.status = action === "pause" ? "paused" : "queued";
+    }
     return { ...record, payload: JSON.stringify(next) };
   });
   if (action === "resume") void once(updated).catch(() => {});
+}
+
+export async function stopRemovedMessage(id: string) {
+  const { db, workspaceId } = await syncDatabase();
+  // The card can be removed before durableSend has inserted its document.
+  // The HTTP claim checks this fence, including claims from another tab.
+  localStorage.setItem(removalFence(workspaceId, id), "1");
+  const doc = await db.outbox.findOne(id).exec();
+  if (!doc) return false;
+  const updated = await doc.incrementalModify((record: any) => {
+    const current: Intention = JSON.parse(record.payload);
+    if (!["queued", "paused"].includes(current.status)) return record;
+    // A claimed request can still finish. Keep its identity and receipt.
+    const cancelled = current.attempted === false;
+    return {
+      ...record,
+      payload: JSON.stringify({
+        ...current,
+        status: cancelled ? "cancelled" : "paused",
+        ...(cancelled ? { receipt: { id, status: "cancelled" } } : {}),
+      }),
+    };
+  });
+  return JSON.parse(updated.payload).status === "cancelled";
 }
 export function useOutbox() {
   const [entries, setEntries] = useState<OutboxEntry[]>([]);
