@@ -23,7 +23,7 @@ import codex_process_supervisor as process_supervisor
 import recover_backend
 
 FAKE_NATIVE = r'''#!/usr/bin/env python3
-import json, os, sys, time
+import base64, json, os, sys, time
 from pathlib import Path
 Path(os.environ['FAKE_NATIVE_PID']).write_text(str(os.getpid()))
 for line in sys.stdin:
@@ -45,6 +45,16 @@ for line in sys.stdin:
         for delta in ['a', 'b', 'c', 'd', 'e', 'f']:
             print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId'],'delta':delta}}),flush=True)
         print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId']}}),flush=True)
+        result={'ok':True}
+    elif method == 'outputBurst':
+        for index in range(request['params']['count']):
+            print(json.dumps({'method':'item/commandExecution/outputDelta','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId'],'delta':str(index)+','}}),flush=True)
+        print(json.dumps({'method':'item/completed','params':{'threadId':'thread','turnId':'burst-turn','item':{'id':request['params']['itemId'],'type':'commandExecution','exitCode':0}}}),flush=True)
+        result={'ok':True}
+    elif method == 'monitorBurst':
+        for index in range(request['params']['count']):
+            chunk=base64.b64encode((str(index)+',').encode()).decode()
+            print(json.dumps({'method':'command/exec/outputDelta','params':{'processId':'monitor-item','stream':'stdout','deltaBase64':chunk}}),flush=True)
         result={'ok':True}
     elif method == 'turn/start':
         print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'turn','itemId':'item','delta':'retained-output'}}),flush=True)
@@ -344,6 +354,130 @@ class ProcessSupervisorContract(unittest.TestCase):
                 return db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE agent=? AND method=?',
                                   (agent['id'], 'item/agentMessage/delta')).fetchone()[0]
         wait_for(lambda: counts() == 6)
+
+    def test_adjacent_command_output_deltas_batch_without_losing_receipts(self):
+        server = self.server()
+        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
+        def close_runtime():
+            runtime.servers.clear()
+            runtime.__dict__.setdefault('_native_tools_retiring', {}).clear()
+            runtime.server = None
+            runtime.close()
+        self.addCleanup(close_runtime)
+        agent = runtime.create({'name': 'Output burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with runtime.lock, runtime.db() as db:
+            agent = runtime.agent(agent['id'], db)
+            agent.update(threadId='thread', turnId='burst-turn', status='running', inFlight=True)
+            runtime.put(db, 'agents', agent)
+            runtime.put(db, 'monitors', {'id': 'monitor-item', 'agent': agent['id'],
+                'status': 'running', 'log': str(self.root/'monitor.log'), 'bytes': 0, 'tail': ''})
+        runtime.notification({'method': 'item/started', 'params': {
+            'threadId': 'thread', 'turnId': 'burst-turn',
+            'item': {'id': 'command-item', 'type': 'commandExecution', 'command': 'fixture'}}})
+        runtime.notification({'method': 'item/started', 'params': {
+            'threadId': 'thread', 'turnId': 'burst-turn',
+            'item': {'id': 'baseline-item', 'type': 'commandExecution', 'command': 'fixture'}}})
+        count = 320
+        baseline_at = time.time()
+        baseline_delays, baseline_durations = [], []
+        for index in range(count):
+            message = {'method': 'item/commandExecution/outputDelta', 'params': {
+                'threadId': 'thread', 'turnId': 'burst-turn', 'itemId': 'baseline-item',
+                'delta': f'{index},'}, '_studioReceivedAt': baseline_at}
+            started_at = time.time()
+            message['_studioDispatchedAt'] = started_at
+            runtime.notification(message, 'default', None)
+            runtime.commit_supervisor_event('baseline', message, index + 1, 'default', None)
+            baseline_delays.append((started_at - baseline_at) * 1000)
+            baseline_durations.append((time.time() - started_at) * 1000)
+        terminal = {'method': 'item/completed', 'params': {'threadId': 'thread', 'turnId': 'burst-turn',
+                    'item': {'id': 'baseline-item', 'type': 'commandExecution', 'exitCode': 0}}}
+        terminal_started = time.time()
+        runtime.notification(terminal, 'default', None)
+        runtime.commit_supervisor_event('baseline', terminal, count + 1, 'default', None)
+        baseline_delays.append((terminal_started - baseline_at) * 1000)
+        baseline_durations.append((time.time() - terminal_started) * 1000)
+        delivered = []
+        after_delays, after_durations = [], []
+        release_at = [None]
+        def notification(message):
+            started_at = time.time()
+            runtime.notification(message, 'default', None)
+            runtime.commit_supervisor_event(server.proc.handle, message,
+                                            message['_studioSupervisorSequence'], 'default', None)
+            after_delays.append((message.get('_studioDispatchedAt', started_at)
+                                 - (release_at[0] or started_at)) * 1000)
+            after_durations.append((time.time() - started_at) * 1000)
+            delivered.append(message)
+        server.notification = notification
+        server.supervisor_commit = lambda message, sequence: None
+        server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied(
+            server.proc.handle, sequence)
+        gate, started = threading.Event(), threading.Event()
+        server.enqueue(lambda _: (started.set(), gate.wait(30)), {})
+        self.assertTrue(started.wait(3))
+        submitted = server.submit('outputBurst', {'itemId': 'command-item', 'count': count})
+        server.wait(submitted, timeout=15)
+        wait_for(lambda: server.callbacks.qsize() >= count + 1)
+        queued_before_release = server.callbacks.qsize()
+        release_at[0] = time.time()
+        gate.set()
+        wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
+        batches = [message for message in delivered
+                   if message.get('method') == 'item/commandExecution/outputDelta']
+        terminals = [message for message in delivered if message.get('method') == 'item/completed']
+        self.assertLessEqual(len(batches), 3)
+        self.assertEqual(sum(len(message['_studioNotificationSamples']) for message in batches), count)
+        self.assertEqual(''.join(message['params']['delta'] for message in batches),
+                         ''.join(f'{index},' for index in range(count)))
+        self.assertEqual(len(terminals), 1)
+        self.assertGreater(delivered.index(terminals[0]), delivered.index(batches[-1]))
+        self.assertFalse(server.proc.ack_pending)
+        with runtime.read_db() as db:
+            row = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                             (agent['id'] + ':command-item',)).fetchone()
+        item = json.loads(row['record'])
+        self.assertEqual(json.loads(item['text'])['aggregatedOutput'],
+                         ''.join(f'{index},' for index in range(count)))
+        with runtime.db() as db:
+            total = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
+                               'WHERE agent=? AND method=?',
+                               (agent['id'], 'item/commandExecution/outputDelta')).fetchone()[0]
+        self.assertEqual(total, count * 2)
+        percentile = lambda values, fraction: sorted(values)[min(len(values)-1, int((len(values)-1)*fraction))]
+        print('command output load:', json.dumps({
+            'events': count, 'beforeCallbacks': count + 1, 'afterCallbacks': len(batches) + len(terminals),
+            'queuedBeforeRelease': queued_before_release,
+            'beforeQueueDelayMs': {'p95': round(percentile(baseline_delays, .95), 2),
+                                   'max': round(max(baseline_delays), 2)},
+            'afterQueueDelayMs': {'p95': round(percentile(after_delays, .95), 2),
+                                  'max': round(max(after_delays), 2)},
+            'beforeCallbackDurationMs': {'p95': round(percentile(baseline_durations, .95), 2),
+                                         'max': round(max(baseline_durations), 2),
+                                         'total': round(sum(baseline_durations), 2)},
+            'afterCallbackDurationMs': {'p95': round(percentile(after_durations, .95), 2),
+                                        'max': round(max(after_durations), 2),
+                                        'total': round(sum(after_durations), 2)}}), flush=True)
+
+        delivered.clear()
+        gate, started = threading.Event(), threading.Event()
+        server.enqueue(lambda _: (started.set(), gate.wait(30)), {})
+        self.assertTrue(started.wait(3))
+        submitted = server.submit('monitorBurst', {'count': count})
+        server.wait(submitted, timeout=15)
+        wait_for(lambda: server.callbacks.qsize() >= count)
+        gate.set()
+        wait_for(lambda: server.proc.cursor == server.proc.read_cursor)
+        batches = [message for message in delivered
+                   if message.get('method') == 'command/exec/outputDelta']
+        self.assertLessEqual(len(batches), 3)
+        expected = ''.join(f'{index},' for index in range(count)).encode()
+        self.assertEqual((self.root/'monitor.log').read_bytes(), expected)
+        with runtime.db() as db:
+            row = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                        ('monitor-item',)).fetchone()[0])
+        self.assertEqual(row['bytes'], len(expected))
+        self.assertEqual(row['tail'].encode(), expected)
 
     def test_delta_batch_does_not_repeat_a_durable_prefix(self):
         server = self.server()
