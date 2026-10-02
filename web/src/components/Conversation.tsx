@@ -1183,6 +1183,19 @@ export default function Conversation(p: {
       )}
       <MessageActions
         hidden={!!m.streaming}
+        info={
+          m.role === "assistant"
+            ? {
+                message: m,
+                agentId: !p.room && managed ? agent?.id : undefined,
+                stateDir: p.data.stateDir,
+                rootId:
+                  !p.room && managed ? agent?.rootId || agent?.id : undefined,
+                accounts: p.limitsAccounts,
+                onCopy: (value) => void copy(value),
+              }
+            : undefined
+        }
         onCopy={() => void copy(m.text)}
         onQuote={
           !p.room && !m.pending

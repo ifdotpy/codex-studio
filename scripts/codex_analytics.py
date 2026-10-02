@@ -773,6 +773,11 @@ class AnalyticsMixin:
         request_started = time.perf_counter() if timing else None
         if scope not in {'agent', 'team', 'all'}:
             raise ValueError('Unknown analytics scope')
+        if options.get('view') == 'message-info':
+            if scope != 'agent':
+                raise ValueError('Select one agent for message metadata')
+            from codex_message_info import message_info
+            return message_info(self, agent, options.get('item'), options.get('turn'), options.get('thread'))
         if options.get('view') == 'turn-errors':
             self.agent(agent)
             thread = options.get('thread')
