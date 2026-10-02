@@ -39,7 +39,7 @@ const server = await createServer({
         if (id !== entry) return;
         return `
 import React from 'react'; import {createRoot} from 'react-dom/client'; import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css'; import TeamChats from '/src/components/TeamChats.tsx'; import '/src/style.css'; import '/src/workspace-layout.css'; import '/src/appearance.css'; import {theme} from '/src/theme.ts';
+import '@mantine/core/styles.css'; import TeamChats from '/src/components/shell/messages/TeamChats.tsx'; import '/src/style.css'; import '/src/workspace-layout.css'; import '/src/appearance.css'; import {theme} from '/src/theme.ts';
 const lead={id:'lead',name:'Lead',rootId:'lead',isLead:true,source:'managed',created:1,updated:1};
 const worker={id:'worker',name:'Worker',rootId:'lead',isLead:false,source:'managed',created:1,updated:1};
 const room={id:'private:lead:worker',kind:'private',members:['lead','worker'],name:'Worker',updated:1,lastMessage:{seq:1391,text:'room message 1391',created:1,sender:'worker'}};
