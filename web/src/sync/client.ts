@@ -192,8 +192,12 @@ async function pull(
 const invalidations = new Map<() => void, string>();
 let stopInvalidations: (() => void) | undefined;
 let changeStreamSupport: Promise<boolean> | undefined;
-const pushStreams = new Map<string, EventSource>();
-const pushScopes = new Map<string, Set<() => void>>();
+type PushConnection = {
+  callbacks: Set<() => void>;
+  connect: () => Promise<void>;
+  stop: () => void;
+};
+const pushConnections = new Map<string, PushConnection>();
 function supportsChangeStream() {
   return (changeStreamSupport ??= api<{
     protocolVersion: number;
@@ -269,108 +273,152 @@ async function applyPush(scope: string, encoded: string) {
   }
   return true;
 }
-function attachPush(scope: string, callback: () => void) {
-  let callbacks = pushScopes.get(scope);
-  if (!callbacks) pushScopes.set(scope, (callbacks = new Set()));
-  callbacks.add(callback);
+function createPushConnection(scope: string): PushConnection {
+  const callbacks = new Set<() => void>();
+  let stopped = false;
+  let connecting = false;
+  let source: EventSource | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let lastFallbackAt = 0;
+  const available = () => !document.hidden && navigator.onLine !== false;
+  const notify = () => {
+    if (!stopped) for (const listener of callbacks) listener();
+  };
+  const close = () => {
+    source?.close();
+    source = undefined;
+  };
+  const retry = (delay: number) => {
+    if (stopped) return;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      void connect();
+    }, delay);
+  };
   const connect = async () => {
-    if (
-      !(await supportsChangeStream()) ||
-      document.hidden ||
-      navigator.onLine === false ||
-      pushStreams.has(scope)
-    )
-      return;
-    const source = new EventSource(await pushUrl(scope));
-    pushStreams.set(scope, source);
-    source.onopen = () => {
-      lastFallbackAt = 0;
-    };
-    source.addEventListener("changes", (raw) => {
-      void applyPush(scope, (raw as MessageEvent).data)
-        .then((accepted) => {
-          if (accepted)
-            for (const listener of pushScopes.get(scope) || []) listener();
-          else {
-            source.close();
-            pushStreams.delete(scope);
-            for (const listener of pushScopes.get(scope) || []) listener();
-            setTimeout(connect, 250);
-          }
-        })
-        .catch(() => {
-          source.close();
-          pushStreams.delete(scope);
-          for (const listener of pushScopes.get(scope) || []) listener();
-          setTimeout(connect, 250);
-        });
-    });
-    for (const name of ["reset", "cursor-ahead"])
-      source.addEventListener(name, (raw) => {
-        source.close();
-        pushStreams.delete(scope);
-        void (async () => {
-          if (name === "cursor-ahead") {
-            try {
-              const terminal = JSON.parse((raw as MessageEvent).data);
-              if (
-                Number.isSafeInteger(terminal.maxSeq) &&
-                terminal.maxSeq >= 0
-              ) {
-                if (scope === "state:entities:v1") {
-                  const { db } = await syncDatabase();
-                  await persistProjection(db.projections, {
-                    id: "state:entities:checkpoint",
-                    payload: "{}",
-                    seq: terminal.maxSeq,
-                  });
-                } else if (scope === "drafts")
-                  save("codex-sync-drafts-cursor", String(terminal.maxSeq));
-                else if (scope.startsWith("transcript:")) {
-                  const { db } = await syncDatabase();
-                  await db.projections.findOne(scope).remove();
-                }
-              }
-            } catch {
-              /* Pull callback below repairs an invalid cursor. */
+    if (stopped || connecting || source || !available()) return;
+    connecting = true;
+    try {
+      if (!(await supportsChangeStream())) return;
+      const url = await pushUrl(scope);
+      // A chat can close while its persisted checkpoint is still being read.
+      if (stopped || !callbacks.size || !available()) return;
+      const current = new EventSource(url);
+      source = current;
+      current.onopen = () => {
+        lastFallbackAt = 0;
+      };
+      current.addEventListener("changes", (raw) => {
+        void applyPush(scope, (raw as MessageEvent).data)
+          .then((accepted) => {
+            if (stopped || source !== current) return;
+            if (accepted) notify();
+            else {
+              close();
+              notify();
+              retry(250);
             }
-          }
-          for (const listener of pushScopes.get(scope) || []) listener();
-          setTimeout(connect, 1000);
-        })();
+          })
+          .catch(() => {
+            if (stopped || source !== current) return;
+            close();
+            notify();
+            retry(250);
+          });
       });
-    source.onerror = () => {
-      if (Date.now() - lastFallbackAt < 5000) return;
-      lastFallbackAt = Date.now();
-      for (const listener of pushScopes.get(scope) || []) listener();
-    };
+      for (const name of ["reset", "cursor-ahead"])
+        current.addEventListener(name, (raw) => {
+          if (stopped || source !== current) return;
+          close();
+          void (async () => {
+            if (name === "cursor-ahead") {
+              try {
+                const terminal = JSON.parse((raw as MessageEvent).data);
+                if (
+                  Number.isSafeInteger(terminal.maxSeq) &&
+                  terminal.maxSeq >= 0
+                ) {
+                  const { db } = await syncDatabase();
+                  if (stopped) return;
+                  if (scope === "state:entities:v1") {
+                    await persistProjection(db.projections, {
+                      id: "state:entities:checkpoint",
+                      payload: "{}",
+                      seq: terminal.maxSeq,
+                    });
+                  } else if (scope === "drafts")
+                    save("codex-sync-drafts-cursor", String(terminal.maxSeq));
+                  else if (scope.startsWith("transcript:"))
+                    await db.projections.findOne(scope).remove();
+                }
+              } catch {
+                /* Pull callback below repairs an invalid cursor. */
+              }
+            }
+            notify();
+            retry(1000);
+          })();
+        });
+      current.onerror = () => {
+        if (stopped || source !== current) return;
+        if (Date.now() - lastFallbackAt < 5000) return;
+        lastFallbackAt = Date.now();
+        notify();
+      };
+    } catch {
+      notify();
+      retry(1000);
+    } finally {
+      connecting = false;
+    }
   };
   const suspend = () => {
-    if (!document.hidden && navigator.onLine !== false) return;
-    pushStreams.get(scope)?.close();
-    pushStreams.delete(scope);
+    if (available()) return;
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+    close();
   };
   const resume = () => {
-    pushStreams.get(scope)?.close();
-    pushStreams.delete(scope);
+    if (stopped) return;
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+    close();
     void connect();
   };
   const stopResume = onResume(resume);
   window.addEventListener("offline", suspend);
   document.addEventListener("visibilitychange", suspend);
   window.addEventListener("online", resume);
-  void connect();
+  return {
+    callbacks,
+    connect,
+    stop: () => {
+      stopped = true;
+      clearTimeout(retryTimer);
+      close();
+      stopResume();
+      window.removeEventListener("offline", suspend);
+      document.removeEventListener("visibilitychange", suspend);
+      window.removeEventListener("online", resume);
+    },
+  };
+}
+function attachPush(scope: string, callback: () => void) {
+  let connection = pushConnections.get(scope);
+  if (!connection) {
+    connection = createPushConnection(scope);
+    pushConnections.set(scope, connection);
+  }
+  const retained = connection;
+  retained.callbacks.add(callback);
+  void retained.connect();
   return () => {
-    stopResume();
-    window.removeEventListener("offline", suspend);
-    document.removeEventListener("visibilitychange", suspend);
-    window.removeEventListener("online", resume);
-    callbacks?.delete(callback);
-    if (!callbacks?.size) {
-      pushScopes.delete(scope);
-      pushStreams.get(scope)?.close();
-      pushStreams.delete(scope);
+    retained.callbacks.delete(callback);
+    if (!retained.callbacks.size) {
+      retained.stop();
+      if (pushConnections.get(scope) === retained)
+        pushConnections.delete(scope);
     }
   };
 }
@@ -1125,7 +1173,10 @@ const syncReadRetryBaseMs = 250;
 const syncReadRetryMaxMs = 8000;
 const syncReadRetryMaxExponent = 5;
 const isTransientSyncReadFailure = (error: unknown) =>
-  error instanceof ApiError && error.status >= 500 && error.status < 600;
+  error instanceof TypeError ||
+  (error instanceof ApiError &&
+    ((error.status >= 500 && error.status < 600) ||
+      [408, 429].includes(error.status)));
 async function acquireProjection(
   scope: string,
   expectedWorkspace?: string,
