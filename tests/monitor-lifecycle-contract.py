@@ -22,6 +22,7 @@ spec = importlib.util.spec_from_file_location("runtime_fixture", ROOT / "tests/r
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_runtime import ResponseTimeout, Runtime
+from codex_native_errors import NativeRpcError
 
 
 class MonitorServer(fixture.FakeServer):
@@ -45,7 +46,7 @@ class MonitorServer(fixture.FakeServer):
             if self.write_submit_error:
                 raise RuntimeError(self.write_submit_error)
             if self.write_error:
-                future.set_exception(RuntimeError(self.write_error))
+                future.set_exception(NativeRpcError({'code': -32600, 'message': self.write_error}))
             elif not self.timeout_writes:
                 future.set_result({})
             return future
@@ -318,7 +319,7 @@ class MonitorLifecycleContract(unittest.TestCase):
         self.server.timeout_writes = True
         with self.assertRaises(ResponseTimeout):
             self.runtime.monitor_input(key, {"closeStdin": True})
-        self.server.writes[0].set_exception(RuntimeError("EOF rejected"))
+        self.server.writes[0].set_exception(NativeRpcError({'code': -32600, 'message': 'EOF rejected'}))
         fixture.eventually(lambda: not self.record(key).get("stdinCloseRequested"))
         self.assertFalse(self.record(key).get("stdinClosed", False))
         self.server.timeout_writes = False

@@ -277,7 +277,7 @@ class TerminalsContract(unittest.TestCase):
         f.eventually(lambda: self.manager.output(second["id"])["status"] == "exited")
         self.assertEqual(self.manager.output(second["id"])["exitCode"], 4)
 
-    def test_lost_spawn_ack_does_not_create_another_shell(self):
+    def test_known_spawn_ack_survives_wait_timeout_without_another_shell(self):
         from codex_runtime import ResponseTimeout
         body = {"id": "lost-spawn", "agent": self.agent["id"]}
         server = self.manager.connect()
@@ -292,7 +292,10 @@ class TerminalsContract(unittest.TestCase):
             second = self.manager.create(self.runtime, body)
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(len(self.manager.processes), 1)
-        self.assertIn("unknown", first["error"])
+        # The native future is already acknowledged. A later wait error must
+        # not replace that exact receipt with an unknown outcome.
+        self.assertEqual(first["status"], "running")
+        self.assertNotIn("error", first)
         f.eventually(lambda: self.manager.output(first["id"])["error"] is None)
         self.send(first, "exit 6\n")
         f.eventually(lambda: self.manager.output(first["id"])["status"] == "exited")

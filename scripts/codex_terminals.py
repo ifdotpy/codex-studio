@@ -140,6 +140,16 @@ class TerminalManager:
             signature, prior = self.receipt(db, data.get("id"), data)
             if prior is not None:
                 return prior
+        # Connection setup and native I/O must not hold the output lock.
+        server = self.connect()
+        with self.lock, self.db() as db:
+            if self.closed:
+                raise ValueError("The terminal server is closing")
+            signature, prior = self.receipt(db, data.get("id"), data)
+            if prior is not None:
+                return prior
+            if server is not self.server or server.closed or server.transport_error or server.proc.poll() is not None:
+                raise ValueError("The terminal connection closed before creation")
             key = str(uuid.uuid4())
             now = time.time()
             record = {
@@ -152,46 +162,70 @@ class TerminalManager:
                 "updated": now,
                 "exitCode": None,
             }
-            server = self.connect()
             shell = os.environ.get("SHELL", "/bin/zsh")
             if not os.path.isabs(shell) or not os.access(shell, os.X_OK):
                 shell = "/bin/sh"
             pid_path = self.native_root / (key + ".pid")
-            self.processes[key] = {"server": server, "connection": self.connection, "pid_path": pid_path,
-                                   "decoder": codecs.getincrementaldecoder("utf-8")("replace")}
+            owned = self.processes[key] = {
+                "server": server, "connection": self.connection, "pid_path": pid_path,
+                "decoder": codecs.getincrementaldecoder("utf-8")("replace"),
+                "spawn_lock": threading.RLock(),
+            }
             db.execute("INSERT INTO user_terminals VALUES (?,?,?,?)", (key, json.dumps(record), "", 0))
             self.save_receipt(db, data["id"], signature, record)
-            db.commit()
-            # Native handles belong to this dedicated connection, independent of
-            # account switches. Restore the user's environment inside the shell.
-            env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
-            env.update(TERM="xterm-256color", COLORTERM="truecolor")
-            try:
-                params = {
-                    "processHandle": key, "cwd": str(cwd), "tty": True,
-                    "command": [sys.executable, "-B", str(Path(__file__).with_name("codex_terminal_child.py")), str(pid_path), shell],
-                    "size": {"rows": rows, "cols": cols}, "env": env,
-                    "timeoutMs": None, "outputBytesCap": None,
-                }
-                from codex_runtime import SubmissionUnknown
+        # Native handles belong to this dedicated connection, independent of
+        # account switches. Restore the user's environment inside the shell.
+        env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
+        env.update(TERM="xterm-256color", COLORTERM="truecolor")
+        params = {
+            "processHandle": key, "cwd": str(cwd), "tty": True,
+            "command": [sys.executable, "-B", str(Path(__file__).with_name("codex_terminal_child.py")), str(pid_path), shell],
+            "size": {"rows": rows, "cols": cols}, "env": env,
+            "timeoutMs": None, "outputBytesCap": None,
+        }
+        submitted = None
+        try:
+            from codex_runtime import SubmissionUnknown
+            # Close can mark this terminal closed while submission is pending.
+            # Its kill waits only for this terminal's write, not its receipt.
+            with owned["spawn_lock"]:
+                with self.lock, self.db() as db:
+                    row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
+                    current = json.loads(row[0])
+                    if self.closed or current["status"] != "running" or self.processes.get(key) is not owned:
+                        if current["status"] == "running":
+                            current.update(status="exited", error="The terminal server is closing", updated=time.time())
+                            self.processes.pop(key, None)
+                            db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(current), key))
+                        db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(current), data["id"]))
+                        return current
                 try:
                     submitted = server.submit("process/spawn", params,
                                               operation_id="terminal-spawn:" + key)
                 except SubmissionUnknown as error:
                     submitted = error.submitted
-                server.on_result(submitted, lambda future: self.spawn_result(key, data["id"], future))
-                server.wait(submitted, timeout=10)
-            except Exception as error:
-                from codex_runtime import NativeRpcError, SubmissionRejected
-                rejected = isinstance(error, (NativeRpcError, SubmissionRejected))
-                record.update(error=str(error), status="exited" if rejected else "running")
-                db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
+            server.on_result(submitted, lambda future: self.spawn_result(key, data["id"], future, owned))
+            server.wait(submitted, timeout=10)
+        except Exception as error:
+            from codex_runtime import NativeRpcError, SubmissionRejected
+            rejected = isinstance(error, (NativeRpcError, SubmissionRejected))
+            with self.lock, self.db() as db:
+                row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
+                record = json.loads(row[0])
+                if record["status"] == "running" and self.processes.get(key) is owned:
+                    record.update(error=str(error), status="exited" if rejected else "running")
+                    db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
+                    if rejected:
+                        self.processes.pop(key, None)
                 db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(record), data["id"]))
-                if rejected:
-                    self.processes.pop(key, None)
-            return record
+            # A response can arrive between a timeout and its database update.
+            # Reconcile that exact future after the update without resubmission.
+            if submitted is not None and submitted[2].done():
+                self.spawn_result(key, data["id"], submitted[2], owned)
+        with self.lock, self.db() as db:
+            return json.loads(db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()[0])
 
-    def spawn_result(self, key, request_id, future):
+    def spawn_result(self, key, request_id, future, owned=None):
         from codex_runtime import NativeRpcError
         failure = None
         try:
@@ -202,7 +236,13 @@ class TerminalManager:
             return  # Disconnect cleanup preserves an unknown outcome.
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
+            if not row:
+                return
             record = json.loads(row[0])
+            current = self.processes.get(key)
+            if owned is not None and current is not owned and (current is not None or record["status"] == "running"):
+                return
+            stop = current if record["status"] == "closed" and not failure else None
             if record["status"] == "running":
                 record.pop("error", None)
                 if failure:
@@ -210,28 +250,59 @@ class TerminalManager:
                     self.processes.pop(key, None)
                 db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
             db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(record), request_id))
+        if stop:
+            self.stop_process(key, stop)
+
+    def start_guard(self):
+        # Existing managers receive this field lazily after a live update.
+        with self.lock:
+            guard = getattr(self, "_start_lock", None)
+            if guard is None:
+                guard = self._start_lock = threading.RLock()
+            return guard
 
     def connect(self):
         from codex_runtime import AppServer
-        if self.server is not None:
-            if not (self.server.closed or self.server.proc.poll() is not None or self.server.transport_error):
-                return self.server
-            if self.processes:
-                raise ValueError("The terminal connection closed. Wait for process cleanup, then create a new terminal.")
-            self.server.close()
-            self.close_streams(self.server)
-        home = self.native_root / "home"
-        home.mkdir(mode=0o700, exist_ok=True)
-        (home / "config.toml").write_text(
-            '[features]\nplugins = false\nremote_plugin = false\napps = false\nskip_host_skill_discovery = true\n')
-        connection = self.connection = object()
-        self.server = AppServer(self.native_root, self.notification, lambda _: None,
-                                lambda: self.disconnected(connection), home=home, isolated=True,
-                                supervisor_handle="terminals", supervisor_root=self.root)
-        for owned in self.processes.values():
-            owned["server"] = self.server
-            owned["connection"] = connection
-        return self.server
+        with self.start_guard():
+            with self.lock:
+                if self.closed:
+                    raise ValueError("The terminal server is closing")
+                previous = self.server
+                if previous is not None:
+                    if not (previous.closed or previous.proc.poll() is not None or previous.transport_error):
+                        return previous
+                    if self.processes:
+                        raise ValueError("The terminal connection closed. Wait for process cleanup, then create a new terminal.")
+            if previous is not None:
+                previous.close()
+                self.close_streams(previous)
+            home = self.native_root / "home"
+            home.mkdir(mode=0o700, exist_ok=True)
+            (home / "config.toml").write_text(
+                '[features]\nplugins = false\nremote_plugin = false\napps = false\nskip_host_skill_discovery = true\n')
+            with self.lock:
+                if self.closed:
+                    raise ValueError("The terminal server is closing")
+                connection = self.connection = object()
+                for owned in self.processes.values():
+                    owned["connection"] = connection
+            server = AppServer(self.native_root, self.notification, lambda _: None,
+                               lambda: self.disconnected(connection), home=home, isolated=True,
+                               supervisor_handle="terminals", supervisor_root=self.root)
+            with self.lock:
+                closed = self.closed
+                if not closed:
+                    self.server = server
+                    for owned in self.processes.values():
+                        if owned["connection"] is connection:
+                            owned["server"] = server
+            if closed:
+                server.close()
+                if not server.join_callbacks():
+                    raise RuntimeError("Terminal callbacks did not drain")
+                self.close_streams(server)
+                raise ValueError("The terminal server is closing")
+            return server
 
     def notification(self, message):
         method, params = message.get("method"), message.get("params", {})
@@ -456,16 +527,27 @@ class TerminalManager:
         if action == "resize":
             owned["server"].call("process/resizePty", {"processHandle": key, "size": {"rows": rows, "cols": cols}}, timeout=3)
         elif action == "close" and owned:
+            self.stop_process(key, owned)
+        return record
+
+    def stop_process(self, key, owned):
+        with self.lock:
+            guard = owned.get("spawn_lock")
+            if guard is None:
+                guard = owned["spawn_lock"] = threading.RLock()
+        with guard:
             self.terminate(owned)
             # The helper may not have written its PID yet. Native kill also
             # handles that startup interval, without a second command spawn.
             from codex_runtime import NativeRpcError
+            server = owned["server"]
+            if server is None:
+                return
             try:
-                owned["server"].call("process/kill", {"processHandle": key}, timeout=3)
+                server.call("process/kill", {"processHandle": key}, timeout=3)
             except NativeRpcError as error:
                 if not any(text in str(error) for text in ("no active process for process handle", "is no longer running")):
                     raise
-        return record
 
     @staticmethod
     def session_groups(session):
@@ -521,21 +603,19 @@ class TerminalManager:
         with self.lock:
             self.closed = True
             active = list(self.processes.values())
-        if self.supervisor_mode:
+        # A concurrent constructor must finish or discard its transport before
+        # shutdown closes the published connection. Neither step holds lock.
+        with self.start_guard():
+            if not self.supervisor_mode:
+                for owned in active:
+                    self.terminate(owned)
             if self.server:
                 self.server.close()
                 if not self.server.join_callbacks():
                     raise RuntimeError("Terminal callbacks did not drain")
                 self.close_streams(self.server)
-            return
-        for owned in active:
-            self.terminate(owned)
-        if self.server:
-            self.server.close()
-            if not self.server.join_callbacks():
-                raise RuntimeError("Terminal callbacks did not drain")
-            self.close_streams(self.server)
-        self.disconnected()
+            if not self.supervisor_mode:
+                self.disconnected()
 
     @staticmethod
     def close_streams(server):

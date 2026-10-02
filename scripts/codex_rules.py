@@ -523,86 +523,134 @@ class RulesMixin:
         self.put(db, "rules", r)
 
     def monitor_input(self, key, data, owner=None, epoch=None):
-        close_operation = None
-        with self.lock, self.db() as db:
-            row = db.execute(
-                "SELECT record FROM runtime_monitors WHERE id=?", (key,)
-            ).fetchone()
+        from codex_native_errors import NativeRpcError
+        from codex_runtime import SubmissionRejected
+
+        def load(db):
+            row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if not row:
                 raise ValueError("Unknown monitor")
-            m = json.loads(row[0])
-            a = self.agent(m["agent"], db)
-            if owner and owner != m["agent"]:
+            monitor = json.loads(row[0])
+            agent = self.agent(monitor["agent"], db)
+            if owner and owner != monitor["agent"]:
                 raise ValueError("This monitor belongs to another agent")
-            if epoch is not None and a["epoch"] != epoch:
+            if epoch is not None and agent["epoch"] != epoch:
                 raise ValueError("The caller was stopped")
-            if (
-                m["status"] != "running"
-                or m.get("cancelRequested")
-                or not m.get("interactive")
-                or not a["autoWake"]
-                or a["epoch"] != m["epoch"]
-            ):
+            if (self.closed or agent.get("deletedAt") or monitor["status"] != "running"
+                    or monitor.get("cancelRequested") or not monitor.get("interactive")
+                    or not agent["autoWake"] or agent["epoch"] != monitor["epoch"]):
                 raise ValueError("This interactive monitor is not active")
-            server = self.connect(a.get("accountKey", "default"))
-            close = False
-            if "rows" in data or "cols" in data:
-                rows, cols = data.get("rows", 24), data.get("cols", 80)
-                if not all(isinstance(v, int) and 1 <= v <= 1000 for v in (rows, cols)):
-                    raise ValueError("Terminal size must be 1 to 1000")
-                submitted = server.submit(
-                    "command/exec/resize",
-                    {"processId": key, "size": {"rows": rows, "cols": cols}},
-                )
-            else:
-                text = data.get("text", "")
-                if not isinstance(text, str) or len(text) > 32000:
-                    raise ValueError("Input must have at most 32000 characters")
-                if m.get("stdinClosed") or m.get("stdinCloseRequested"):
-                    raise ValueError("This monitor stdin is closed or its close acknowledgement is pending")
-                close = bool(data.get("closeStdin", False))
+            return monitor, agent
+
+        def identity(monitor, agent):
+            return (monitor["agent"], monitor["epoch"], monitor.get("operation"),
+                    monitor.get("created"), monitor.get("command"),
+                    agent["epoch"], agent.get("accountKey", "default"), agent.get("threadId"))
+
+        with self.lock:
+            guard = self.__dict__.setdefault("_monitor_input_locks", {}).setdefault(key, threading.Lock())
+        # Serialize this monitor only. Connect and native writes can wait for I/O.
+        with guard:
+            with self.lock, self.db() as db:
+                monitor, agent = load(db)
+                expected = identity(monitor, agent)
+                account_key = agent.get("accountKey", "default")
+            server = self.connect(account_key)
+            connection_id = self.connection_ids.get(account_key)
+            with self.lock, self.db() as db:
+                monitor, agent = load(db)
+                if (identity(monitor, agent) != expected
+                        or not connection_id or not self.connection_current(account_key, connection_id)
+                        or self.servers.get(account_key) is not server or getattr(server, "closed", False)):
+                    raise ValueError("The monitor changed before input submission")
+                if monitor.get("inputAttempt"):
+                    raise ValueError("The previous monitor input outcome is unknown; do not repeat it")
+                close = False
+                if "rows" in data or "cols" in data:
+                    rows, cols = data.get("rows", 24), data.get("cols", 80)
+                    if not all(isinstance(value, int) and 1 <= value <= 1000 for value in (rows, cols)):
+                        raise ValueError("Terminal size must be 1 to 1000")
+                    method = "command/exec/resize"
+                    params = {"processId": key, "size": {"rows": rows, "cols": cols}}
+                else:
+                    text = data.get("text", "")
+                    if not isinstance(text, str) or len(text) > 32000:
+                        raise ValueError("Input must have at most 32000 characters")
+                    if monitor.get("stdinClosed") or monitor.get("stdinCloseRequested"):
+                        raise ValueError("This monitor stdin is closed or its close acknowledgement is pending")
+                    close = bool(data.get("closeStdin", False))
+                    method = "command/exec/write"
+                    params = {"processId": key, "deltaBase64": base64.b64encode(text.encode()).decode(),
+                              "closeStdin": close}
+                attempt = {"id": str(uuid.uuid4()), "agent": agent["id"], "epoch": agent["epoch"],
+                           "accountKey": account_key, "connectionId": connection_id,
+                           "method": method, "params": params, "status": "submitted", "created": time.time()}
+                monitor["inputAttempt"] = attempt
                 if close:
-                    close_operation = str(uuid.uuid4())
-                    account_key = a.get("accountKey", "default")
-                    connection_id = self.connection_ids[account_key]
-                    m.update(stdinCloseRequested=close_operation)
-                    m.pop("stdinError", None)
-                    self.put(db, "monitors", m)
-                    # A write failure does not prove that the server received no bytes.
-                    db.commit()
-                submitted = self.submit_reserved(server,
-                    "command/exec/write",
-                    {
-                        "processId": key,
-                        "deltaBase64": base64.b64encode(text.encode()).decode(),
-                        "closeStdin": close,
-                    },
-                )
-        if close_operation:
-            def reconcile(future):
-                try:
-                    future.result()
-                    error = None
-                except Exception as cause:
-                    error = str(cause)
-                with self.lock:
-                    if self.closed or not self.connection_current(account_key, connection_id):
+                    monitor["stdinCloseRequested"] = attempt["id"]
+                    monitor.pop("stdinError", None)
+                self.put(db, "monitors", monitor)
+                # This exact request is accepted before native I/O. Stop may now
+                # cancel the command; it cannot make this request safe to replay.
+                db.commit()
+
+            def settle(error=None):
+                # Transport failures can use any message. Only a native rejection
+                # or proof that no bytes were submitted releases this receipt.
+                unknown = error is not None and not isinstance(error, (NativeRpcError, SubmissionRejected))
+                with self.lock, self.db() as db:
+                    if (self.closed or not self.connection_current(account_key, connection_id)
+                            or self.servers.get(account_key) is not server):
                         return
-                    with self.db() as db:
-                        row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
-                        if not row:
-                            return
-                        latest = json.loads(row[0])
-                        if latest.get("stdinCloseRequested") != close_operation:
-                            return
-                        if not error or "outcome unknown" not in error:
+                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                    if not row:
+                        return
+                    latest = json.loads(row[0])
+                    current = self.agent(latest["agent"], db)
+                    if (identity(latest, current) != expected or not current.get("autoWake")
+                            or current.get("deletedAt") or latest.get("cancelRequested")
+                            or latest.get("status") != "running"
+                            or (latest.get("inputAttempt") or {}).get("id") != attempt["id"]):
+                        return
+                    receipt = {**attempt, "status": "uncertain" if unknown else "failed" if error else "acknowledged",
+                               "finished": time.time(), **({"error": str(error)} if error else {})}
+                    if unknown:
+                        latest["inputAttempt"] = receipt
+                    else:
+                        latest.pop("inputAttempt", None)
+                        latest["lastInputAttempt"] = receipt
+                    if close and latest.get("stdinCloseRequested") == attempt["id"]:
+                        if not unknown:
                             latest.pop("stdinCloseRequested", None)
                         if error:
-                            latest["stdinError"] = error
+                            latest["stdinError"] = str(error)
                         else:
                             latest["stdinClosed"] = True
                             latest.pop("stdinError", None)
-                        self.put(db, "monitors", latest)
+                    self.put(db, "monitors", latest)
+
+            def reconcile(future):
+                try:
+                    future.result()
+                except Exception as error:
+                    settle(error)
+                else:
+                    settle()
+
+            try:
+                submitted = self.submit_reserved(server, method, params,
+                    operation_id="monitor-input:" + key + ":" + attempt["id"])
+            except Exception as error:
+                settle(error)
+                raise
             server.on_result(submitted, reconcile)
-        # The app-server reader must stay free to deliver output before the acknowledgement.
-        return server.wait(submitted)
+            # The reader stays free to deliver output before the acknowledgement.
+            try:
+                result = server.wait(submitted)
+            except Exception as error:
+                settle(error)
+                raise
+            # The reply may arrive before its queued callback. Do not leave the
+            # next input waiting behind unrelated streamed output.
+            settle()
+            return result

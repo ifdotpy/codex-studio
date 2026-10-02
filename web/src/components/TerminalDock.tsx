@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
-import { api, errorText, save, saved } from "../api";
+import { api, syncApi, errorText, save, saved } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard";
@@ -37,6 +37,8 @@ type Output = {
 };
 const running = (status: string) =>
   ["running", "starting", "approval"].includes(status);
+const inputUncertaintyNotice =
+  "Previous input delivery is uncertain. Check the terminal output before you enter it again. Buffered input was not sent.";
 
 export default function TerminalDock({
   data,
@@ -493,7 +495,11 @@ function ShellView({
   const terminal = useRef<Terminal | null>(null);
   const [failure, setFailure] = useState("");
   const [inputFailure, setInputFailure] = useState("");
+  const [inputWarning, setInputWarning] = useState("");
   const inputBlocked = useRef(false);
+  const inputGeneration = useRef(0);
+  const inputUncertain = useRef(false);
+  const pendingInput = useRef<object | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [status, setStatus] = useState(shell.status);
   const [retry, setRetry] = useState(0);
@@ -501,6 +507,14 @@ function ShellView({
   const downloadAttempt = useRef<symbol | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState("");
+  const fenceInput = () => {
+    if (pendingInput.current) inputUncertain.current = true;
+    inputGeneration.current++;
+    pendingInput.current = null;
+    inputChain.current = Promise.resolve();
+    inputBlocked.current = true;
+    if (terminal.current) terminal.current.options.disableStdin = true;
+  };
   useEffect(
     () => () => {
       downloadAttempt.current = null;
@@ -579,22 +593,34 @@ function ShellView({
   };
   const send = (text: string) => {
     if (inputBlocked.current) return;
+    const generation = inputGeneration.current;
     const request_id = crypto.randomUUID();
     inputChain.current = inputChain.current
       .then(async () => {
-        if (inputBlocked.current) return;
-        const result = await api("/api/terminals/input", {
-          id: shell.id,
-          text,
-          request_id,
-        });
-        if (result.ok === false)
-          throw new Error(
-            result.error || "Terminal input delivery is uncertain.",
-          );
+        if (generation !== inputGeneration.current || inputBlocked.current)
+          return;
+        const pending = {};
+        pendingInput.current = pending;
+        try {
+          const result = await syncApi("/api/terminals/input", {
+            id: shell.id,
+            text,
+            request_id,
+          });
+          if (generation !== inputGeneration.current) return;
+          if (result.ok === false)
+            throw new Error(
+              result.error || "Terminal input delivery is uncertain.",
+            );
+        } finally {
+          if (pendingInput.current === pending) pendingInput.current = null;
+        }
       })
       .catch((e) => {
+        if (generation !== inputGeneration.current) return;
         inputBlocked.current = true;
+        inputUncertain.current = true;
+        setInputWarning(inputUncertaintyNotice);
         if (terminal.current) terminal.current.options.disableStdin = true;
         setInputFailure(
           errorText(e) + " Input paused. Reconnect before you continue.",
@@ -604,13 +630,16 @@ function ShellView({
   const sendRef = useRef(send);
   sendRef.current = send;
   useEffect(() => {
+    const generation = ++inputGeneration.current;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     let observer: ResizeObserver | undefined;
     let resizeTimer: ReturnType<typeof setTimeout>;
     let offset = 0;
+    inputChain.current = Promise.resolve();
     inputBlocked.current = false;
     setInputFailure("");
+    if (inputUncertain.current) setInputWarning(inputUncertaintyNotice);
     let instance: Terminal | undefined;
     void Promise.all([
       import("@xterm/xterm"),
@@ -638,7 +667,10 @@ function ShellView({
         const fit = new FitAddon();
         instance.loadAddon(fit);
         instance.open(host.current);
-        instance.onData((text) => sendRef.current(text));
+        instance.onData((text) => {
+          if (!disposed && generation === inputGeneration.current)
+            sendRef.current(text);
+        });
         const resize = () => {
           if (disposed || !host.current?.clientWidth) return;
           fit.fit();
@@ -690,6 +722,7 @@ function ShellView({
       });
     return () => {
       disposed = true;
+      fenceInput();
       clearTimeout(timer);
       clearTimeout(resizeTimer);
       observer?.disconnect();
@@ -708,10 +741,20 @@ function ShellView({
       {(failure || inputFailure) && (
         <div className="terminal-dock-error" role="status">
           {inputFailure || failure}{" "}
-          <button onClick={() => setRetry((value) => value + 1)}>
+          <button
+            onClick={() => {
+              fenceInput();
+              setRetry((value) => value + 1);
+            }}
+          >
             Reconnect
           </button>
         </div>
+      )}
+      {inputWarning && (
+        <p className="terminal-output-notice" role="status">
+          {inputWarning}
+        </p>
       )}
       <div
         ref={host}

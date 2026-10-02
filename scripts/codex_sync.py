@@ -424,6 +424,36 @@ class SyncStore:
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
                    (next_sequence(db), scope, key, encoded, int(deleted)))
 
+    def entity_maintenance_needed(self, db):
+        """Check the existing window rules within the pull's read snapshot."""
+        from codex_entity_contracts import monitor_records
+        from codex_sync_entities import encoded, project
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('runtime_agents','runtime_events','runtime_tasks','runtime_monitors')")}
+        markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
+            "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
+        if ('seeded' not in markers
+                or ('runtime_agents' in tables and 'agent_organization_fields' not in markers)
+                or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
+            return True
+        if 'runtime_events' in tables:
+            sequence = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
+            if 'event_window_seq' not in markers or int(markers['event_window_seq']) != sequence:
+                return True
+        if 'runtime_monitors' in tables:
+            recent = monitor_records(db)
+            stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
+                                     "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
+            if set(stored) != {str(record['id']) for record in recent}:
+                return True
+            for record in recent:
+                key = str(record['id'])
+                _, digest, _ = encoded('monitor', key, project('monitor', record))
+                if stored[key] != digest:
+                    return True
+        return False
+
     def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0,
              reset_support=False, priority_id=None):
         after = max(0, int(after))
@@ -433,22 +463,29 @@ class SyncStore:
             if scope == 'state:entities:v1':
                 from codex_sync_entities import (entity_tombstone_floor, max_seq,
                                                  seed, sync_task_window,
-                                                 sync_event_window, sync_monitor_window)
+                                                 sync_event_window, sync_monitor_window,
+                                                 ENTITY_TOMBSTONE_COUNT_KEY, ENTITY_TOMBSTONE_LIMIT)
                 with self.connection("SyncStore.pull") as db:
-                    db.execute('BEGIN IMMEDIATE')
-                    startup_memory_mark("first-renderer-sync-pull")
-                    seed(db, self.chat_snapshot or self.snapshot)
-                    startup_memory_mark("entity-seed")
-                    # Retire old task DTOs gradually so an existing client checkpoint
-                    # can consume the resulting tombstones through ordinary deltas.
-                    sync_task_window(db)
-                    sync_event_window(db)
-                    sync_monitor_window(db)
-                    db.commit()
-                    # Pruning always runs on its own connection after this pull
-                    # releases its read transaction. One pull never waits for it.
-                    self._schedule_entity_pruning()
                     db.execute('BEGIN')
+                    startup_memory_mark("first-renderer-sync-pull")
+                    if self.entity_maintenance_needed(db):
+                        # Do not upgrade a read snapshot after another writer commits.
+                        # The existing maintenance functions read again under the writer.
+                        db.rollback()
+                        db.execute('BEGIN IMMEDIATE')
+                        seed(db, self.chat_snapshot or self.snapshot)
+                        startup_memory_mark("entity-seed")
+                        # Retire old task DTOs gradually so existing checkpoints
+                        # consume the resulting tombstones through ordinary deltas.
+                        sync_task_window(db)
+                        sync_event_window(db)
+                        sync_monitor_window(db)
+                        db.commit()
+                        db.execute('BEGIN')
+                    count = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
+                                       (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()
+                    if count is None or int(count[0]) > ENTITY_TOMBSTONE_LIMIT:
+                        self._schedule_entity_pruning()
                     high = max_seq(db)
                     floor = entity_tombstone_floor(db)
                     initial_high = (min(high, max(0, int(initial_high)))
