@@ -192,9 +192,10 @@ test("supervisor mode is opt-in in the saved launchd configuration", async () =>
     assert.equal(supervisorPlist.KeepAlive, true);
     assert.equal(supervisorPlist.AbandonProcessGroup, true);
     assert.equal(supervisorPlist.Label, result.supervisorLabel);
-    assert.deepEqual(supervisorPlist.ProgramArguments.slice(-2), [
+    assert.deepEqual(supervisorPlist.ProgramArguments.slice(-3), [
       "--state",
       result.state,
+      "--wait-for-lease",
     ]);
     await configureRecovery({
       ...data,
@@ -203,6 +204,67 @@ test("supervisor mode is opt-in in the saved launchd configuration", async () =>
     });
     const relaunched = JSON.parse(readFileSync(result.config, "utf8"));
     assert.equal(relaunched.supervisorEnabled, true);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("recovery rewrite refuses to stop its legacy supervisor while handles are live", async () => {
+  const data = fixture();
+  const paths = recoveryPaths(data.env, data.home);
+  const registered = new Set();
+  const calls = [];
+  try {
+    const run = async (file, args) => {
+      calls.push([file, args]);
+      if (file === "/bin/launchctl") {
+        const service = args[1];
+        if (args[0] === "print" && !registered.has(service))
+          throw new Error("service is not loaded");
+        if (args[0] === "bootstrap")
+          registered.add(
+            `${args[1]}/${args[2].includes("supervisor.") ? paths.supervisorLabel : paths.label}`,
+          );
+        if (args[0] === "print" && service === `gui/777/${paths.label}`)
+          return { stdout: "pid = 4242\n" };
+        return { stdout: "" };
+      }
+      if (file === "/bin/ps") return { stdout: "4242\n" };
+      return {
+        stdout: JSON.stringify({ handles: [{ id: "live", pid: 8888 }] }),
+      };
+    };
+    const initial = await configureRecovery({
+      ...data,
+      enabled: true,
+      restartEnvironment: { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
+      run,
+    });
+    writeFileSync(
+      path.join(initial.state, "supervisor.lock"),
+      JSON.stringify({ pid: 9001, startTime: "fixture-start" }),
+    );
+    const originalPlist = readFileSync(initial.plist, "utf8");
+    writeFileSync(path.join(data.root, "recover_backend-v2.py"), "fixture v2");
+    await assert.rejects(
+      configureRecovery({
+        ...data,
+        supervisor: path.join(data.root, "recover_backend-v2.py"),
+        enabled: true,
+        run,
+      }),
+      /legacy supervisor pid \d+ owns 1 live handle/,
+    );
+    assert.equal(readFileSync(initial.plist, "utf8"), originalPlist);
+    assert.equal(
+      calls.some(
+        ([file, args]) =>
+          file === "/bin/launchctl" &&
+          args[0] === "bootout" &&
+          args[1] === `gui/777/${paths.label}`,
+      ),
+      false,
+    );
   } finally {
     rmSync(data.root, { recursive: true, force: true });
   }

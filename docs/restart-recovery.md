@@ -121,7 +121,11 @@ is deferred to v2.
    health. A failed or timed out probe does not start a competing owner. The
    supervisor service uses `KeepAlive` and `AbandonProcessGroup`; desktop quit,
    backend restart, or recovery-job rewrite and kickstart do not unload or
-   restart it.
+   restart it. The LaunchAgent starts its supervisor with `--wait-for-lease`.
+   If a legacy recovery-started owner still holds the lease, the new instance
+   stays alive, logs `supervisor waiting for owner <pid>` once, and takes over
+   after that owner exits. It then runs the normal identity-checked child cleanup
+   and single fallback-generation recovery.
 2. Choose one idle boundary: stop admitting new work and wait for turns, monitors,
    background tasks, and user terminals to finish. The first installation cannot
    transfer existing in-process pipes, so this is the one planned interruption.
@@ -137,6 +141,24 @@ is deferred to v2.
    signals only the old backend, and waits for a supervisor-mode replacement.
    For later backend-only restarts, omit `--initial-cutover`. Do not unload the
    recovery LaunchAgent or terminate the supervisor.
+
+### Migrate an install with a legacy recovery-started owner
+
+Install the new build and leave the existing recovery job and its supervisor
+running. Desktop startup bootstraps the independent supervisor LaunchAgent; its
+instance waits on the lease held by the legacy owner. The legacy owner hands
+over when it exits, including at the next reboot/login or a planned stop. The
+waiting LaunchAgent then checks the recorded child identities and performs the
+existing crash-recovery cleanup before it accepts backend connections.
+
+The legacy supervisor can still be torn down when launchd rewrites or boots out
+the recovery job that started it. Do not disable, rewrite, or boot out that job
+while its supervisor owns live handles. `desktop/recovery.cjs` checks the
+recovery job PID, supervisor parent PID, and supervisor status before a restart
+or bootout, and refuses the operation while that legacy owner has live handles.
+Wait for the legacy owner to exit or its handles to close, then retry the
+recovery-job change. The supervisor LaunchAgent remains loaded and takes the
+lease when it becomes available.
 
 The supervisor LaunchAgent survives desktop quits, recovery-job restarts, and
 backend restarts, and starts at login after a host reboot. It records its PID
