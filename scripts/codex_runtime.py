@@ -747,7 +747,9 @@ class AppServer:
             try:
                 if self.supervisor_event_applied:
                     self.proc.ack_applied_deltas(self.supervisor_event_applied)
-                self.coalesce_supervisor_deltas(message)
+                if message.get("method") not in {"item/agentMessage/delta",
+                                                  "item/commandExecution/outputDelta"}:
+                    self.coalesce_supervisor_deltas(message)
             except Exception as error:
                 # Preserve the original entry if receipt preparation is unavailable.
                 self.protocol_error(error)
@@ -769,6 +771,52 @@ class AppServer:
                     slots.pop(slot["key"])
             return True
         return False
+
+    def collect_supervisor_stream_batch(self, callback, first):
+        """Group adjacent stream deltas from different items for one durable flush."""
+        methods = {"item/agentMessage/delta", "item/commandExecution/outputDelta"}
+        limit = getattr(self, "_supervisor_stream_batch_limit", 128)
+        if (not self.supervisor_mode or callback != self.notification or not isinstance(first, dict)
+                or first.get("method") not in methods or "id" in first):
+            return [first]
+        params = first.get("params")
+        sequence = first.get("_studioSupervisorSequence")
+        if (not isinstance(params, dict) or not isinstance(params.get("delta"), str)
+                or type(sequence) is not int):
+            return [first]
+        messages, sequences = [first], [sequence]
+        size = len(params["delta"].encode("utf-8"))
+        with self.callback_lock:
+            with self.callbacks.mutex:
+                for next_callback, next_message in self.callbacks.queue:
+                    if len(messages) >= limit or size >= 65536:
+                        break
+                    next_params = next_message.get("params") if isinstance(next_message, dict) else None
+                    next_sequence = (next_message.get("_studioSupervisorSequence")
+                                     if isinstance(next_message, dict) else None)
+                    if (next_callback != callback or not isinstance(next_message, dict)
+                            or "id" in next_message or next_message.get("method") not in methods
+                            or not isinstance(next_params, dict)
+                            or not isinstance(next_params.get("delta"), str)
+                            or type(next_sequence) is not int
+                            or next_sequence != sequences[-1] + 1):
+                        break
+                    next_size = len(next_params["delta"].encode("utf-8"))
+                    if size + next_size > 65536:
+                        break
+                    messages.append(next_message)
+                    sequences.append(next_sequence)
+                    size += next_size
+            if len(messages) > 1:
+                try:
+                    self.proc.register_event_batch(sequences)
+                except Exception as error:
+                    self.protocol_error(error)
+                    return [first]
+                for _ in messages[1:]:
+                    self.callbacks.get_nowait()
+                    self.callbacks.task_done()
+        return messages
 
     def coalesce_supervisor_deltas(self, message):
         """Commit adjacent unread deltas with all their journal receipts."""
@@ -892,10 +940,37 @@ class AppServer:
                             break
                     continue
                 count = 1
+                task_count = 1
+                callback_messages = [message]
+                sequence = message.get("_studioSupervisorSequence") if isinstance(message, dict) else None
+                try:
+                    already_applied = (sequence is not None and callback == self.notification
+                                       and self.supervisor_event_applied
+                                       and self.supervisor_event_applied(sequence))
+                except Exception as error:
+                    self.fail_transport(error)
+                    self.callbacks.task_done()
+                    break
+                if already_applied:
+                    try:
+                        self.proc.ack(sequence)
+                    except Exception as error:
+                        self.fail_transport(error)
+                        self.callbacks.task_done()
+                        break
+                    self.callbacks.task_done()
+                    continue
+                if (self.supervisor_mode and sequence is not None
+                        and isinstance(message, dict)
+                        and message.get("method") in {"item/agentMessage/delta",
+                                                       "item/commandExecution/outputDelta"}):
+                    callback_messages = self.collect_supervisor_stream_batch(callback, message)
+                    count = len(callback_messages)
+                    # The batch collector already marked removed queue entries done.
                 # Drain adjacent text fragments in one runtime transaction. Never
                 # cross a request, receipt, lifecycle event, or another item.
                 # Producer-coalesced entries are already batches; never merge them again.
-                if (not coalesced and callback == self.notification and isinstance(message, dict)
+                if (count == 1 and not coalesced and callback == self.notification and isinstance(message, dict)
                         and message.get("method") == "item/agentMessage/delta"):
                     params = message.get("params", {})
                     if isinstance(params, dict) and isinstance(params.get("delta"), str):
@@ -925,57 +1000,51 @@ class AppServer:
                         if count > 1:
                             message = {**message, "params": {**params, "delta": "".join(p["delta"] for p in samples)},
                                        "_studioNotificationSamples": samples}
-                sequence = message.get("_studioSupervisorSequence") if isinstance(message, dict) else None
-                try:
-                    already_applied = (sequence is not None and callback == self.notification
-                                       and self.supervisor_event_applied
-                                       and self.supervisor_event_applied(sequence))
-                except Exception as error:
-                    self.fail_transport(error)
-                    for _ in range(count):
-                        self.callbacks.task_done()
-                    break
-                if already_applied:
-                    try:
-                        self.proc.ack(sequence)
-                    except Exception as error:
-                        self.fail_transport(error)
-                        for _ in range(count):
-                            self.callbacks.task_done()
-                        break
-                    for _ in range(count):
-                        self.callbacks.task_done()
-                    continue
+                        if count > 1:
+                            callback_messages = [message]
+                            task_count = count
                 callback_started = time.monotonic()
                 callback_ok = False
                 try:
-                    if isinstance(message, dict):
-                        message["_studioDispatchedAt"] = time.time()
-                    callback(message)
+                    for callback_message in callback_messages:
+                        if isinstance(callback_message, dict):
+                            callback_message["_studioDispatchedAt"] = time.time()
+                        callback(callback_message)
+                    sequence = (callback_messages[-1].get("_studioSupervisorSequence")
+                                if isinstance(callback_messages[-1], dict) else sequence)
                     if (sequence is not None and callback == self.notification
                             and self.supervisor_commit):
-                        self.supervisor_commit(message, sequence)
+                        commit_message = callback_messages[-1]
+                        if len(callback_messages) > 1:
+                            commit_message = {**commit_message,
+                                              "_studioSupervisorBatchCount": len(callback_messages)}
+                        self.supervisor_commit(commit_message, sequence)
                     callback_ok = True
                 except Exception as error:
                     self.protocol_error(error)
                     if sequence is not None:
                         self.fail_transport(error)
                 finally:
-                    sequence = message.get("_studioSupervisorSequence") if isinstance(message, dict) else None
+                    sequence = (callback_messages[-1].get("_studioSupervisorSequence")
+                                if isinstance(callback_messages[-1], dict) else None)
                     if sequence is not None and callback_ok:
                         try:
                             self.proc.ack(sequence)
                         except Exception as error:
                             self.protocol_error(f"Supervisor event ACK failed at {sequence}: {error}")
                     duration = (time.monotonic() - callback_started) * 1000
-                    metadata = message if isinstance(message, dict) else {}
+                    metadata = callback_messages[0] if isinstance(callback_messages[0], dict) else {}
                     received = metadata.get("_studioReceivedAt")
                     delay = max(0, metadata.get("_studioDispatchedAt", time.time()) - received) * 1000 if type(received) in (int, float) else 0
                     if duration >= 100 or delay >= 1000:
                         params = metadata.get("params") or {}
                         params = params if isinstance(params, dict) else {}
+                        methods = sorted({item.get("method", "receipt") for item in callback_messages
+                                          if isinstance(item, dict)})
                         diagnostic = {"kind": "callbackLatency", "at": time.time(),
-                                      "method": metadata.get("method", "receipt"), "rpcId": metadata.get("id"),
+                                      "method": (methods[0] if len(methods) == 1 else "supervisor/streamDeltaBatch"),
+                                      "batchMethods": methods if len(methods) > 1 else None,
+                                      "rpcId": metadata.get("id"),
                                       "threadId": params.get("threadId"), "turnId": params.get("turnId"),
                                       "itemId": params.get("itemId"), "queueDelayMs": round(delay, 3),
                                       "durationMs": round(duration, 3), "notificationCount": count,
@@ -985,7 +1054,7 @@ class AppServer:
                             self.log.flush()
                         except (OSError, ValueError):
                             pass
-                    for _ in range(count):
+                    for _ in range(task_count):
                         self.callbacks.task_done()
                 if sequence is not None and not callback_ok:
                     self.fail_transport("Supervisor event was not durably applied")
@@ -1951,8 +2020,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             stream = getattr(self, "_stream_buffer", None)
             if stream is not None and isinstance(params, dict):
                 with self.lock, self.db() as db:
-                    stream.flush_locked(db, account=account, thread_id=params.get("threadId"),
-                                        item_id=params.get("itemId"), turn_id=params.get("turnId"),
+                    batch = message.get("_studioSupervisorBatchCount", 1) > 1
+                    stream.flush_locked(db, account=account,
+                                        thread_id=None if batch else params.get("threadId"),
+                                        item_id=None if batch else params.get("itemId"),
+                                        turn_id=None if batch else params.get("turnId"),
                                         force=True, supervisor_handle=handle, supervisor_sequence=sequence)
                 return
         with self.db() as db:
