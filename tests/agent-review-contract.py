@@ -270,7 +270,7 @@ class AgentReviewContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertIsNone(db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (self.key,)).fetchone())
 
-    def test_claim_is_once_and_has_no_input_after_restart(self):
+    def test_unsent_claim_restores_same_review_after_restart(self):
         target = {'type': 'commit', 'sha': 'abc123', 'title': 'Fix'}
         result = self.make({'target': target})
         child = self.runtime.agent(result['agentId'])
@@ -286,6 +286,11 @@ class AgentReviewContract(unittest.TestCase):
         self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
         child = self.runtime.agent(child['id'])
         with self.runtime.lock, self.runtime.db() as db:
+            resumed = claim(self.runtime, db, child)
+            self.assertEqual(resumed['reviewTarget'], target)
+            self.assertEqual(resumed['action'], 'review')
+            self.assertEqual(resumed['events'], [])
+            self.assertFalse(resumed['submitted'])
             self.assertIsNone(claim(self.runtime, db, child))
         self.assertEqual(self.events(child), [])
         self.assertEqual(self.make({'target': target}), result)

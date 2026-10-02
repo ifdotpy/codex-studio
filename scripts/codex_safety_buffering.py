@@ -19,6 +19,37 @@ def active(agent):
             and receipt.get('accountKey') == agent.get('accountKey', 'default'))
 
 
+def recover_restart(runtime, db, agent):
+    """Turn an in-flight retry into a durable hold when its receipt is incomplete."""
+    receipt = agent.get('nativeSafetyRetry') or {}
+    if receipt.get('stage') not in ACTIVE:
+        return False
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+    row = db.execute('SELECT record FROM runtime_safety_retries WHERE id=?', (receipt.get('id'),)).fetchone()
+    op = json.loads(row[0]) if row else {
+        **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+        'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch'),
+    }
+    if op.get('id') != receipt.get('id'):
+        op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+              'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch')}
+    if (op.get('agent') != agent.get('id') or op.get('epoch') != agent.get('epoch')
+            or op.get('accountKey') != agent.get('accountKey', 'default')):
+        return False
+    if op.get('stage') in {'running', 'failed', 'cancelled'}:
+        return False
+    reason = ('Safety retry stopped at restart during ' + str(op.get('stage')) +
+              '. Studio did not repeat the native operation. Review the saved retry receipt.')
+    op.update(stage='failed', terminalHold=True, error=reason, finished=time.time())
+    runtime.put(db, 'safety_retries', op)
+    agent['nativeSafetyRetry'] = public(op)
+    agent.update(status='interrupted', autoWake=False, inFlight=False,
+                 nativeFailureHold=True, error=reason)
+    runtime.child_stopped_event(db, agent, 'interrupted', reason,
+                                'safety-retry:' + str(op.get('id')))
+    return True
+
+
 def action(runtime, key, data):
     choice = data.get('safety')
     if choice not in {'wait', 'retry', 'cancel'}:

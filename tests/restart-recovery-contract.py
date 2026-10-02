@@ -3,10 +3,13 @@
 import copy
 import importlib.util
 import json
+import queue
 import subprocess
 import sys
+import time
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('connection-recovery-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -35,6 +38,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
+        self.server.pending = {}
         self.server.native = native
         self.server.calls.clear()
         return self.runtime.agent(self.key)
@@ -109,6 +113,133 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertTrue(a['autoWake'])
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='reserved-input'").fetchone()[0],'pending')
+
+    def test_scenario_4_disconnect_preserves_first_preparation_receipt(self):
+        with self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, a, 'user', 'Original instruction', 'preparation-input')
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id='preparation-input'")
+            a.update(threadId=None, turnId=None, status='starting', inFlight=True,
+                autoWake=True, startAttempt={'id':'preparation-attempt','epoch':a['epoch'],
+                    'accountKey':'default','threadId':None,'events':['preparation-input'],
+                    'submitted':False})
+            self.runtime.put(db, 'agents', a)
+        self.runtime.disconnected('default', self.runtime.connection_ids['default'])
+        disconnected = self.runtime.agent(self.key)
+        self.assertEqual(disconnected['disconnectRecovery']['startAttempt']['id'],
+                         'preparation-attempt')
+        self.runtime.close()
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.server = self.runtime.connect()
+        self.server.pending = {}
+        a = self.runtime.agent(self.key)
+        self.assertEqual(a['status'], 'queued')
+        self.assertTrue(a['autoWake'])
+        self.assertEqual(a['restartRecovery']['stage'], 'input_restored')
+        self.assertEqual(a['connectionRecovery']['attemptId'], 'preparation-attempt')
+        with self.runtime.db() as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT status,turn_id FROM runtime_events WHERE id='preparation-input'").fetchone()),
+                ('pending', None))
+        with patch('codex_native_tools.gate', return_value=True):
+            self.runtime.dispatch()
+        deadline = time.monotonic() + 5
+        starts = []
+        while time.monotonic() < deadline:
+            starts = [params for method, params in self.server.calls
+                      if method == 'turn/start' and params.get('clientUserMessageId') == 'preparation-input']
+            if starts:
+                break
+            time.sleep(.02)
+        self.assertEqual(len(starts), 1)
+
+    def test_scenario_4_disconnect_after_thread_preparation_keeps_one_input(self):
+        with self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, a, 'user', 'Original instruction', 'prepared-input')
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE id='prepared-input'")
+            a.update(threadId='prepared-thread', turnId=None, status='starting', inFlight=True,
+                autoWake=True, startAttempt={'id':'prepared-attempt','epoch':a['epoch'],
+                    'accountKey':'default','threadId':'prepared-thread',
+                    'events':['prepared-input'],'submitted':False})
+            self.runtime.put(db, 'agents', a)
+        self.runtime.disconnected('default', self.runtime.connection_ids['default'])
+        self.runtime.close()
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        self.server = self.runtime.connect()
+        self.server.pending = {}
+        self.server.callbacks = queue.Queue()
+        self.server.clock_replies = queue.Queue()
+        self.server.native = {'id':'prepared-thread','status':{'type':'idle'},'turns':[]}
+        a = self.runtime.agent(self.key)
+        self.assertEqual(a['restartRecovery']['stage'], 'input_restored')
+        self.assertEqual(a['connectionRecovery']['attemptId'], 'prepared-attempt')
+        with patch('codex_native_tools.gate', return_value=True):
+            self.runtime.dispatch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            starts = [params for method, params in self.server.calls if method == 'turn/start']
+            if starts:
+                break
+            time.sleep(.02)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'prepared-input')
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,status FROM runtime_events WHERE id='prepared-input'").fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertIn(rows[0]['status'], {'dispatching', 'delivered'})
+
+    def test_scenario_5_reconciles_exact_accepted_input_identity(self):
+        with self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, a, 'user', 'Original instruction', 'exact-native-input')
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='exact-native-input'")
+        self.server.native['turns'].append({'id':'accepted-turn','clientUserMessageId':'exact-native-input',
+            'status':'completed','items':[{'id':'input-item','type':'userMessage','clientId':'exact-native-input',
+                'content':[{'type':'text','text':'Original instruction'}]}]})
+        self.restart(threadId='native-thread', turnId=None, startAttempt={
+            'id':'accepted-attempt','epoch':self.a['epoch'],'accountKey':'default',
+            'threadId':'native-thread','events':['exact-native-input'],'submitted':True})
+        a = self.runtime.agent(self.key)
+        self.assertEqual(a['restartRecovery']['stage'], 'held')
+        self.assertEqual(a['contextRepairWait']['events'], ['exact-native-input'])
+        self.runtime.dispatch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if self.runtime.agent(self.key).get('restartRecovery', {}).get('stage') == 'finished':
+                break
+            time.sleep(.02)
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
+        with self.runtime.db() as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT status,turn_id FROM runtime_events WHERE id='exact-native-input'").fetchone()),
+                ('delivered','accepted-turn'))
+
+    def test_scenario_5_proves_input_was_not_accepted_before_restart(self):
+        with self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, a, 'user', 'Original instruction', 'not-accepted-input')
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='not-accepted-input'")
+        self.server.native['turns'] = [{'id':'older-turn','clientUserMessageId':'older-input',
+            'status':'completed','items':[{'id':'older-user','type':'userMessage','clientId':'older-input',
+                'content':[{'type':'text','text':'Earlier instruction'}]}]}]
+        self.restart(threadId='native-thread', turnId=None, startAttempt={
+            'id':'not-accepted-attempt','epoch':self.a['epoch'],'accountKey':'default',
+            'threadId':'native-thread','events':['not-accepted-input'],'submitted':True})
+        self.runtime.dispatch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with self.runtime.db() as db:
+                status = db.execute("SELECT status FROM runtime_events WHERE id='not-accepted-input'").fetchone()[0]
+            if status == 'pending':
+                break
+            time.sleep(.02)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute(
+                "SELECT status FROM runtime_events WHERE id='not-accepted-input'").fetchone()[0], 'pending')
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
 
     def test_submitted_input_without_turn_is_held(self):
         parent_id = self.make_worker()

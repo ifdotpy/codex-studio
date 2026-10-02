@@ -35,7 +35,8 @@ def restore(db, agent):
         agent['restartRecovery'] = {
             **{key: disconnected.get(key) for key in (*SCOPE, 'turnId')},
             'autoWake': True, 'at': disconnected.get('at', time.time()),
-            'stage': 'pending', 'startAttempt': copy.deepcopy(agent.get('startAttempt')),
+            'stage': 'pending', 'startAttempt': copy.deepcopy(
+                agent.get('startAttempt') or disconnected.get('startAttempt')),
         }
     if old.get('stage') == 'pending' and any(old.get(key) != agent.get(key) for key in SCOPE):
         old['stage'] = 'superseded'
@@ -72,6 +73,14 @@ def restore(db, agent):
                        (key, agent['id'], agent['epoch']))
         agent.update(status='queued', autoWake=True, inFlight=False, error=None)
         marker['stage'] = 'input_restored'
+        agent['connectionRecovery'] = {'source': 'restart_unsent_attempt', 'at': time.time(),
+            'attemptId': attempt.get('id'), 'eventIds': list(attempt.get('events', [])),
+            'outcome': 'input_restored'}
+        review = agent.get('nativeReview') or {}
+        if attempt.get('action') == 'review' and review.get('status') == 'started':
+            review.pop('startedAt', None)
+            review['status'] = 'pending'
+            agent['nativeReview'] = review
         return True
     if turn:
         agent.update(turnId=turn, status='interrupted', autoWake=False,
@@ -82,6 +91,18 @@ def restore(db, agent):
     # No native turn identity means an accepted input cannot be reconciled yet.
     marker['stage'] = 'held'
     marker['reason'] = 'Native input submission has no confirmed turn identity.'
+    valid_events = attempt.get('events') and all(db.execute(
+        "SELECT 1 FROM runtime_events WHERE id=? AND agent=? AND epoch=? "
+        "AND status IN ('reserved','dispatching','uncertain')",
+        (event_id, agent['id'], agent['epoch'])).fetchone() for event_id in attempt.get('events', []))
+    if (attempt.get('submitted') is True and valid_events and agent.get('threadId')):
+        event_ids = list(attempt['events'])
+        error = 'Context repair waits for a confirmed input receipt: ' + event_ids[0]
+        agent.update(status='queued', autoWake=True, inFlight=False, error=error,
+                     contextRepairWait={'error': error, 'scope': 'native',
+                         'source': {'id': agent['id'], 'accountKey': agent.get('accountKey', 'default'),
+                                    'epoch': agent['epoch'], 'threadId': agent['threadId'],
+                                    'attemptId': None}, 'events': event_ids, 'nextCheckAt': 0})
     return False
 
 
