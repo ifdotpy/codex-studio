@@ -8,7 +8,7 @@ import {
   syncApi as api,
   ApiError,
   errorText,
-  setToken,
+  refreshSession,
   saved,
   save,
 } from "./api";
@@ -118,10 +118,9 @@ export function useSnapshot() {
       credentialRetry.current = undefined;
       const request = ++generation.current;
       try {
-        const session = await api<{ token: string }>("/api/session");
+        const session = await refreshSession();
         if (request !== generation.current) return;
         sessionToken.current = session.token;
-        setToken(session.token);
         setData((old) =>
           old && old.token !== session.token
             ? { ...old, token: session.token }

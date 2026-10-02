@@ -1,4 +1,4 @@
-import { syncApi, setToken } from "../api";
+import { syncApi, refreshSession } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
 import type { Attachment } from "../components/ComposerAttachments";
@@ -205,8 +205,7 @@ export function deliverUpload(row: PendingUpload): Promise<Attachment | null> {
       throw new Error("The saved upload belongs to another workspace or chat.");
     if (uploadCancelled(row.id)) return null;
     if (current.asset) return current.asset;
-    const session = await syncApi<{ token: string }>("/api/session");
-    setToken(session.token);
+    const session = await refreshSession();
     const content = await transaction<
       { bytes?: ArrayBuffer; file?: Blob } | undefined
     >("readonly", (store) => store.get(row.id), ["contents"]);
@@ -227,7 +226,7 @@ export function deliverUpload(row: PendingUpload): Promise<Attachment | null> {
         base64,
         id: row.id,
       },
-      { workspaceId: row.workspace },
+      { workspaceId: row.workspace, sessionToken: session.token },
     );
     const asset: Attachment = response.asset || response;
     if (asset.id !== row.id)

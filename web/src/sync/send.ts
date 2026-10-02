@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { syncApi, ApiError, errorText, setToken } from "../api";
+import { syncApi, ApiError, errorText, refreshSession } from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
 
@@ -55,14 +55,13 @@ async function deliver(doc: any) {
     const { workspaceId } = await syncDatabase();
     const [identity, session] = await Promise.all([
       syncApi<{ workspaceId: string }>("/api/sync/identity"),
-      syncApi<{ token: string }>("/api/session"),
+      refreshSession(),
     ]);
     if (identity.workspaceId !== workspaceId)
       throw new ApiError(
         "The server workspace changed. Reload before sending.",
         409,
       );
-    setToken(session.token);
     // Claim the current content before HTTP. Cancellation uses the same atomic
     // update and can succeed only before this request starts.
     const claimed = await doc.incrementalModify((record: any) => {
@@ -94,6 +93,7 @@ async function deliver(doc: any) {
     if (value.status !== "queued") return intentionResult(value);
     const result = await syncApi<any>("/api/messages", value.body, {
       workspaceId,
+      sessionToken: session.token,
     });
     const acknowledged = [
       "queued",

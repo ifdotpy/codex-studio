@@ -1,4 +1,4 @@
-import { api, ApiError } from "../api";
+import { api, syncApi, ApiError } from "../api";
 import type { Message, Snapshot } from "../types";
 import { transcriptMessages } from "../hooks";
 import { stopRemovedMessage, type OutgoingMessage } from "../sync/send";
@@ -61,7 +61,9 @@ export async function removeSendingMessage(scope: Scope, target: Target) {
     }
     if (request) {
       try {
-        await api("/api/queue", request, { workspaceId: scope.workspaceId });
+        await syncApi("/api/queue", request, {
+          workspaceId: scope.workspaceId,
+        });
         cancelled = true;
       } catch (error) {
         // Never repeat an unknown mutation with a new identity. A race with
