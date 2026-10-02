@@ -198,7 +198,11 @@ try {
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
-  await page.getByText("Loading prices", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".session-cost-summary")?.textContent?.trim() ===
+      "",
+  );
   assert.doesNotMatch(
     await page.locator("#usage-footer").innerText(),
     /Unpriced:/,
@@ -223,11 +227,10 @@ try {
   for (let n = 0; n < 100 && !pendingSessionCost; n++)
     await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(pendingSessionCost, "team refresh waits in the fixture");
-  assert.match(
+  assert.doesNotMatch(
     await page.locator("#usage-footer").innerText(),
-    /Session estimate updating/,
+    /Updating/,
   );
-  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
   holdSessionCost = false;
   await pendingSessionCost.fulfill({
     json: sessionCostResult(selectedChat.id),
@@ -246,7 +249,10 @@ try {
     await page.locator("#usage-footer").innerText(),
     /Session estimate: \$0\.42/,
   );
-  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Updating/,
+  );
   holdSessionCost = false;
   await pendingSessionCost.fulfill({
     json: sessionCostResult(selectedChat.id),
@@ -264,7 +270,10 @@ try {
     await page.locator("#usage-footer").innerText(),
     /Session estimate: \$1\.26/,
   );
-  assert.match(await page.locator("#usage-footer").innerText(), /Updating/);
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Updating/,
+  );
   holdSessionCost = false;
   await pendingSessionCost.fulfill({
     json: sessionCostResult(selectedChat.id),

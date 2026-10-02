@@ -1,11 +1,14 @@
 """Volatile output-token telemetry. Never enters agents or sync projections."""
 from collections import OrderedDict, deque
+import logging
 import math
 import threading
 import time
 
 WINDOW = 4.0
 BUCKET = .25
+MAX_RATE = 1000.0
+_logged_implausible_correction = False
 
 
 def count(value):
@@ -27,7 +30,7 @@ class TurnRate:
         self.last = None
 
     def prune(self, now):
-        while self.bins and self.bins[0][0] <= now - WINDOW:
+        while self.bins and self.bins[0][0] < now - WINDOW:
             self.bins.popleft()
 
     def text(self, text, now):
@@ -47,20 +50,31 @@ class TurnRate:
             return
         self.prune(now)
         delta = total - self.actual
-        if self.pending:
-            # Correct the whole interval, including estimates outside the window.
-            # A late usage notice must not look like a new burst of output.
-            ratio = delta / self.pending
-            for sample in self.bins:
-                sample[1] += sample[2] * ratio
-                sample[2] = 0.0
-        elif delta:
-            duration = max(BUCKET, now - self.anchor)
-            start = max(now - duration, now - WINDOW)
+        duration = max(BUCKET, now - self.anchor)
+        global _logged_implausible_correction
+        if delta / duration > MAX_RATE:
+            if not _logged_implausible_correction:
+                logging.getLogger(__name__).warning(
+                    'Ignored token-rate correction above %.0f tok/s', MAX_RATE)
+                _logged_implausible_correction = True
+            return
+        # Replace text estimates with the provider's count over the full
+        # interval. A receipt must not turn into a one-bucket output burst.
+        self.bins = deque(sample for sample in self.bins if sample[0] <= self.anchor)
+        for sample in self.bins:
+            sample[2] = 0.0
+        interval = now - self.anchor
+        if delta and interval > 0:
+            start = max(self.anchor, now - WINDOW)
             stamp = start
             while stamp < now:
-                end = min(stamp + BUCKET, now)
-                self.bins.append([end, delta * (end - stamp) / duration, 0.0])
+                bucket = math.floor(stamp / BUCKET) * BUCKET
+                end = min(bucket + BUCKET, now)
+                overlap = max(0.0, end - max(stamp, self.anchor))
+                if self.bins and self.bins[-1][0] == bucket:
+                    self.bins[-1][1] += delta * overlap / interval
+                else:
+                    self.bins.append([bucket, delta * overlap / interval, 0.0])
                 stamp = end
         self.actual, self.pending, self.anchor = total, 0.0, now
         self.estimated = False
@@ -73,7 +87,7 @@ class TurnRate:
         tokens = sum(sample[1] + sample[2] for sample in self.bins)
         value = {
             'turnId': self.turn, 'active': True, 'estimated': self.estimated,
-            'rate': round(tokens / min(WINDOW, max(BUCKET, now - self.started)), 2),
+            'rate': round(min(MAX_RATE, tokens / min(WINDOW, max(BUCKET, now - self.started))), 2),
             'outputTokens': round(self.actual + self.pending, 2),
         }
         return value
@@ -115,14 +129,26 @@ class TokenRates:
                 usage = params.get('tokenUsage') or {}
                 total = count((usage.get('total') or {}).get('outputTokens'))
                 last = count((usage.get('last') or {}).get('outputTokens'))
+                if (rate is None or rate.turn != turn) and turn and agent.get('inFlight') and turn == agent.get('turnId'):
+                    # A resumed native thread can report usage before it repeats
+                    # turn/started. Rebuild the volatile meter from its current turn.
+                    rate = entry['rate'] = TurnRate(turn, now)
+                    rate.baseline = entry['lifetime']
                 if rate and rate.active and (not turn or turn == rate.turn):
                     turn_output = count(params.get('turnOutputTokens'))
                     if turn_output is not None:
                         rate.correct(turn_output, now)
                     elif total is not None:
-                        if rate.baseline is None and last is not None:
-                            rate.baseline = total - last
-                        if rate.baseline is not None and total >= rate.baseline:
+                        seeded_without_last = False
+                        if rate.baseline is None:
+                            # On restart, total is cumulative for the thread.
+                            # Use the current response count to seed its base.
+                            if last is None:
+                                rate.baseline = total
+                                seeded_without_last = True
+                            else:
+                                rate.baseline = max(0, total - last)
+                        if not seeded_without_last and rate.baseline is not None and total >= rate.baseline:
                             rate.correct(total - rate.baseline, now)
                     elif last is not None:
                         identity = params.get('responseId') or (usage.get('total') or {}).get('totalTokens')
@@ -162,7 +188,7 @@ class TokenRates:
                     for key, entry in self.entries.items()
                     if entry.get('root') == root_id and entry['agent'] != root_id
                     and self.agents.get(entry['agent']) == key
-                    and entry['rate'] is not None and entry['rate'].active}
+                    and entry['rate'] is not None}
 
     def workspace_snapshot(self):
         with self.lock:
@@ -174,7 +200,7 @@ class TokenRates:
                 value = entry['rate'].snapshot(now)
                 rates[entry['agent']] = value
                 root = entry.get('root')
-                if root and root != entry['agent'] and value['active']:
+                if root and root != entry['agent']:
                     teams.setdefault(root, {})[entry['agent']] = value
             return {'rates': rates, 'teams': teams}
 

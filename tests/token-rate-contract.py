@@ -55,6 +55,17 @@ class RateContract(unittest.TestCase):
         self.assertEqual(rate.snapshot(.01)['rate'], 200)
         self.assertEqual(rate.snapshot(.01)['outputTokens'], 50)
 
+    def test_implausible_correction_is_ignored_and_display_is_capped(self):
+        rate = TurnRate('one', 0)
+        with self.assertLogs('codex_token_rate', level='WARNING') as log:
+            rate.correct(745, .01)
+            TurnRate('two', 0).correct(745, .01)
+        self.assertEqual(len(log.output), 1)
+        self.assertEqual(rate.snapshot(.01)['outputTokens'], 0)
+        self.assertEqual(rate.snapshot(.01)['rate'], 0)
+        rate.text('x' * 20000, .02)
+        self.assertEqual(rate.snapshot(.02)['rate'], 1000)
+
     def test_codex_lifetime_baseline_current_turn_reset_and_stale_sources(self):
         now = [0]
         rates = TokenRates(lambda: now[0])
@@ -87,6 +98,30 @@ class RateContract(unittest.TestCase):
         now[0] = 5
         usage(1100, 20, turn='two')
         self.assertEqual(rates.snapshot('lead')['outputTokens'], 20)
+
+    def test_first_usage_after_resume_seeds_lifetime_baseline(self):
+        now = [20]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'resumed', 'threadId': 'thread', 'turnId': 'active', 'inFlight': True}
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'active', 'tokenUsage': {
+            'total': {'outputTokens': 100000}, 'last': {'outputTokens': 120}}}, 'a', 'new-connection')
+        self.assertEqual(rates.snapshot('resumed')['outputTokens'], 120)
+        now[0] = 22
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'active', 'tokenUsage': {
+            'total': {'outputTokens': 100180}, 'last': {'outputTokens': 60}}}, 'a', 'new-connection')
+        self.assertEqual(rates.snapshot('resumed')['outputTokens'], 300)
+
+    def test_claude_turn_output_corrections_are_cumulative(self):
+        now = [0]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'claude', 'threadId': 'thread', 'turnId': 'one', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'one'}}, 'a', 'c')
+        for now[0], cumulative in ((1, 40), (2, 100)):
+            rates.observe(agent, 'thread/tokenUsage/updated', {
+                'turnId': 'one', 'turnOutputTokens': cumulative,
+                'tokenUsage': {'total': {'outputTokens': cumulative}, 'last': {'outputTokens': cumulative}},
+            }, 'a', 'c')
+        self.assertEqual(rates.snapshot('claude')['outputTokens'], 100)
 
     def test_missing_baseline_keeps_estimate_and_input_tokens_never_count(self):
         rates = TokenRates(lambda: 1)
@@ -121,10 +156,22 @@ class RateContract(unittest.TestCase):
         self.assertEqual(set(shared['rates']), {'lead', 'one', 'two', 'other'})
         self.assertEqual(shared['teams']['lead'], batch)
         rates.observe(agents[1], 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c')
-        self.assertEqual(set(rates.team_snapshot('lead')), {'two'})
+        self.assertEqual(set(rates.team_snapshot('lead')), {'one', 'two'})
+        self.assertFalse(rates.team_snapshot('lead')['one']['active'])
         rates.observe(agents[2], 'turn/started', {'turn': {'id': 'new-turn'}}, 'a', 'new-connection')
         self.assertEqual(rates.team_snapshot('lead')['two']['outputTokens'], 0)
         self.assertEqual(rates.team_snapshot('other-team')['other']['outputTokens'], 40)
+
+    def test_rate_is_tracked_before_any_client_reads_a_snapshot(self):
+        now = [0]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'unwatched', 'rootId': 'unwatched', 'threadId': 'thread', 'turnId': 'turn', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c')
+        rates.stream('item/agentMessage/delta', {
+            'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 400,
+        }, 'a', 'c')
+        now[0] = 2
+        self.assertEqual(rates.snapshot('unwatched')['outputTokens'], 100)
 
     def test_claude_message_counts_are_deduplicated_and_final_total_corrects(self):
         now = [0]

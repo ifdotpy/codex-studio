@@ -130,7 +130,8 @@ try {
         await team.getAttribute("class"),
         size === 3 ? "team-compact" : null,
       );
-      const meter = (id) => team.locator(`.token-rate[data-agent="${id}"]`);
+      const meter = (id) =>
+        team.locator(`.token-rate[data-agent="${id}"][data-variant="worker"]`);
       const card = (id) =>
         team
           .locator(".worker-entry")
@@ -311,6 +312,32 @@ try {
               ?.textContent.includes("tok/s"),
           agent.id,
         );
+      for (const agent of running)
+        assert.doesNotMatch(
+          await follower
+            .locator(`#team .token-rate[data-agent="${agent.id}"]`)
+            .innerText(),
+          /^0 tok\/s$/,
+        );
+      await page.waitForFunction(
+        () =>
+          window.__teamRateSources.some((source) => source.readyState === 2) &&
+          window.__teamRateSources.some((source) => source.readyState === 1),
+      );
+      await page.evaluate(() => {
+        const stale = window.__teamRateSources.find(
+          (source) => source.readyState === 2,
+        );
+        stale?.dispatchEvent(new Event("error"));
+        if (!stale) throw Error("Expected the replaced workspace stream");
+      });
+      await page.waitForFunction(
+        (id) =>
+          document
+            .querySelector(`#team .token-rate[data-agent="${id}"]`)
+            ?.textContent.includes("tok/s"),
+        running[0].id,
+      );
       assert.equal(
         (await page.evaluate(
           () =>
@@ -395,7 +422,13 @@ try {
         running[0].id,
       );
       await injectOnBatch(20);
-      assert.equal(await meter(running[0].id).innerText(), "20 tok/s");
+      await page.waitForFunction(
+        (id) =>
+          document.querySelector(
+            `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+          )?.textContent === "20 tok/s",
+        running[0].id,
+      );
       await page.emulateMedia({ reducedMotion: "no-preference" });
       await page.waitForFunction(
         (id) =>
@@ -426,10 +459,12 @@ try {
       await page.evaluate(() => window.__rateObserver.disconnect());
       await page.emulateMedia({ reducedMotion: "reduce" });
       await injectOnBatch(140);
-      assert.equal(
-        await meter(running[0].id).innerText(),
-        "140 tok/s",
-        "reduced motion jumps to the target",
+      await page.waitForFunction(
+        (id) =>
+          document.querySelector(
+            `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+          )?.textContent === "140 tok/s",
+        running[0].id,
       );
       clearInterval(timer);
       timer = undefined;
@@ -440,8 +475,26 @@ try {
         (id) =>
           document.querySelector(
             `.token-rate[data-agent="${id}"][data-variant="worker"]`,
-          )?.textContent === "",
+          )?.dataset.active === "false" &&
+          document
+            .querySelector(
+              `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+            )
+            ?.textContent.includes("tok/s"),
         running[0].id,
+      );
+      assert.match(
+        (await meter(running[0].id).textContent()) || "",
+        /tok\/s$/,
+        JSON.stringify(
+          await meter(running[0].id).evaluate((node) => ({
+            text: node.textContent,
+            innerText: node.innerText,
+            visible: node.getBoundingClientRect().width > 0,
+            display: getComputedStyle(node).display,
+            visibility: getComputedStyle(node).visibility,
+          })),
+        ),
       );
       await page.locator("#team-close").click();
       assert.equal(
