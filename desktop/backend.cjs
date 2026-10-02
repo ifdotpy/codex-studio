@@ -238,11 +238,32 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   const state = stateDirectory(env);
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
+  let persistedSupervisorMode = false;
+  try {
+    const saved = JSON.parse(
+      fs.readFileSync(
+        path.join(canonicalState, "background-recovery.json"),
+        "utf8",
+      ),
+    );
+    if (
+      saved.supervisorEnabled !== undefined &&
+      typeof saved.supervisorEnabled !== "boolean"
+    )
+      throw new Error("The saved supervisor setting is invalid.");
+    persistedSupervisorMode = saved.supervisorEnabled === true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const supervisorMode =
+    env.CODEX_AGENTS_SUPERVISOR_MODE === undefined
+      ? persistedSupervisorMode
+      : env.CODEX_AGENTS_SUPERVISOR_MODE === "1";
   const origin = `http://127.0.0.1:${port}`;
   const existing = await identity(origin, canonicalState);
   if (
     existing &&
-    env.CODEX_AGENTS_SUPERVISOR_MODE === "1" &&
+    supervisorMode &&
     existing.supervisorMode !== true &&
     existing.supervisorFallback !== true
   )
@@ -274,7 +295,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     { timeout: 5000 },
   );
   const codex = executable("codex", env);
-  if (env.CODEX_AGENTS_SUPERVISOR_MODE === "1") {
+  if (supervisorMode) {
     const supervisor = path.join(
       resources,
       "scripts/codex_process_supervisor.py",
@@ -283,6 +304,9 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       throw new Error(
         "Supervisor mode is enabled but its packaged script is missing.",
       );
+    const log = path.join(canonicalState, "supervisor.log");
+    const fd = fs.openSync(log, "a", 0o600);
+    let started = false;
     const deadline = Date.now() + 10000;
     let lastError;
     while (Date.now() < deadline) {
@@ -300,9 +324,36 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         break;
       } catch (error) {
         lastError = error;
+        if (!started) {
+          started = true;
+          let child;
+          try {
+            // The supervisor's state-directory lease elects one owner when the
+            // desktop and LaunchAgent both start it during the same recovery.
+            child = spawn(
+              python,
+              ["-B", supervisor, "--state", canonicalState],
+              {
+                cwd: os.homedir(),
+                detached: true,
+                stdio: ["ignore", fd, fd],
+                env: {
+                  ...env,
+                  CODEX_AGENTS_STATE_DIR: canonicalState,
+                  CODEX_AGENTS_SUPERVISOR_MODE: "1",
+                },
+              },
+            );
+            child.on("error", () => {});
+            child.unref();
+          } catch (spawnError) {
+            lastError = spawnError;
+          }
+        }
         await sleep(100);
       }
     }
+    fs.closeSync(fd);
     if (lastError) {
       throw new Error(
         `Supervisor mode is enabled but no compatible supervisor is ready for ${canonicalState}. The backend was not started: ${lastError.message}`,
@@ -320,6 +371,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       env: {
         ...env,
         CODEX_AGENTS_STATE_DIR: canonicalState,
+        CODEX_AGENTS_SUPERVISOR_MODE: supervisorMode ? "1" : "0",
         CODEX_BIN: codex,
         CODEX_NODE: process.execPath,
         PATH: `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`,

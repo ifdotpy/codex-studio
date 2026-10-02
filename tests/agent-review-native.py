@@ -176,11 +176,11 @@ stream_max_retries = 0
             original_submit, original_wait = AppServer.submit, AppServer.wait
             delayed_responses = []
 
-            def submit(server, method, params):
+            def submit(server, method, params, *, operation_id=None):
                 calls.append((method, copy.deepcopy(params)))
                 if method == 'review/start':
                     runtime.child_thread = params['threadId']
-                return original_submit(server, method, params)
+                return original_submit(server, method, params, operation_id=operation_id)
 
             def wait(server, submitted, timeout=60):
                 result = original_wait(server, submitted, timeout)

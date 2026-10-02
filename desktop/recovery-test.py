@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 import fcntl
 
 HERE = Path(__file__).resolve().parent
@@ -81,6 +82,18 @@ class RecoveryTest(unittest.TestCase):
                 with self.assertRaises(type(error)):
                     recovery.tick(self.config, self.state)
                 spawn.assert_not_called()
+
+    def test_supervisor_fallback_never_signals_pid_claimed_by_unrelated_listener(self):
+        foreign_pid = os.getpid()
+        body = json.dumps({"application": "codex-agents", "protocol": 1,
+                           "stateDir": str(self.state), "pid": foreign_pid,
+                           "supervisorMode": True}).encode()
+        with patch.object(recovery.urllib.request, "build_opener") as build_opener, \
+                patch.object(recovery.os, "kill") as kill:
+            build_opener.return_value.open.return_value = io.BytesIO(body)
+            with self.assertRaisesRegex(RuntimeError, "not the packaged Codex Canvas"):
+                recovery.tick(self.config, self.state, supervisor_fallback=True)
+            self.assertNotIn(call(foreign_pid, signal.SIGTERM), kill.call_args_list)
 
     def test_same_owner_survives_supervisor_restart_and_crash_keeps_data(self):
         self.child, status = recovery.tick(self.config, self.state)

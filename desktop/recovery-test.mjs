@@ -18,6 +18,7 @@ const {
   configureRecovery,
   recoveryPaths,
   recoveryPreference,
+  supervisorPreference,
   isInstalledApplication,
   recoveryStatusLabel,
 } = createRequire(import.meta.url)("./recovery.cjs");
@@ -169,7 +170,41 @@ test("supervisor mode is opt-in in the saved launchd configuration", async () =>
     });
     const config = JSON.parse(readFileSync(result.config, "utf8"));
     assert.equal(config.supervisorEnabled, true);
-    assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, "1");
+    assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, undefined);
+    await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async () => {},
+    });
+    const relaunched = JSON.parse(readFileSync(result.config, "utf8"));
+    assert.equal(relaunched.supervisorEnabled, true);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("a Finder launch cannot turn off the persisted supervisor setting", async () => {
+  const data = fixture();
+  try {
+    const files = recoveryPaths(data.env, data.home);
+    mkdirSync(path.dirname(files.config), { recursive: true });
+    writeFileSync(
+      files.config,
+      JSON.stringify({ version: 1, enabled: true, supervisorEnabled: true }),
+    );
+    await configureRecovery({ ...data, enabled: true, run: async () => {} });
+    assert.equal(
+      JSON.parse(readFileSync(files.config)).supervisorEnabled,
+      true,
+    );
+    assert.equal(supervisorPreference(data.env), true);
+    assert.equal(
+      supervisorPreference({
+        ...data.env,
+        CODEX_AGENTS_SUPERVISOR_MODE: "0",
+      }),
+      false,
+    );
   } finally {
     rmSync(data.root, { recursive: true, force: true });
   }

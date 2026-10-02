@@ -28,13 +28,18 @@ from pathlib import Path
 Path(os.environ['FAKE_NATIVE_PID']).write_text(str(os.getpid()))
 for line in sys.stdin:
     request=json.loads(line)
-    if 'id' not in request: continue
     method=request.get('method')
     if not method: continue
     with open(os.environ['FAKE_NATIVE_OPS'],'a') as log: log.write(json.dumps({'method':method,'params':request.get('params')})+'\n')
+    if method == 'initialized':
+        Path(os.environ['FAKE_NATIVE_INITIALIZED']).touch()
+        continue
+    if 'id' not in request: continue
     if method == 'initialize':
         result={'userAgent':'fake-model/1.0.0'}
     elif method == 'model/list':
+        if not Path(os.environ['FAKE_NATIVE_INITIALIZED']).exists():
+            continue
         result={'data':[{'model':'fake'}]}
     elif method == 'burst':
         for delta in ['a', 'b', 'c', 'd', 'e', 'f']:
@@ -107,6 +112,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             'CODEX_BIN':str(self.binary),
             'FAKE_NATIVE_PID':str(self.pid_file),
             'FAKE_NATIVE_OPS':str(self.root/'native-ops.jsonl'),
+            'FAKE_NATIVE_INITIALIZED':str(self.root/'native-initialized'),
             'FAKE_RELEASE':str(self.release),
         })
         self.env_patch.start()
@@ -154,6 +160,29 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.deactivate.append(lambda:active.update(value=False))
         return server
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS process identity precision contract')
+    def test_process_start_time_distinguishes_children_started_in_same_second(self):
+        children = []
+        try:
+            for _ in range(5):
+                children = [subprocess.Popen(['/bin/sleep', '3']) for _ in range(2)]
+                starts = [subprocess.check_output(
+                    ['/bin/ps', '-p', str(child.pid), '-o', 'lstart='], text=True).strip()
+                    for child in children]
+                if starts[0] == starts[1]:
+                    break
+                for child in children:
+                    child.terminate()
+                    child.wait(timeout=3)
+                children = []
+            self.assertTrue(children, 'could not create same-second process fixtures')
+            self.assertNotEqual(process_start_time(children[0].pid), process_start_time(children[1].pid))
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=3)
+
     def test_backend_detach_reattaches_to_same_fake_turn_and_replays_output(self):
         first=self.server(delay=True)
         native_pid=wait_for(lambda: int(self.pid_file.read_text()) if self.pid_file.exists() else None)
@@ -167,6 +196,14 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.release.touch()
         eventually=lambda: any(m.get('params',{}).get('delta')=='retained-output' for m in self.delivered)
         wait_for(eventually)
+        logged_stderr = lambda: (self.root/'app-server.log').exists() and b'stderr-between-output' in (self.root/'app-server.log').read_bytes()
+        try:
+            wait_for(logged_stderr)
+        except AssertionError:
+            with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+                journal_stderr = db.execute("SELECT count(*) FROM events WHERE kind='stderr'").fetchone()[0]
+            log = (self.root/'app-server.log').read_bytes() if (self.root/'app-server.log').exists() else b'<missing>'
+            self.fail(f"journal stderr events={journal_stderr}; app-server.log={log!r}")
         self.assertEqual(int(self.pid_file.read_text()),native_pid)
         time.sleep(.2)
         self.assertEqual(sum(m.get('params',{}).get('delta')=='retained-output' for m in self.delivered),1)
@@ -184,6 +221,87 @@ class ProcessSupervisorContract(unittest.TestCase):
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
+
+    def test_reattach_completes_initialized_if_backend_dies_after_initialize_result(self):
+        crash = "\n".join([
+            "import os,sys",
+            "from pathlib import Path",
+            "sys.path.insert(0,sys.argv[1]+'/scripts')",
+            "from codex_runtime import AppServer",
+            "original=AppServer.write",
+            "def crash_before_initialized(self,value,operation_id=None):",
+            "    if value.get('method')=='initialized': os._exit(73)",
+            "    return original(self,value,operation_id=operation_id)",
+            "AppServer.write=crash_before_initialized",
+            "AppServer(Path(sys.argv[2]),lambda _:None,lambda _:None,lambda:None,",
+            "          executable=os.environ['CODEX_BIN'],supervisor_handle='account:default')",
+        ])
+        crashed = subprocess.run([sys.executable, '-B', '-c', crash, str(ROOT), str(self.root)],
+                                 env=os.environ.copy(), timeout=10, check=False)
+        self.assertEqual(crashed.returncode, 73)
+        wait_for(self._initialize_result_saved)
+        self.assertFalse(self._operation_accepted('initialized:account:default'))
+
+        second = self.server()
+        self.assertEqual(second.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertEqual(operations.count('initialized'), 1)
+        self.assertTrue(self._operation_accepted('initialized:account:default'))
+        second.close()
+        third = self.server()
+        self.assertEqual(third.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertEqual(operations.count('initialized'), 1)
+
+    def _initialize_result_saved(self):
+        try:
+            with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+                row = db.execute("SELECT init_result FROM handles WHERE id='account:default'").fetchone()
+            return bool(row and row[0])
+        except sqlite3.OperationalError:
+            return False
+
+    def _operation_accepted(self, operation_id):
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            return db.execute('SELECT 1 FROM operations WHERE handle=? AND operation_id=?',
+                              ('account:default', operation_id)).fetchone() is not None
+
+    def test_reopened_handle_completes_handshake_for_new_child_generation(self):
+        first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        self.restart_supervisor()
+        self.assertTrue(status(self.root)['recovery']['blocked'] is None)
+        (self.root/'native-initialized').unlink(missing_ok=True)
+
+        second = self.server()
+        new_pid = wait_for(lambda: pid if (pid := int(self.pid_file.read_text())) != old_pid else None)
+        self.assertNotEqual(new_pid, old_pid)
+        self.assertEqual(second.call('model/list', {}, timeout=1)['data'][0]['model'], 'fake')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 2)
+        self.assertEqual(operations.count('initialized'), 2)
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            initialized = [row[0] for row in db.execute(
+                "SELECT operation_id FROM operations WHERE handle='account:default' "
+                "AND operation_id LIKE 'initialized:%' ORDER BY operation_id")]
+        self.assertEqual(initialized, ['initialized:account:default', 'initialized:account:default:2'])
+
+    def restart_supervisor(self):
+        self.supervisor.terminate()
+        self.supervisor.wait(timeout=5)
+        self.supervisor_log_stream.close()
+        self.supervisor_log_stream = self.supervisor_log.open('a')
+        self.supervisor = subprocess.Popen([sys.executable, '-B', str(ROOT/'scripts/codex_process_supervisor.py'),
+            '--state', str(self.root)], stdout=subprocess.DEVNULL, stderr=self.supervisor_log_stream)
+        wait_for(lambda: status(self.root))
 
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
@@ -294,7 +412,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
             seq = server.proc.cursor + 1
             payload = json.dumps({'id': 'unsettled', 'method': 'item/tool/call', 'params': {}})
-            db.execute('INSERT INTO events VALUES (?,?,?,?,?)',
+            db.execute('INSERT INTO events(handle,sequence,kind,payload,size) VALUES (?,?,?,?,?)',
                        (server.proc.handle, seq, 'stdout', payload, len(payload)))
         server.proc.read_cursor = seq + 1
         server.proc.ack_pending.add(seq + 1)
@@ -455,7 +573,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             time.sleep(.05)
         raise AssertionError(f'supervisor recovery did not become ready: {last_error}; {self.supervisor_log.read_text()}')
 
-    def test_supervisor_sigkill_recovers_children_that_exit_on_pipe_close(self):
+    def test_supervisor_reboot_closes_dead_handles_and_preserves_receipts(self):
         server=self.server('account:dead-child')
         server.call('model/list',{})
         pid=int(self.pid_file.read_text())
@@ -466,12 +584,16 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.restart_supervisor_after_kill()
         wait_for(lambda: process_start_time(pid) is None)
         recovery=status(self.root)['recovery']
-        self.assertTrue(recovery['degraded'])
-        self.assertTrue(recovery['fallbackReady'])
+        self.assertFalse(recovery['degraded'])
+        self.assertFalse(recovery['fallbackReady'])
+        self.assertEqual(status(self.root)['handles'], [])
         with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
-            outcome=db.execute("SELECT outcome FROM recovery_events WHERE handle='account:dead-child' ORDER BY id DESC LIMIT 1").fetchone()[0]
+            row=db.execute("SELECT outcome,detail FROM recovery_events WHERE handle='account:dead-child' ORDER BY id DESC LIMIT 1").fetchone()
+            reason=db.execute("SELECT closed_reason FROM handles WHERE id='account:dead-child'").fetchone()[0]
             self.assertEqual(db.execute("SELECT count(*) FROM operations WHERE handle='account:dead-child'").fetchone()[0],receipts_before)
-        self.assertEqual(outcome,'already-exited')
+        self.assertEqual(row[0],'already-exited')
+        self.assertIn('no longer running',row[1])
+        self.assertIn('no longer running',reason)
 
     def test_supervisor_sigkill_terminates_verified_live_child_group(self):
         os.environ['FAKE_STAY_ALIVE']='1'
@@ -492,7 +614,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(resumed.call('model/list',{})['data'][0]['model'],'fake')
         os.environ.pop('FAKE_STAY_ALIVE',None)
 
-    def test_reused_child_pid_fails_closed_without_signalling(self):
+    def test_reused_child_pid_closes_old_handle_without_signalling_new_process(self):
         os.environ['FAKE_STAY_ALIVE']='1'
         server=self.server('account:reused-pid')
         server.call('model/list',{})
@@ -503,8 +625,12 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.restart_supervisor_after_kill()
         recovery=status(self.root)['recovery']
         self.assertFalse(recovery['fallbackReady'])
-        self.assertIn('Cannot prove ownership',recovery['blocked'])
+        self.assertIsNone(recovery['blocked'])
+        self.assertEqual(status(self.root)['handles'], [])
         self.assertIsNotNone(process_start_time(pid))
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            self.assertIn('different process start time', db.execute(
+                "SELECT closed_reason FROM handles WHERE id='account:reused-pid'").fetchone()[0])
         os.kill(pid,signal.SIGKILL)
         os.environ.pop('FAKE_STAY_ALIVE',None)
 

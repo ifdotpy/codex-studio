@@ -432,6 +432,8 @@ python3 -B tests/protocol-reader-contract.py
 python3 -B tests/catalog-recovery-contract.py
 python3 -B tests/native-binary-contract.py
 python3 -B tests/native-runtime-updates-contract.py
+python3 -B tests/process-supervisor-contract.py
+python3 -B tests/upgrade-contract.py
 python3 -B tests/model-catalog-reader-contract.py
 python3 -B tests/tool-request-contract.py
 python3 -B tests/spawn-request-recovery-contract.py
@@ -454,6 +456,10 @@ python3 -B tests/question-history-contract.py
 npm --prefix web test
 npm --prefix desktop test
 ```
+
+`tests/process-supervisor-contract.py` covers supervisor child recovery and
+durable receipts. `tests/upgrade-contract.py` protects startup behavior for
+installations that have no saved supervisor setting.
 
 Browser checks use the installed Chrome, or `CHROME_BIN`. Desktop checks use hidden
 Electron windows. Native protocol fixtures can run without paid model requests.

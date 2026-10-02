@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import time
@@ -32,6 +33,34 @@ def identity(port, state, timeout=5):
         raise RuntimeError("The backend identity does not match this recovery service.")
     os.kill(data["pid"], 0)
     return data
+
+
+def verify_backend_process(data, config):
+    """Prove the reported PID is the packaged backend listening on this port."""
+    pid = data["pid"]
+    script = (Path(config["resources"]) / "scripts/codex-canvas").resolve()
+    try:
+        command = subprocess.check_output(
+            ["/bin/ps", "-p", str(pid), "-o", "command="],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        ).strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
+    try:
+        arguments = shlex.split(command)
+    except ValueError as error:
+        raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
+    if str(script) not in arguments:
+        raise RuntimeError("The reported backend PID is not the packaged Codex Canvas process.")
+    try:
+        listeners = subprocess.check_output(
+            ["/usr/sbin/lsof", "-nP", f"-iTCP:{config['port']}", "-sTCP:LISTEN", "-t"],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        ).split()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("Cannot verify the backend listener before fallback.") from error
+    if str(pid) not in listeners:
+        raise RuntimeError("The reported backend PID does not own the configured listener.")
 
 
 def lease_available(state):
@@ -127,6 +156,7 @@ def tick(config, state, child=None, supervisor_fallback=False):
     if existing and supervisor_fallback and existing.get("supervisorFallback") is True:
         return None, "fallback attached"
     if existing and supervisor_fallback and existing.get("supervisorMode") is True:
+        verify_backend_process(existing, config)
         os.kill(existing["pid"], signal.SIGTERM)
         return None, "supervisor backend stopping for fallback"
     if existing:
@@ -212,6 +242,10 @@ def run(filename, interval=5):
                 config = load_config(filename, state)
                 if config.get("enabled") is not True:
                     return
+                if "CODEX_AGENTS_SUPERVISOR_MODE" in os.environ:
+                    config["supervisorEnabled"] = (
+                        os.environ["CODEX_AGENTS_SUPERVISOR_MODE"] == "1"
+                    )
                 supervisor, supervisor_status = supervisor_tick(config, state, supervisor)
                 if supervisor_status == "supervisor degraded":
                     existing = identity(config["port"], state)

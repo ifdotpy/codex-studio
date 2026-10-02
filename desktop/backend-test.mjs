@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
 import {
   realpathSync,
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
   rmSync,
   copyFileSync,
   symlinkSync,
@@ -178,6 +180,198 @@ test("supervisor mode refuses a backend without supervisor ownership", async () 
       );
     },
   );
+});
+
+test("saved supervisor mode attaches consistently when Finder supplies no variable", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "studio-saved-supervisor-"));
+  const canonicalState = path.join(root, "state");
+  mkdirSync(canonicalState);
+  writeFileSync(
+    path.join(canonicalState, "background-recovery.json"),
+    JSON.stringify({ supervisorEnabled: true }),
+  );
+  const expected = {
+    ...record,
+    stateDir: realpathSync(canonicalState),
+    supervisorMode: true,
+  };
+  try {
+    await serve(
+      (_req, res) => res.end(JSON.stringify(expected)),
+      async (origin) => {
+        const result = await ensureBackend({
+          resources: "/missing-desktop-assets",
+          port: Number(new URL(origin).port),
+          env: { CODEX_AGENTS_STATE_DIR: canonicalState },
+        });
+        assert.equal(result.supervisorMode, true);
+        assert.equal(result.owned, false);
+      },
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recovery service and desktop startup racing use one persisted supervisor mode", async () => {
+  const root = mkdtempSync(path.join("/tmp", "srr-"));
+  const canonicalState = path.join(root, "state");
+  mkdirSync(canonicalState);
+  const portServer = createServer();
+  await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
+  const port = portServer.address().port;
+  await new Promise((resolve) => portServer.close(resolve));
+  const resources = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+  );
+  const python = execFileSync(
+    "python3",
+    ["-c", "import sys; print(sys.executable)"],
+    {
+      encoding: "utf8",
+    },
+  ).trim();
+  const recoveryConfig = path.join(canonicalState, "background-recovery.json");
+  writeFileSync(
+    recoveryConfig,
+    JSON.stringify({
+      version: 1,
+      enabled: true,
+      supervisorEnabled: true,
+      stateDir: canonicalState,
+      resources,
+      python,
+      codex: "/usr/bin/true",
+      port,
+      environment: {},
+      unsetEnvironment: [],
+    }),
+  );
+  let recovery;
+  const recoveryOutput = [];
+  let backend;
+  let supervisor;
+  try {
+    const desktopStarting = ensureBackend({
+      resources,
+      port,
+      env: {
+        CODEX_AGENTS_STATE_DIR: canonicalState,
+        CODEX_BIN: "/usr/bin/true",
+        PATH: process.env.PATH,
+      },
+    });
+    recovery = spawn(python, [
+      "-B",
+      path.join(resources, "desktop/recover_backend.py"),
+      "--config",
+      recoveryConfig,
+    ]);
+    recovery.stdout.on("data", (chunk) =>
+      recoveryOutput.push(chunk.toString()),
+    );
+    recovery.stderr.on("data", (chunk) =>
+      recoveryOutput.push(chunk.toString()),
+    );
+    try {
+      backend = await desktopStarting;
+    } catch (error) {
+      let supervisorLog = "";
+      try {
+        supervisorLog = readFileSync(
+          path.join(canonicalState, "supervisor.log"),
+          "utf8",
+        );
+      } catch {}
+      throw new Error(
+        `${error.message}\nRecovery service: ${recoveryOutput.join("")}\nSupervisor: ${supervisorLog}`,
+      );
+    }
+    assert.equal(backend.supervisorMode, true);
+    assert.equal(backend.stateDir, realpathSync(canonicalState));
+    assert.equal(recovery.exitCode, null);
+    const health = JSON.parse(
+      execFileSync(
+        python,
+        [
+          "-B",
+          path.join(resources, "scripts/codex_process_supervisor.py"),
+          "--status-json",
+          "--state",
+          canonicalState,
+        ],
+        {
+          encoding: "utf8",
+          env: { ...process.env, CODEX_AGENTS_STATE_DIR: canonicalState },
+        },
+      ),
+    );
+    assert.equal(health.stateDir, realpathSync(canonicalState));
+    assert.equal(health.recovery.blocked, null);
+  } finally {
+    if (recovery) {
+      recovery.kill("SIGTERM");
+      await new Promise((resolve) => {
+        if (recovery.exitCode !== null) return resolve();
+        recovery.once("exit", resolve);
+      });
+    }
+    let backendPid;
+    try {
+      const current = await identity(
+        `http://127.0.0.1:${port}`,
+        realpathSync(canonicalState),
+      );
+      if (current.stateDir === realpathSync(canonicalState)) {
+        backendPid = current.pid;
+        process.kill(current.pid, "SIGTERM");
+      }
+    } catch {}
+    if (backendPid) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        try {
+          execFileSync("/bin/ps", ["-p", String(backendPid), "-o", "stat="], {
+            stdio: "ignore",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch {
+          break;
+        }
+      }
+    }
+    try {
+      supervisor = JSON.parse(
+        readFileSync(path.join(canonicalState, "supervisor.lock"), "utf8"),
+      );
+      process.kill(supervisor.pid, "SIGTERM");
+    } catch {}
+    if (supervisor?.pid) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        try {
+          execFileSync(
+            "/bin/ps",
+            ["-p", String(supervisor.pid), "-o", "stat="],
+            {
+              stdio: "ignore",
+            },
+          );
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch {
+          break;
+        }
+      }
+    }
+    rmSync(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 20,
+      retryDelay: 50,
+    });
+  }
+  assert.equal(recovery?.exitCode, 0);
 });
 
 test("the desktop may attach to a diagnosed fallback generation", async () => {

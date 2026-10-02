@@ -31,7 +31,12 @@ Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state
 npm run package
 ```
 
-The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. The package includes Electron, Python source files, role skills, and the compiled web assets. Python and Codex remain installed prerequisites. The package uses no checkout paths at runtime. It uses a persistent local signing certificate and is not notarized. This build is for local use.
+The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. Set
+`CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-package` to build outside the
+checkout. The package includes Electron, Python source files, role skills, and
+the compiled web assets. Python and Codex remain installed prerequisites. The
+package uses no checkout paths at runtime. It uses a persistent local signing
+certificate and is not notarized. This build is for local use.
 
 Configure `CODEX_STUDIO_SIGNING_IDENTITY` with the certificate fingerprint from
 `security find-identity -p codesigning`. Alternatively, save
@@ -48,17 +53,50 @@ external Python imports from adding files that invalidate the resource seal.
 Run `node desktop/signing-test.mjs` from the repository root to check the local
 certificate and cache behavior.
 
+To install a locally built update while keeping the detached backend and its
+active work running:
+
+1. Build and verify the signed app under `/tmp`:
+
+   ```sh
+   CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-supervisor node desktop/package.mjs
+   codesign --verify --deep --strict \
+     "/tmp/codex-studio-supervisor/Codex Studio-darwin-arm64/Codex Studio.app"
+   ```
+
+2. Quit the Studio window with **Quit Codex Studio**. This records a closed
+   desktop intent; it does not stop the detached backend or its agents.
+3. Stage the verified bundle beside Applications, then swap the app bundle:
+
+   ```sh
+   ditto "/tmp/codex-studio-supervisor/Codex Studio-darwin-arm64/Codex Studio.app" \
+     "/Applications/Codex Studio.next.app"
+   codesign --verify --deep --strict "/Applications/Codex Studio.next.app"
+   mv "/Applications/Codex Studio.app" "/Applications/Codex Studio.previous.app"
+   mv "/Applications/Codex Studio.next.app" "/Applications/Codex Studio.app"
+   ```
+
+   The bundle paths updated by this change are
+   `Contents/Resources/app.asar` (desktop main, backend and recovery modules),
+   `Contents/Resources/recover_backend.py`, and
+   `Contents/Resources/workspace/scripts/` (the process supervisor, canvas API,
+   and runtime). The package also replaces the remaining files in the app bundle.
+
+4. Open `/Applications/Codex Studio.app`. It attaches to the existing backend.
+   Keep `Codex Studio.previous.app` until the new app opens successfully; remove
+   it later if desired. Do not launch both copies.
+
 ## Native bridge
 
 `bridge.d.ts` defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
 
-| Method                      | Result                                                                         |
-| --------------------------- | ------------------------------------------------------------------------------ |
-| `pickDirectory()`           | A folder path, or `null`                                                       |
-| `pickFiles()`               | Up to 20 files, with name, path, MIME type, and base64 data; 20 MB total limit |
-| `revealPath(path)`          | Reveal an existing absolute path in Finder                                     |
-| `openExternal(url)`         | Open an HTTP or HTTPS URL in the default browser                               |
-| `notify({title, body, target})`     | Send a silent native notification                            |
+| Method                          | Result                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `pickDirectory()`               | A folder path, or `null`                                                       |
+| `pickFiles()`                   | Up to 20 files, with name, path, MIME type, and base64 data; 20 MB total limit |
+| `revealPath(path)`              | Reveal an existing absolute path in Finder                                     |
+| `openExternal(url)`             | Open an HTTP or HTTPS URL in the default browser                               |
+| `notify({title, body, target})` | Send a silent native notification                                              |
 
 Call the first four methods directly from a user click or keyboard handler, before an `await`. The isolated preload accepts a trusted input event for 1.2 seconds and consumes it once. Native notifications are enabled globally. macOS controls their presentation. Other Chromium permissions are denied.
 

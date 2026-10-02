@@ -97,8 +97,12 @@ Transcript deltas are produced by `/api/sync/pull` and are scoped to one agent.
 The stream carries the same projection document shape and cursor semantics.
 A transcript delta requires its existing item base. If the base is absent,
 the client pulls from zero and applies the resulting full snapshot before
-accepting deltas. A transcript retention floor or deleted/recreated projection
-requires a full pull. Clients must not infer a full transcript from a delta.
+accepting deltas. A legacy cached transcript stored as one document with an
+`items` array is not a valid base for applying a delta to per-item storage:
+clients must first migrate every cached item into item rows or pull and apply a
+full snapshot. A transcript retention floor or deleted/recreated projection
+also requires a full pull. Clients must not infer a full transcript from a
+delta.
 
 ## Resumable change stream
 
@@ -116,8 +120,13 @@ reconnect, the server uses `Last-Event-ID` in preference to `after`. Each
 sequence, and JSON data:
 
 ```json
-{"protocolVersion":1,"workspaceId":"…","scope":"drafts",
- "documents":[{"id":"…","payload":"…","seq":121}],"cursor":121}
+{
+  "protocolVersion": 1,
+  "workspaceId": "…",
+  "scope": "drafts",
+  "documents": [{ "id": "…", "payload": "…", "seq": 121 }],
+  "cursor": 121
+}
 ```
 
 An event contains a bounded batch (at most 100 documents and at most 1 MiB of
@@ -169,7 +178,10 @@ validate the workspace identity; persist scope cursors only after applying
 documents; obey page and payload limits; implement entity `reset=1`, hidden
 baseline replacement, floor and `fresh/initialHigh` rules; preserve drafts and
 outbox during entity reset; apply transcript full snapshots and deltas only
-with a valid base; reconnect with `Last-Event-ID` or explicit `after`; handle
+with a valid item base in the native storage format. A legacy cached full
+transcript is not sufficient if the client persists only changed delta items;
+it must migrate all cached items to item rows or pull a full snapshot first.
+Reconnect with `Last-Event-ID` or explicit `after`; handle
 cursor-ahead/reset by pulling; cap its own buffers; treat heartbeats as liveness
 only; and fall back to pull on unsupported capability, version, or stream
 failure. It must never interpret a stream cursor as authorization or repeat a

@@ -17,6 +17,7 @@ const {
   configureRecovery,
   isInstalledApplication,
   recoveryPreference,
+  supervisorPreference,
   recoveryStatusLabel,
   trackDesktopRecovery,
 } = require("./recovery.cjs");
@@ -490,6 +491,10 @@ async function start() {
   backend = await ensureBackend({
     resources: backendResources,
     port: Number(process.env.CODEX_DESKTOP_PORT || 4620),
+    env: {
+      ...process.env,
+      CODEX_AGENTS_SUPERVISOR_MODE: supervisorPreference() ? "1" : "0",
+    },
   });
   const primaryDisplay = screen.getPrimaryDisplay();
   const restoredWindow = loadWindowState(app.getPath("userData"), [

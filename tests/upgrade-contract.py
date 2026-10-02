@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,12 +23,16 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_canvas import Canvas, make_server
-from codex_runtime import Runtime
+from codex_runtime import AppServer, Runtime
 import codex_analytics_storage
 import codex_payload_migrate
 import codex_work
 from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
+
+recovery_spec = importlib.util.spec_from_file_location("recover_backend", ROOT / "desktop/recover_backend.py")
+recover_backend = importlib.util.module_from_spec(recovery_spec)
+recovery_spec.loader.exec_module(recover_backend)
 
 
 # Last main snapshots from 24 and 25 September 2026. Both predate bounded
@@ -275,6 +280,34 @@ class UpgradeContract(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     runtime.close()
+
+
+class SupervisorUpgradeContract(unittest.TestCase):
+    def test_legacy_recovery_config_without_setting_keeps_supervisor_disabled(self):
+        with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:
+            state = Path(directory).resolve()
+            config = {
+                "version": 1, "stateDir": str(state), "enabled": True,
+                "port": 4620, "python": sys.executable, "codex": "/usr/bin/true",
+                "resources": str(ROOT),
+                "environment": {"CODEX_AGENTS_SUPERVISOR_MODE": "1"},
+                "unsetEnvironment": [],
+            }
+            filename = state / "background-recovery.json"
+            filename.write_text(json.dumps(config))
+            loaded = recover_backend.load_config(filename, state)
+            with patch.dict(os.environ, {}, clear=True):
+                env = recover_backend.launch_environment(loaded, state)
+            self.assertNotIn("CODEX_AGENTS_SUPERVISOR_MODE", env)
+            self.assertEqual(recover_backend.supervisor_tick(loaded, state)[1], "disabled")
+
+    def test_saved_true_requires_supervisor_before_any_appserver_spawn(self):
+        with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:
+            state = Path(directory).resolve()
+            (state / "background-recovery.json").write_text('{"supervisorEnabled":true}\n')
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(RuntimeError, "AppServers were not started"):
+                    AppServer(state, lambda _: None, lambda _: None, lambda: None, executable="/usr/bin/true")
 
 
 if __name__ == "__main__":
