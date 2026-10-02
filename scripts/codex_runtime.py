@@ -4449,6 +4449,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a = json.loads(row[0])
             if a.get("deletedAt"):
                 return
+            restart = a.get('restartRecovery') or {}
+            native_turn_id = ((p.get('turn') or {}).get('id') if method == 'turn/completed'
+                              else (p.get('turn') or {}).get('id') if method == 'turn/started'
+                              else None)
+            restart_event = (method in {'turn/started', 'turn/completed'}
+                and native_turn_id and restart.get('stage') in {'pending', 'continued', 'superseded'}
+                and restart.get('autoWake') and restart.get('turnId') == native_turn_id
+                and (a.get('disconnectRecovery') or {}).get('source') == 'restart'
+                and restart.get('epoch') == a.get('epoch')
+                and restart.get('accountKey', 'default') == a.get('accountKey', 'default')
+                and restart.get('threadId') == a.get('threadId')
+                and not a.get('nativeFailureHold') and not a.get('accountTransferId')
+                and not a.get('workspaceOperation'))
+            if restart_event:
+                if method == 'turn/started' or a.get('turnId') in (None, native_turn_id):
+                    a.update(autoWake=True, status='running', inFlight=True,
+                             turnId=native_turn_id, error=None)
+                    restart.update(stage='continued', observedAt=restart.get('observedAt', time.time()),
+                                   outcome='active')
             stream = getattr(self, '_stream_buffer', None)
             if stream:
                 if method == 'item/completed' and isinstance((p.get('item') or {}).get('id'), str):
@@ -4756,6 +4775,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             a["status"] = "queued"
                         from codex_agent_management import parked_after_turn
                         parked_after_turn(a)
+                        restart = a.get('restartRecovery') or {}
+                        if restart.get('turnId') == turn.get('id') and restart.get('stage') == 'continued':
+                            restart.update(stage='finished', reconciledAt=time.time(),
+                                           outcome=turn.get('status'))
                         self.put(db, "agents", a)
                     return
                 known_capacity_source = bool(a.get("turnId") and a["turnId"] == turn.get("id"))
@@ -4815,7 +4838,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
-                if (a["status"] != "waiting" and not retrying_after_input
+                if (a["status"] != "waiting" and (not retrying_after_input or restart_event)
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     stopped = (turn.get("status") != "completed"
@@ -4823,7 +4846,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if not stopped:
                         self.parent_event(db, a, turn.get("id", "unknown"),
                                           json.dumps(a["error"]) if a.get("error")
-                                          else a.get("lastAnswer", "No final text returned"))
+                                          else a.get("lastAnswer", "No final text returned"),
+                                          recovery=bool(retrying_after_input and restart_event))
                     elif not self.worker_continuation_pending(a):
                         self.child_stopped_event(db, a, a["status"],
                             a.get("error") or "The turn ended without a final result.",
@@ -4838,6 +4862,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.changed.set()
             if a.get("activeTools") and (a.get("activity") or {}).get("phase") == "thinking":
                 a["activity"] = {"phase": "tool", "tools": a["activeTools"], "at": time.time()}
+            restart = a.get('restartRecovery') or {}
+            if (method == 'turn/completed' and restart.get('turnId') == (p.get('turn') or {}).get('id')
+                    and restart.get('stage') == 'continued'):
+                restart.update(stage='finished', reconciledAt=time.time(),
+                               outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
                 token_rates(self).observe(a, method, p, account_key, connection_id)
             self.put(db, "agents", a)

@@ -190,7 +190,7 @@ class TurnRecoveryMixin:
                         or not a.get('inFlight') or a.get('deletedAt')
                         or any(a.get(k) != value for k, value in expected.items())):
                     return {'status': 'superseded'}
-                if (native_state not in {'idle', 'notLoaded'} or turn.get('id') != a.get('turnId')
+                if (native_state not in {'idle', 'notLoaded', 'active'} or turn.get('id') != a.get('turnId')
                         or turn.get('status') not in {'completed', 'failed', 'interrupted'}):
                     return {'status': 'unconfirmed'}
                 # Do not manufacture user delivery receipts or re-execute tool calls.
