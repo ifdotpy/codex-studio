@@ -227,7 +227,7 @@ class TerminalManager:
         connection = self.connection = object()
         self.server = AppServer(self.native_root, self.notification, lambda _: None,
                                 lambda: self.disconnected(connection), home=home, isolated=True,
-                                supervisor_handle="terminals")
+                                supervisor_handle="terminals", supervisor_root=self.root)
         for owned in self.processes.values():
             owned["server"] = self.server
             owned["connection"] = connection
