@@ -453,14 +453,19 @@ async function finishTurn(s, active, result, error) {
       ) || s.contextWindow;
     s.contextWindow = window;
     const output = result?.usage?.output_tokens;
-    const turnOutputTokens =
+    const turnOutputDelta =
       Number.isFinite(output) && output >= 0
         ? Math.max(0, output - active.reportedOutput)
         : undefined;
-    if (turnOutputTokens !== undefined) active.reportedOutput = output;
+    if (turnOutputDelta !== undefined) {
+      active.reportedOutput = output;
+      active.reportedTurnOutput += turnOutputDelta;
+    }
     emit("thread/tokenUsage/updated", {
       threadId: s.id,
-      ...(turnOutputTokens !== undefined ? { turnOutputTokens } : {}),
+      ...(turnOutputDelta !== undefined
+        ? { turnOutputTokens: active.reportedTurnOutput }
+        : {}),
       turnId: turn.id,
       model: active.lastModel,
       responseId: active.lastMessageId,
@@ -632,6 +637,7 @@ async function startSession(s, active, p) {
           items: [],
           synthetic: true,
         };
+        active.reportedTurnOutput = 0;
         s.turns.push(active.turn);
         emit("turn/started", {
           threadId: s.id,
@@ -990,6 +996,7 @@ function newActive(turn) {
     assistantBlocks: new Map(),
     reportedUsage: 0,
     reportedOutput: 0,
+    reportedTurnOutput: 0,
     idleSince: null,
     lastUsage: null,
   };
@@ -1394,6 +1401,7 @@ async function handle(method, p) {
           "Claude background work started a turn; wait or steer that turn",
         );
       active.turn = turn;
+      active.reportedTurnOutput = 0;
       active.idleSince = null;
       active.reservingInput = true;
     }

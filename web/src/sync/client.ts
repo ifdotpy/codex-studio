@@ -556,13 +556,16 @@ export function watchSyncInvalidations(
       };
       const connect = () => {
         if (!available() || !isOwner || source) return;
+        let connectedSource: EventSource;
         try {
-          source = new EventSource("/api/sync/stream?protocol=2");
+          connectedSource = new EventSource("/api/sync/stream?protocol=2");
+          source = connectedSource;
         } catch {
           // The elected lock holder already polls the compact generation row.
           return;
         }
-        source.addEventListener("token-rates", (event) => {
+        connectedSource.addEventListener("token-rates", (event) => {
+          if (source !== connectedSource) return;
           try {
             const message = JSON.parse((event as MessageEvent).data);
             if (
@@ -575,18 +578,14 @@ export function watchSyncInvalidations(
             // Malformed telemetry cannot invalidate sync projections.
           }
         });
-        source.onerror = () => {
-          clearWorkspaceTokenRates();
-          broadcast({ kind: "token-rates", rates: {}, teams: {} });
-        };
-        source.onopen = () => {
+        connectedSource.onopen = () => {
           if (openedStream) {
             notify();
             broadcast({ kind: "invalidate" });
           }
           openedStream = true;
         };
-        source.onmessage = (event) => {
+        connectedSource.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data);
             if (

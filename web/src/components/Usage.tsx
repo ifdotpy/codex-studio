@@ -445,14 +445,11 @@ export default function Usage({
           .filter(Boolean)
           .join("\n")}
       >
-        {sessionCostUpdating && (
-          <span className="session-cost-updating">Updating · </span>
-        )}
         {sessionCost?.pricingState === "loading"
-          ? "Loading prices"
+          ? ""
           : sessionCost
             ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
-            : "Session estimate updating"}
+            : ""}
         {Array.isArray(sessionCost?.unknownModels) &&
           sessionCost.unknownModels.length > 0 &&
           ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}

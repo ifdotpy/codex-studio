@@ -116,7 +116,7 @@ try {
         .map((source) => source.url)
         .sort(),
     );
-  const meterOffConnections = await connections();
+  let meterOffConnections = await connections();
   await page.evaluate(() => {
     window.__rateDelivery = true;
   });
@@ -128,10 +128,23 @@ try {
     itemId: "rate-answer",
     delta: "x".repeat(160),
   });
-  await page.waitForFunction(() =>
-    document.querySelector(".token-rate")?.textContent.includes("tok/s"),
+  await page.waitForFunction(
+    () => Number(document.querySelector(".token-rate")?.dataset.rate) > 0,
   );
   assert.match(await meter.innerText(), /≈.*tok\/s/);
+  assert.doesNotMatch(
+    await meter.innerText(),
+    /^≈?0 tok\/s$/,
+    JSON.stringify(
+      await meter.evaluate((node) => ({
+        text: node.textContent,
+        rate: node.dataset.rate,
+        estimated: node.dataset.estimated,
+        active: node.dataset.active,
+        batch: window.__lastRateBatch?.rates[node.dataset.agent],
+      })),
+    ),
+  );
   assert.equal(await meter.getAttribute("data-agent"), other.id);
   assert.deepEqual(
     await connections(),
@@ -148,11 +161,34 @@ try {
     () => document.querySelector(".token-rate")?.dataset.estimated === "false",
   );
   assert.doesNotMatch(await meter.innerText(), /≈/);
+  notify(actor, "item/agentMessage/delta", {
+    itemId: "rate-answer",
+    delta: "More streamed output.",
+  });
+  await page.waitForFunction(
+    () => Number(document.querySelector(".token-rate")?.dataset.rate) > 0,
+  );
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.waitForFunction(
+    (id) => document.querySelector(".token-rate")?.dataset.agent === id,
+    lead.id,
+  );
+  await page.locator(`[data-chat="${other.id}"]`).click();
+  await page.waitForFunction(() =>
+    document.querySelector(".token-rate")?.textContent.includes("tok/s"),
+  );
+  assert.doesNotMatch(await meter.innerText(), /^0 tok\/s$/);
+  meterOffConnections = await connections();
   notify(actor, "turn/completed", {
     turn: { id: actor.turnId, status: "completed" },
   });
   await page.waitForFunction(
     () => document.querySelector(".token-rate")?.dataset.active === "false",
+  );
+  assert.match(
+    await meter.innerText(),
+    /tok\/s$/,
+    "footer keeps the dim last value",
   );
   await page.waitForFunction(
     (id) => window.__lastRateBatch?.rates[id]?.active === false,

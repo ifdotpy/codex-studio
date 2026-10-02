@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { Agent } from "../types";
 import {
   formatTokenRate,
+  getTokenRate,
+  getWorkspaceTeamTokenRate,
   subscribeTokenRate,
   tweenTokenRate,
   workerRateKey,
@@ -21,10 +23,15 @@ export default function TokenRate({
     variant === "worker"
       ? workerRateKey(agent.rootId || "", agent.id)
       : agent.id;
+  const workspaceTeamRate =
+    variant === "worker"
+      ? getWorkspaceTeamTokenRate(agent.rootId || "", agent.id)
+      : null;
+  const initialRate = workspaceTeamRate || getTokenRate(scope);
   const [sample, setSample] = useState<{
     id: string;
     value: Rate | null;
-  } | null>(null);
+  }>(() => ({ id: scope, value: initialRate }));
   const [motionReduced, setMotionReduced] = useState(
     () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
@@ -41,25 +48,29 @@ export default function TokenRate({
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
   }, []);
-  const rate = sample?.id === scope ? sample.value : null;
+  const sampleRate = sample?.id === scope ? sample.value : null;
+  const rate =
+    (variant === "worker" ? workspaceTeamRate : getTokenRate(scope)) ||
+    sampleRate;
   // Card metadata can lag the transcript. The batch owns its current turn.
   const matchesTurn =
     variant === "worker" || !agent.turnId || rate?.turnId === agent.turnId;
-  const active = Boolean(
-    rate?.active &&
-      (variant === "worker" ||
-        (agent.inFlight && ["starting", "running"].includes(agent.status))),
-  );
+  const active = Boolean(rate?.active);
   const visible =
     matchesTurn &&
     rate !== null &&
     rate.outputTokens > 0 &&
-    (variant === "footer" || (active && rate.rate > 0));
+    (!active || rate.rate > 0);
   const target = visible ? rate.rate : 0;
   const turn = `${agent.id}:${variant === "worker" ? rate?.turnId || "" : agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
     // The first sample of a new turn must not tween from the previous turn.
-    if (previousTurn.current !== turn || motionReduced || !visible) {
+    if (
+      previousTurn.current !== turn ||
+      motionReduced ||
+      !visible ||
+      !current.current
+    ) {
       previousTurn.current = turn;
       current.current = target;
       setShown(target);
@@ -99,7 +110,7 @@ export default function TokenRate({
       }
     >
       {visible
-        ? `${rate?.estimated ? "≈" : ""}${formatTokenRate(previousTurn.current === turn ? shown : target)} tok/s`
+        ? `${rate?.estimated ? "≈" : ""}${formatTokenRate(previousTurn.current === turn && shown > 0 ? shown : target)} tok/s`
         : ""}
     </span>
   );

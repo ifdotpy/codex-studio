@@ -81,12 +81,12 @@ const openTeams = new Map<string, number>();
 function validRates(value: unknown): value is Record<string, TokenRate | null> {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      Object.keys(value).length <= 1024 &&
-      Object.entries(value).every(
-        ([id, rate]) => id.length <= 200 && validRate(rate as TokenRate | null),
-      ),
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length <= 1024 &&
+    Object.entries(value).every(
+      ([id, rate]) => id.length <= 200 && validRate(rate as TokenRate | null),
+    ),
   );
 }
 function publishTeam(teamId: string) {
@@ -141,6 +141,12 @@ export function subscribeTokenRate(
     subscribers!.delete(listener);
     if (!subscribers!.size) listeners.delete(id);
   };
+}
+export function getTokenRate(id: string) {
+  return values.get(id) || null;
+}
+export function getWorkspaceTeamTokenRate(teamId: string, agentId: string) {
+  return workspaceRates.teams[teamId]?.[agentId] || null;
 }
 export function tweenTokenRate(from: number, to: number, elapsed: number) {
   const progress = Math.min(1, Math.max(0, elapsed / 450));
