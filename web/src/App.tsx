@@ -1342,14 +1342,16 @@ export default function App() {
         />
       )}
       {smallTeam && <TeamDiskTotal workers={workers} disk={worktreeDisk} />}
-      <Button
-        id="lead-row"
-        aria-current={opened === lead?.id ? "page" : undefined}
-        leftSection={<ArrowLeft size={13} />}
-        onClick={() => lead && open(lead.id)}
-      >
-        {lead?.name || "Main agent"}
-      </Button>
+      {/* The lead link is only useful from a worker chat. */}
+      {lead && opened !== lead.id && (
+        <Button
+          id="lead-row"
+          leftSection={<ArrowLeft size={13} />}
+          onClick={() => open(lead.id)}
+        >
+          {lead.name || "Main agent"}
+        </Button>
+      )}
       {showTeamFilters && (
         <>
           <TextInput
