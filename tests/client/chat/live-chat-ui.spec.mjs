@@ -298,7 +298,5 @@ test("Live chat ui", async ({
         .filter((ownedContext) => ownedContext !== runnerContext)
         .map((ownedContext) => ownedContext.close()),
     );
-    proc.kill("SIGTERM");
-    if (proc.exitCode === null) await new Promise((r) => proc.once("exit", r));
   }
 });

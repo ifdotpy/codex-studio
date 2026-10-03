@@ -777,8 +777,5 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
   } finally {
     await page?.unrouteAll({ behavior: "ignoreErrors" });
     await browser?.close();
-    proc.kill("SIGTERM");
-    if (proc.exitCode === null)
-      await new Promise((resolve) => proc.once("exit", resolve));
   }
 });

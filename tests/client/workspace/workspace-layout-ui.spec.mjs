@@ -512,6 +512,5 @@ test("Workspace layout ui", async ({
         .filter((ownedContext) => ownedContext !== runnerContext)
         .map((ownedContext) => ownedContext.close()),
     );
-    fixture.kill("SIGTERM");
   }
 });

@@ -602,9 +602,6 @@ test(
           .filter((ownedContext) => ownedContext !== runnerContext)
           .map((ownedContext) => ownedContext.close()),
       );
-      fixture.kill("SIGTERM");
-      if (fixture.exitCode === null)
-        await new Promise((resolve) => fixture.once("exit", resolve));
     }
   },
 );

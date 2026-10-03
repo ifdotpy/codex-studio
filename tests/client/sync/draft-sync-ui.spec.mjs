@@ -341,13 +341,5 @@ test("Draft sync ui", async ({
         .filter((ownedContext) => ownedContext !== runnerContext)
         .map((ownedContext) => ownedContext.close()),
     );
-    fixture.stdin.end();
-    await new Promise((resolve) => {
-      fixture.once("exit", resolve);
-      setTimeout(() => {
-        fixture.kill("SIGTERM");
-        resolve();
-      }, 3000).unref();
-    });
   }
 });

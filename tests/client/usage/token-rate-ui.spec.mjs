@@ -438,7 +438,5 @@ test("Token rate ui", async ({
         .filter((ownedContext) => ownedContext !== runnerContext)
         .map((ownedContext) => ownedContext.close()),
     );
-    proc.kill("SIGTERM");
-    await new Promise((resolve) => proc.once("exit", resolve));
   }
 });

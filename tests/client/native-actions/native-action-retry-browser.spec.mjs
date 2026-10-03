@@ -231,6 +231,5 @@ test("Native action retry browser", async () => {
     );
   } finally {
     await browser?.close();
-    fixture.kill("SIGTERM");
   }
 });

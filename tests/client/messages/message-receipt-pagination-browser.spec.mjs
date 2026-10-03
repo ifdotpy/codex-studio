@@ -395,9 +395,6 @@ test("Message receipt pagination browser", async ({
         .map((ownedContext) => ownedContext.close()),
     );
     await server?.close();
-    fixture.kill("SIGTERM");
-    if (fixture.exitCode === null)
-      await new Promise((resolve) => fixture.once("exit", resolve));
     await rm(temporary, { recursive: true, force: true });
   }
 });
