@@ -19,6 +19,8 @@ of the same tests to this document.
 ## Choose a suite
 
 Run commands from the repository root after `npm ci` and `npm --prefix web ci`.
+Server and provider replay checks also require `npm --prefix scripts/claude_bridge ci`
+for the pinned Claude bridge dependencies, including fixture-backed provider runs.
 
 ```sh
 npm run test:client:unit
