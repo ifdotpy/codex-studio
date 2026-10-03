@@ -30,7 +30,10 @@ test("installed queue display ui", async ({ browser: _browser }) => {
   const fixture = spawn(
     "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
+    },
   );
   let log = "",
     browser;
@@ -52,6 +55,10 @@ test("installed queue display ui", async ({ browser: _browser }) => {
     const origin = `http://127.0.0.1:${port}`;
     const state = () =>
       fetch(`${origin}/api/state`).then((response) => response.json());
+    const initial = await state();
+    const lead = initial.threads.find(
+      (agent) => agent.name === "Other project",
+    );
     browser = _browser;
     const page = await browser.newPage({
       viewport: { width: 1440, height: 960 },
@@ -59,18 +66,26 @@ test("installed queue display ui", async ({ browser: _browser }) => {
     page.setDefaultTimeout(12000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    // Exercise direct delivery against servers without the optional sync protocol.
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
     await page.goto(origin);
     await page.locator("[data-chat]").first().waitFor();
-    const initial = await state();
-    const lead = initial.threads.find(
-      (agent) => agent.name === "Other project",
-    );
     const row = () => page.locator(`[data-chat="${lead.id}"]`);
     await row().click();
+    fixture.stdin.write(
+      JSON.stringify({
+        method: "fixture/agent-status",
+        params: {
+          agent: lead.id,
+          status: "running",
+          autoWake: true,
+          threadId: lead.threadId,
+        },
+      }) + "\n",
+    );
+    await poll(
+      async () =>
+        (await state()).threads.find((agent) => agent.id === lead.id).inFlight,
+      "fixture turn starts",
+    );
     const post = async (text) => {
       const response = await fetch(origin + "/api/messages", {
         method: "POST",
@@ -83,17 +98,11 @@ test("installed queue display ui", async ({ browser: _browser }) => {
           id: crypto.randomUUID(),
           room: lead.id,
           text,
-          delivery: "queue",
+          delivery: "after_turn",
         }),
       });
       assert.equal(response.status, 200);
     };
-    await post("Active fixture turn");
-    await poll(
-      async () =>
-        (await state()).threads.find((a) => a.id === lead.id).inFlight,
-      "fixture turn starts",
-    );
     for (const text of [
       "First queued instruction",
       "Second queued instruction",
@@ -108,35 +117,29 @@ test("installed queue display ui", async ({ browser: _browser }) => {
       0,
       "No duplicate queue panel",
     );
-    const queuedBubble = (text) =>
-      page.locator(".message.user").filter({ hasText: text });
-    await queuedBubble("First queued instruction").waitFor();
+    const queuedItem = (text) =>
+      page.locator(".message-queue-item").filter({ hasText: text });
+    await queuedItem("First queued instruction").waitFor();
     assert.equal(
       await page.getByText("First queued instruction", { exact: true }).count(),
       1,
     );
     await page
-      .locator(
-        '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-      )
-      .getByRole("button", { name: "Edit queued message", exact: true })
+      .getByRole("button", { name: "Edit queued message 1", exact: true })
       .click();
     await page
       .getByRole("textbox", { name: "Edit queued message", exact: true })
       .fill("Revised first instruction");
     await page
-      .locator(".queue-editor")
-      .getByRole("button", { name: "Save", exact: true })
+      .locator(".message-queue-editor")
+      .getByRole("button", { name: "Save queued message", exact: true })
       .click();
     await poll(
       async () => (await queue()).items[0].text === "Revised first instruction",
       "queue edit is persisted",
     );
     await page
-      .locator(
-        '.message.user:has(.inline-queue-actions[data-queue-position="2"])',
-      )
-      .getByRole("button", { name: "Move message first", exact: true })
+      .getByRole("button", { name: "Move queued message 2 up", exact: true })
       .click();
     await poll(
       async () => (await queue()).items[0].text === "Second queued instruction",
@@ -146,34 +149,22 @@ test("installed queue display ui", async ({ browser: _browser }) => {
       async () =>
         (
           await page
-            .locator(
-              '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-            )
+            .locator(".message-queue-item[data-message-id]")
+            .first()
             .textContent()
         ).includes("Second queued instruction"),
       "queue UI applies server order",
     );
     await page
-      .locator(
-        '.message.user:has(.inline-queue-actions[data-queue-position="1"])',
-      )
-      .getByRole("button", { name: "Cancel queued message", exact: true })
+      .getByRole("button", { name: "Delete queued message 1", exact: true })
       .click();
     await poll(
       async () => (await queue()).items.length === 1,
       "queue cancellation is persisted",
     );
     await page.setViewportSize({ width: 390, height: 844 });
-    await page
-      .locator(".message.user")
-      .filter({ hasText: "Revised first instruction" })
-      .scrollIntoViewIfNeeded();
-    assert.equal(
-      await page
-        .getByText("Revised first instruction", { exact: true })
-        .count(),
-      1,
-    );
+    await queuedItem("Revised first instruction").scrollIntoViewIfNeeded();
+    assert.equal(await queuedItem("Revised first instruction").count(), 1);
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     await page.screenshot({ path: join(root, "queue-mobile.png") });
     assert.deepEqual(errors, []);

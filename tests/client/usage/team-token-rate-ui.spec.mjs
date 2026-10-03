@@ -21,7 +21,7 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
-test("team token rate ui", async ({ browser: _browser }) => {
+test("team token rate ui", async ({ browser }) => {
   test.setTimeout(120_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),

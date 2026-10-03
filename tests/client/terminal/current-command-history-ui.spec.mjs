@@ -39,8 +39,8 @@ test("current command history ui", async ({ browser: _browser }) => {
   import TurnHistory from '/src/components/conversation/transcript/TurnHistory.tsx';
   function Fixture(){
    const [snapshot,setSnapshot]=useState(null);window.applySnapshot=setSnapshot;
-   return <MantineProvider><main data-case={snapshot?.label}>
-   {snapshot && <TurnHistory items={snapshot.items} enabled={snapshot.enabled} storageKey="fixture"
+    return <MantineProvider><main data-case={snapshot?.label}>
+   {snapshot && <TurnHistory key={snapshot.label} items={snapshot.items} currentTurn={snapshot.currentTurn} enabled={snapshot.enabled} storageKey="fixture"
    renderMessage={item=><p data-message={item.id}>{item.text}</p>} onJump={()=>{}}/>}
    <output hidden>{JSON.stringify(snapshot?.items)}</output>
    </main></MantineProvider>;
@@ -93,6 +93,9 @@ test("current command history ui", async ({ browser: _browser }) => {
       id,
       role: "tool",
       turnId: "turn",
+      ...(["completed", "failed", "interrupted", "ended"].includes(state)
+        ? { turnStatus: state }
+        : {}),
       toolStatus: state,
       text: JSON.stringify({
         type,
@@ -101,18 +104,30 @@ test("current command history ui", async ({ browser: _browser }) => {
         status: state,
       }),
     });
-    const completed = command("finished", "completed");
-    const running = command("current", "running");
-    const items = [
-      { id: "user", role: "user", text: "Run checks" },
-      completed,
-      command("failed", "failed"),
-      command(
+    const completed = {
+      ...command("finished", "completed"),
+      turnId: "previous",
+    };
+    const failed = {
+      ...command("failed", "failed"),
+      turnId: "previous",
+    };
+    const monitor = {
+      ...command(
         "monitor",
         "completed",
         "dynamicToolCall",
         "orchestration_monitor",
       ),
+      turnId: "previous",
+      turnStatus: "failed",
+    };
+    const running = command("current", "running");
+    const items = [
+      { id: "user", role: "user", text: "Run checks" },
+      completed,
+      failed,
+      monitor,
       running,
       {
         id: "image",
@@ -130,21 +145,16 @@ test("current command history ui", async ({ browser: _browser }) => {
       },
     ];
     let cases = 0;
-    const apply = async (label, rows, enabled) => {
+    const apply = async (label, rows, enabled, currentTurn) => {
       await page.evaluate((snapshot) => window.applySnapshot(snapshot), {
         label,
         items: rows,
         enabled,
+        currentTurn,
       });
       await page
         .locator(`main[data-case="${label}"]`)
         .waitFor({ state: "attached" });
-      for (const disclosure of await page
-        .locator(".turn-work,.tool-group")
-        .all()) {
-        if ((await disclosure.getAttribute("open")) === null)
-          await disclosure.locator(":scope > summary").click();
-      }
       assert.deepEqual(
         JSON.parse(await page.locator("output").textContent()),
         rows,
@@ -152,22 +162,53 @@ test("current command history ui", async ({ browser: _browser }) => {
       );
       cases++;
     };
+    const expandWork = async () => {
+      for (const disclosure of await page
+        .locator(".turn-work,.tool-group")
+        .all()) {
+        if ((await disclosure.getAttribute("open")) === null)
+          await disclosure.locator(":scope > summary").click();
+      }
+    };
     for (const enabled of [true, false]) {
-      await apply("running-" + enabled, items, enabled);
-      assert.equal(await page.locator('[data-message="current"]').count(), 1);
+      await apply("running-" + enabled, items, enabled, "turn");
+      await expandWork();
+      assert.equal(
+        await page.locator('[data-message="current"]').isVisible(),
+        true,
+      );
       for (const id of ["finished", "failed", "monitor"])
-        assert.equal(await page.locator(`[data-message="${id}"]`).count(), 0);
-      assert.equal(await page.locator('[data-message="answer"]').count(), 1);
-      assert.equal(await page.locator('[data-message="image"]').count(), 1);
+        assert.equal(
+          await page.locator(`[data-message="${id}"]`).isVisible(),
+          false,
+        );
+      assert.equal(
+        await page.locator('[data-message="answer"]').isVisible(),
+        true,
+      );
+      assert.equal(
+        await page.locator('[data-message="image"]').isVisible(),
+        true,
+      );
       assert.doesNotMatch(
         await page.locator("main").innerText(),
         /Ran 3 commands/,
       );
       const ended = items.map((x) =>
-        x.id === "current" ? command("current", "completed") : x,
+        x.turnId === "turn"
+          ? {
+              ...x,
+              ...(x.id === "current" ? command("current", "completed") : {}),
+              turnStatus: "completed",
+            }
+          : x,
       );
       await apply("ended-" + enabled, ended, enabled);
-      assert.equal(await page.locator('[data-message="current"]').count(), 0);
+      await expandWork();
+      assert.equal(
+        await page.locator('[data-message="current"]').isVisible(),
+        false,
+      );
       await apply("only-history-" + enabled, [completed], enabled);
       assert.equal(
         await page.locator(".turn-work,.tool-group,.turn-history").count(),
@@ -177,13 +218,21 @@ test("current command history ui", async ({ browser: _browser }) => {
         "approval-" + enabled,
         [command("approval", "approval")],
         enabled,
+        "turn",
       );
       assert.equal(await page.locator('[data-message="approval"]').count(), 1);
     }
     await page.setViewportSize({ width: 390, height: 844 });
-    await apply("mobile", items, true);
-    assert.equal(await page.locator('[data-message="current"]').count(), 1);
-    assert.equal(await page.locator('[data-message="finished"]').count(), 0);
+    await apply("mobile", items, true, "turn");
+    await expandWork();
+    assert.equal(
+      await page.locator('[data-message="current"]').isVisible(),
+      true,
+    );
+    assert.equal(
+      await page.locator('[data-message="finished"]').isVisible(),
+      false,
+    );
     assert.deepEqual(errors, []);
     assert.deepEqual(writes, []);
     console.log(

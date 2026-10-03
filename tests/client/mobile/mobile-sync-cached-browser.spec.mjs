@@ -143,20 +143,22 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     holdIdentity = true;
     await page.reload();
     const started = Date.now();
-    await page.evaluate(async () => {
-      const client = await import("/src/sync/client.ts");
-      window.syncErrors = [];
-      window.stopState = await client.watchProjection(
-        "state",
-        (value) => (window.state = value),
-        (error) => {
+    const startWatchers = () =>
+      page.evaluate(async () => {
+        const client = await import("/src/sync/client.ts");
+        window.syncErrors = [];
+        window.stopState = await client.watchProjection(
+          "state",
+          (value) => (window.state = value),
+          (error) => {
+            if (error) window.syncErrors.push(String(error));
+          },
+        );
+        window.stopDrafts = await client.startDraftReplication((error) => {
           if (error) window.syncErrors.push(String(error));
-        },
-      );
-      window.stopDrafts = await client.startDraftReplication((error) => {
-        if (error) window.syncErrors.push(String(error));
+        });
       });
-    });
+    await startWatchers();
     await page.waitForFunction(
       () => window.state?.runtime?.agents?.[0]?.name === "Cached",
     );
@@ -202,10 +204,17 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       await page.evaluate(() => window.state.runtime.agents[0].name),
       "Cached",
     );
+    assert.ok(
+      (await page.evaluate(() => window.syncErrors)).some((error) =>
+        error.includes("workspace changed"),
+      ),
+      "A workspace identity mismatch blocks cached data access",
+    );
 
-    // A failed check is not cached forever. Reconnecting to the saved workspace recovers.
+    // A changed server requires a reload; the saved workspace can then recover.
     currentWorkspace = workspaceId;
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.reload();
+    await startWatchers();
     await page
       .waitForFunction(
         () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
