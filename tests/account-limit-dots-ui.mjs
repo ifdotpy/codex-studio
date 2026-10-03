@@ -68,7 +68,7 @@ try {
     },
     {
       id: "signedout",
-      label: "Signed out",
+      label: "Status pending",
       email: "signedout@example.test",
       provider: "codex",
       status: "signed_out",
@@ -130,14 +130,14 @@ try {
       },
     },
   };
+  snapshots.reset.data.rateLimits.secondary.resetsAt = now - 1;
   const expected = {
     default: "green",
     yellow: "yellow",
     red: "red",
-    unknown: "gray",
     reset: "green",
-    signedout: "gray",
-    "no-weekly": "gray",
+    signedout: "green",
+    "no-weekly": "green",
   };
   browser = await chromium.launch({
     executablePath:
@@ -147,18 +147,25 @@ try {
     args: ["--disable-extensions", "--no-first-run"],
   });
   const screenshots = [];
-  for (const mobile of [false, true]) {
+  for (const [mobile, scheme] of [
+    [false, "light"],
+    [false, "dark"],
+    [true, "light"],
+    [true, "dark"],
+  ]) {
     const context = await browser.newContext({
       viewport: mobile
         ? { width: 390, height: 844 }
         : { width: 1440, height: 960 },
       hasTouch: mobile,
       isMobile: mobile,
+      colorScheme: scheme,
     });
     const page = await context.newPage();
     page.setDefaultTimeout(12000);
     const errors = [],
       reads = [];
+    let unknownAvailable = true;
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/accounts", (route) =>
       route.fulfill({ json: { defaultAccountKey: "default", accounts } }),
@@ -170,7 +177,7 @@ try {
       state.runtime.rateLimitsByAccount = snapshots;
       await route.fulfill({ response, json: state });
     });
-    await page.route("**/api/sync/pull?*", async (route) => {
+    await page.route("**/api/sync/pull?scope=state&*", async (route) => {
       const response = await route.fetch();
       const data = await response.json();
       for (const document of data.documents || []) {
@@ -183,13 +190,12 @@ try {
       await route.fulfill({ response, json: data });
     });
     await page.route(/\/api\/limits(?:\?.*)?$/, (route) => {
-      const key =
-        new URL(route.request().url()).searchParams.get("account_key") ||
-        "default";
-      reads.push(key);
+      const query = new URL(route.request().url()).searchParams;
+      const key = query.get("account_key") || "default";
+      reads.push({ key, cached: query.get("cached") === "1" });
       return route.fulfill({
         json:
-          key === "unknown"
+          key === "unknown" && unknownAvailable
             ? limits("unknown", 10)
             : snapshots[key] || { accountKey: key, at: now, data: null },
       });
@@ -239,10 +245,8 @@ try {
         color,
       );
       const box = await target.boundingBox();
-      assert.ok(
-        box.width >= 44 && box.height >= 44,
-        "touch area is at least 44 pixels",
-      );
+      assert.equal(box.width, 16);
+      assert.equal(box.height, 16);
       assert.ok(
         box.x >= 0 && box.x + box.width <= (mobile ? 390 : 1440),
         "the touch area fits the viewport",
@@ -263,11 +267,37 @@ try {
         .evaluate((element) => getComputedStyle(element).outlineStyle),
       "solid",
     );
-    assert.ok(
-      reads.every((key) => key === "default"),
-      "the dots do not read additional accounts on mount",
+    await page.waitForFunction(() =>
+      document.querySelector(
+        '.account-limits-dot-target[data-account-key="unknown"] [data-color="green"]',
+      ),
     );
-    const calmPath = join(root, mobile ? "dots-390.png" : "dots-desktop.png");
+    assert.equal(
+      await page.locator(".account-limits-dot[data-color='gray']").count(),
+      0,
+    );
+    assert.match(
+      await page
+        .locator('.account-limits-dot-target[data-account-key="reset"]')
+        .getAttribute("aria-label"),
+      /Cached reset passed/,
+    );
+    assert.ok(
+      accounts
+        .filter((account) => !account.disconnected)
+        .every((account) =>
+          reads.some((read) => read.key === account.id && read.cached),
+        ),
+    );
+    assert.ok(reads.every((read) => read.key === "default" || read.cached));
+    assert.equal(
+      await page
+        .locator(".account-limits-dots")
+        .evaluate((element) => element.getBoundingClientRect().height),
+      16,
+    );
+    const prefix = `dots-${mobile ? 390 : 1440}-${scheme}`;
+    const calmPath = join(root, `${prefix}.png`);
     await page.screenshot({ path: calmPath, animations: "disabled" });
     screenshots.push(calmPath);
     const red = page.locator(
@@ -300,15 +330,10 @@ try {
     assert.doesNotMatch(await tooltip.innerText(), /5h|\b0% left/);
     const before = await page.locator("#usage-footer").boundingBox();
     await page.screenshot({
-      path: join(
-        root,
-        mobile ? "dots-390-tooltip.png" : "dots-desktop-tooltip.png",
-      ),
+      path: join(root, `${prefix}-tooltip.png`),
       animations: "disabled",
     });
-    screenshots.push(
-      join(root, mobile ? "dots-390-tooltip.png" : "dots-desktop-tooltip.png"),
-    );
+    screenshots.push(join(root, `${prefix}-tooltip.png`));
     await red.press("Enter");
     const tabs = page.getByRole("tab");
     await page
@@ -379,12 +404,7 @@ try {
       before,
       "panel selection preserves the footer geometry",
     );
-    assert.ok(
-      !reads.some((key) =>
-        ["yellow", "red", "reset", "signedout", "no-weekly"].includes(key),
-      ),
-      "cached account dots and panel tabs do not cause new provider reads",
-    );
+    assert.ok(reads.every((read) => read.key === "default" || read.cached));
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,
@@ -393,20 +413,38 @@ try {
     );
     await page.mouse.move(1, 1);
     await page.locator(".account-limits-dots").screenshot({
-      path: join(root, mobile ? "dots-390-row.png" : "dots-desktop-row.png"),
+      path: join(root, `${prefix}-row.png`),
       animations: "disabled",
     });
-    screenshots.push(
-      join(root, mobile ? "dots-390-row.png" : "dots-desktop-row.png"),
-    );
+    screenshots.push(join(root, `${prefix}-row.png`));
+    snapshots.yellow = limits("yellow", 0);
+    snapshots.yellow.at = now + 1;
+    unknownAvailable = false;
+    await page.reload();
+    if (mobile) await page.locator("#sidebar-toggle").click();
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page
+      .locator(
+        '.account-limits-dot-target[data-account-key="yellow"] [data-color="green"]',
+      )
+      .waitFor();
+    await page
+      .locator(
+        '.account-limits-dot-target[data-account-key="unknown"] [data-color="green"]',
+      )
+      .waitFor();
+    snapshots.yellow = limits("yellow", 15);
     assert.deepEqual(errors, []);
     await context.close();
   }
   console.log(
-    "Account dots UI passed: weekly bands, reset first, gray states, current marker, tooltip, keyboard, tabs, cached reads, and 390 px touch targets.",
+    "Account dots UI passed: weekly bands, stale reset, no gray connected dots, keyboard, tabs, cached reads, persisted limits, and four viewport themes.",
   );
   console.log(JSON.stringify({ screenshots }));
 } finally {
+  for (const context of browser?.contexts() || [])
+    for (const page of context.pages())
+      await page.unrouteAll({ behavior: "ignoreErrors" });
   await browser?.close();
   fixture.kill("SIGTERM");
 }

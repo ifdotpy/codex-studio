@@ -6272,12 +6272,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def store_rate_limits(self, account_key, value):
         """Write account telemetry and cache while the account cache lock is held."""
+        def visible_bucket(bucket):
+            if not isinstance(bucket, dict):
+                return None
+            def visible_window(window):
+                return ({key: window.get(key) for key in ("usedPercent", "resetsAt", "windowDurationMins")}
+                        if isinstance(window, dict) else None)
+            return {"limitId": bucket.get("limitId"), "limitName": bucket.get("limitName"),
+                    "primary": visible_window(bucket.get("primary")),
+                    "secondary": visible_window(bucket.get("secondary"))}
+
+        def visible(value):
+            data = value.get("data")
+            if not isinstance(data, dict):
+                return (value.get("error"), None)
+            buckets = data.get("rateLimitsByLimitId") or {}
+            if not isinstance(buckets, dict):
+                buckets = {}
+            return (value.get("error"), data.get("accountId"), data.get("rateLimitResetCredits"),
+                    data.get("status"), data.get("signedIn"), visible_bucket(data.get("rateLimits")),
+                    {key: visible_bucket(bucket) for key, bucket in buckets.items()})
+
+        previous = self.rate_limits_for(account_key)
         value = {**value, "accountKey": account_key}
+        changed = visible(previous) != visible(value)
         with self.db() as db:
             self.analytics_safe(db, self.analytics_limit, account_key, value)
-        self.rate_limits_by_account[account_key] = value
-        if account_key == "default":
-            self.rate_limits = value
+            self.rate_limits_by_account[account_key] = value
+            if account_key == "default":
+                self.rate_limits = value
+            if changed:
+                from codex_sync_entities import patch as sync_entity_patch
+                sync_entity_patch(db, "workspace", "current", {
+                    "rateLimits": self.rate_limits,
+                    "rateLimitsByAccount": self.rate_limits_by_account.copy(),
+                })
 
     def limit_refresh_lock(self, account_key):
         with self.lock:

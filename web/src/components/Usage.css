@@ -50,30 +50,26 @@
   display: flex;
   flex: 0 0 100%;
   min-width: 0;
-  height: 44px;
+  height: 16px;
   overflow-x: auto;
   justify-content: safe flex-end;
-  margin-top: -12px;
+  margin-top: 0;
 }
 .account-limits-dot-target {
   display: grid;
   place-items: center;
-  flex: 0 0 44px;
-  width: 44px;
-  height: 44px;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
   padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   cursor: pointer;
 }
-.account-limits-dot-target:hover,
-.account-limits-dot-target:focus-visible {
-  background: var(--hover);
-}
 .account-limits-dot-target:focus-visible {
   outline: 2px solid var(--muted);
-  outline-offset: -2px;
+  outline-offset: -1px;
 }
 .account-limits-dot {
   width: 6px;
@@ -234,9 +230,6 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 600px) {
-  .account-limits-dots {
-    margin-top: -8px;
-  }
   .usage-footer .account-limits-toggle {
     margin-left: 0;
   }

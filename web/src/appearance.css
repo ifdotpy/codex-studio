@@ -294,7 +294,11 @@
 
 /* Phone controls must work with a finger, including menus and disclosures. */
 @media (max-width: 760px) {
-  html body :is(button, summary, [role="option"], [role="tab"]) {
+  html
+    body
+    :is(button, summary, [role="option"], [role="tab"]):not(
+      .account-limits-dot-target
+    ) {
     /* Compact component sizes cannot reduce the phone's minimum target. */
     min-width: 44px !important;
     min-height: 44px !important;

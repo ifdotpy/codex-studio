@@ -42,9 +42,10 @@ export function weeklyRunway(
         window.usedPercent <= 100
           ? window.usedPercent
           : null;
-      const remaining = used === null ? null : 100 - used;
       const reset =
         finite(window.resetsAt) && window.resetsAt > 0 ? window.resetsAt : null;
+      const expired = reset !== null && reset <= now;
+      const remaining = expired ? 100 : used === null ? null : 100 - used;
       const observed = limits?.at;
       const start = reset === null ? null : reset - WEEK_MINUTES * 60;
       const elapsed =
@@ -52,17 +53,19 @@ export function weeklyRunway(
       const valid =
         !signedOut &&
         reset !== null &&
-        reset > now &&
+        !expired &&
         finite(observed) &&
         observed <= now + 5 &&
         elapsed !== null &&
         elapsed > 0 &&
         elapsed <= 7;
       const days =
-        valid && remaining !== null && used !== null
-          ? used === 0
+        remaining !== null
+          ? expired || used === 0
             ? Infinity
-            : remaining / (used / elapsed!)
+            : valid
+              ? remaining / (used / elapsed!)
+              : null
           : null;
       return [
         {
@@ -81,8 +84,13 @@ export function weeklyRunway(
       ];
     }),
   );
-  if (signedOut || !windows.length)
+  if (
+    signedOut ||
+    !limits?.data ||
+    (windows.length > 0 && windows.every((window) => window.remaining === null))
+  )
     return { color: "gray", days: null, windows };
+  if (!windows.length) return { color: "green", days: Infinity, windows };
   if (
     windows.some(
       (window) =>
@@ -91,7 +99,7 @@ export function weeklyRunway(
   )
     return { color: "red", days: 0, windows };
   if (windows.some((window) => window.days === null))
-    return { color: "gray", days: null, windows };
+    return { color: "red", days: null, windows };
   const days = Math.min(
     ...windows.map((window) =>
       window.resetFirst ? Math.max(7, window.days!) : window.days!,
