@@ -44,10 +44,13 @@ with tempfile.TemporaryDirectory() as directory:
         "provider": "codex", "nativeToolCatalog": {"secret": "private"}, "timing": {"private": 1},
         "pinned": True, "archived": False, "projectFolder": "review", "projectFolderRevision": 3,
         "reviewDefaults": {"model": "gpt-6-astra", "effort": "high"},
+        "concurrency": 0, "subagentConcurrencyVersion": 2,
     }
     projected = project("agent", visible)
     assert projected["error"] == "visible error"
     assert projected["reviewDefaults"] == visible["reviewDefaults"]
+    assert projected["concurrency"] == 0
+    assert projected["subagentConcurrencyVersion"] == 2
     for field in ("pinned", "archived", "projectFolder", "projectFolderRevision"):
         assert projected.get(field) == visible[field], f"{field} must survive entity sync"
     assert len(projected["overview"]["task"]) == 4000

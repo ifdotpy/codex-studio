@@ -63,6 +63,7 @@ export interface AgentEntityDto {
   startAttempt?: any;
   status?: any;
   statusDetail?: any;
+  subagentConcurrencyVersion?: any;
   tail?: any;
   threadId?: any;
   tokensUsed?: any;

@@ -15,7 +15,7 @@ AGENT_FIELDS = frozenset("""
     id name status source kind parentId rootId threadId orchestratorId orchestratorName
     isLead role sharedRoomId model provider effort fastMode concurrency accountKey cwd worktree created updated
     turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
-    launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported
+    launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported subagentConcurrencyVersion
     workerDefaults reviewDefaults parkedEvent pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
     daybreakEnabled accountTransfer
     overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
