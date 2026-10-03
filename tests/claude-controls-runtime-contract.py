@@ -225,6 +225,33 @@ class Controls(unittest.TestCase):
             close.assert_called_once()
         self.assertNotIn('default', self.rt._native_tools_retiring)
 
+    def test_unsupported_close_restores_the_original_idle_connection(self):
+        from types import SimpleNamespace
+        import sqlite3
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 14}}
+        self.server.provider_options = {}
+        self.server.pending = {}
+        self.server.callbacks = queue.Queue()
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(handle='account:default', generation=2,
+            call=lambda action: {'pid': 123, 'returnCode': None})
+        journal = sqlite3.connect(self.rt.root / 'supervisor.sqlite3')
+        try:
+            journal.executescript("CREATE TABLE handles(id TEXT,pid INTEGER,generation INTEGER,signature TEXT,closed_at REAL);"
+                "CREATE TABLE child_identities(handle TEXT,pid INTEGER,start_time TEXT);"
+                "INSERT INTO handles VALUES('account:default',123,2,'exact',NULL);"
+                "INSERT INTO child_identities VALUES('account:default',123,'verified');")
+        finally:
+            journal.close()
+        previous = self.rt.connection_ids['default']
+        with patch('codex_process_supervisor.process_start_time', return_value='verified'), \
+                patch('codex_process_supervisor.admin_close_handle', side_effect=RuntimeError('Unknown supervisor action')):
+            self.assertFalse(retire_idle_bridge(self.rt, 'default', {}, self.server))
+        self.assertEqual(self.rt.connection_ids['default'], previous)
+        self.assertIs(self.rt.servers['default'], self.server)
+        self.assertNotIn('default', self.rt._native_tools_retiring)
+        self.assertFalse(self.server.closed)
+
     def test_older_supervisor_keeps_idle_bridge_and_connection(self):
         from types import SimpleNamespace
         self.server.initialize_result = {'capabilities': {'claudeVersion': 14}}

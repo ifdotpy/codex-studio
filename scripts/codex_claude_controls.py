@@ -272,7 +272,9 @@ def retire_idle_bridge(rt, key, account, server):
     with rt.lock, rt.db() as db:
         if eligible(db) is False:
             return False
-        rt.connection_ids[key] = 'retired:' + str(uuid.uuid4())
+        previous_connection = rt.connection_ids.get(key)
+        retired_connection = 'retired:' + str(uuid.uuid4())
+        rt.connection_ids[key] = retired_connection
         rt.servers.pop(key, None)
         for agent in agents:
             rt.loaded.discard(agent['id'])
@@ -282,8 +284,22 @@ def retire_idle_bridge(rt, key, account, server):
         from codex_process_supervisor import admin_close_handle
         retiring = rt.__dict__.setdefault('_native_tools_retiring', {})
         retiring[key] = {'server': server}
-        result = admin_close_handle(rt.root, server.proc.handle, native['pid'],
-                                    native['startTime'], native['signature'])
+        try:
+            result = admin_close_handle(rt.root, server.proc.handle, native['pid'],
+                                        native['startTime'], native['signature'])
+        except RuntimeError as error:
+            if 'Unknown supervisor action' not in str(error):
+                raise
+            # Unsupported close is a confirmed rejection. The original child stays alive.
+            with rt.lock:
+                if rt.connection_ids.get(key) != retired_connection or key in rt.servers:
+                    raise ValueError('The Claude connection changed after the rejected close') from error
+                rt.connection_ids[key] = previous_connection
+                rt.servers[key] = server
+                if key == 'default':
+                    rt.server = server
+                retiring.pop(key, None)
+            return False
         if result.get('closed') is not True:
             raise ValueError('The idle Claude process close outcome is unknown')
         # A supervised close otherwise detaches the backend and keeps the old bridge alive.
