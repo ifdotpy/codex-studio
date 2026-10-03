@@ -67,31 +67,9 @@ try {
   );
   assert(activeWorkers.length > 0);
 
-  const settings = new Map();
-  for (const agent of initial.threads) {
-    if (!agent.agentModeSupported) continue;
-    settings.set(agent.id, {
-      concurrency: agent.concurrency ?? 32,
-      revision: agent.agentModeRevision ?? 0,
-    });
-  }
-  const receipts = new Map();
-  const getAgent = (id) => {
-    const setting = settings.get(id);
-    return {
-      id,
-      concurrency: setting.concurrency,
-      agentMode: setting.concurrency === 0 ? "single" : "multi",
-      agentModeRevision: setting.revision,
-      agentModeSupported: true,
-    };
-  };
-  const decorate = (state) => {
-    state.threads = state.threads.map((agent) =>
-      settings.has(agent.id) ? { ...agent, ...getAgent(agent.id) } : agent,
-    );
-    return state;
-  };
+  assert.equal(typeof lead.concurrency, "number");
+  const currentLead = async () =>
+    (await snapshot()).threads.find((agent) => agent.id === lead.id);
   browser = await browserType.launch({
     headless: true,
     ...(browserType === chromium &&
@@ -125,46 +103,37 @@ try {
     { stateDir: initial.stateDir, id: lead.id },
   );
   let loseNextReply = false,
-    staleNextRequest = false;
-  await page.route("**/api/state*", async (route) => {
-    const response = await route.fetch();
-    const state = decorate(await response.json());
-    return route.fulfill({ response, json: state });
-  });
+    raceNextRequest = false;
   await page.route("**/api/conversation", async (route) => {
     const body = route.request().postDataJSON();
     if (body.subagent_concurrency === undefined && !body.agent_mode)
       return route.continue();
     writes.push(body);
-    const current = settings.get(body.id);
-    assert(current, `Unknown setting target ${body.id}`);
-    if (staleNextRequest) {
-      staleNextRequest = false;
-      current.concurrency = 8;
-      current.revision += 1;
-      return route.fulfill({
-        status: 400,
-        json: {
-          error: "Concurrency changed on another device",
-          outcome: "not_applied",
+    if (raceNextRequest) {
+      raceNextRequest = false;
+      const response = await fetch(origin + "/api/conversation", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Canvas-Token": initial.token,
         },
+        body: JSON.stringify({
+          id: body.id,
+          subagent_concurrency: 8,
+          expected_mode_revision: body.expected_mode_revision,
+          request_id: "browser-conflicting-device",
+        }),
       });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).concurrency, 8);
     }
-    if (receipts.has(body.request_id))
-      return route.fulfill({ status: 200, json: getAgent(body.id) });
-    const target =
-      body.subagent_concurrency ?? (body.agent_mode === "single" ? 0 : 32);
-    if (target !== current.concurrency) {
-      current.concurrency = target;
-      current.revision += 1;
-    }
-    receipts.set(body.request_id, true);
-    const response = getAgent(body.id);
     if (loseNextReply) {
       loseNextReply = false;
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
       return route.abort("failed");
     }
-    return route.fulfill({ status: 200, json: response });
+    return route.continue();
   });
   page.on("request", (request) => {
     if (
@@ -199,6 +168,15 @@ try {
   assert.equal(await control.getAttribute("data-agent-mode"), "multi");
   assert.equal(await input.getAttribute("min"), "0");
   assert.equal(await input.getAttribute("max"), "512");
+  assert.equal(
+    await input.getAttribute("title"),
+    "0 disables subagents. The lead does not count. Extra work waits in the queue.",
+  );
+  const helpId = await input.getAttribute("aria-describedby");
+  assert.equal(
+    await page.locator(`#${helpId}`).textContent(),
+    "0 disables subagents. The lead does not count. Extra work waits in the queue.",
+  );
   await input.fill("64");
   await apply.click();
   await waitConcurrency(64);
@@ -210,6 +188,7 @@ try {
   ]);
   assert.equal(writes.at(-1).subagent_concurrency, 64);
   assert.equal(writes.at(-1).expected_mode_revision, 0);
+  assert.equal((await currentLead()).concurrency, 64);
 
   // Zero expresses Single agent and does not interrupt accepted workers.
   await input.fill("0");
@@ -220,6 +199,10 @@ try {
     .getByText("No new worker turns will start.", { exact: true })
     .waitFor();
   let state = await snapshot();
+  assert.equal(
+    state.threads.find((agent) => agent.id === lead.id).concurrency,
+    0,
+  );
   for (const worker of activeWorkers)
     assert.equal(
       state.threads.find((agent) => agent.id === worker.id).status,
@@ -231,6 +214,7 @@ try {
   await apply.click();
   await waitConcurrency(512);
   assert.equal(await control.getAttribute("data-agent-mode"), "multi");
+  assert.equal((await currentLead()).concurrency, 512);
   assert.deepEqual(prompts, []);
   console.log(
     "PASS numeric limit, 0/positive mode derivation, and active workers retained",
@@ -247,14 +231,15 @@ try {
   await retry.waitFor();
   const lost = writes.at(-1);
   assert.equal(lost.expected_mode_revision, 3);
-  assert.equal(settings.get(lead.id).revision, 4);
+  assert.equal((await currentLead()).agentModeRevision, 4);
   await page.reload();
   await retry.waitFor();
   await retry.click();
   await retry.waitFor({ state: "detached" });
   assert.deepEqual(writes.at(-1), lost);
-  assert.equal(settings.get(lead.id).revision, 4);
+  assert.equal((await currentLead()).agentModeRevision, 4);
   await waitConcurrency(128);
+  assert.equal((await currentLead()).concurrency, 128);
   console.log(
     "PASS lost response, reload, and exact retry without duplicate apply",
   );
@@ -293,10 +278,11 @@ try {
     .waitFor({ state: "detached" });
   assert.deepEqual(writes.at(-1), legacy);
   await waitConcurrency(0);
+  assert.equal((await currentLead()).concurrency, 0);
   console.log("PASS exact migration retry for a saved legacy mode request");
 
   // Conflict is explicit: discard that request, refresh canonical value, allow editing.
-  staleNextRequest = true;
+  raceNextRequest = true;
   await input.fill("16");
   await apply.click();
   await control.getByRole("alert").waitFor();
@@ -311,7 +297,8 @@ try {
   await input.fill("9");
   await apply.click();
   await waitConcurrency(9);
-  assert.equal(settings.get(lead.id).revision, 7);
+  assert.equal((await currentLead()).agentModeRevision, 7);
+  assert.equal((await currentLead()).concurrency, 9);
   console.log(
     "PASS CAS conflict clears rejected request and refreshes canonical setting",
   );
@@ -347,7 +334,7 @@ try {
   await page
     .getByRole("button", { name: "Retry limit change", exact: true })
     .waitFor({ state: "detached" });
-  assert.equal(settings.get(lead.id).revision, 7);
+  assert.equal((await currentLead()).agentModeRevision, 7);
   assert.deepEqual(writes.at(-1), noOp);
   await waitConcurrency(9);
   console.log("PASS same-revision no-op receipt is accepted");
@@ -367,7 +354,11 @@ try {
     .getByRole("button", { name: "Apply", exact: true })
     .click();
   await waitConcurrency(17);
-  assert.equal(settings.get(other.id).concurrency, 17);
+  assert.equal(
+    (await snapshot()).threads.find((agent) => agent.id === other.id)
+      .concurrency,
+    17,
+  );
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await waitConcurrency(9);
   console.log("PASS settings are isolated per chat");
@@ -433,6 +424,7 @@ try {
   await input.fill("512");
   await control.getByRole("button", { name: "Apply", exact: true }).click();
   await waitConcurrency(512);
+  assert.equal((await currentLead()).concurrency, 512);
   assert.deepEqual(prompts, []);
   assert.deepEqual(errors, []);
   await page.screenshot({ path: join(root, "mobile-subagent-limit.png") });

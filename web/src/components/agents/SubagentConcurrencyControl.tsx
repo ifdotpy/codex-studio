@@ -6,6 +6,8 @@ import "./subagent-concurrency-control.css";
 const DEFAULT_CONCURRENCY = 32;
 const MIN_CONCURRENCY = 0;
 const MAX_CONCURRENCY = 512;
+const CONCURRENCY_HELP =
+  "0 disables subagents. The lead does not count. Extra work waits in the queue.";
 
 type Confirmed = { concurrency: number; revision: number };
 type LimitRequest = {
@@ -316,6 +318,8 @@ function ScopedConcurrencyControl({
           step={1}
           inputMode="numeric"
           aria-label="Subagent parallelism"
+          aria-describedby={`subagent-concurrency-help-${lead.id}`}
+          title={CONCURRENCY_HELP}
           value={draft}
           disabled={!workspaceId || saving || !!pending || !!initial.error}
           onChange={(event) => {
@@ -326,6 +330,9 @@ function ScopedConcurrencyControl({
           }}
         />
       </label>
+      <span id={`subagent-concurrency-help-${lead.id}`} className="sr-only">
+        {CONCURRENCY_HELP}
+      </span>
       <button
         type="submit"
         className="agent-mode-apply"
