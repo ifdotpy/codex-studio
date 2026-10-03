@@ -1338,8 +1338,10 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 if path.path == "/api/limits" and canvas.runtime:
                     query = parse_qs(path.query)
                     account_key = query.get("account_key", ["default"])[0]
-                    if query.get("cached") == ["1"]:
-                        return self.send(canvas.runtime.rate_limits_for(account_key))
+                    cached = canvas.runtime.rate_limits_for(account_key)
+                    if query.get("cached") == ["1"] and (cached.get("data") is not None or cached.get("error")):
+                        return self.send(cached)
+                    # An empty cache after a restart needs one ordinary read.
                     return self.send(canvas.runtime.limits(account_key))
                 if path.path == "/api/task" and canvas.runtime:
                     return self.send(canvas.runtime.task_detail(parse_qs(path.query).get("id", [""])[0]))
