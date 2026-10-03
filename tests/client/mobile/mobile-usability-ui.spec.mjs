@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -14,6 +15,11 @@ test("Mobile usability", async () => {
   const repo = testRepo;
   const { webkit, devices } = createRequire(join(repo, "web/package.json"))(
     "playwright-core",
+  );
+  const webkitPath = webkit.executablePath();
+  test.skip(
+    !existsSync(webkitPath),
+    `WebKit runtime is not installed at ${webkitPath}`,
   );
   const phase =
     process.argv.find((arg) => arg.startsWith("--phase="))?.split("=")[1] ||
@@ -110,7 +116,10 @@ test("Mobile usability", async () => {
     const lead = snapshot.threads.find(
       (agent) => agent.name === "Release lead",
     );
-    browser = await webkit.launch({ headless: true });
+    browser = await webkit.launch({
+      headless: true,
+      executablePath: webkitPath,
+    });
     for (const width of [375, 390, 430, 1440]) {
       const desktop = width === 1440;
       const height = desktop

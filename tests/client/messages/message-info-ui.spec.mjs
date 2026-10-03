@@ -197,23 +197,60 @@ test("Message info", async ({ browser: testBrowser }) => {
       (entry) => entry.id === agent.id + ":" + itemId,
     );
     const stamp = new Date((source.at ?? source.created) * 1000);
-    const expected = stamp.toLocaleString("en-US", {
-      timeZone: "Europe/Warsaw",
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hourCycle: "h23",
-    });
-    const displayedAt = await page.evaluate(
-      (shown) => Date.parse(shown),
-      await value("Local date and time"),
+    const expectedParts = Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: "Europe/Warsaw",
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+      })
+        .formatToParts(stamp)
+        .map(({ type, value }) => [type, value]),
+    );
+    const displayed = await value("Local date and time");
+    const fields = displayed.match(
+      /^([A-Za-z]{3}) (\d{1,2}), (\d{4}), (\d{2}):(\d{2}):(\d{2})$/,
+    );
+    assert.ok(fields, `unexpected timestamp display: ${displayed}`);
+    const month = new Map(
+      [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
+      ].map((name, index) => [name, index]),
+    );
+    const displayedWallTime = Date.UTC(
+      Number(fields[3]),
+      month.get(fields[1]),
+      Number(fields[2]),
+      Number(fields[4]),
+      Number(fields[5]),
+      Number(fields[6]),
+    );
+    const expectedWallTime = Date.UTC(
+      Number(expectedParts.year),
+      month.get(expectedParts.month),
+      Number(expectedParts.day),
+      Number(expectedParts.hour),
+      Number(expectedParts.minute),
+      Number(expectedParts.second),
     );
     assert.ok(
-      Math.abs(displayedAt - stamp.getTime()) <= 1000,
-      `date differs by more than one second: ${expected}`,
+      Math.abs(displayedWallTime - expectedWallTime) <= 1000,
+      `message timestamp differs from its Europe/Warsaw source time by more than one second: ${displayed}`,
     );
     assert.equal(
       await dialog.getByText(/tokens per second/i).count(),

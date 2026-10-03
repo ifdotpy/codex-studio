@@ -58,6 +58,10 @@ test("Messages loading", async () => {
         `${origin}/api/complaint?id=${encodeURIComponent(complaint.id)}`,
       )
     ).json();
+    const inboxComplaint = { ...complaint };
+    delete inboxComplaint.text;
+    delete inboxComplaint.responses;
+    state.runtime.complaints = [inboxComplaint];
     const direct = state.runtime.rooms.find(
       (room) => room.kind === "private" && room.members.includes(lead.id),
     );
@@ -140,8 +144,6 @@ test("Messages loading", async () => {
       ],
     });
     const errors = [];
-    const workScopes = [];
-    let workDelay = 0;
     let stateReads = 0,
       workspaceReads = 0,
       detailReads = 0,
@@ -172,7 +174,7 @@ test("Messages loading", async () => {
         current.threads[0].updated = 100 + stateReads;
         return route.fulfill({ json: current });
       });
-      await next.route("**/api/workspace?*", async (route) => {
+      await next.route("**/api/workspace/tasks?*", async (route) => {
         workspaceReads++;
         await pause(8000);
         await route
@@ -181,13 +183,6 @@ test("Messages loading", async () => {
             json: { error: "Workspace history unavailable" },
           })
           .catch(() => {});
-      });
-      await next.route("**/api/work?*", async (route) => {
-        workScopes.push(
-          new URL(route.request().url()).searchParams.get("agent"),
-        );
-        if (workDelay) await pause(workDelay);
-        return route.fulfill({ json: { tasks: [review] } }).catch(() => {});
       });
       await next.route("**/api/complaint?*", async (route) => {
         detailReads++;
@@ -244,99 +239,77 @@ test("Messages loading", async () => {
     };
     page = await prepare(1280);
     let drawer = await openMessages(page);
-    await drawer
-      .getByText(second.title, { exact: true })
-      .waitFor({ timeout: 1500 });
+    assert.equal(
+      await drawer.locator('[data-room="you"]').getAttribute("aria-pressed"),
+      "true",
+      "the Messages view opens on the For you inbox",
+    );
+    assert.equal(
+      await drawer.getByText(second.title, { exact: true }).count(),
+      0,
+    );
     assert.equal(
       workspaceReads,
       0,
-      "For you uses the current snapshot without a workspace history request",
+      "the current Messages inbox does not fetch removed workspace task history",
     );
     assert.equal(
       await drawer.getByText("Unrelated private task", { exact: true }).count(),
       0,
     );
-    await drawer.getByText(review.title, { exact: true }).waitFor();
-    assert.ok(
-      workScopes.length > 0,
-      "missing chat work history uses a separate scoped read",
+    assert.equal(
+      await drawer.getByText(review.title, { exact: true }).count(),
+      0,
     );
-    assert.ok(
-      workScopes.every((id) => id === lead.id),
-      "work review reads stay in the selected lead",
-    );
-    workDelay = 2000;
-    await drawer.getByRole("tab", { name: "Team", exact: true }).click();
-    await drawer.getByRole("tab", { name: "For you", exact: true }).click();
+    const complaintCard = drawer.locator(`[data-complaint="${complaint.id}"]`);
+    await complaintCard
+      .getByText("Loading message…", { exact: true })
+      .waitFor();
+    await complaintCard.getByText(detail.text, { exact: true }).waitFor();
+    assert.equal(detailReads, 1, "one summary starts one detail request");
+    await complaintCard
+      .getByRole("button", { name: "Reply", exact: true })
+      .click();
+    await complaintCard
+      .getByRole("textbox", { name: "Reply", exact: true })
+      .waitFor();
+    await drawer.locator(`[data-room="${direct.id}"]`).click();
+    await drawer.locator(`[data-room="you"]`).click();
     await drawer
-      .getByText(review.title, { exact: true })
+      .getByText("Loading message…", { exact: true })
       .waitFor({ timeout: 500 });
     assert.equal(
-      await drawer.getByText("Checking review tasks…", { exact: true }).count(),
-      0,
-      "returning to the inbox keeps the last confirmed data during a slow refresh",
-    );
-    workDelay = 0;
-    await drawer.getByText(second.title, { exact: true }).click();
-    const focused = page.locator(
-      `[data-user-task="${second.id}"].user-task-focused`,
-    );
-    await focused
-      .getByRole("textbox", { name: "Result note (optional)", exact: true })
-      .waitFor();
-    assert.equal(
-      await focused
-        .getByRole("button", { name: "Send for review", exact: true })
-        .count(),
-      1,
-    );
-    assert.equal(
-      await page.locator(`[data-user-task="${first.id}"] textarea`).count(),
-      0,
-      "the exact requested task opens",
-    );
-    await page
-      .getByRole("dialog", { name: "Workspace", exact: true })
-      .locator(".mantine-Drawer-close")
-      .click();
-    drawer = await openMessages(page);
-    const readsBefore = stateReads;
-    await drawer.locator(`[data-complaint="${complaint.id}"]`).click();
-    const modal = page.getByRole("dialog", {
-      name: "Message to you",
-      exact: true,
-    });
-    await modal.getByRole("textbox", { name: "Reply", exact: true }).waitFor();
-    assert.ok(
-      stateReads - readsBefore >= 2,
-      "state updates while the detail request is in flight",
-    );
-    assert.equal(
       detailReads,
-      1,
-      "state object changes do not replace the detail request",
+      2,
+      "returning to For you requests one fresh detail after remount",
     );
-    await modal.getByRole("button", { name: "Close", exact: true }).click();
-    await drawer.getByRole("tab", { name: "Team", exact: true }).click();
-    const roomDetail = drawer.locator(`[data-room-detail="${broadcast.id}"]`);
+    assert.equal(
+      await drawer.getByText("Loading message…", { exact: true }).count(),
+      1,
+      "the message shows its loading state while the refreshed detail is pending",
+    );
+    await drawer.getByText(detail.text, { exact: true }).waitFor();
+    const roomDetail = drawer.locator(".team-room-detail");
+    await drawer.locator(`[data-room="${broadcast.id}"]`).click();
     await roomDetail
       .getByRole("alert")
       .filter({ hasText: "Room read unavailable" })
       .waitFor();
     assert.equal(
       await roomDetail.getByText("No messages yet.", { exact: true }).count(),
-      0,
+      1,
+      "a failed initial read shows the empty state with its retry notice",
     );
     assert.equal(
       await drawer
         .locator(`[data-room="${broadcast.id}"]`)
         .getAttribute("aria-pressed"),
       "true",
-      "desktop opens the most recent room",
+      "selecting the broadcast opens that room",
     );
     roomFails = false;
     await roomDetail
-      .getByRole("button", { name: "Retry messages", exact: true })
+      .getByRole("button", { name: "Retry", exact: true })
       .click();
     await roomDetail.locator(".team-message").waitFor();
     await roomDetail.getByRole("alert").waitFor({ state: "hidden" });
@@ -346,9 +319,8 @@ test("Messages loading", async () => {
     });
     const mobile = await prepare(390);
     const mobileDrawer = await openMessages(mobile);
-    await mobileDrawer.getByRole("tab", { name: "Team", exact: true }).click();
     await mobileDrawer
-      .getByRole("textbox", { name: "Search team chats", exact: true })
+      .getByRole("textbox", { name: "Search chats", exact: true })
       .waitFor();
     assert.equal(
       await mobileDrawer.locator(".team-room-detail").isVisible(),
@@ -357,7 +329,7 @@ test("Messages loading", async () => {
     );
     await mobileDrawer.locator(`[data-room="${direct.id}"]`).click();
     await mobileDrawer.locator(".team-message").waitFor();
-    const overflow = await mobileDrawer.evaluate((_element) =>
+    const overflow = await mobileDrawer.evaluate((element) =>
       [
         ...element.querySelectorAll(
           ".team-room-detail,.team-room-messages,.team-message",
@@ -374,14 +346,10 @@ test("Messages loading", async () => {
         [
           ".mantine-Drawer-content",
           ".mantine-Drawer-body",
-          ".workspace-focused-messages",
-          ".workspace-messages",
-          ".workspace-message-body",
-          ".messages-views",
-          ".messages-team-panel",
           ".team-chats",
           ".team-room-detail",
-          ".team-room-footer",
+          ".team-room-header",
+          ".unified-message-scroll",
         ].map((selector) => {
           const node = document.querySelector(selector);
           if (!node) return [selector, null];
@@ -408,22 +376,22 @@ test("Messages loading", async () => {
       JSON.stringify(mobileLayout, null, 2),
     );
     assert.ok(
-      mobileLayout[".team-room-footer"].bottom >= 896,
-      "the room fills the mobile window to its bottom edge",
+      mobileLayout[".team-room-detail"].bottom >= 896,
+      "the room detail fills the mobile window to its bottom edge",
     );
     assert.ok(
-      mobileLayout[".team-room-footer"].bottom <= 901,
-      "the room footer stays inside the mobile window",
+      mobileLayout[".team-room-detail"].bottom <= 901,
+      "the room detail stays inside the mobile window",
     );
     await mobile.screenshot({
       path: join(root, "messages-mobile.png"),
       animations: "disabled",
     });
     await mobileDrawer
-      .getByRole("button", { name: "Back to team chats", exact: true })
+      .getByRole("button", { name: "Back to chats", exact: true })
       .click();
     await mobileDrawer
-      .getByRole("textbox", { name: "Search team chats", exact: true })
+      .getByRole("textbox", { name: "Search chats", exact: true })
       .waitFor();
     assert.equal(
       await mobileDrawer.locator(".team-room-detail").isVisible(),
@@ -440,10 +408,9 @@ test("Messages loading", async () => {
         detailReads,
         roomReads,
         cases: [
-          "snapshot inbox without workspace read",
-          "exact user task focus",
-          "work review absent from chat snapshot",
-          "cached inbox survives a slow tab return",
+          "current inbox excludes removed user-task history without workspace read",
+          "complaint detail waits without blocking state refresh",
+          "confirmed message is retained while a remount refresh is pending",
           "slow detail survives state updates",
           "desktop latest room",
           "room retry clears error",

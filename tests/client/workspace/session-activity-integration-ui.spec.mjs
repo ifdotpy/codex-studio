@@ -117,10 +117,15 @@ test("Session activity integration", async () => {
         },
       });
     });
-    let historyTasks = [];
-    await page.route("**/api/workspace?*", (r) =>
-      r.fulfill({ json: { tasks: historyTasks, monitors: [] } }),
-    );
+    let historyTasks = [
+      task,
+      { ...task, id: "newer-command", created: Date.now() / 1000 },
+    ];
+    let taskFeedReads = 0;
+    await page.route("**/api/workspace/tasks?*", (r) => {
+      taskFeedReads++;
+      return r.fulfill({ json: { tasks: historyTasks, monitors: [] } });
+    });
     await page.addInitScript(
       ({ stateDir, id }) => {
         localStorage.setItem(
@@ -158,7 +163,7 @@ test("Session activity integration", async () => {
       await page.screenshot({ path: join(root, `activity-${width}.png`) });
       const before = detailReads.length;
       await row.click();
-      await page.getByRole("dialog", { name: /Background tasks/ }).waitFor();
+      await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
       await page.waitForFunction(
         () =>
           document.querySelector(".tasks-content.show-task-detail") !== null,
@@ -172,17 +177,24 @@ test("Session activity integration", async () => {
       );
       await page.keyboard.press("Escape");
       await page
-        .getByRole("dialog", { name: /Background tasks/ })
+        .getByRole("dialog", { name: /Current activity/ })
         .waitFor({ state: "hidden" });
     }
     await page.setViewportSize({ width: 1280, height: 900 });
+    historyTasks = [
+      { ...task, id: "newer-command", command: "second active command" },
+    ];
+    const beforeMissingTaskFeed = taskFeedReads;
     await row.click();
-    await page.getByRole("dialog", { name: /Background tasks/ }).waitFor();
+    await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
+    for (let n = 0; n < 120 && taskFeedReads === beforeMissingTaskFeed; n++)
+      await new Promise((r) => setTimeout(r, 50));
+    assert.ok(taskFeedReads > beforeMissingTaskFeed);
     state.runtime.tasks = state.runtime.tasks.filter(
       (item) => item.id !== task.id,
     );
     await page
-      .getByText("The selected task is no longer available in this chat.", {
+      .getByText("The selected task is no longer active in this chat.", {
         exact: true,
       })
       .waitFor();
@@ -191,6 +203,10 @@ test("Session activity integration", async () => {
       "Missing explicit selection must not open another task",
     );
     historyTasks = [task];
+    const beforeLateHistory = taskFeedReads;
+    for (let n = 0; n < 120 && taskFeedReads === beforeLateHistory; n++)
+      await new Promise((r) => setTimeout(r, 50));
+    assert.ok(taskFeedReads > beforeLateHistory);
     await page
       .locator(`[data-task="${task.id}"][aria-pressed="true"]`)
       .waitFor();
@@ -200,7 +216,7 @@ test("Session activity integration", async () => {
     );
     await page.keyboard.press("Escape");
     await page
-      .getByRole("dialog", { name: /Background tasks/ })
+      .getByRole("dialog", { name: /Current activity/ })
       .waitFor({ state: "hidden" });
     await page.locator(`[data-chat="${other.id}"]`).click();
     await strip.waitFor({ state: "detached" });

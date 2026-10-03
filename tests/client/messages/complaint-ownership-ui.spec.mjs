@@ -147,137 +147,128 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     await page.goto(server.resolvedUrls.local[0] + "check");
     await page.waitForFunction(() => !!window.setRecords);
     await page.evaluate((records) => window.setRecords(records), records);
-    const thread = page.getByRole("region", {
-      name: "Message to you",
-      exact: true,
-    });
-    const back = () =>
-      thread
-        .getByRole("button", { name: "Back to messages", exact: true })
-        .click();
+    const card = (id) => page.locator(`[data-complaint="${id}"]`);
     const open = async (id) => {
-      await page.locator(`[data-complaint="${id}"]`).click();
-      await thread
+      await card(id)
+        .getByRole("button", { name: "Reply", exact: true })
+        .click();
+      await card(id)
         .getByRole("heading", { name: "Your reply", exact: true })
         .waitFor();
     };
+    const close = (id) =>
+      card(id)
+        .getByRole("button", { name: "Close reply", exact: true })
+        .click();
     assert.equal(await page.locator("[data-complaint]").count(), 2);
+    const historyCard = page.locator('[data-complaint="history"]');
     assert.match(
-      await page.locator('[data-complaint="history"]').innerText(),
-      /Awaiting your response/,
+      await historyCard.innerText(),
+      /The lead previously closed its own request\./,
     );
+    await historyCard
+      .getByRole("button", { name: "Reply", exact: true })
+      .waitFor();
     await open("history");
     assert.match(
-      await thread.locator(".complaint-response").innerText(),
-      /Release lead.*Resolved/s,
+      await historyCard.locator(".complaint-response").innerText(),
+      /Release lead[\s\S]*The lead previously closed its own request\./,
     );
     assert.equal(
       history.responses[0].status,
       "resolved",
       "Prior response metadata stays intact",
     );
-    await thread
-      .getByText("Your response is required.", { exact: true })
+    await historyCard
+      .getByRole("heading", { name: "Your reply", exact: true })
       .waitFor();
     assert.equal(
-      await thread
+      await historyCard
         .getByRole("button", { name: "Send reply", exact: true })
         .isDisabled(),
       true,
     );
-    await back();
+    await close("history");
     await open("owner");
     assert.equal(user.readAt, null, "Opening does not mark the request read");
-    await thread
+    await card("owner")
       .getByLabel("Reply", { exact: true })
       .fill("I will grant access.");
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Send reply", exact: true })
       .click();
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Retry response", exact: true })
       .waitFor();
     assert.equal(
-      await thread.getByLabel("Reply", { exact: true }).isDisabled(),
+      await card("owner").getByLabel("Reply", { exact: true }).isDisabled(),
       true,
     );
-    await back();
+    await close("owner");
     await open("owner");
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Retry response", exact: true })
       .click();
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Send reply", exact: true })
       .waitFor();
     assert.equal(completed, 1);
-    await thread
+    await card("owner")
       .getByLabel("Reply", { exact: true })
       .fill("Access is available.");
-    await thread
-      .getByRole("button", {
-        name: "Change message status (optional)",
-        exact: true,
-      })
-      .click();
-    await thread
-      .getByLabel("Message status", { exact: true })
-      .selectOption("resolved");
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Send reply", exact: true })
       .click();
-    await thread
+    await card("owner")
       .getByRole("alert")
       .filter({ hasText: "This message changed" })
       .waitFor();
-    await thread
+    await card("owner")
       .getByText("Another window updated this message.", { exact: true })
       .waitFor();
     assert.equal(attempts.length, 3);
-    await thread
+    await card("owner")
       .getByRole("button", { name: "Send reply", exact: true })
       .click();
-    await thread
+    await card("owner")
       .locator(".complaint-response")
       .filter({ hasText: "Access is available." })
       .waitFor();
     assert.equal(completed, 2);
     assert.notEqual(attempts[3].id, attempts[2].id);
-    await back();
+    assert.equal(attempts[3].status, "in_progress");
+    await close("owner");
     await page.evaluate(() => window.setTarget("lead"));
-    await page.locator('[data-complaint="worker-request"]').click();
-    const leadThread = page.getByRole("region", {
-      name: "Message to main agent",
-      exact: true,
-    });
-    await leadThread
-      .getByText("A response from the main agent is required.", { exact: true })
-      .waitFor();
-    assert.equal(await leadThread.locator(".complaint-reply").count(), 0);
-    await leadThread
-      .getByRole("button", { name: "Back to messages", exact: true })
-      .click();
+    await card("worker-request").waitFor();
+    assert.equal(
+      await card("worker-request")
+        .getByRole("button", { name: "Reply", exact: true })
+        .count(),
+      0,
+      "messages addressed to the lead do not expose the user's reply form",
+    );
     await page.evaluate(() => window.setTarget("user"));
     for (const status of [200, 409]) {
       await open("owner");
-      await thread
+      await card("owner")
         .getByLabel("Reply", { exact: true })
         .fill(`Deferred ${status}`);
       mode = "deferred";
       pending = null;
-      await thread
+      await card("owner")
         .getByRole("button", { name: "Send reply", exact: true })
         .click();
       for (let attempt = 0; !pending && attempt < 100; attempt++)
         await new Promise((resolve) => setTimeout(resolve, 10));
       assert.ok(pending);
-      await back();
+      await close("owner");
       await open("history");
       await page.evaluate((forbidden) => {
         window.wrongMessage = false;
         window.observer = new MutationObserver(() => {
           if (
             document
-              .querySelector(".message-inline-thread")
+              .querySelector('[data-complaint="history"]')
               ?.textContent.includes(forbidden)
           )
             window.wrongMessage = true;
@@ -308,14 +299,14 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         await new Promise(requestAnimationFrame);
       });
       assert.equal(await page.evaluate(() => window.wrongMessage), false);
-      await thread.getByText(history.text, { exact: true }).waitFor();
+      await historyCard.getByText(history.text, { exact: true }).waitFor();
       assert.equal(
-        await thread.locator(".complaint-reply").count(),
+        await historyCard.locator(".complaint-reply").count(),
         1,
         "Current historical records permit a user reply",
       );
       await page.evaluate(() => window.observer.disconnect());
-      await back();
+      await close("history");
     }
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(

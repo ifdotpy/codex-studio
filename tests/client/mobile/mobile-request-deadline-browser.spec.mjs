@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ test("Mobile request deadline", async () => {
   const repo = testRepo;
   const require = createRequire(join(repo, "web/package.json"));
   const { chromium, webkit } = require("playwright-core");
+  const webkitPath = webkit.executablePath();
   const { createServer } = await import(require.resolve("vite"));
   const server = await createServer({
     configFile: false,
@@ -19,17 +21,22 @@ test("Mobile request deadline", async () => {
   });
   await server.listen();
   try {
+    let webkitUnavailable = false;
     for (const [name, engine] of [
       ["chromium", chromium],
       ["webkit", webkit],
     ]) {
+      if (name === "webkit" && !existsSync(webkitPath)) {
+        webkitUnavailable = true;
+        console.warn(
+          `SKIP WebKit deadline subcase: runtime is not installed at ${webkitPath}`,
+        );
+        continue;
+      }
       const browser = await engine.launch({
         headless: true,
-        ...(name === "chromium"
-          ? {
-              executablePath: browserExecutablePath,
-            }
-          : {}),
+        executablePath:
+          name === "chromium" ? browserExecutablePath : webkitPath,
       });
       try {
         const page = await browser.newPage();
@@ -143,6 +150,11 @@ test("Mobile request deadline", async () => {
         await browser.close();
       }
     }
+    if (webkitUnavailable)
+      test.info().annotations.push({
+        type: "environment-skip",
+        description: `WebKit executable missing at ${webkitPath}; Chromium checks ran, WebKit checks were not run.`,
+      });
   } finally {
     await server.close();
   }
