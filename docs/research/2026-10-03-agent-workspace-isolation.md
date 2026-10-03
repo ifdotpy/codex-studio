@@ -48,11 +48,11 @@ These are the requirements after the design discussion. Each item records a deci
 
 ## Decision
 
-| OS      | Mechanism                                                                                                                  | Status                                                         |
-| ------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Measured. Meets the requirements only after a base exists      |
-| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Measured. Meets the requirements on btrfs, after a base exists |
-| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                   |
+| OS      | Mechanism                                                                                                                  | Status                                                                                  |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Main candidate. Open: base build time, build cache paths, builds under a strict sandbox |
+| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Main candidate on btrfs. Open: parallel metadata load, sandbox                          |
+| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                                            |
 
 **This design does not meet requirement 3 for the first agent of a repository.** The base build is
 O(files): about 16.5 min for chromium on macOS. Starts after that are about 1 s. So the decision
@@ -117,6 +117,25 @@ Two rules:
 - **Checkpoint commit at the end of each turn**, so uncommitted agent work survives removal or a crash.
 
 Nested repositories (149 in chromium) need one fetch for each nested repository that the agent changed.
+
+## Folders without git
+
+The workspace mechanism does not need git. Isolation, start, the read-only phase, the notice,
+checkpoints, removal and the FSEvents delta work for any folder. Today an implementer outside a git
+repository works directly in `cwd` with a warning ([ORCHESTRATION.md](../../ORCHESTRATION.md)), so it
+has no isolation. With images it has the same isolation as in a git repository.
+
+Only the return of the result needs another path. Studio has three versions of each file: the base
+(the copy at base build time), the user's current file, and the agent's file.
+
+1. Studio lists the files that the agent changed: FSEvents on the agent mount since the snapshot
+   event id, with a compare against the base as the fallback.
+2. If the user did not change a file since the base, Studio takes the agent's version.
+3. If both changed it, Studio runs a three-way merge on the plain files (`git merge-file` or `diff3`
+   work without a repository).
+4. A conflict, and every binary file that both sides changed, goes to the user to choose.
+
+The git-only parts of the design (alternates, `core.checkStat`, the snapshot commit) do not apply.
 
 ## Options and verdicts
 
@@ -381,10 +400,43 @@ Differences that decide the choice:
 | agent layer on another volume (for example a RAM disk) | possible                                   | no, a clone must stay on the base's volume |
 | checkpoint and restore                                 | clone of the shadow file (not tested)      | clone of the agent file (tested)           |
 
-**Result: use a clone of the image file on macOS.** It is as fast or faster than the shadow file,
-10 parallel builds were 11 percent faster (356 s against 400 s, native 344 s), and the agent image is
-independent of the base. Keep the shadow file as a fallback when the agent layer must live on another
-volume.
+**Result: use a clone of the image file on macOS.** The reasons are the independent agent file and
+the fast creation. A general speed advantage is not proven: in this test 10 parallel Rust builds were
+11 percent faster with the clone (356 s against 400 s, native 344 s), but in the independent Swift
+test below the incremental build was faster with the shadow (1.54 s against 2.27 s). Keep the shadow
+file as a fallback when the agent layer must live on another volume.
+
+### Independent check: small Swift project (second agent)
+
+A second agent repeated the comparison on 2026-10-03 with its own scripts. Evidence on this Mac:
+`~/.local/share/codex-studio-evidence/2026-10-03-asif-comparison/` (`summary.json`, `results.json`,
+logs). Data: 50,000 files, base image about 960 MB, a SwiftPM project of 100 Swift files. macOS 27.2,
+busy host, caches not purged. Medians of three runs:
+
+| Check                                   | Clone of the image file | Shadow file     |
+| --------------------------------------- | ----------------------- | --------------- |
+| `clonefile()`                           | 0.26 ms                 | none            |
+| create and attach                       | 0.69 s                  | 0.78 s          |
+| `git status`                            | 0.22 s                  | 0.23 s          |
+| read                                    | 0.71 s                  | 0.66 s          |
+| incremental build after one file change | 2.27 s                  | 1.54 s          |
+| build after module cache reset          | 4.09 s                  | 3.64 s          |
+| private bytes after build               | 25.2 MiB                | 28.7 MiB        |
+| detach / delete file                    | 0.56 s / 0.02 s         | 0.54 s / 0.01 s |
+
+Findings:
+
+- **Isolation works for both.** Writes of one agent did not appear in another. The base checksum did
+  not change.
+- **The clone works without the base at its old path.** The base was renamed, the clone was attached,
+  and its data was intact.
+- **Build caches do not move between paths.** In both variants Swift rejected the module cache that
+  was built at another absolute path (build exit code 1). After a module cache reset the build passed.
+- **Seatbelt blocked every write outside the workspace:** outside write, outside delete, another
+  agent's workspace, a symbolic link, path traversal, deleting the base, writes from a child process.
+- **A strict Seatbelt profile broke the Swift build.** The changed-code build failed (exit code 1) with
+  writes allowed only to the workspace and `/dev/null`. It passed only when the shared user temporary
+  folder was also writable. That folder is shared by all agents, so it is not isolation between them.
 
 ### Linux overlayfs (OrbStack machine, blink and trading-bot)
 
@@ -451,7 +503,10 @@ Other Linux facts:
    path that runs commands or writes files needs a mandatory process sandbox (Seatbelt on macOS)
    that allows writes only to the agent mount and the agent's own temporary and cache folders. Shared
    writable caches let one agent damage the cache of another agent: give each agent its own writable
-   cache, or make shared caches read-only.
+   cache, or make shared caches read-only. A strict profile broke the Swift build until the shared user
+   temporary folder was writable (independent check). Next step: give each agent its own temporary
+   folder (`TMPDIR` inside its mount) and test whether the Swift and Xcode tools accept it. Tools that
+   ask the system for the user temporary folder can ignore `TMPDIR`.
 3. **FSEvents is not always cheap and is not a snapshot.** When events are lost, FSEvents sets
    `kFSEventStreamEventFlagMustScanSubDirs` and the client must scan those folders again
    ([Apple FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)).
@@ -463,9 +518,11 @@ Other Linux facts:
    objects it needs ([git clone, `--shared`](https://git-scm.com/docs/git-clone)). Studio must keep
    those objects alive, for example with a ref per base commit in the user's repository
    (`refs/studio/base/<id>`), or copy the needed packs into the base.
-5. **Build output reuse is not shown.** The bases in these tests had no build output. Rust was tested;
-   Xcode and Swift were not. Ten Rust builds made 33 GB of agent layers. A warm `target/` in the base
-   is expected to save time, but this was not measured.
+5. **Build output reuse is not shown, and absolute paths block it.** The bases in these tests had no
+   build output. Ten Rust builds made 33 GB of agent layers. In the independent Swift check, the
+   module cache from another absolute path was rejected in both variants. Every agent mount has its own
+   path, so build caches stored in the base must be free of absolute paths, use path remapping, or be
+   rebuilt per agent. A full Xcode project was not tested.
 6. **Linux under parallel load.** Ten overlay mounts were 4 to 6 times slower than one shared native
    tree for parallel `git status` and `rg` (3.4 s against 0.6 to 0.8 s). The native runs shared one
    tree and one cache, so this is a lower bound for native, but the gap is large.
@@ -479,7 +536,8 @@ Other Linux facts:
   the FSEvents delta, detach. Expected O(changes).
 - Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
-- Xcode and Swift builds, and reuse of build output stored in the base.
+- A full Xcode project, and reuse of build output stored in the base (only a small SwiftPM project
+  was tested).
 - Windows (differencing VHDX, ProjFS).
 - Linux on bare metal and on ext4 or XFS.
 - The process sandbox together with the image.
