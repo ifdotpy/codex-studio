@@ -7,7 +7,7 @@ reads application and agent state through the server HTTP API; the server owns
 persistent state, execution, and native provider access. Keep permission and
 request identity rules intact for actions that write state. Match checks to the
 changed interface, and use the focused composer check with
-`node ../tests/skill-autocomplete-ui.mjs` for skill completion changes.
+`npm run test:skill-autocomplete` for skill completion changes.
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
@@ -161,7 +161,7 @@ The current turn shows tool calls by default, including completed commands while
 the agent thinks. Manual collapse remains available. Turn completion preserves
 the visible calls; older commands stay hidden when history is reopened.
 
-`tests/live-chat-ui.mjs` injects app-server notifications into an isolated runtime.
+`tests/client/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
@@ -300,5 +300,5 @@ Targeted checks:
 
 ```sh
 python3 tests/connection-recovery-contract.py
-node tests/disconnect-recovery-ui.mjs
+npm --prefix web run test:browser -- disconnect-recovery-ui.spec.mjs
 ```

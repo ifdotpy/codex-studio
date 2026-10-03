@@ -148,8 +148,8 @@ not a filesystem path. Temporary native files are removed after each attempt.
 Targeted checks from the repository root:
 
 ```sh
-node tests/dictation-ui.mjs
-node --experimental-strip-types tests/speech-native.mjs
+npm --prefix web run test:browser -- dictation-ui.spec.mjs
+node web/node_modules/vitest/vitest.mjs run --config desktop/vitest.config.mjs native-ux.test.mjs dictation-permissions.test.mjs
 ```
 
 These checks mock capture and recognition. They do not request microphone or Speech
@@ -172,8 +172,8 @@ focus. A click opens the chat or the request that needs attention.
 Alerts use the existing chat snapshot without separate workspace reads. The first
 snapshot after launch establishes a baseline; old events do not repeat.
 The desktop app must remain running. macOS notification settings still apply.
-Run `node tests/desktop-alerts-contract.mjs` and
-`node tests/desktop-notifications-ui.mjs` from the repository root. The UI check
+Run `npm --prefix web run test:unit -- desktopAlerts.test.mjs` and
+`npm --prefix web run test:browser -- desktop-notifications-ui.spec.mjs` from the repository root. The UI check
 records native bridge calls; it does not display or verify macOS banners.
 
 Native transcription accepts an attempt `id`. `onTranscriptionProgress()` reports completed and total audio parts for that ID. `cancelTranscription(id)` stops that attempt after a user action. The saved recording remains on the device.
