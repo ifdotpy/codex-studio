@@ -438,6 +438,54 @@ Findings:
   writes allowed only to the workspace and `/dev/null`. It passed only when the shared user temporary
   folder was also writable. That folder is shared by all agents, so it is not isolation between them.
 
+### Seatbelt with Apple build tools (follow-up)
+
+Test on 2026-10-03: a new SwiftPM executable package and a copy of the real project
+`CallScribe.xcodeproj` (6 remote Swift packages) inside an ASIF mount, Swift 6.4, Xcode SDK 27.0.
+Strict profile: `(allow default)`, `(deny file-write*)`, writes allowed only to the agent mount and
+`/dev/null`. Environment: `TMPDIR`, `CLANG_MODULE_CACHE_PATH` and `SWIFTPM_MODULECACHE_OVERRIDE` inside
+the mount. `swift build` also used `--disable-sandbox`, `--cache-path`, `--config-path` and
+`--security-path` inside the mount.
+
+| Build                                                                                      | Profile                                                | Result                                                                             |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `swift build` (default Swift Build system)                                                 | strict                                                 | fails: `error: permissionDenied` at `Ld`                                           |
+| the same link command run alone                                                            | strict                                                 | passes, so the linker is not the cause                                             |
+| `swift build --build-system native`                                                        | strict                                                 | **passes**                                                                         |
+| `swift build`                                                                              | strict + `T/TemporaryItems` only                       | fails                                                                              |
+| `swift build`                                                                              | strict + `T/TemporaryItems` + `T/TemporaryDirectory.*` | **passes (2 of 2)**                                                                |
+| `swift build`                                                                              | strict + the whole user temporary folder `T`           | passes                                                                             |
+| `xcodebuild` on the package, `-packageCachePath` and `-derivedDataPath` in the mount       | strict, narrow or whole `T`                            | fails: writes `~/Library/Caches/org.swift.swiftpm/manifests/ManifestLoading/*.dia` |
+| the same, with that cache folder also writable                                             | narrow                                                 | fails: `sandbox-exec: sandbox_apply: Operation not permitted`                      |
+| `CallScribe.xcodeproj`, packages resolved and built once outside the sandbox (27 s + 33 s) | narrow, narrow + cache, whole `T`                      | fails the same two ways                                                            |
+
+`T` is the user temporary folder from `getconf DARWIN_USER_TEMP_DIR`.
+
+Findings:
+
+- **`TMPDIR` is not enough.** Swift Build writes to the user temporary folder through Foundation and
+  TSCBasic: `T/TemporaryItems/NSIRD_swift-build_*` and `T/TemporaryDirectory.*/`. They ignore `TMPDIR`.
+  A `HOME` inside the mount does not move user caches either.
+- **Seatbelt matches resolved paths.** A rule for `/var/folders/...` has no effect. Write
+  `/private/var/folders/...`.
+- **A narrow rule is enough for `swift build`.** Allow `(subpath "<T>/TemporaryItems")` and
+  `(regex #"^<T>/TemporaryDirectory\.[^/]+(/.*)?$")`. Files directly in `T` are not needed. These
+  folders are shared by all agents. Their names are random, so an accident is unlikely, but one agent
+  can still delete the temporary items of another.
+- **The native build system needs no exception.**
+- **`xcodebuild` with Swift packages does not run under Seatbelt.** SwiftPM writes manifest
+  diagnostics to the global cache, which `-packageCachePath` does not move, and then applies its own
+  sandbox to the manifest, which fails inside a sandbox. `xcodebuild` has no option to turn the
+  manifest sandbox off. A warm resolve and build outside the sandbox does not avoid it.
+
+Options for Xcode projects with packages (not tested):
+
+1. A build broker: Studio runs `xcodebuild` outside the agent sandbox, with all paths inside the agent
+   mount, when the agent asks for a build.
+2. Turn off the SwiftPM manifest sandbox with a global Xcode user setting. This changes the user's
+   Xcode for all projects.
+3. EndpointSecurity instead of Seatbelt, as Apple DTS suggests. It needs an Apple entitlement.
+
 ### Linux overlayfs (OrbStack machine, blink and trading-bot)
 
 | Operation                        | Native                    | overlayfs               |
@@ -503,10 +551,9 @@ Other Linux facts:
    path that runs commands or writes files needs a mandatory process sandbox (Seatbelt on macOS)
    that allows writes only to the agent mount and the agent's own temporary and cache folders. Shared
    writable caches let one agent damage the cache of another agent: give each agent its own writable
-   cache, or make shared caches read-only. A strict profile broke the Swift build until the shared user
-   temporary folder was writable (independent check). Next step: give each agent its own temporary
-   folder (`TMPDIR` inside its mount) and test whether the Swift and Xcode tools accept it. Tools that
-   ask the system for the user temporary folder can ignore `TMPDIR`.
+   cache, or make shared caches read-only. Apple build tools need exceptions: `swift build` needs two
+   shared folders in the user temporary folder, and `xcodebuild` with Swift packages does not run under
+   Seatbelt at all. See "Seatbelt with Apple build tools".
 3. **FSEvents is not always cheap and is not a snapshot.** When events are lost, FSEvents sets
    `kFSEventStreamEventFlagMustScanSubDirs` and the client must scan those folders again
    ([Apple FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)).
@@ -536,8 +583,8 @@ Other Linux facts:
   the FSEvents delta, detach. Expected O(changes).
 - Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
-- A full Xcode project, and reuse of build output stored in the base (only a small SwiftPM project
-  was tested).
+- A full Xcode build inside an agent mount under a sandbox (blocked, see above), and reuse of build
+  output stored in the base.
 - Windows (differencing VHDX, ProjFS).
 - Linux on bare metal and on ext4 or XFS.
 - The process sandbox together with the image.
