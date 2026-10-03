@@ -1,7 +1,7 @@
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile, mkdtemp } from "node:fs/promises";
+import { access, readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -834,6 +834,14 @@ async function runAccountsUi(mode) {
       console.log(
         `PERF state-refreshes-after-save=${stateReads - snapshotsBefore}`,
       );
+      for (const name of [
+        "chat-settings-390.png",
+        "chat-settings-1440.png",
+        "chat-settings-saved-390.png",
+        "chat-settings-saved-1440.png",
+      ]) {
+        await access(join(evidence, name));
+      }
       console.log(`PERF evidence=${evidence}`);
       return;
     }
