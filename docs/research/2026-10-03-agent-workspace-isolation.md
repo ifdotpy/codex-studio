@@ -63,6 +63,13 @@ needs one of these:
 
 Without one of them, no measured option meets requirement 3 on macOS for large repositories.
 
+**User decision (2026-10-03): build the base in the background when Multi agent mode is turned on.**
+The trigger is the **Multi agent** / **Single agent** switch in the chat header
+([ORCHESTRATION.md](../../ORCHESTRATION.md)). When the switch goes to Multi agent, Studio starts the
+base build for the lead's repository if no current base exists. Open point: what an implementer gets
+if it starts before the base is ready (for example, today's git worktree flow until the base is
+ready).
+
 The process sandbox (requirement 2) is a separate and required part. The image isolates the
 workspace, not the process. See "Limits and risks".
 
