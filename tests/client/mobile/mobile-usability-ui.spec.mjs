@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createRequire } from "node:module";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Mobile usability", async () => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Headless WebKit audit of the production UI. Only temporary fixture state is used.
 
@@ -636,6 +633,5 @@ test("Mobile usability", async () => {
     );
   } finally {
     await browser?.close();
-    fixture.kill("SIGTERM");
   }
 });

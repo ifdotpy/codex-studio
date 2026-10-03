@@ -5,11 +5,14 @@ import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { createRequire } from "node:module";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Terminal UI transport fixture; Python terminal contracts exercise actual PTYs.
   const skill = testRepo;
@@ -589,7 +592,6 @@ test("Terminal dock", async () => {
   if (process.argv.includes("--fixture-only")) process.exit(0);
 
   // The same dock also exercises real shell input and saved output through the HTTP server.
-  const { spawn } = await import("node:child_process");
   const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));
   const fixture = spawn(
     "python3",
@@ -742,6 +744,5 @@ test("Terminal dock", async () => {
       }
     }
     await liveBrowser?.close();
-    fixture.kill("SIGTERM");
   }
 });

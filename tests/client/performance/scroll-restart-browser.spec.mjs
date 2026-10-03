@@ -4,11 +4,10 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Scroll restart", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Exercise the real scroll hook across a browser reload and delayed history load.
   const repo = testRepo;

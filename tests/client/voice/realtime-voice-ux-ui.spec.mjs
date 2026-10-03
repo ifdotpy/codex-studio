@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
 test("Realtime voice ux", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(root + "/package.json");

@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Question history", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Real isolated HTTP runtime, no model or user state.
   const project = testRepo;
@@ -123,9 +120,5 @@ test("Question history", async ({
     await page?.screenshot({ path: join(root, "failure.png") });
     console.error("Evidence:", root, log);
     throw error;
-  } finally {
-    proc.kill("SIGTERM");
-    if (proc.exitCode === null)
-      await new Promise((resolve) => proc.once("exit", resolve));
   }
 });

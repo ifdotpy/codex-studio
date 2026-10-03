@@ -4,12 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
-test("Usage resume notice", async ({ context: _testContext }) => {
+test("Usage resume notice", async ({ context: testContext }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Render the production limit notice and verify its schedule and opt-out action.
 

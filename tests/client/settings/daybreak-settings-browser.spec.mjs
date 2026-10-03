@@ -10,15 +10,13 @@ import {
   modelValue,
   selectModel,
 } from "../../model-picker.mjs";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
 test("Daybreak settings", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   // Exercise the real settings component without a backend or model request.
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));

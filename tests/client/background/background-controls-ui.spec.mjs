@@ -4,15 +4,13 @@ import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
 test("Background controls", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
   const skill = testRepo;

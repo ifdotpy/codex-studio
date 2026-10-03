@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
-test("Draft recovery", async ({ context: _testContext }) => {
+test("Draft recovery", async ({ context: testContext }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   // Real IndexedDB. Fail local writes, reload, and recover without losing text.
   const { createServer } = await import(
     new URL(

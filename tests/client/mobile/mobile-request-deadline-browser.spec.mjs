@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Mobile request deadline", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Browser request deadlines still expire after mobile JavaScript suspension.
   const repo = testRepo;

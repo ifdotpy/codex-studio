@@ -4,11 +4,10 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Progress cache", async () => {
   test.setTimeout(180_000);
-  void expect;
   // Cache boundaries use the actual module and isolated browser storage.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));

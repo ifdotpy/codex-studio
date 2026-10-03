@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 test("Sync stream measure @performance", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Private fake-runtime measurement: fixture write commit -> persisted renderer row.
 
@@ -290,10 +293,6 @@ test("Sync stream measure @performance", async () => {
     await browser?.close();
     await server?.close();
     fixture.stdin.end();
-    if (fixture.exitCode === null) {
-      fixture.kill("SIGTERM");
-      await new Promise((resolve) => fixture.once("exit", resolve));
-    }
     await rm(directory, { recursive: true, force: true });
   }
 });

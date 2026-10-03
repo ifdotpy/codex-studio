@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
 test("Complaint ownership", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Current message recipient, history, and response delivery through the real component.
   const repo = testRepo;

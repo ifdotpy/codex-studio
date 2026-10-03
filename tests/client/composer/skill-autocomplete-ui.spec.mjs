@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Skill autocomplete", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production composer against an isolated runtime and delayed skill endpoint.
 
@@ -720,8 +717,6 @@ test("Skill autocomplete", async ({
   } catch (error) {
     console.error(error);
     console.error(log);
-    process.exitCode = 1;
-  } finally {
-    fixture.kill("SIGTERM");
+    throw error;
   }
 });

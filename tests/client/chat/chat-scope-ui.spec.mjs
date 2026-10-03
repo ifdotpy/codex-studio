@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Chat scope", async ({ browser: testBrowser, context: _testContext }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Real fixture, HTTP API, and headless browser. No model calls or user state.
 
@@ -265,7 +262,5 @@ test("Chat scope", async ({ browser: testBrowser, context: _testContext }) => {
     await page?.screenshot({ path: join(root, "failure.png"), fullPage: true });
     console.error("Evidence:", root);
     throw error;
-  } finally {
-    proc.kill("SIGTERM");
   }
 });

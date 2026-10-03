@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
-test("Sync push", async ({ context: _testContext }) => {
+test("Sync push", async ({ context: testContext }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   // Real RxDB/Dexie reconciles a shared stream invalidation through HTTP pull.
   const { createServer } = await import(
     new URL(

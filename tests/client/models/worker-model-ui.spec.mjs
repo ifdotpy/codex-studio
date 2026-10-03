@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { modelOptions, modelValue, selectModel } from "../../model-picker.mjs";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 test("Worker model", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production client with an isolated runtime. No model service or user state.
   const skill = testRepo;
@@ -295,6 +297,5 @@ test("Worker model", async () => {
     );
   } finally {
     await browser?.close();
-    proc.kill("SIGTERM");
   }
 });

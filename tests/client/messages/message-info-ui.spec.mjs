@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Message info", async ({
   browser: testBrowser,
   context: _testContext,
 }) => {
   test.setTimeout(180_000);
-  void expect;
-  void browserExecutablePath;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production renderer and metadata HTTP reads, temp state, headless Chrome only.
   const repo = testRepo;
@@ -325,8 +322,6 @@ test("Message info", async ({
   } catch (error) {
     console.error(log.slice(-3000));
     throw error;
-  } finally {
-    proc.kill("SIGTERM");
   }
   async function assertEventually(read) {
     for (let i = 0; i < 100; i++) {

@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 test("Session activity integration", async () => {
   test.setTimeout(180_000);
-  void expect;
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   const repo = testRepo;
   const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
@@ -212,10 +213,6 @@ test("Session activity integration", async () => {
     );
   } finally {
     await browser?.close();
-    if (proc.exitCode === null) {
-      const done = once(proc, "exit");
-      proc.kill("SIGTERM");
-      await done;
-    }
+    // spawnFixture owns bounded child cleanup, including test timeouts.
   }
 });
