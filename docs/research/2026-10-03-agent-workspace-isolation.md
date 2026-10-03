@@ -48,11 +48,11 @@ These are the requirements after the design discussion. Each item records a deci
 
 ## Decision
 
-| OS      | Mechanism                                                                                                                  | Status                                                                                  |
-| ------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Main candidate. Open: base build time, build cache paths, builds under a strict sandbox |
-| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Main candidate on btrfs. Open: parallel metadata load, sandbox                          |
-| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                                            |
+| OS      | Mechanism                                                                                                                  | Status                                                                                           |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Main candidate. Xcode with packages needs a global SwiftPM setting and a shared temporary folder |
+| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Main candidate on btrfs. Open: parallel metadata load, sandbox                                   |
+| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                                                     |
 
 **This design does not meet requirement 3 for the first agent of a repository.** The base build is
 O(files): about 16.5 min for chromium on macOS. Starts after that are about 1 s. So the decision
@@ -480,18 +480,70 @@ Findings:
 
 Options for Xcode projects with packages. **User rule (2026-10-03): Studio must not know what agents
 do.** The sandbox must stay generic, so a build broker (Studio runs `xcodebuild` for the agent) is
-rejected. None of the options below was tested:
+rejected. Options 2 to 4 were not tested:
 
-1. **Agent home inside its mount.** Set `CFFIXED_USER_HOME` for the agent, so that user caches and
-   preferences resolve inside the agent mount. A per-agent preference could then turn off the SwiftPM
-   manifest sandbox without a change to the user's Xcode. Unknown: whether `xcodebuild` and SwiftPM
-   honor this variable for caches and preferences.
+1. **Agent home inside its mount.** Tested in "Final checks": caches move, preferences do not, so the
+   SwiftPM manifest sandbox still needs the global setting.
 2. **A separate macOS user per agent slot.** Unix file permissions replace Seatbelt, so nested
    sandboxes work. Costs: a one-time admin setup, a privileged launcher, caches per user (less reuse),
    Xcode first-launch steps per user.
 3. **EndpointSecurity instead of Seatbelt**, as Apple DTS suggests. It needs an Apple entitlement and
    user approval of a system extension.
 4. **Turn off the SwiftPM manifest sandbox globally.** It changes the user's Xcode for all projects.
+
+### Final checks: Xcode under Seatbelt, build reuse, scale, base update
+
+Test on 2026-10-03 with a copy of `CallScribe.xcodeproj` (6 remote Swift packages, Swift macros) and
+`trading-bot`, ASIF bases, macOS 27.2.
+
+Final Seatbelt profile (generic, no rule for a single tool):
+
+```scheme
+(version 1)
+(allow default)
+(deny file-write*)
+(deny user-preference-write)
+(allow file-write* (subpath "<agent mount>"))
+(allow file-write* (literal "/dev/null"))
+(allow file-write* (subpath "<user temporary folder T, resolved under /private/var>"))
+```
+
+Agent environment: `CFFIXED_USER_HOME` and `HOME` inside the mount, `TMPDIR` inside the mount,
+`XCODE_XCCONFIG_FILE` pointing to an xcconfig in the mount with
+`OTHER_SWIFT_FLAGS = $(inherited) -Xfrontend -disable-sandbox`.
+
+| Check                                                                                           | Result                                                                                                                                                                             |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `xcodebuild`, without the global SwiftPM setting                                                | fails: `sandbox_apply: Operation not permitted` (manifest sandbox)                                                                                                                 |
+| `xcodebuild`, global setting on, only `TemporaryItems` and `TemporaryDirectory.*` in `T`        | 249 Swift compile tasks pass, then `actool` fails: it writes `T/actool-sprite-atlas-scratch-<UUID>`                                                                                |
+| `xcodebuild`, global setting on, the whole `T` writable                                         | **BUILD SUCCEEDED**: clean 26.3 s (286 Swift compile tasks), no-op 2.7 s                                                                                                           |
+| write outside, delete outside, write to another agent, write to the real home, `defaults write` | all 5 denied. Write to the own mount allowed                                                                                                                                       |
+| `defaults write` without `(deny user-preference-write)`                                         | **allowed**: `cfprefsd` writes the user's real preferences for the agent                                                                                                           |
+| `CFFIXED_USER_HOME` for caches                                                                  | SwiftPM caches, package configuration and default DerivedData move into the agent home. The real `~/Library` did not change                                                        |
+| `CFFIXED_USER_HOME` for preferences                                                             | does not work: `defaults write` changed the user's real domain                                                                                                                     |
+| Xcode DerivedData from the base, agent at another path                                          | not reused: full rebuild, 286 Swift compile tasks, 23.4 s. No-op after that 2.9 s                                                                                                  |
+| Rust `target/` from the base, agent at another path                                             | **reused**: 1.0 s instead of 55.7 s, 0 stale units. No-op 0.6 s                                                                                                                    |
+| detach after an Xcode build                                                                     | plain eject fails: `ibtoold` stays alive and holds the mount. Stop the processes from `lsof -t +f -- <mount>`, then eject: 3.5 to 4.2 s                                            |
+| detach after a git commit                                                                       | eject dissented by a git process (fsmonitor daemon)                                                                                                                                |
+| 30 agents (trading-bot base)                                                                    | 30 clones 0.31 s, 30 attaches 47.5 s in sequence (about 1.6 s each), 30 parallel no-op builds 11.1 s (30 of 30 succeeded), memory free 86 percent before and after, removal 27.8 s |
+| new base version (clone, attach, 50-line change, commit, detach)                                | 2.44 s. The new version owns 15.4 MB of blocks                                                                                                                                     |
+
+The global SwiftPM setting `IDEPackageSupportDisableManifestSandbox` was turned on only during the
+`xcodebuild` runs and restored to its original state (absent) after each run. The final check
+confirmed that it is absent. It was also written by mistake for about 30 s in an earlier run through
+`defaults write` with `CFFIXED_USER_HOME`, and removed.
+
+What this means:
+
+- **Xcode projects with Swift packages can run under Seatbelt only with a global change to the user's
+  Xcode** (SwiftPM manifest sandbox off) and with the whole user temporary folder writable. That folder
+  is shared by all agents and other apps of the user.
+- **The profile must deny `user-preference-write`.** A file-write rule alone does not stop an agent from
+  changing the user's preferences.
+- **Build reuse depends on the tool.** Rust reuses a base `target/` at any path. Xcode does not reuse
+  DerivedData at another path. SwiftPM rejected its module cache at another path (independent check).
+- **Removal must stop the processes that hold the mount** (background daemons such as `ibtoold` or a
+  git fsmonitor daemon). Use `lsof` on the mount, so Studio does not need to know the tools.
 
 ### Linux overlayfs (OrbStack machine, blink and trading-bot)
 
@@ -540,11 +592,18 @@ Other Linux facts:
    cycle. Budget disk per agent and remove finished agents.
 8. **The image does not stop writes outside the workspace.** A process sandbox (Seatbelt on macOS,
    namespaces or Landlock on Linux) must allow writes only to the agent mount and the agent's own
-   temporary and cache folders. See "Limits and risks", item 2.
+   temporary and cache folders. On macOS the profile must also deny `user-preference-write`. See
+   "Final checks".
 9. **Build the base in parallel.** 16 `tar` streams are 4 times faster than one on macOS.
 10. **Measure a cloned image with `ATTR_CMNEXT_PRIVATESIZE`.** `ls` and `du` show the full size of a
     clone. `getattrlist` with `ATTR_CMNEXT_PRIVATESIZE` (option `FSOPT_ATTR_CMN_EXTENDED`) returns the
     bytes that only this clone owns: 2.00 GB after 2 GB of writes in the test.
+11. **Put the agent home inside the mount.** `CFFIXED_USER_HOME` and `HOME` move user caches and the
+    default DerivedData into the agent mount. They do not move preferences.
+12. **Remove an agent in two steps.** Stop every process that holds the mount (`lsof -t +f --
+<mount>`), then eject. Background daemons from builds and git can hold the mount after the agent
+    ends.
+13. **Write Seatbelt paths in resolved form.** `/var/folders/...` must be `/private/var/folders/...`.
 
 ## Limits and risks
 
@@ -558,9 +617,10 @@ Other Linux facts:
    path that runs commands or writes files needs a mandatory process sandbox (Seatbelt on macOS)
    that allows writes only to the agent mount and the agent's own temporary and cache folders. Shared
    writable caches let one agent damage the cache of another agent: give each agent its own writable
-   cache, or make shared caches read-only. Apple build tools need exceptions: `swift build` needs two
-   shared folders in the user temporary folder, and `xcodebuild` with Swift packages does not run under
-   Seatbelt at all. See "Seatbelt with Apple build tools".
+   cache, or make shared caches read-only. Apple build tools need exceptions: the whole user temporary
+   folder must be writable (shared by all agents), and `xcodebuild` with Swift packages also needs the
+   global SwiftPM setting `IDEPackageSupportDisableManifestSandbox`, which changes the user's Xcode for
+   all projects. See "Final checks".
 3. **FSEvents is not always cheap and is not a snapshot.** When events are lost, FSEvents sets
    `kFSEventStreamEventFlagMustScanSubDirs` and the client must scan those folders again
    ([Apple FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)).
@@ -572,11 +632,10 @@ Other Linux facts:
    objects it needs ([git clone, `--shared`](https://git-scm.com/docs/git-clone)). Studio must keep
    those objects alive, for example with a ref per base commit in the user's repository
    (`refs/studio/base/<id>`), or copy the needed packs into the base.
-5. **Build output reuse is not shown, and absolute paths block it.** The bases in these tests had no
-   build output. Ten Rust builds made 33 GB of agent layers. In the independent Swift check, the
-   module cache from another absolute path was rejected in both variants. Every agent mount has its own
-   path, so build caches stored in the base must be free of absolute paths, use path remapping, or be
-   rebuilt per agent. A full Xcode project was not tested.
+5. **Build output reuse depends on the tool.** Every agent mount has its own path. Rust reused a base
+   `target/` at another path (1.0 s instead of 55.7 s). Xcode rebuilt everything from a base
+   DerivedData at another path (23.4 s, 286 Swift compile tasks), and SwiftPM rejected its module cache
+   at another path. For Xcode and SwiftPM a warm base gives no build time gain today.
 6. **Linux under parallel load.** Ten overlay mounts were 4 to 6 times slower than one shared native
    tree for parallel `git status` and `rg` (3.4 s against 0.6 to 0.8 s). The native runs shared one
    tree and one cache, so this is a lower bound for native, but the gap is large.
@@ -586,16 +645,13 @@ Other Linux facts:
 ## Not measured
 
 - Agents that live for days. Three build and clean cycles are the only proxy.
-- Update of a base to a new version. Plan: `cp -c` of the base file (O(1)), attach read-write, apply
-  the FSEvents delta, detach. Expected O(changes).
+- Base update with a real FSEvents delta of a large repository (the small update took 2.44 s).
 - Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
-- A full Xcode build inside an agent mount under a sandbox (blocked, see above), and reuse of build
-  output stored in the base.
+- Xcode projects that need code signing, simulators or UI tests under the sandbox.
 - Windows (differencing VHDX, ProjFS).
-- Linux on bare metal and on ext4 or XFS.
-- The process sandbox together with the image.
-- More than 10 agents.
+- Linux on bare metal and on ext4 or XFS, and the Linux process sandbox.
+- More than 30 agents.
 
 ## Appendix: commands
 
