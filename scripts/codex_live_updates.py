@@ -120,30 +120,39 @@ class LiveUpdates:
             from codex_sqlite_traces import transaction_watchdog
             transaction_watchdog(self.runtime.root)
             path = self.scripts / "studio-live-update.json"
-            try:
-                raw = path.read_bytes()
-            except FileNotFoundError:
-                self._successful = None
-                return
-            key = hashlib.sha256(raw).hexdigest()
-            source_signature = self._sources()
-            attempt_key = (key, source_signature)
-            if attempt_key != self._attempt_key:
-                self._successful = None
-                self._scope = None
-                self._attempt_key, self._attempts, self._retry_at = attempt_key, 0, 0
-            if key == self._successful:
-                state = self.status()
-                if state.pop("receiptError", None) is not None:
-                    self._record(state)
-                return
-            if time.monotonic() < self._retry_at:
-                return
-            self._attempts += 1
             # Publishers hold this same lock exclusively while replacing sources
             # and publish the manifest last. Never wait behind a publisher here.
             with (self.scripts / ".studio-update.lock").open("a+b") as lock:
-                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # A publisher can retire an applied patch. An unavailable
+                    # lease cannot invalidate the confirmed application receipt.
+                    if self.status().get("status") == "applied":
+                        return
+                    raise
+                try:
+                    raw = path.read_bytes()
+                except FileNotFoundError:
+                    # Retain the receipt, but revalidate an identical manifest
+                    # if a publisher restores it after this confirmed absence.
+                    self._successful = None
+                    return
+                key = hashlib.sha256(raw).hexdigest()
+                source_signature = self._sources()
+                attempt_key = (key, source_signature)
+                if attempt_key != self._attempt_key:
+                    self._successful = None
+                    self._scope = None
+                    self._attempt_key, self._attempts, self._retry_at = attempt_key, 0, 0
+                if key == self._successful:
+                    state = self.status()
+                    if state.pop("receiptError", None) is not None:
+                        self._record(state)
+                    return
+                if time.monotonic() < self._retry_at:
+                    return
+                self._attempts += 1
                 if path.read_bytes() != raw:
                     raise ValueError("Live update publication changed; retry required")
                 manifest, source = self._validate(raw)
