@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
@@ -7,6 +7,7 @@ import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 test("sidebar drag browser", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
+  console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
   const proc = spawn(
     "python3",
     ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
@@ -304,7 +305,5 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   } catch (error) {
     console.error("Fixture errors:", log);
     throw error;
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
   }
 });
