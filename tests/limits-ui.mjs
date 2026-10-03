@@ -102,6 +102,17 @@ try {
         })
       : route.fulfill({ json: { ...limits, accountKey: selectedAccount } }),
   );
+  // The server cache holds the same fixture limits as a provider read.
+  await page.route(/\/api\/limits\?.*cached=1/, (route) =>
+    route.fulfill({
+      json: {
+        ...limits,
+        accountKey:
+          new URL(route.request().url()).searchParams.get("account_key") ||
+          "default",
+      },
+    }),
+  );
   let costs = {
     at: now,
     stale: false,
