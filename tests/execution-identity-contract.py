@@ -267,6 +267,19 @@ class ExecutionIdentityContract(unittest.TestCase):
         self.assertTrue(any(effect['kind'] == 'task_submit' and effect['taskId'] == task['id'] for effect in child_run['effects']))
         self.assertEqual(next(node for node in run['nodes'] if node['kind'] == 'managed_worker')['agentId'], child['id'])
 
+    def test_savepoint_before_caller_write_does_not_commit_separately(self):
+        from codex_execution import safe_record, _save
+        a = self.lead()
+        run = self.records(a)[0]['id']
+        with self.runtime.lock, self.assertRaisesRegex(RuntimeError, 'abort caller'), self.runtime.db() as db:
+            self.assertFalse(db.in_transaction)
+            safe_record(db, _save, db, 'nodes', 'uncommitted-node', run,
+                        {'id': 'uncommitted-node', 'runId': run, 'status': 'running'})
+            self.assertTrue(db.in_transaction)
+            raise RuntimeError('abort caller')
+        with self.runtime.db() as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM runtime_execution_nodes WHERE id='uncommitted-node'").fetchone())
+
     def test_partial_record_failure_rolls_back_and_caller_agent_put_commits(self):
         from codex_execution import _save
         a = self.lead()

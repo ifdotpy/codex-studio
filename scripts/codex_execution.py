@@ -46,9 +46,10 @@ def safe_record(db, callback, *args, **kwargs):
     opened = False
     try:
         # RELEASE must never commit side records before the caller's writes.
-        # An explicit BEGIN uses the same commit already owned by Runtime.db.
+        # Take the writer before callback reads to avoid a snapshot upgrade.
+        # This uses the same commit already owned by Runtime.db.
         if not db.in_transaction:
-            db.execute('BEGIN')
+            db.execute('BEGIN IMMEDIATE')
         db.execute('SAVEPOINT exec_record')
         opened = True
         result = callback(*args, **kwargs)

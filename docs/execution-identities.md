@@ -105,18 +105,18 @@ python3 -B tests/execution-write-cost.py
 ## Notification replay measurement
 
 The October 3, 2026 replay uses `tests/notification-load-contract.py` on
-`origin/main` revision `0185781` and the execution branch. Three trials alternate
+`origin/main` revision `6d8cabc` and the execution branch. Three trials alternate
 between the two checkouts. Each trial uses temporary state, 320 input frames,
 288 callbacks after transport coalescence, and one dispatcher connection.
 
 | Metric, milliseconds  | Before median | After median |       Before range |        After range |
 | --------------------- | ------------: | -----------: | -----------------: | -----------------: |
-| Queue delay p95       |       625.457 |      510.711 | 532.764 to 657.924 | 433.517 to 608.410 |
-| Callback duration p95 |         6.660 |        5.690 |     5.851 to 7.114 |     5.677 to 6.921 |
-| Total lock wait       |       420.688 |      384.576 | 404.827 to 487.100 | 364.276 to 443.618 |
-| Total lock hold       |       618.903 |      508.236 | 529.085 to 657.007 | 431.126 to 606.337 |
+| Queue delay p95       |       724.927 |      687.127 | 622.491 to 735.785 | 640.622 to 762.610 |
+| Callback duration p95 |         7.611 |        7.694 |     7.553 to 8.072 |     7.113 to 8.390 |
+| Total lock wait       |       506.617 |      478.093 | 442.043 to 507.127 | 474.604 to 500.802 |
+| Total lock hold       |       724.136 |      682.954 | 621.393 to 728.888 | 639.632 to 764.840 |
 
-The after trials have lower median times. Host load varies between trials.
+The medians overlap within the measured ranges. Host load varies between trials.
 These elapsed times do not establish a speed change or live performance.
 The SQL statement counts above measure the additional record hook separately.
 
