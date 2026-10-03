@@ -6,18 +6,18 @@ The report separates provider token usage from tool payload sizes.
 
 ## What the numbers mean
 
-| Measurement | Source and limit |
-|---|---|
-| Input, output, total tokens | Codex usage records for observed model responses. |
-| Cached input tokens | A subset of input tokens. Do not add it to input again. |
-| Reasoning output tokens | A subset of output tokens. Do not add it to output again. |
-| Cache-write input tokens | The separate counter supplied by Codex, when available. |
-| Context percentage | The last reported total divided by the reported model context window. |
-| Model tool payload | The recorded arguments or result at the model tool boundary. |
-| Native tool payload | The arguments or result that app-server exposes for a native tool. |
-| Bytes and characters | UTF-8 bytes and Unicode characters in text or a compact JSON representation. |
-| Duration | A provider duration when supplied; otherwise an observed interval when both endpoints exist. |
-| Images | Observed count, decoded byte size for embedded base64 data, and available PNG dimensions. These are not image tokens. |
+| Measurement                 | Source and limit                                                                                                      |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Input, output, total tokens | Codex usage records for observed model responses.                                                                     |
+| Cached input tokens         | A subset of input tokens. Do not add it to input again.                                                               |
+| Reasoning output tokens     | A subset of output tokens. Do not add it to output again.                                                             |
+| Cache-write input tokens    | The separate counter supplied by Codex, when available.                                                               |
+| Context percentage          | The last reported total divided by the reported model context window.                                                 |
+| Model tool payload          | The recorded arguments or result at the model tool boundary.                                                          |
+| Native tool payload         | The arguments or result that app-server exposes for a native tool.                                                    |
+| Bytes and characters        | UTF-8 bytes and Unicode characters in text or a compact JSON representation.                                          |
+| Duration                    | A provider duration when supplied; otherwise an observed interval when both endpoints exist.                          |
+| Images                      | Observed count, decoded byte size for embedded base64 data, and available PNG dimensions. These are not image tokens. |
 
 A model `exec` call can run several native tools. Its result can omit or truncate
 their output. Adding that result to the native outputs counts some text twice.
@@ -94,5 +94,5 @@ Analytics adds no messages or tool definitions to model input.
 python3 -B tests/analytics-contract.py
 python3 -B tests/analytics-history-contract.py
 npm --prefix web run build
-node tests/analytics-ui.mjs
+npm --prefix web run test:browser -- analytics-ui.spec.mjs
 ```

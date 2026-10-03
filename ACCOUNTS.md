@@ -68,7 +68,7 @@ codex-control create 'Task' --cwd /path/to/project --account ACCOUNT
 ```
 
 Checks: `tests/project-accounts-contract.py`, `tests/account-project-runtime.py`,
-`tests/runtime-accounts-contract.py`, and `tests/account-project-ui.mjs`.
+`tests/runtime-accounts-contract.py`, and `tests/client/accounts/account-project-ui.spec.mjs`.
 Fixture checks do not make paid model requests or redeem real reset credits.
 
 ## Add an account
@@ -84,7 +84,7 @@ until Studio can reconcile it with the native profile. A retry with the same req
 ID does not start another login. An existing native account appears only once.
 
 Checks: `tests/account-login-contract.py`, `tests/runtime-accounts-contract.py`,
-and `tests/accounts-ui-smoke.mjs`. These checks use isolated fixtures.
+and `tests/client/accounts/accounts-ui-smoke.spec.mjs`. These checks use isolated fixtures.
 
 ## Delete an account
 
@@ -143,5 +143,5 @@ same request ID with different content is rejected. `action` can be `retry` or
 The lead's `accountTransfer` field provides progress after a page reload.
 
 Checks: `tests/account-transfer-contract.py`, `tests/account-transfer-native.py`,
-and `tests/account-transfer-ui.mjs`. The native test uses isolated profiles and a
+and `tests/client/accounts/account-transfer-ui.spec.mjs`. The native test uses isolated profiles and a
 local Responses provider. It makes no cloud model requests.

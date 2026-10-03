@@ -74,7 +74,7 @@ The permanent tests reproduce the relevant checks without relying on that direct
 
 - `tests/runtime-contract.py`: 35 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
 - `tests/canvas-contract.py`: 17 data and HTTP cases retained for legacy sessions, shared chats, and safe request handling.
-- `tests/product-ui.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
+- `tests/client/workspace/product-ui.spec.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
 - Headless Chrome: rendered at 1440 × 960 and 390 × 844; no horizontal page overflow.
 - Live Codex: one Astra lead, two reviewers, one command monitor. No claim of a live 40-model load test.
 
