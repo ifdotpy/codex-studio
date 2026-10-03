@@ -478,13 +478,20 @@ Findings:
   sandbox to the manifest, which fails inside a sandbox. `xcodebuild` has no option to turn the
   manifest sandbox off. A warm resolve and build outside the sandbox does not avoid it.
 
-Options for Xcode projects with packages (not tested):
+Options for Xcode projects with packages. **User rule (2026-10-03): Studio must not know what agents
+do.** The sandbox must stay generic, so a build broker (Studio runs `xcodebuild` for the agent) is
+rejected. None of the options below was tested:
 
-1. A build broker: Studio runs `xcodebuild` outside the agent sandbox, with all paths inside the agent
-   mount, when the agent asks for a build.
-2. Turn off the SwiftPM manifest sandbox with a global Xcode user setting. This changes the user's
-   Xcode for all projects.
-3. EndpointSecurity instead of Seatbelt, as Apple DTS suggests. It needs an Apple entitlement.
+1. **Agent home inside its mount.** Set `CFFIXED_USER_HOME` for the agent, so that user caches and
+   preferences resolve inside the agent mount. A per-agent preference could then turn off the SwiftPM
+   manifest sandbox without a change to the user's Xcode. Unknown: whether `xcodebuild` and SwiftPM
+   honor this variable for caches and preferences.
+2. **A separate macOS user per agent slot.** Unix file permissions replace Seatbelt, so nested
+   sandboxes work. Costs: a one-time admin setup, a privileged launcher, caches per user (less reuse),
+   Xcode first-launch steps per user.
+3. **EndpointSecurity instead of Seatbelt**, as Apple DTS suggests. It needs an Apple entitlement and
+   user approval of a system extension.
+4. **Turn off the SwiftPM manifest sandbox globally.** It changes the user's Xcode for all projects.
 
 ### Linux overlayfs (OrbStack machine, blink and trading-bot)
 
