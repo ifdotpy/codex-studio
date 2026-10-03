@@ -33,19 +33,20 @@ class RuntimeLockMetricsContract(unittest.TestCase):
     def test_condition_wait_releases_and_restores_the_wrapped_lock(self):
         lock = MeasuredRLock()
         condition = threading.Condition(lock)
+        ready = threading.Event()
         notified = threading.Event()
 
-        def notify():
-            time.sleep(.01)
+        def wait_for_notification():
             with condition:
-                condition.notify()
+                ready.set()
+                self.assertTrue(condition.wait(timeout=1))
                 notified.set()
 
-        thread = threading.Thread(target=notify)
+        thread = threading.Thread(target=wait_for_notification)
         thread.start()
+        self.assertTrue(ready.wait(timeout=1))
         with condition:
-            with lock:
-                self.assertTrue(condition.wait(timeout=1))
+            condition.notify()
         thread.join(timeout=1)
         self.assertTrue(notified.is_set())
         self.assertFalse(thread.is_alive())
