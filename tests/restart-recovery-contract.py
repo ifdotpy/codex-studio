@@ -530,12 +530,37 @@ class RestartContract(fixture.ConnectionRecoveryContract):
     def test_restart_preserves_eligible_failed_preparation_attempt(self):
         attempt, error = self.failed_preparation()
         self.runtime.close()
+        # Restore the pending receipt for the abrupt-exit state under test.
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='pending',error=NULL,turn_id=NULL "
+                       "WHERE id='failed-preparation-input' AND agent=? AND epoch=?",
+                       (self.key, attempt['epoch']))
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
         self.addCleanup(self.runtime.close)
         agent = self.runtime.agent(self.key)
         self.assertEqual(agent['status'], 'failed')
         self.assertEqual(agent['error'], error)
         self.assertEqual(agent['startAttempt'], attempt)
+        with self.runtime.db() as db:
+            self.assertEqual(tuple(db.execute(
+                "SELECT status,turn_id FROM runtime_events WHERE id='failed-preparation-input'"
+            ).fetchone()), ('pending', None))
+
+        result = recover(self.runtime, self.key)
+
+        self.assertEqual(result, {'status': 'input_restored', 'attemptId': attempt['id']})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'queued')
+        self.assertTrue(agent['autoWake'])
+        self.assertNotIn('startAttempt', agent)
+        self.assertEqual(agent['connectionRecovery']['outcome'], 'input_restored')
+        repeated = recover(self.runtime, self.key)
+        self.assertNotEqual(repeated.get('status'), 'input_restored')
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT id,status,turn_id FROM runtime_events "
+                              "WHERE id='failed-preparation-input'").fetchall()
+        self.assertEqual([tuple(row) for row in rows],
+                         [('failed-preparation-input', 'pending', None)])
 
     def test_scenario_4_disconnect_preserves_first_preparation_receipt(self):
         with self.runtime.db() as db:
