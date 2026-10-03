@@ -832,6 +832,11 @@ def native_launch_environment(root, handle, command, env, cwd):
     # Older supervisors hash the backend ID into the launch. Keep their exact
     # accepted signature, but only for the same verified native configuration.
     _, pid, identity_pid, started, _ = saved
+    if started and pid == identity_pid and process_start_time(pid) is None:
+        # An exited child has no environment to recover. Let open_handle check
+        # its owned Popen exit or durable recovery proof before replacement.
+        # An orphaned handle still fails there; this is not replay permission.
+        return clean
     if not started or pid != identity_pid or not process_start_matches(pid, started, allow_legacy=True):
         raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
     original = process_launch_environment(pid)

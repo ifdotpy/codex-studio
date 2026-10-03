@@ -951,6 +951,51 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
 
+    def test_exited_legacy_launch_reaches_supervisor_without_replaying_receipts(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        first.wait(first.submit('model/list', {}, operation_id='retained-operation'), timeout=2)
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+            self.assertIsNone(db.execute('SELECT closed_at FROM handles').fetchone()[0])
+        os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
+        with patch.object(process_supervisor, 'process_launch_environment',
+                          side_effect=AssertionError('An exited child has no launch environment')):
+            second = self.server()
+        self.assertEqual(second.proc.generation, first.proc.generation + 1)
+        self.assertFalse(second.proc.resumed)
+        self.assertNotEqual(int(self.pid_file.read_text()), old_pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        duplicate = second.proc.call('write', operationId='retained-operation', nativeId=50,
+                                     message={'id': 50, 'method': 'model/list', 'params': {}})
+        self.assertTrue(duplicate['duplicate'])
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 2)
+        self.assertEqual(operations.count('model/list'), 2)
+        self.assertNotIn('turn/start', operations)
+
+    def test_dead_orphan_launch_still_requires_supervisor_ownership(self):
+        with patch.object(process_supervisor, 'native_launch_environment',
+                          side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        old_pid = int(self.pid_file.read_text())
+        first.close()
+        os.kill(old_pid, signal.SIGKILL)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        command, env, cwd = [str(self.binary)], dict(os.environ), None
+        clean = process_supervisor.native_launch_environment(
+            self.root, 'account:default', command, env, cwd)
+        isolated = process_supervisor.Supervisor(self.root)
+        with self.assertRaisesRegex(RuntimeError, 'orphaned; native outcome remains unknown'):
+            isolated.open_handle('account:default', command, clean, cwd)
+        self.assertEqual(isolated.children, {})
+        self.assertEqual(int(self.pid_file.read_text()), old_pid)
+
     def test_closed_legacy_launch_starts_new_generation_without_replaying_receipts(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):
