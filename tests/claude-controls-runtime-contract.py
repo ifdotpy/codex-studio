@@ -225,6 +225,20 @@ class Controls(unittest.TestCase):
             close.assert_called_once()
         self.assertNotIn('default', self.rt._native_tools_retiring)
 
+    def test_older_supervisor_keeps_idle_bridge_and_connection(self):
+        from types import SimpleNamespace
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 14}}
+        self.server.provider_options = {}
+        self.server.pending = {}
+        self.server.callbacks = queue.Queue()
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(handle='account:default', generation=2,
+            call=lambda action: (_ for _ in ()).throw(RuntimeError('Unknown supervisor action')))
+        previous = self.rt.connection_ids['default']
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {}, self.server))
+        self.assertEqual(self.rt.connection_ids['default'], previous)
+        self.assertIs(self.rt.servers['default'], self.server)
+
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 15}}
         self.server.provider_options = {}

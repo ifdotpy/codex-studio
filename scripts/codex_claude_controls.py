@@ -248,7 +248,13 @@ def retire_idle_bridge(rt, key, account, server):
     if getattr(server, 'supervisor_mode', False):
         import sqlite3
         from codex_process_supervisor import process_start_time
-        transport = server.proc.call('status')
+        try:
+            transport = server.proc.call('status')
+        except RuntimeError as error:
+            if 'Unknown supervisor action' in str(error):
+                # An older supervisor keeps the working bridge until its process exits.
+                return False
+            raise
         path = rt.root / 'supervisor.sqlite3'
         journal = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=5)
         try:
