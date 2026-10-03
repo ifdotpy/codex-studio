@@ -84,6 +84,10 @@ export function query({prompt,options}){
     const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Choose?',header:'Choice',options:[{label:'A',description:'First'}]}]},{toolUseID:'ask',signal:abort.signal});
     if(decision.updatedInput.answers['Choose?']!=='A')throw new Error('Missing answer');
    }
+   if(text==='question-multi'){
+    const decision=await options.canUseTool('AskUserQuestion',{questions:[{question:'Features?',header:'Features',multiSelect:true,options:[{label:'A',description:'First'},{label:'B',description:'Second'}]}]},{toolUseID:'ask-multi',signal:abort.signal});
+    if(decision.updatedInput.answers['Features?']!=='A, B')throw new Error('Missing multi answer');
+   }
    if(text==='tool'){
     const tool=options.mcpServers.studio.tools[0];
     const result=await tool.call({text:'hello'});
@@ -188,6 +192,7 @@ class Bridge(unittest.TestCase):
         self.sequence = 0
         self.notifications = []
         self.approval = 'decline'
+        self.question_answers = ['A']
         self.thread = self.call('thread/start', {'cwd':str(root),'dynamicTools':[{'name':'echo','description':'Echo',
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
 
@@ -204,7 +209,7 @@ class Bridge(unittest.TestCase):
         row = self.rows.get(timeout=10)
         if 'id' in row and 'method' in row:
             result = ({'decision':self.approval} if row['method'].endswith('requestApproval') else
-                      {'answers':{'0':{'answers':['A']}}} if row['method'].endswith('requestUserInput') else
+                      {'answers':{'0':{'answers':self.question_answers}}} if row['method'].endswith('requestUserInput') else
                       {'success':True,'contentItems':[{'type':'inputText','text':'tool-ok'}]})
             self.write({'id':row['id'],'result':result})
         return row
@@ -539,6 +544,15 @@ class Bridge(unittest.TestCase):
         # Like Codex, an interrupt without an active turn changes nothing and says so.
         with self.assertRaisesRegex(ValueError,'^no active turn to interrupt$'):
             self.call('turn/interrupt',{'threadId':self.thread,'turnId':result['id']})
+
+    def test_claude_multi_choice_keeps_options_and_returns_comma_joined_labels(self):
+        self.question_answers = ['A', 'B']
+        self.turn('question-multi', 'question-multi')
+        self.assertEqual(self.completed()['status'], 'completed')
+        question = next(row for row in self.notifications if row.get('method') == 'item/tool/requestUserInput')
+        sent = question['params']['questions'][0]
+        self.assertTrue(sent['multiSelect'])
+        self.assertEqual(sent['options'][1]['description'], 'Second')
 
     def test_thread_name_is_stored_like_codex(self):
         self.assertEqual(self.call('thread/name/set',{'threadId':self.thread,'name':'Review 7'}),{})
