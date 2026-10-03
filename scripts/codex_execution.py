@@ -35,15 +35,40 @@ RETENTION_SECONDS = 30 * 86400
 PRUNE_LIMIT = 200
 
 
-def safe_record(callback, *args, **kwargs):
-    """A side record failure must not discard the caller's native event."""
+def _log_failure(callback, error):
+    # Do not log provider input, results, or request arguments.
+    logging.getLogger(__name__).error("Execution record failed: %s (%s)",
+                                     getattr(callback, '__name__', type(callback).__name__), type(error).__name__)
+
+
+def safe_record(db, callback, *args, **kwargs):
+    """Rollback partial side records without discarding the caller's state."""
+    opened = False
     try:
-        return callback(*args, **kwargs)
+        # RELEASE must never commit side records before the caller's writes.
+        # An explicit BEGIN uses the same commit already owned by Runtime.db.
+        if not db.in_transaction:
+            db.execute('BEGIN')
+        db.execute('SAVEPOINT exec_record')
+        opened = True
+        result = callback(*args, **kwargs)
+        db.execute('RELEASE exec_record')
+        return result
     except Exception as error:
-        # Do not log provider input, results, or request arguments.
-        logging.getLogger(__name__).error("Execution record failed: %s (%s)",
-                                         getattr(callback, '__name__', type(callback).__name__), type(error).__name__)
+        if opened:
+            try:
+                db.execute('ROLLBACK TO exec_record')
+                db.execute('RELEASE exec_record')
+            except Exception as cleanup_error:
+                _log_failure(safe_record, cleanup_error)
+        _log_failure(callback, error)
         return None
+
+
+def needs_record(table, record, previous):
+    if table == 'agents' and previous:
+        return any(previous.get(field) != record.get(field) for field in AGENT_FIELDS)
+    return True
 
 
 def prune(db, *, now=None, limit=PRUNE_LIMIT):
@@ -64,8 +89,22 @@ def prune(db, *, now=None, limit=PRUNE_LIMIT):
 
 def maintenance(runtime):
     # The HTTP server already performs hourly maintenance. Never run in put().
-    with runtime.db() as db:
-        return safe_record(prune, db)
+    deadline = time.monotonic() + 2
+    total = 0
+    while time.monotonic() < deadline:
+        try:
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            with runtime.db(busy_timeout=remaining_ms) as db:
+                deleted = safe_record(db, prune, db)
+        except Exception as error:
+            _log_failure(maintenance, error)
+            break
+        if deleted is None:
+            break
+        total += deleted
+        if deleted < PRUNE_LIMIT:
+            break
+    return total
 
 
 def observe_child_thread(db, account, method, params):

@@ -27,13 +27,16 @@ their existing transactions. Text deltas do not write execution records.
 Disconnect and backend restart do not establish a native terminal outcome.
 A native completion record must identify the exact root turn, account, and thread.
 Child and background events update nodes only. The observer preserves the existing
-agent, item, task, and failure notice handlers. Record failures log the function
-and exception type. They do not discard native events.
+agent, item, task, and failure notice handlers. Record callbacks use a savepoint
+inside the caller's transaction. A failure rolls back the callback's partial
+records. It logs the function and exception type and preserves the caller's writes.
+The savepoint does not add a commit. Deltas with no execution change skip the hook.
 
-The existing hourly HTTP server maintenance removes at most 200 finished or
-rejected runs older than 30 days per pass. It removes their dependent records
-first. Active and unknown runs remain available for recovery. Existing receipts
-and input events remain outside this retention policy.
+The existing hourly HTTP server maintenance removes finished or rejected runs
+older than 30 days. It uses batches of 200 and one short transaction per batch.
+It stops when no expired rows remain or two seconds pass. It removes dependent
+records first. Active and unknown runs remain available for recovery. Existing
+receipts and input events remain outside this retention policy.
 
 ## Reads
 
@@ -81,19 +84,19 @@ The measurement uses the actual `Runtime.put` caller and temporary state. It
 counts only SQL executed by the additional record hook. Existing source writes,
 sync projections, and transaction commits remain outside these counts.
 
-| Put case                                                   | Reads | Writes | Total |
-| ---------------------------------------------------------- | ----: | -----: | ----: |
-| Agent text delta or no execution field change              |     0 |      0 |     0 |
-| Agent accepted attempt with one input, changed preparation |     3 |      3 |     6 |
-| Agent first unsent attempt with one input                  |     2 |      3 |     5 |
-| New tool request linked to an active run                   |     4 |      1 |     5 |
-| Unchanged tool request                                     |     3 |      0 |     3 |
-| Tool request terminal status                               |     3 |      1 |     4 |
+| Put case                                                   | Reads | Writes | Savepoint controls | Total |
+| ---------------------------------------------------------- | ----: | -----: | -----------------: | ----: |
+| Agent text delta or no execution field change              |     0 |      0 |                  0 |     0 |
+| Agent accepted attempt with one input, changed preparation |     3 |      3 |                  2 |     8 |
+| Agent first unsent attempt with one input                  |     2 |      3 |                  2 |     7 |
+| New tool request linked to an active run                   |     4 |      1 |                  2 |     7 |
+| Unchanged tool request                                     |     3 |      0 |                  2 |     5 |
+| Tool request terminal status                               |     3 |      1 |                  2 |     6 |
 
 The count varies with the state. Each additional input adds one link insert.
 A terminal run update adds one attempt status update. A worker status change
 adds one node read and, when its node exists, one node write. Child creation also
-links the parent run and creates a worker node. The record hook adds no commits.
+links the parent run and creates a worker node. The record hook adds no commits. Each callback adds SAVEPOINT and RELEASE.
 
 ```sh
 python3 -B tests/execution-write-cost.py

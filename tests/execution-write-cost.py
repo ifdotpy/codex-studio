@@ -17,24 +17,25 @@ def measure():
     contract = contract_module.ExecutionIdentityContract()
     contract.setUp()
     counts = {}
-    original = codex_execution.reconcile_effect
+    original = codex_execution.safe_record
 
     def count(name, table, record):
         statements = []
 
-        def traced(runtime, db, *args):
+        def traced(db, *args):
             db.set_trace_callback(statements.append)
             try:
-                return original(runtime, db, *args)
+                return original(db, *args)
             finally:
                 db.set_trace_callback(None)
 
-        with contract.runtime.lock, contract.runtime.db() as db, patch('codex_execution.reconcile_effect', traced):
+        with contract.runtime.lock, contract.runtime.db() as db, patch('codex_execution.safe_record', traced):
             contract.runtime.put(db, table, record)
         counts[name] = {
             'statements': len(statements),
             'reads': sum(sql.startswith('SELECT') for sql in statements),
             'writes': sum(sql.startswith(('INSERT', 'UPDATE', 'DELETE')) for sql in statements),
+            'controls': sum(sql.startswith(('SAVEPOINT', 'RELEASE', 'BEGIN', 'ROLLBACK')) for sql in statements),
         }
 
     try:

@@ -2206,8 +2206,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
         if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
-            from codex_execution import reconcile_effect, safe_record
-            safe_record(reconcile_effect, self, db, table, record, previous)
+            from codex_execution import needs_record, reconcile_effect, safe_record
+            if needs_record(table, record, previous):
+                safe_record(db, reconcile_effect, self, db, table, record, previous)
         from codex_sync_entities import put as sync_entity_put
         collection = {
             "agents": "agent", "tasks": "task", "monitors": "monitor",
@@ -4844,7 +4845,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # return the exact batch to the outbox, but another busy attempt
                 # would repeat the rejection until this native turn ends.
                 from codex_execution import reject_attempt, safe_record
-                safe_record(reject_attempt, db, attempt, error)
+                safe_record(db, reject_attempt, db, attempt, error)
                 a["steerRejectedTurnId"] = a.get("turnId") or ""
                 a.update(status="running" if a.get("inFlight") else "queued", error=None)
                 a.pop("startAttempt", None)
@@ -5170,7 +5171,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if row is None:
                 if p.get("parentThreadId"):
                     from codex_execution import observe_child_thread, safe_record
-                    safe_record(observe_child_thread, db, account_key, method, p)
+                    safe_record(db, observe_child_thread, db, account_key, method, p)
                 return
             a = json.loads(row[0])
             if a.get("deletedAt"):
@@ -5206,8 +5207,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and (p.get('status') or {}).get('type') == 'notLoaded'):
                     stream.flush_locked(db, account=account_key, thread_id=tid, close=True, force=True)
                 a = self.agent(a['id'], db)
-            from codex_execution import observe_native, safe_record
-            safe_record(observe_native, db, a, method, p)
+            if method in {"turn/started", "turn/completed"}:
+                from codex_execution import observe_native, safe_record
+                safe_record(db, observe_native, db, a, method, p)
             attempt = a.get("startAttempt") or {}
             if (a.get("nativeReview") and attempt.get("action") == "review"
                     and attempt.get("submitted") and method in {"item/started", "item/completed"}
@@ -5848,7 +5850,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if child["id"] not in existing:
                     self.put(db, "agents", child)
                     from codex_execution import record_spawn, safe_record
-                    safe_record(record_spawn, db, current, child, key)
+                    safe_record(db, record_spawn, db, current, child, key)
                     text = child["prompt"]
                     if child.get("workerBaseCommit"):
                         text += ("\n\n[Studio worker worktree base] Commit " + child["workerBaseCommit"]

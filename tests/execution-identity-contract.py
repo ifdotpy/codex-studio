@@ -267,6 +267,31 @@ class ExecutionIdentityContract(unittest.TestCase):
         self.assertTrue(any(effect['kind'] == 'task_submit' and effect['taskId'] == task['id'] for effect in child_run['effects']))
         self.assertEqual(next(node for node in run['nodes'] if node['kind'] == 'managed_worker')['agentId'], child['id'])
 
+    def test_partial_record_failure_rolls_back_and_caller_agent_put_commits(self):
+        from codex_execution import _save
+        a = self.lead()
+        fixture.eventually(lambda: self.records(a)[0]['attempts'][0]['submission'] == 'accepted')
+        before = self.records(a)[0]
+        writes = []
+
+        def fail_after_write(db, table, key, run, record):
+            _save(db, table, key, run, record)
+            writes.append((table, key))
+            raise RuntimeError('Fault after the first execution write')
+
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(a['id'], db)
+            current['name'] = 'Caller put commits'
+            current['startAttempt']['id'] = 'partial-attempt'
+            with patch('codex_execution._save', fail_after_write), self.assertLogs('codex_execution', level='ERROR'):
+                self.runtime.put(db, 'agents', current)
+            self.assertTrue(db.in_transaction)
+            self.assertIsNone(db.execute("SELECT 1 FROM runtime_execution_attempts WHERE id='partial-attempt'").fetchone())
+        self.assertEqual(writes, [('attempts', 'partial-attempt')])
+        self.assertEqual(self.runtime.agent(a['id'])['name'], 'Caller put commits')
+        self.assertEqual(self.runtime.agent(a['id'])['startAttempt']['id'], 'partial-attempt')
+        self.assertEqual(self.records(a)[0], before)
+
     def test_record_failure_does_not_discard_native_completion_or_items_and_tasks(self):
         a = self.lead()
         with self.runtime.db() as db:
@@ -358,13 +383,15 @@ class ExecutionIdentityContract(unittest.TestCase):
         canvas.runtime = self.runtime
         server = make_server(canvas)
         try:
-            server.service_actions()
+            with patch('codex_execution.prune', wraps=prune) as batches:
+                server.service_actions()
+            self.assertEqual(batches.call_count, 2)
             with self.runtime.db() as db:
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 0)
             server.service_actions()  # The same hourly window does not prune again.
             with self.runtime.db() as db:
-                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 1)
-                self.assertEqual(prune(db, now=now), 1)
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 0)
+                self.assertEqual(prune(db, now=now), 0)
                 for table in ('attempts', 'inputs', 'effects', 'nodes'):
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_execution_' + table + " WHERE run LIKE 'expired-%'").fetchone()[0], 0)
                 self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_execution_runs WHERE id=?', (active,)).fetchone())
@@ -372,6 +399,26 @@ class ExecutionIdentityContract(unittest.TestCase):
                 self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (input_id,)).fetchone())
         finally:
             server.server_close()
+
+    def test_maintenance_stops_at_two_seconds_after_a_committed_batch(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from codex_execution import maintenance, PRUNE_LIMIT
+        a = self.lead()
+        run = self.records(a)[0]['id']
+
+        def finish_batch(db):
+            db.execute('INSERT INTO runtime_execution_inputs VALUES (?,?)', (run, 'timed-batch-marker'))
+            return PRUNE_LIMIT
+
+        # Deadline: 12. First batch starts at 10.2 and the next check sees 12.1.
+        clock = SimpleNamespace(monotonic=Mock(side_effect=[10, 10.1, 10.2, 12.1]))
+        with patch('codex_execution.time', clock), patch('codex_execution.prune', side_effect=finish_batch) as batches:
+            self.assertEqual(maintenance(self.runtime), PRUNE_LIMIT)
+        self.assertEqual(batches.call_count, 1)
+        with self.runtime.db() as db:
+            self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_execution_inputs WHERE run=? AND event=?',
+                                          (run, 'timed-batch-marker')).fetchone())
 
     def test_agent_and_execution_writes_rollback_together_and_deltas_do_not_write(self):
         a = self.lead()
@@ -387,7 +434,7 @@ class ExecutionIdentityContract(unittest.TestCase):
             current = self.runtime.agent(a['id'], db)
             current['tail'] = 'Text delta'
             self.runtime.put(db, 'agents', current)
-        self.assertFalse(any('runtime_execution_' in sql for sql in statements))
+        self.assertFalse(any('runtime_execution_' in sql or 'exec_record' in sql for sql in statements))
 
 
 if __name__ == '__main__':

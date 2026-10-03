@@ -910,7 +910,7 @@ class WorkMixin:
                     "created": time.time(),
                 }
                 from codex_execution import safe_record, submission_identity
-                result.update(safe_record(submission_identity, db, self.agent(submitter, db)) or {})
+                result.update(safe_record(db, submission_identity, db, self.agent(submitter, db)) or {})
                 result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
                 w["results"].append(result)
                 w["status"] = "review"
