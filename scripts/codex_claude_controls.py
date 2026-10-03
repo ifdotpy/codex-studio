@@ -248,6 +248,7 @@ def retire_idle_bridge(rt, key, account, server):
     if getattr(server, 'supervisor_mode', False):
         import sqlite3
         from codex_process_supervisor import process_start_time
+        transport = server.proc.call('status')
         path = rt.root / 'supervisor.sqlite3'
         journal = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=5)
         try:
@@ -256,7 +257,8 @@ def retire_idle_bridge(rt, key, account, server):
                                   'WHERE h.id=? AND h.closed_at IS NULL', (server.proc.handle,)).fetchone()
         finally:
             journal.close()
-        if (not row or row[0] != server.proc.pid or row[1] != server.proc.generation
+        if (not row or row[0] != transport.get('pid') or row[1] != server.proc.generation
+                or transport.get('returnCode') is not None
                 or row[3] != row[0] or not row[2] or not row[4]
                 or process_start_time(row[0]) != row[4]):
             raise ValueError('The idle Claude process identity is unknown')

@@ -995,6 +995,41 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(len(turns), 2)
         self.assertEqual([row['params'] for row in turns], [params, params])
 
+    def test_idle_claude_upgrade_uses_real_supervisor_transport_identity(self):
+        from contextlib import contextmanager
+        from codex_claude_controls import retire_idle_bridge
+        server = self.server()
+        server.initialize_result = {'capabilities': {'claudeVersion': 14}}
+        server.provider_options = {}
+        runtime = object.__new__(Runtime)
+        runtime.root = self.root
+        runtime.lock = threading.RLock()
+        runtime.servers = {'default': server}
+        runtime.server = server
+        runtime.connection_ids = {'default': 'old-connection'}
+        runtime.preparations = {}
+        runtime.loaded = set()
+        runtime.records = lambda db, table: []
+        path = self.root / 'idle-runtime.sqlite3'
+        @contextmanager
+        def database():
+            db = sqlite3.connect(path)
+            try:
+                db.execute('CREATE TABLE IF NOT EXISTS runtime_monitors(record TEXT)')
+                db.execute('CREATE TABLE IF NOT EXISTS runtime_tasks(record TEXT)')
+                yield db
+            finally:
+                db.close()
+        runtime.db = database
+        old_pid = server.proc.call('status')['pid']
+        self.assertFalse(hasattr(server.proc, 'pid'))
+        self.assertTrue(retire_idle_bridge(runtime, 'default', {}, server))
+        self.assertNotIn('default', runtime.servers)
+        wait_for(lambda: process_start_time(old_pid) is None)
+        replacement = self.server()
+        self.assertEqual(replacement.proc.generation, server.proc.generation + 1)
+        self.assertNotEqual(replacement.proc.call('status')['pid'], old_pid)
+
     def test_closed_legacy_launch_without_recovery_proof_is_rejected(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):

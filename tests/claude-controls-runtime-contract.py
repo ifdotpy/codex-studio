@@ -205,7 +205,7 @@ class Controls(unittest.TestCase):
         self.server.pending = {}
         self.server.callbacks = queue.Queue()
         self.server.supervisor_mode = True
-        self.server.proc = SimpleNamespace(handle='account:default', pid=123, generation=2)
+        self.server.proc = SimpleNamespace(handle='account:default', generation=2, call=lambda action: {'pid': 123, 'returnCode': None})
         import sqlite3
         with sqlite3.connect(self.rt.root / 'supervisor.sqlite3') as journal:
             journal.execute('CREATE TABLE handles(id TEXT,pid INTEGER,generation INTEGER,signature TEXT,closed_at REAL)')
