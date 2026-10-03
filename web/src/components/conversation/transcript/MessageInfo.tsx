@@ -15,6 +15,8 @@ type Metadata = {
   accountKey?: string;
   accountLabel?: string;
   provider?: string;
+  runId?: string;
+  attemptId?: string;
   turnDurationMs?: number;
   responseRate?: number;
   tokens?: { outputTokens?: number; reasoningOutputTokens?: number };
@@ -124,6 +126,8 @@ export default function MessageInfo({
     rows.push(["Provider", metadata?.provider || account!.provider!]);
   if (metadata?.accountLabel || account?.label)
     rows.push(["Account", metadata?.accountLabel || account!.label]);
+  if (metadata?.runId) rows.push(["Run ID", metadata.runId]);
+  if (metadata?.attemptId) rows.push(["Attempt ID", metadata.attemptId]);
   if (knownNumber(metadata?.turnDurationMs))
     rows.push(["Turn duration", duration(metadata.turnDurationMs)]);
   if (knownNumber(metadata?.tokens?.outputTokens))

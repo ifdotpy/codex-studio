@@ -150,8 +150,9 @@ try {
     turn: { id: turnId, status: "completed" },
     durationMs: 2500,
   });
+  let metadata;
   await assertEventually(async () => {
-    const metadata = await (
+    metadata = await (
       await fetch(
         origin +
           "/api/analytics?" +
@@ -178,6 +179,10 @@ try {
       .filter({ has: page.locator("dt", { hasText: label }) })
       .locator("dd")
       .innerText();
+  assert.equal(await value("Run ID"), metadata.runId);
+  assert.equal(await value("Attempt ID"), metadata.attemptId);
+  assert.match(metadata.runId, /^run:/);
+  assert.ok(metadata.attemptId);
   assert.equal(await value("Model"), agent.model);
   assert.equal(await value("Reasoning effort"), agent.effort);
   assert.equal(await value("Turn duration"), "2.5 s");

@@ -32,6 +32,8 @@ def message_info(runtime, agent, item_id, turn_id=None, thread=None):
             return result
         turn = json.loads(rows[0][0])
         thread = turn.get('threadId')
+        from codex_execution import message_identity
+        result.update(message_identity(runtime, agent, thread, turn_id))
         for field in ('model', 'effort', 'accountKey'):
             if turn.get(field):
                 result[field] = turn[field]
