@@ -11,6 +11,8 @@ const repo = fileURLToPath(new URL("../../../../", import.meta.url));
 const web = join(repo, "web");
 const runner = join(web, "node_modules/@playwright/test/cli.js");
 const config = join(web, "playwright.config.ts");
+const benchmarkGlobalTimeoutMs = 360_000;
+const benchmarkCommandTimeoutMs = 390_000;
 const requiredPaths = [
   runner,
   config,
@@ -31,13 +33,15 @@ for (const spec of specs) {
       "--config",
       config,
       "--project=performance",
+      "--global-timeout",
+      String(benchmarkGlobalTimeoutMs),
       join(repo, "tests/client/performance", spec),
     ],
     {
       cwd: web,
       stdio: "inherit",
       env: { ...process.env, PLAYWRIGHT_INCLUDE_SPECIAL: "1" },
-      timeout: 90_000,
+      timeout: benchmarkCommandTimeoutMs,
     },
   );
   if (result.error) throw result.error;

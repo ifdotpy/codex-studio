@@ -14,6 +14,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASELINE_REVISION = "e681bcc618d9ea4f4a0799de3fa81d01eee92687";
+const commandTimeoutMs = 90_000;
+const benchmarkGlobalTimeoutMs = 360_000;
+const benchmarkCommandTimeoutMs = 390_000;
 const repo = dirname(
   dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
 );
@@ -44,12 +47,18 @@ const baseline = join(temporaryRoot, "baseline");
 const baselineWeb = join(baseline, "web");
 let baselineWorktreeAdded = false;
 
-function command(program, args, cwd, extraEnv = {}) {
+function command(
+  program,
+  args,
+  cwd,
+  extraEnv = {},
+  timeoutMs = commandTimeoutMs,
+) {
   const result = spawnSync(program, args, {
     cwd,
     env: { ...process.env, ...extraEnv },
     stdio: "inherit",
-    timeout: 90_000,
+    timeout: timeoutMs,
   });
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`${program} ${args.join(" ")} timed out`);
@@ -183,10 +192,13 @@ function runCurrentSpec(spec) {
       "--config",
       playwrightConfig,
       "--project=performance",
+      "--global-timeout",
+      String(benchmarkGlobalTimeoutMs),
       join(tests, "client/performance", spec),
     ],
     web,
     { PLAYWRIGHT_INCLUDE_SPECIAL: "1" },
+    benchmarkCommandTimeoutMs,
   );
 }
 
@@ -199,6 +211,8 @@ function runBaselineSpec(spec) {
       "--config",
       join(baselineWeb, "playwright.config.ts"),
       "--project=performance",
+      "--global-timeout",
+      String(benchmarkGlobalTimeoutMs),
       join(baseline, "tests/client/performance", spec),
     ],
     baselineWeb,
@@ -206,6 +220,7 @@ function runBaselineSpec(spec) {
       PLAYWRIGHT_INCLUDE_SPECIAL: "1",
       RENDER_ISOLATION: "baseline",
     },
+    benchmarkCommandTimeoutMs,
   );
 }
 
