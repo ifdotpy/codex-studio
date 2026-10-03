@@ -284,6 +284,22 @@ export function useVisibleChatResult(
       candidates.at(-1)
     )?.id;
   }, [items, proof?.turnId]);
+  const nativeTurnItemIds = useMemo(
+    () =>
+      proof
+        ? items
+            .filter(
+              (item) =>
+                item.turnId === proof.turnId &&
+                item.role !== "user" &&
+                !item.pending &&
+                !item.streaming,
+            )
+            .map((item) => item.id)
+        : [],
+    [items, proof?.turnId],
+  );
+  const nativeTurnItemIdsKey = nativeTurnItemIds.join("\u0000");
   const completedTurnVisible =
     latestPage &&
     items.some(
@@ -320,7 +336,7 @@ export function useVisibleChatResult(
         !document.hasFocus() ||
         !target?.isConnected ||
         target.hasAttribute("data-lazy-message") ||
-        (!finalId && target.dataset.outcome !== "completed")
+        (!finalId && !target.closest<HTMLElement>('[data-outcome="completed"]'))
       )
         return;
       const box = target.getBoundingClientRect();
@@ -353,13 +369,38 @@ export function useVisibleChatResult(
       { root },
     );
     const connect = () => {
-      if (target?.isConnected) return;
-      const next =
-        root.querySelector<HTMLElement>(
-          finalId
-            ? `[data-message="${CSS.escape(finalId)}"]:not([data-lazy-message])`
-            : `[data-turn="${CSS.escape(proof.turnId)}"][data-outcome="completed"], [data-turns~="${CSS.escape(proof.turnId)}"][data-outcome="completed"]`,
-        ) || undefined;
+      const next = finalId
+        ? (root.querySelector<HTMLElement>(
+            `[data-message="${CSS.escape(finalId)}"]:not([data-lazy-message])`,
+          ) ?? undefined)
+        : (() => {
+            for (
+              let index = nativeTurnItemIds.length - 1;
+              index >= 0;
+              index--
+            ) {
+              const id = nativeTurnItemIds[index];
+              const row = root.querySelector<HTMLElement>(
+                `[data-message="${CSS.escape(id)}"]:not([data-lazy-message])`,
+              );
+              if (
+                row?.isConnected &&
+                row.getClientRects().length &&
+                row.closest<HTMLElement>('[data-outcome="completed"]')
+              )
+                return row;
+            }
+            const singleTurn = root.querySelector<HTMLElement>(
+              `[data-turn="${CSS.escape(proof.turnId)}"][data-outcome="completed"]`,
+            );
+            const nativeTurns = singleTurn?.dataset.turns
+              ?.trim()
+              .split(/\s+/)
+              .filter(Boolean);
+            return nativeTurns && nativeTurns.length > 1
+              ? undefined
+              : (singleTurn ?? undefined);
+          })();
       if (target !== next) {
         observer.disconnect();
         target = next;
@@ -385,7 +426,7 @@ export function useVisibleChatResult(
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["data-outcome"],
+      attributeFilter: ["data-outcome", "open"],
     });
     connect();
     window.addEventListener("focus", resume);
@@ -406,6 +447,7 @@ export function useVisibleChatResult(
     proof?.turnId,
     agent?.readStateSupported,
     finalId,
+    nativeTurnItemIdsKey,
     completedTurnVisible,
     loaded,
     !!onReadResult,

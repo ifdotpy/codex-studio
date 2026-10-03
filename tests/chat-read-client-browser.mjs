@@ -46,7 +46,7 @@ window.foreground=false;window.visible=true;Object.defineProperty(document,'visi
 const initial={id:'one',threadId:'thread',lastCompletedTurn:'turn',lastCompletedTurnStatus:'completed',source:'managed',status:'completed',name:'One',model:'sol',created:1,readStateSupported:true};
 window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;window.fail=false;window.serverState=JSON.parse(localStorage.getItem('server-read-state')||'null');
 const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(url==='/api/state?view=chat')return new Response(JSON.stringify({stateDir:'/state',threads:[{...window.agent,readState:window.serverState}]}),{headers:{'Content-Type':'application/json'}});if(url!='/api/organization')return nativeFetch(url,options);const body=JSON.parse(options.body);window.calls.push({...body,workspace:options.headers['X-Canvas-Workspace']});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail)return new Response(JSON.stringify({error:'Read state changed'}),{status:409});const value=body.read_state;window.serverState={threadId:value.thread_id,turnId:value.turn_id,read:value.read,revision:value.expected_revision+1};localStorage.setItem('server-read-state',JSON.stringify(window.serverState));return new Response(JSON.stringify({...initial,readState:window.serverState}),{headers:{'Content-Type':'application/json'}})};
-function Fixture(){const[agent,setAgent]=useState({...initial,readState:window.serverState}),[opened,setOpened]=useState('one'),[workspace,setWorkspace]=useState('first'),[loaded,setLoaded]=useState(true),[message,setMessage]=useState('turn'),[offset,setOffset]=useState(900),[streaming,setStreaming]=useState(false),[phase,setPhase]=useState("final_answer"),[nodeVersion,setNodeVersion]=useState(0),[turnStatus,setTurnStatus]=useState(undefined),[latestPage,setLatestPage]=useState(true),[resultText,setResultText]=useState("Completed result"),[groupTurn,setGroupTurn]=useState('turn'),[groupTurns,setGroupTurns]=useState('turn');const scroll=useRef(null);const data={stateDir:'/state',threads:[agent],runtime:{agents:[agent]}};const controls=useChatReadState(data,opened,text=>window.notifications.push(text),async()=>{window.refreshes++},workspace);window.controls=controls;window.agent=agent;window.state=controls.readStateFor(agent);window.marking=[...controls.marking];window.markUnread=()=>controls.markUnread(agent);window.setAgent=value=>flushSync(()=>setAgent(value));window.setOpened=value=>flushSync(()=>setOpened(value));window.setWorkspace=value=>flushSync(()=>setWorkspace(value));window.setLoaded=value=>flushSync(()=>setLoaded(value));window.setMessage=value=>flushSync(()=>setMessage(value));window.setOffset=value=>flushSync(()=>setOffset(value));window.setStreaming=value=>flushSync(()=>setStreaming(value));window.setPhase=value=>flushSync(()=>setPhase(value));window.replaceResult=()=>flushSync(()=>setNodeVersion(v=>v+1));window.setTurnStatus=value=>flushSync(()=>setTurnStatus(value));window.setLatestPage=value=>flushSync(()=>setLatestPage(value));window.setResultText=value=>flushSync(()=>setResultText(value));window.setGroupTurn=value=>flushSync(()=>setGroupTurn(value));window.setGroupTurns=value=>flushSync(()=>setGroupTurns(value));window.observe=proof=>controls.observeRead(proof);useVisibleChatResult(scroll,agent,[{id:'result',role:'assistant',turnId:message,phase,streaming,turnStatus,text:resultText}],loaded,controls.observeRead,workspace,latestPage);return <><div id="messages" ref={scroll} style={{height:180,overflow:'auto'}}><div style={{height:offset}}/><section key={nodeVersion} data-turn={groupTurn} data-turns={groupTurns} data-outcome={turnStatus}><article data-message="result" style={{height:80}}>Completed result</article></section></div><button onClick={()=>void controls.markUnread(agent)}>Unread</button></>};const appRoot=createRoot(document.getElementById('root'));window.unmount=()=>appRoot.unmount();appRoot.render(<Fixture/>);`;
+function Fixture(){const[agent,setAgent]=useState({...initial,readState:window.serverState}),[opened,setOpened]=useState('one'),[workspace,setWorkspace]=useState('first'),[loaded,setLoaded]=useState(true),[message,setMessage]=useState('turn'),[offset,setOffset]=useState(900),[streaming,setStreaming]=useState(false),[phase,setPhase]=useState("final_answer"),[nodeVersion,setNodeVersion]=useState(0),[turnStatus,setTurnStatus]=useState(undefined),[latestPage,setLatestPage]=useState(true),[resultText,setResultText]=useState("Completed result"),[groupTurn,setGroupTurn]=useState('turn'),[groupTurns,setGroupTurns]=useState('turn'),[nativeRows,setNativeRows]=useState(null),[rowsOpen,setRowsOpen]=useState(true);const scroll=useRef(null);const data={stateDir:'/state',threads:[agent],runtime:{agents:[agent]}};const controls=useChatReadState(data,opened,text=>window.notifications.push(text),async()=>{window.refreshes++},workspace);window.controls=controls;window.agent=agent;window.state=controls.readStateFor(agent);window.marking=[...controls.marking];window.markUnread=()=>controls.markUnread(agent);window.setAgent=value=>flushSync(()=>setAgent(value));window.setOpened=value=>flushSync(()=>setOpened(value));window.setWorkspace=value=>flushSync(()=>setWorkspace(value));window.setLoaded=value=>flushSync(()=>setLoaded(value));window.setMessage=value=>flushSync(()=>setMessage(value));window.setOffset=value=>flushSync(()=>setOffset(value));window.setStreaming=value=>flushSync(()=>setStreaming(value));window.setPhase=value=>flushSync(()=>setPhase(value));window.replaceResult=()=>flushSync(()=>setNodeVersion(v=>v+1));window.setTurnStatus=value=>flushSync(()=>setTurnStatus(value));window.setLatestPage=value=>flushSync(()=>setLatestPage(value));window.setResultText=value=>flushSync(()=>setResultText(value));window.setGroupTurn=value=>flushSync(()=>setGroupTurn(value));window.setGroupTurns=value=>flushSync(()=>setGroupTurns(value));window.setNativeRows=value=>flushSync(()=>setNativeRows(value));window.setRowsOpen=value=>flushSync(()=>setRowsOpen(value));window.observe=proof=>controls.observeRead(proof);useVisibleChatResult(scroll,agent,nativeRows||[{id:'result',role:'assistant',turnId:message,phase,streaming,turnStatus,text:resultText}],loaded,controls.observeRead,workspace,latestPage);return <><div id="messages" ref={scroll} style={{height:180,overflow:'auto'}}><div style={{height:offset}}/><section key={nodeVersion} data-turn={groupTurn} data-turns={groupTurns} data-outcome={turnStatus}><>{nativeRows?<details open={rowsOpen}><summary>Joined work</summary>{nativeRows.map(row=><div key={row.id} data-message={row.id} style={{height:row.height,marginTop:row.marginTop||0}}>{row.text}</div>)}</details>:<article data-message="result" style={{height:80}}>Completed result</article>}</></section></div><button onClick={()=>void controls.markUnread(agent)}>Unread</button></>};const appRoot=createRoot(document.getElementById('root'));window.unmount=()=>appRoot.unmount();appRoot.render(<Fixture/>);`;
       },
     },
   ],
@@ -372,11 +372,66 @@ try {
     window.setGroupTurns("historical-a silent-b");
     window.setMessage("silent-b");
     window.setOffset(0);
+    window.setNativeRows([
+      ...Array.from({ length: 12 }, (_, index) => ({
+        id: `history-a-${index}`,
+        role: "tool",
+        turnId: "historical-a",
+        turnStatus: "completed",
+        height: 80,
+        text: `Historical activity ${index}`,
+      })),
+      {
+        id: "activity-silent-b",
+        role: "tool",
+        turnId: "silent-b",
+        turnStatus: "completed",
+        height: 80,
+        text: "Latest tool activity",
+      },
+    ]);
+    window.setRowsOpen(false);
     window.setAgent({
       ...window.agent,
       lastCompletedTurn: "silent-b",
       lastCompletedTurnStatus: "completed",
     });
+  });
+  await settle();
+  assert.equal(
+    await page.evaluate(() => window.calls.length),
+    0,
+    "a collapsed joined disclosure does not acknowledge hidden latest-turn rows",
+  );
+  await page.evaluate(() => window.setRowsOpen(true));
+  await settle();
+  assert.equal(
+    await page.evaluate(() => window.calls.length),
+    0,
+    "visible historical rows cannot acknowledge latest-turn activity below the viewport",
+  );
+  assert.equal(
+    await page.locator('[data-message="history-a-0"]').isVisible(),
+    true,
+    "historical A is visible at the top of the transcript",
+  );
+  assert.equal(
+    await page.evaluate(() => {
+      const root = document.querySelector("#messages").getBoundingClientRect();
+      const latest = document
+        .querySelector('[data-message="activity-silent-b"]')
+        .getBoundingClientRect();
+      return (
+        Math.min(root.bottom, latest.bottom) > Math.max(root.top, latest.top)
+      );
+    }),
+    false,
+    "latest B is below the transcript viewport",
+  );
+  await page.evaluate(() => {
+    const root = document.querySelector("#messages");
+    root.scrollTop = root.scrollHeight;
+    root.dispatchEvent(new Event("scroll"));
   });
   await page.waitForFunction(() =>
     window.calls.some((call) => call.read_state.turn_id === "silent-b"),
