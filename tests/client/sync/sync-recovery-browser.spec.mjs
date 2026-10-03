@@ -73,9 +73,16 @@ test("Sync recovery browser", async ({
                 ? []
                 : [
                     {
-                      id: "state",
+                      id: "entity:workspace:current",
                       seq: 1,
-                      payload: JSON.stringify({ marker: "replicated" }),
+                      payload: JSON.stringify({
+                        collection: "workspace",
+                        id: "current",
+                        value: {
+                          stateDir: "fixture-workspace",
+                          marker: "replicated",
+                        },
+                      }),
                       _deleted: false,
                     },
                   ],
@@ -123,8 +130,8 @@ test("Sync recovery browser", async ({
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
     await page.waitForFunction(
       () =>
-        window.snapshot.data?.marker === "replicated" &&
-        window.second.data?.marker === "replicated" &&
+        window.snapshot.data?.runtime.marker === "replicated" &&
+        window.second.data?.runtime.marker === "replicated" &&
         !window.snapshot.error &&
         !window.outbox.error,
     );
@@ -143,7 +150,7 @@ test("Sync recovery browser", async ({
       () => !window.snapshot.error && !window.second.error,
     );
     assert.equal(
-      await page.evaluate(() => window.snapshot.data.marker),
+      await page.evaluate(() => window.snapshot.data.runtime.marker),
       "replicated",
       "An empty pull clears stale errors without a new snapshot",
     );

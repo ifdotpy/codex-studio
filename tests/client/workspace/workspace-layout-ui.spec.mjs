@@ -138,7 +138,19 @@ test("Workspace layout ui", async ({
         const response = await route.fetch();
         const data = await response.json();
         const scope = new URL(route.request().url()).searchParams.get("scope");
-        if (scope === "state" || scope === "state:chat") {
+        if (scope === "state:entities:v1") {
+          for (const document of data.documents || []) {
+            const entity = JSON.parse(document.payload);
+            if (entity.collection !== "agent") continue;
+            if (entity.id === lead.id) {
+              entity.value.name = longTitle;
+              entity.value.cwd = longProject;
+            } else if (entity.value.rootId === lead.id) {
+              entity.value.cwd = longProject;
+            }
+            document.payload = JSON.stringify(entity);
+          }
+        } else if (scope === "state" || scope === "state:chat") {
           for (const document of data.documents || []) {
             document.payload = JSON.stringify(
               labels(JSON.parse(document.payload)),
