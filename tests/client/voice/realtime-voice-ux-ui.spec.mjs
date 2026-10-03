@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
-test("Realtime voice ux", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Realtime voice ux", async ({ context }) => {
   test.setTimeout(180_000);
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(root + "/package.json");
   const { createServer } = await import(require.resolve("vite"));
+  const entryPath = join(root, "audit-entry.tsx");
   const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import RealtimeVoice from '/src/components/RealtimeVoice.tsx';
   window.calls=[];window.order=[];window.stops=0;window.records=[];window.pending=false;window.voiceError='';window.codexDesktop={requestMicrophone:async()=>{window.order.push('permission');if(window.holdPermission)await new Promise(r=>window.releasePermission=r);}};
   window.RTCPeerConnection=class{constructor(){window.pc=this;}addTrack(){}createDataChannel(){return window.dc={close(){},send(){throw Error('Native Core owns messages');}};}async createOffer(){return {sdp:'v=0\\noffer'};}async setLocalDescription(){}async setRemoteDescription(sdp){window.answer=sdp;window.emit({type:"session.started"});}close(){}};
@@ -36,20 +35,18 @@ test("Realtime voice ux", async ({
           });
         },
         resolveId(id) {
-          if (id === "/audit-entry.tsx") return root + id;
+          if (id === "/audit-entry.tsx") return entryPath;
         },
         load(id) {
-          if (id === root + "/audit-entry.tsx") return entry;
+          if (id === entryPath) return entry;
         },
       },
     ],
   });
   await server.listen();
-  const browser = testBrowser;
   try {
-    const page = await browser.newPage({
-      viewport: { width: 500, height: 700 },
-    });
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 500, height: 700 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     async function reset() {

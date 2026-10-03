@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Chat controls", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Chat controls", async ({ page }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Exercise production components against isolated HTTP and SQLite, with one transport failure.
@@ -19,8 +16,7 @@ test("Chat controls", async ({
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  let log = "",
-    browser;
+  let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   const poll = async (fn, label) => {
     for (let i = 0; i < 120; i++) {
@@ -36,10 +32,7 @@ test("Chat controls", async ({
   const origin = `http://127.0.0.1:${port}`;
   const state = () =>
     fetch(`${origin}/api/state`).then((response) => response.json());
-  browser = testBrowser;
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 960 },
-  });
+  await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

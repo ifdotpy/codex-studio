@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Skill autocomplete", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Skill autocomplete", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production composer against an isolated runtime and delayed skill endpoint.
@@ -20,7 +17,12 @@ test("Skill autocomplete", async ({
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  let browser;
+  const contexts = [];
+  const newPage = async (options) => {
+    const context = await testBrowser.newContext(options);
+    contexts.push(context);
+    return context.newPage();
+  };
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
 
@@ -43,8 +45,7 @@ test("Skill autocomplete", async ({
     const other = state.threads.find((agent) => agent.name === "Other project");
     assert.ok(lead && other);
 
-    browser = testBrowser;
-    const page = await browser.newPage({
+    const page = await newPage({
       viewport: { width: 1280, height: 900 },
     });
     await page.addInitScript(() => {
@@ -500,7 +501,7 @@ test("Skill autocomplete", async ({
     assert.equal(queues.length, 0);
     assert.deepEqual(pageErrors, []);
 
-    const failurePage = await browser.newPage({
+    const failurePage = await newPage({
       viewport: { width: 1280, height: 900 },
     });
     await stubSessionCosts(failurePage);
@@ -575,7 +576,7 @@ test("Skill autocomplete", async ({
       "mobile composer feedback does not cause horizontal overflow",
     );
 
-    const mobilePage = await browser.newPage({
+    const mobilePage = await newPage({
       viewport: { width: 390, height: 844 },
     });
     await stubSessionCosts(mobilePage);
@@ -626,7 +627,7 @@ test("Skill autocomplete", async ({
       "long namespaced skill names do not overflow the popup",
     );
 
-    const emptyPage = await browser.newPage({
+    const emptyPage = await newPage({
       viewport: { width: 1280, height: 900 },
     });
     await stubSessionCosts(emptyPage);
@@ -718,5 +719,7 @@ test("Skill autocomplete", async ({
     console.error(error);
     console.error(log);
     throw error;
+  } finally {
+    await Promise.all(contexts.map((context) => context.close()));
   }
 });

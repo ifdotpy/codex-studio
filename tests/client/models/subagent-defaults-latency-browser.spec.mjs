@@ -6,10 +6,7 @@ import { join } from "node:path";
 import { modelValue, selectModel } from "../../model-picker.mjs";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Subagent defaults latency @performance", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Subagent defaults latency @performance", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Click-to-Saved latency of the subagent defaults control on the 40-worker
@@ -64,8 +61,7 @@ test("Subagent defaults latency @performance", async ({
       },
     },
   );
-  let browser,
-    log = "";
+  let log = "";
   proc.stderr.on("data", (d) => (log += d));
   const timings = {};
   const port = await new Promise((resolve, reject) => {
@@ -97,10 +93,8 @@ test("Subagent defaults latency @performance", async ({
   const accounts = await post("/api/accounts/register", { home: profile });
   const second = accounts.accounts.find((a) => a.label === "second-account");
   assert.ok(second);
-  browser = testBrowser;
-  const page = await browser.newPage({
-    viewport: { width: 1440, height: 960 },
-  });
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(20000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

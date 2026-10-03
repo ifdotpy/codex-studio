@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Large history @performance", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Large history @performance", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Large transcript through the production renderer. All runtime state is isolated.
@@ -20,7 +17,6 @@ test("Large history @performance", async ({
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "",
-    browser,
     page;
   proc.stderr.on("data", (d) => (log += d));
   const port = await new Promise((resolve, reject) => {
@@ -74,8 +70,8 @@ test("Large history @performance", async ({
       text: `Component ${t} checked. The final result is available.`,
     });
   }
-  browser = testBrowser;
-  page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+  page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(30000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));

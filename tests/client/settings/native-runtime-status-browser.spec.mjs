@@ -6,10 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
-test("Native runtime status", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Native runtime status", async ({ context }) => {
   test.setTimeout(180_000);
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
@@ -80,13 +77,10 @@ test("Native runtime status", async ({
       },
     },
   };
-  let browser;
   try {
     await server.listen();
-    browser = testBrowser;
-    const page = await browser.newPage({
-      viewport: { width: 1100, height: 850 },
-    });
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1100, height: 850 });
     const errors = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);

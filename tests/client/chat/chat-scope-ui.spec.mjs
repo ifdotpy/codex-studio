@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Chat scope", async ({ browser: testBrowser, context: _testContext }) => {
+test("Chat scope", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Real fixture, HTTP API, and headless browser. No model calls or user state.
@@ -24,7 +24,7 @@ test("Chat scope", async ({ browser: testBrowser, context: _testContext }) => {
       },
     },
   );
-  let browser, page;
+  let page;
   let log = "";
   proc.stderr.on("data", (data) => (log += data));
   const poll = async (check, label) => {
@@ -68,8 +68,8 @@ test("Chat scope", async ({ browser: testBrowser, context: _testContext }) => {
       "different chats share the same account",
     );
 
-    browser = testBrowser;
-    page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+    page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));

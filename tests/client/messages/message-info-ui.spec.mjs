@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Message info", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Message info", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production renderer and metadata HTTP reads, temp state, headless Chrome only.
@@ -19,8 +16,8 @@ test("Message info", async ({
     ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
-  let browser,
-    log = "";
+  let browser, browserContext;
+  let log = "";
   proc.stderr.on("data", (data) => {
     log += data;
   });
@@ -36,13 +33,13 @@ test("Message info", async ({
       (agent) => agent.name === "Other project",
     );
     browser = testBrowser;
-    const context = await browser.newContext({
+    browserContext = await browser.newContext({
       viewport: { width: 1440, height: 1000 },
       timezoneId: "Europe/Warsaw",
       locale: "en-US",
       permissions: ["clipboard-read", "clipboard-write"],
     });
-    const page = await context.newPage();
+    const page = await browserContext.newPage();
     page.setDefaultTimeout(12000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -322,6 +319,8 @@ test("Message info", async ({
   } catch (error) {
     console.error(log.slice(-3000));
     throw error;
+  } finally {
+    await browserContext?.close();
   }
   async function assertEventually(read) {
     for (let i = 0; i < 100; i++) {

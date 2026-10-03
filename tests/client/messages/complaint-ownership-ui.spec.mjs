@@ -4,10 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
-test("Complaint ownership", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Complaint ownership", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Current message recipient, history, and response delivery through the real component.
@@ -44,7 +41,7 @@ test("Complaint ownership", async ({
     ],
   });
   await server.listen();
-  let browser;
+  let browserContext;
   const record = (id, author, recipient) => ({
     id,
     author,
@@ -76,10 +73,10 @@ test("Complaint ownership", async ({
   ];
   const records = [user, assigned, history];
   try {
-    browser = testBrowser;
-    const page = await browser.newPage({
+    browserContext = await testBrowser.newContext({
       viewport: { width: 1200, height: 950 },
     });
+    const page = await browserContext.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/check", (route) =>
@@ -331,6 +328,7 @@ test("Complaint ownership", async ({
       "PASS: current recipients, preserved response history, pending user reply, exact retry, conflict, response permissions, late response, mobile",
     );
   } finally {
+    await browserContext?.close();
     await server.close();
   }
 });

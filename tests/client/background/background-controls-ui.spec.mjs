@@ -6,10 +6,7 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { test } from "../playwright.mjs";
 
-test("Background controls", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Background controls", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
@@ -82,13 +79,9 @@ test("Background controls", async ({
   };
   const writes = [];
   let failInput = false;
-  let browser;
   try {
-    browser = testBrowser;
-    const page = await browser.newPage({
-      viewport: { width: 1440, height: 980 },
-      acceptDownloads: true,
-    });
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/api/**", async (route) => {
@@ -316,7 +309,6 @@ test("Background controls", async ({
     assert.deepEqual(errors, []);
     console.log(`PASS background controls browser contract. Evidence: ${root}`);
   } finally {
-    if (browser) await browser.close();
     await new Promise((r) => server.close(r));
   }
 });

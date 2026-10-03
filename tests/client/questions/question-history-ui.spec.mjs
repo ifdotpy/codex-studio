@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, spawnFixture as spawn } from "../playwright.mjs";
 
-test("Question history", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Question history", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Real isolated HTTP runtime, no model or user state.
@@ -23,7 +20,6 @@ test("Question history", async ({
     },
   );
   let log = "",
-    browser,
     page;
   proc.stderr.on("data", (data) => {
     log += data;
@@ -38,8 +34,8 @@ test("Question history", async ({
     const lead = state.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );
-    browser = testBrowser;
-    page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));

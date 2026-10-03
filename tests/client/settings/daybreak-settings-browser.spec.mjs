@@ -12,10 +12,7 @@ import {
 } from "../../model-picker.mjs";
 import { test } from "../playwright.mjs";
 
-test("Daybreak settings", async ({
-  browser: testBrowser,
-  context: _testContext,
-}) => {
+test("Daybreak settings", async ({ context }) => {
   test.setTimeout(180_000);
   // Exercise the real settings component without a backend or model request.
 
@@ -93,13 +90,10 @@ test("Daybreak settings", async ({
     ],
   });
 
-  let browser;
   try {
     await server.listen();
-    browser = testBrowser;
-    const page = await browser.newPage({
-      viewport: { width: 390, height: 700 },
-    });
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 390, height: 700 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(
