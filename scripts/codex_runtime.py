@@ -3073,6 +3073,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             max_agents = int(data.get("maxAgents", DEFAULT_MAX_TEAM_AGENTS))
             if type(concurrency) is not int or not 0 <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not 1 <= max_agents <= MAX_TEAM_AGENTS:
                 raise ValueError(f"Concurrency must be 0 to {MAX_SUBAGENT_CONCURRENCY}; team size must be 1 to {MAX_TEAM_AGENTS}")
+            max_agents_explicit = "maxAgents" in data
+            if is_lead and not max_agents_explicit:
+                max_agents = max(max_agents, concurrency + 2)
             budget = data.get("tokenBudget") or None
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
@@ -3092,7 +3095,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "parentId": parent,
                 "rootId": root["id"] if root else key,
                 **({"subagentConcurrencyVersion": 2,
-                    "maxAgentsExplicit": "maxAgents" in data} if is_lead else {}),
+                    "maxAgentsExplicit": max_agents_explicit} if is_lead else {}),
                 "model": model,
                 "effort": effort,
                 "fastMode": fast_mode,
