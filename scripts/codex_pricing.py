@@ -244,7 +244,9 @@ def price_usage(catalog, provider, model, usage, *, context_tokens=None, input_t
     if rates["cache_read"] is not None and cached is None:
         return None, "incomplete", False
     if rates["cache_write"] is not None and cache_write is None:
-        return None, "incomplete", False
+        # Older Claude rows did not record cache writes. Their input then
+        # prices at the base rate, a close estimate instead of no price.
+        cache_write = 0
     if input_tokens_are_uncached:
         base = input_tokens
         cached = cached or 0

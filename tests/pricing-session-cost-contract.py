@@ -673,7 +673,7 @@ class PricingSessionCostContract(unittest.TestCase):
 
 class ClaudeAliasPricing(unittest.TestCase):
     def test_claude_code_aliases_resolve_to_newest_family_model(self):
-        from codex_pricing import lookup
+        from codex_pricing import lookup, price_usage
         from codex_session_costs import provider_for
         catalog = {"providers": {"anthropic": {"models": {
             "claude-sonnet-4-5": {"release_date": "2025-09-29", "cost": {"input": 3, "output": 15}},
@@ -685,6 +685,11 @@ class ClaudeAliasPricing(unittest.TestCase):
         self.assertIsNone(lookup(catalog, "anthropic", "haiku"))
         self.assertEqual(provider_for("opus[1m]"), "anthropic")
         self.assertIsNone(provider_for("<synthetic>"))
+        catalog["providers"]["anthropic"]["models"]["claude-opus-5-5"]["cost"].update(cache_read=0.2, cache_write=5)
+        cost, status, _ = price_usage(catalog, "anthropic", "opus[1m]", {
+            "inputTokens": 1000, "cachedInputTokens": 600, "cacheWriteInputTokens": None, "outputTokens": 10})
+        self.assertEqual(status, "priced")
+        self.assertAlmostEqual(cost, (400 * 4 + 600 * .2 + 10 * 20) / 1_000_000)
 
 if __name__ == "__main__":
     unittest.main()
