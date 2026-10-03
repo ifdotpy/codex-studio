@@ -66,9 +66,21 @@ Without one of them, no measured option meets requirement 3 on macOS for large r
 **User decision (2026-10-03): build the base in the background when Multi agent mode is turned on.**
 The trigger is the **Multi agent** / **Single agent** switch in the chat header
 ([ORCHESTRATION.md](../../ORCHESTRATION.md)). When the switch goes to Multi agent, Studio starts the
-base build for the lead's repository if no current base exists. Open point: what an implementer gets
-if it starts before the base is ready (for example, today's git worktree flow until the base is
-ready).
+base build for the lead's repository if no current base exists.
+
+**User decision (2026-10-03): an implementer that starts before the base is ready works read-only.**
+
+1. Multi agent mode is turned on. The base build starts in the background.
+2. An implementer starts at once in the user's current folder with the existing read-only sandbox
+   (`sandboxPolicy: {"type": "readOnly"}`, `scripts/codex_runtime.py:3685`). It can read, search,
+   inspect git history and plan. It cannot build or run tests, because they write files.
+3. The base is ready. Studio clones the image file for the agent, copies the fresh user edits into it,
+   makes the snapshot commit, and moves the agent to the image mount with write access (process
+   sandbox limited to the mount and the agent's own folders).
+4. Studio notifies the agent that its writable workspace is ready: the new path, the write access and
+   the snapshot commit. Native delivery steers an active turn or starts an idle one
+   ([ORCHESTRATION.md](../../ORCHESTRATION.md)). The new working folder and sandbox apply from the
+   next turn, so the notice must tell the agent to continue its work there.
 
 The process sandbox (requirement 2) is a separate and required part. The image isolates the
 workspace, not the process. See "Limits and risks".
