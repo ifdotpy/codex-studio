@@ -1336,7 +1336,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             }
                         )
                 if path.path == "/api/limits" and canvas.runtime:
-                    return self.send(canvas.runtime.limits(parse_qs(path.query).get("account_key", ["default"])[0]))
+                    query = parse_qs(path.query)
+                    account_key = query.get("account_key", ["default"])[0]
+                    if query.get("cached") == ["1"]:
+                        return self.send(canvas.runtime.rate_limits_for(account_key))
+                    return self.send(canvas.runtime.limits(account_key))
                 if path.path == "/api/task" and canvas.runtime:
                     return self.send(canvas.runtime.task_detail(parse_qs(path.query).get("id", [""])[0]))
                 if path.path == "/api/complaint" and canvas.runtime:

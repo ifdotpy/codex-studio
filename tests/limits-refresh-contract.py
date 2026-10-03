@@ -51,16 +51,75 @@ class LimitsRefreshContracts(unittest.TestCase):
         call.assert_called_once()
         self.assertEqual(result["data"]["accountId"], "fresh")
 
+    def test_other_account_limit_update_republishes_workspace_entity(self):
+        from codex_sync_entities import put
+        with self.runtime.db() as db:
+            put(db, "workspace", "current", {"rateLimitsByAccount": {}})
+        first = {"at": time.time(), "data": {"accountId": "billing-other", "rateLimits": {"limitId": "claude"}}}
+        self.runtime.set_rate_limits(self.other_key, first)
+        with self.runtime.db() as db:
+            before = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        second = {"at": first["at"] + 1, "data": {"accountId": "billing-other", "rateLimits": {"limitId": "claude", "secondary": {"usedPercent": 20}}}}
+        self.runtime.set_rate_limits(self.other_key, second)
+        with self.runtime.db() as db:
+            seq, payload = db.execute("SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
+        import json
+        self.assertGreater(seq, before)
+        self.assertEqual(json.loads(payload)["value"]["rateLimitsByAccount"][self.other_key]["data"], second["data"])
+        self.runtime.set_rate_limits(self.other_key, {**second, "at": second["at"] + 1,
+                                                      "readAt": second["at"] + 1})
+        with self.runtime.db() as db:
+            timestamp_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(timestamp_seq, seq)
+        reset = {**second, "data": {**second["data"], "rateLimits": {
+            **second["data"]["rateLimits"], "secondary": {"usedPercent": 20, "resetsAt": 1802000000}}}}
+        self.runtime.set_rate_limits(self.other_key, reset)
+        with self.runtime.db() as db:
+            reset_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(reset_seq - seq, 1)
+        self.runtime.set_rate_limits(self.other_key, {**reset, "error": "Sign in required"})
+        with self.runtime.db() as db:
+            error_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(error_seq - reset_seq, 1)
+        self.runtime.set_rate_limits(self.other_key, {**reset, "error": "Sign in required",
+                                                      "data": {**reset["data"], "signedIn": False}})
+        with self.runtime.db() as db:
+            signout_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(signout_seq - error_seq, 1)
+
+    def test_320_equal_notifications_publish_one_workspace_change(self):
+        from codex_sync_entities import put
+        with self.runtime.db() as db:
+            put(db, "workspace", "current", {"rateLimitsByAccount": {}})
+            before = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        def notify(used):
+            self.runtime.notification({"method": "account/rateLimits/updated", "params": {
+                "rateLimits": {"limitId": "claude", "secondary": {
+                    "usedPercent": used, "resetsAt": 1802000000, "windowDurationMins": 10080,
+                }}
+            }}, self.other_key)
+        for _ in range(320):
+            notify(11)
+        with self.runtime.db() as db:
+            repeated = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(repeated - before, 1)
+        notify(12)
+        with self.runtime.db() as db:
+            changed = db.execute("SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(changed - repeated, 1)
+
     def test_delayed_notification_does_not_replace_newer_read(self):
         cached = self.cache()
         self.runtime.notification({"method": "account/rateLimits/updated",
             "_studioReceivedAt": cached["at"] - 180,
             "params": {"rateLimits": {"primary": {"usedPercent": 99}}}})
         self.assertIs(self.runtime.rate_limits_for(), cached)
-        with self.runtime.db() as db:
-            row = db.execute("SELECT record FROM analytics_limits ORDER BY rowid DESC LIMIT 1").fetchone()
         import json
-        self.assertTrue(json.loads(row[0])["ignoredAsStale"])
+        def stale_saved():
+            with self.runtime.db() as db:
+                rows = db.execute("SELECT record FROM analytics_limits ORDER BY rowid DESC LIMIT 2").fetchall()
+            return any(json.loads(row[0]).get("ignoredAsStale") for row in rows)
+        fixture.f.eventually(stale_saved)
 
     def test_slow_account_does_not_block_other_account(self):
         slow = self.runtime.connect()
