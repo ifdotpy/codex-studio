@@ -185,8 +185,8 @@ test("File Links Ui", async ({
         .filter({ hasText: message })
         .last();
       await candidate.waitFor();
+      await expect(candidate).toHaveAttribute("aria-labelledby", /\S+/);
       const labelledBy = await candidate.getAttribute("aria-labelledby");
-      assert.ok(labelledBy, "file error dialog has a stable accessible title");
       const dialog = page.locator(`[aria-labelledby="${labelledBy}"]`);
       await poll(async () =>
         message.test(await dialog.getByRole("alert").textContent()),

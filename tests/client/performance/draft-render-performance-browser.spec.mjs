@@ -373,14 +373,44 @@ test("Draft Render Performance Browser @performance", async ({
           }),
         });
       });
-      await page.waitForFunction(
-        () =>
-          draft.drafts["chat-0"] === "Concurrent remote text" &&
-          draft.conflicts.some((v) => v.text === "typed 19"),
-      );
-      await page.evaluate(() =>
-        draft.dismissDraft(draft.conflicts.find((v) => v.text === "typed 19")),
-      );
+      if (process.env.RENDER_ISOLATION === "baseline") {
+        // The historical baseline adopts the remote value immediately while
+        // retaining the just-edited local version as a dismissible alternative.
+        await page.waitForFunction(
+          () =>
+            draft.drafts["chat-0"] === "Concurrent remote text" &&
+            draft.conflicts.some((v) => v.text === "typed 19"),
+        );
+        await page.getByRole("button", { name: "Other drafts (1)" }).click();
+        await page
+          .locator(".draft-version")
+          .filter({ hasText: "typed 19" })
+          .getByRole("button", { name: "Dismiss", exact: true })
+          .click();
+      } else {
+        // Current behavior keeps the local edit and presents the remote branch
+        // through DraftVersions. Conversation's Replace text action calls
+        // setDraft with the selected version, so exercise that public hook path.
+        await page.waitForFunction(
+          () =>
+            draft.drafts["chat-0"] === "typed 19" &&
+            draft.conflicts.some(
+              (version) => version.text === "Concurrent remote text",
+            ),
+        );
+        const remote = await page.evaluate(
+          () =>
+            draft.conflicts.find(
+              (version) => version.text === "Concurrent remote text",
+            ).text,
+        );
+        await page.evaluate((text) => {
+          draft.setDrafts((current) => ({ ...current, "chat-0": text }));
+        }, remote);
+        await page.waitForFunction(
+          () => draft.drafts["chat-0"] === "Concurrent remote text",
+        );
+      }
       await page.waitForFunction(
         () =>
           draft.drafts["chat-0"] === "Concurrent remote text" &&
@@ -453,7 +483,7 @@ test("Draft Render Performance Browser @performance", async ({
           draft.conflicts.some((version) => version.text === "typed 19"),
         ),
         false,
-        "Conflict dismissal survives a new tab",
+        "The replaced local alternative does not return in a new tab",
       );
       await other.close();
       assert.deepEqual(
