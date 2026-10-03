@@ -120,7 +120,9 @@ export function spawnFixture(command, args, options) {
 
   const child = spawn(command, args, options);
   scope.children.add(child);
-  child.on("error", (error) => scope.errors.push(error));
+  child.on("error", (error) => {
+    if (error.code !== "ESRCH") scope.errors.push(error);
+  });
   child.once("close", () => scope.children.delete(child));
   return child;
 }
