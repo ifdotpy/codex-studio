@@ -8,6 +8,7 @@ import fnmatch
 import math
 import os
 from pathlib import Path
+import select
 import signal
 import subprocess
 import sys
@@ -203,6 +204,8 @@ def selected(entries, pattern):
 
 def run_process(command, cwd, timeout, environment):
     """Run one suite in its own process group and reap it on every exit path."""
+    if os.name != "nt" and not _supports_waitid_nowait():
+        return _run_process_with_group_supervisor(command, cwd, timeout, environment)
     options = {"start_new_session": os.name != "nt"}
     job_handle = None
     if os.name == "nt":
@@ -222,8 +225,9 @@ def run_process(command, cwd, timeout, environment):
                 os.killpg(process.pid, signal.SIGKILL)
             else:
                 if job_handle:
-                    _close_windows_job(job_handle)
-                job_handle = None
+                    owned_job = job_handle
+                    job_handle = None
+                    _close_windows_job(owned_job)
         except ProcessLookupError:
             pass
         except (OSError, subprocess.TimeoutExpired):
@@ -272,6 +276,61 @@ def run_process(command, cwd, timeout, environment):
 
 def _supports_waitid_nowait():
     return hasattr(os, "waitid") and hasattr(os, "WNOWAIT")
+
+
+def _run_process_with_group_supervisor(command, cwd, timeout, environment):
+    """Fallback that keeps a group anchor alive until its children are killed."""
+    supervisor = (
+        "import os, signal, subprocess, sys\n"
+        "status_fd = int(sys.argv[1])\n"
+        "try:\n"
+        "    result = subprocess.call(sys.argv[2:])\n"
+        "except BaseException:\n"
+        "    result = 127\n"
+        "with os.fdopen(status_fd, 'w') as status:\n"
+        "    status.write(str(result))\n"
+        "os.killpg(os.getpgrp(), signal.SIGKILL)\n"
+    )
+    read_fd, write_fd = os.pipe()
+    process = None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-c", supervisor, str(write_fd), *command],
+            cwd=cwd, env=environment, start_new_session=True, pass_fds=(write_fd,))
+    except BaseException:
+        os.close(read_fd)
+        raise
+    finally:
+        os.close(write_fd)
+
+    def terminate_group():
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    try:
+        ready, _, _ = select.select([read_fd], [], [], timeout)
+        if not ready:
+            terminate_group()
+            return None, f"timed out after {timeout:g}s"
+        payload = os.read(read_fd, 64)
+        if not payload:
+            terminate_group()
+            return None, "suite process-group supervisor exited without status"
+        returncode = int(payload.decode("ascii"))
+        process.wait(timeout=5)
+        return returncode, None
+    except BaseException:
+        terminate_group()
+        raise
+    finally:
+        os.close(read_fd)
 
 
 def _windows_kernel32():
@@ -369,15 +428,13 @@ def _close_windows_job(job):
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
         handle = wintypes.HANDLE(job)
-        termination_error = None
-        if not kernel32.TerminateJobObject(handle, 1):
-            termination_error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.TerminateJobObject(handle, 1)
         closed = kernel32.CloseHandle(handle)
         close_error = None if closed else ctypes.WinError(ctypes.get_last_error())
         if close_error:
             raise close_error
-        if termination_error:
-            raise termination_error
+        # Closing a kill-on-close job is itself the required cleanup. A failed
+        # explicit TerminateJobObject call does not invalidate that guarantee.
 
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT, execute=run_process):

@@ -109,20 +109,23 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(marker.stat().st_size, size, "grandchild survived successful suite exit")
 
     def test_posix_fallback_cleans_process_group_after_reaping_leader(self):
-        class FakeProcess:
-            pid = 321
-            returncode = 0
-
-            def wait(self, timeout=None):
-                return self.returncode
-
-        process = FakeProcess()
-        with (mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False),
-              mock.patch.object(RUNNER.subprocess, "Popen", return_value=process),
-              mock.patch.object(RUNNER.os, "killpg") as kill_group):
-            result = RUNNER.run_process(["suite.py"], ROOT, 1, {})
-        self.assertEqual(result, (0, None))
-        kill_group.assert_called_once_with(321, RUNNER.signal.SIGKILL)
+        with tempfile.TemporaryDirectory(prefix="server-runner-fallback-cleanup-") as temp:
+            marker = Path(temp) / "child-output"
+            child = ("import pathlib,time\np=pathlib.Path(" + repr(str(marker)) + ")\n"
+                     "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
+            parent = ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
+                      repr(child) + "]); p=pathlib.Path(" + repr(str(marker)) +
+                      "); deadline=time.monotonic()+2\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)")
+            with mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False):
+                returncode, error = RUNNER.run_process(
+                    [sys.executable, "-c", parent], ROOT, 3, os.environ.copy())
+            self.assertEqual(returncode, 0)
+            self.assertIsNone(error)
+            self.assertTrue(marker.exists())
+            size = marker.stat().st_size
+            time.sleep(.08)
+            self.assertEqual(marker.stat().st_size, size,
+                             "fallback suite process group retained its grandchild")
 
     def test_windows_job_assignment_failure_kills_suspended_suite(self):
         class ApiFunction:
