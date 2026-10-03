@@ -90,14 +90,17 @@ def change_mode(runtime, key, data):
         current = concurrency(agent)
         if agent.get('agentModeRevision', 0) != revision:
             raise ValueError('Subagent concurrency changed. Read the current value before saving')
+        prior_max_agents = agent.get('maxAgents')
+        changed = current != limit
         if current != limit:
             agent.update(concurrency=limit, agentModeRevision=revision + 1,
                          agentModeChangedAt=time.time(), agentModeChangedBy='user')
-            # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
-            # enough records available for the requested workers plus the lead.
-            if not agent.get('maxAgentsExplicit'):
-                minimum_records = limit + LEAD_TEAM_RECORDS + QUEUED_WORKER_HEADROOM
-                agent['maxAgents'] = max(agent.get('maxAgents', DEFAULT_MAX_TEAM_AGENTS), minimum_records)
+        # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
+        # enough records available for the requested workers plus the lead.
+        if not agent.get('maxAgentsExplicit'):
+            minimum_records = limit + LEAD_TEAM_RECORDS + QUEUED_WORKER_HEADROOM
+            agent['maxAgents'] = max(agent.get('maxAgents', DEFAULT_MAX_TEAM_AGENTS), minimum_records)
+        if changed or agent.get('maxAgents') != prior_max_agents:
             runtime.put(db, 'agents', mode_fields(agent))
         canonical = mode_fields(runtime.agent(key, db))
         runtime.save_receipt(db, request, signature,
