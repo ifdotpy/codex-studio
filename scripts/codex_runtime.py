@@ -1422,7 +1422,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
-                a.pop("startAttempt", None)
+                from codex_connection_recovery import preparation_eligible
+                if not preparation_eligible(a):
+                    a.pop("startAttempt", None)
                 from codex_safety_buffering import recover_restart as recover_safety_restart
                 recover_safety_restart(self, db, a)
                 self.put(db, "agents", a)
@@ -2647,11 +2649,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agents = [a for a in self.records(db, "agents") if a.get("accountKey", "default") == account_key]
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
+            from codex_connection_recovery import preparation_eligible
             for a in agents:
                 self.retire_legacy_steer(db, a)
                 start_attempt = copy.deepcopy(a.get("startAttempt"))
                 self.capacity_restart(db, a)
-                a.pop("startAttempt", None)
+                if not preparation_eligible(a):
+                    a.pop("startAttempt", None)
                 if a.get("inFlight") or a["status"] in {"running", "starting", "approval"}:
                     if a["status"] != "paused" or a.get("autoWake"):
                         a["disconnectRecovery"] = {

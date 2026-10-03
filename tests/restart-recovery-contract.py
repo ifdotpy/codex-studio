@@ -505,6 +505,38 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='reserved-input'").fetchone()[0],'pending')
 
+    def failed_preparation(self):
+        attempt = {'id': 'failed-preparation-attempt', 'epoch': self.a['epoch'],
+                   'accountKey': 'default', 'threadId': 'native-thread',
+                   'events': ['failed-preparation-input'], 'submitted': False}
+        error = 'Cannot verify the existing supervisor child; native outcome remains unknown'
+        with self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            self.runtime.enqueue(db, agent, 'user', 'Keep this instruction',
+                                 'failed-preparation-input')
+            agent.update(status='failed', autoWake=True, inFlight=False, turnId=None,
+                         threadId='native-thread', error=error, startAttempt=attempt)
+            self.runtime.put(db, 'agents', agent)
+        return attempt, error
+
+    def test_disconnect_preserves_eligible_failed_preparation_attempt(self):
+        attempt, error = self.failed_preparation()
+        self.runtime.disconnected('default', self.runtime.connection_ids['default'])
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'failed')
+        self.assertEqual(agent['error'], error)
+        self.assertEqual(agent['startAttempt'], attempt)
+
+    def test_restart_preserves_eligible_failed_preparation_attempt(self):
+        attempt, error = self.failed_preparation()
+        self.runtime.close()
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.addCleanup(self.runtime.close)
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'failed')
+        self.assertEqual(agent['error'], error)
+        self.assertEqual(agent['startAttempt'], attempt)
+
     def test_scenario_4_disconnect_preserves_first_preparation_receipt(self):
         with self.runtime.db() as db:
             a = self.runtime.agent(self.key, db)
