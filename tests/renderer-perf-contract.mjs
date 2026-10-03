@@ -220,6 +220,37 @@ assert.equal(
   2,
   "native turn records remain attributable",
 );
+const activePresentation = historyPresentationGroups([
+  runGroups[0],
+  {
+    ...runGroups[1],
+    outcome: undefined,
+    items: [message("tool-b-live", "output", "b", { toolStatus: "running" })],
+  },
+]);
+assert.equal(
+  activePresentation.length,
+  1,
+  "a live adjacent turn stays in the run",
+);
+assert.equal(activePresentation[0].outcome, undefined);
+const completedPresentation = historyPresentationGroups([
+  runGroups[0],
+  {
+    ...runGroups[1],
+    items: [
+      message("tool-b-live", "output", "b", {
+        toolStatus: "completed",
+        turnStatus: "completed",
+      }),
+    ],
+  },
+]);
+assert.equal(
+  completedPresentation[0].id,
+  activePresentation[0].id,
+  "terminal status keeps the shared presentation identity",
+);
 assert.equal(
   historyPresentationGroups([
     ...runGroups.slice(0, 1),
@@ -236,8 +267,16 @@ assert.equal(
     ...runGroups.slice(0, 1),
     { ...runGroups[1], outcome: "failed" },
   ]).length,
-  2,
-  "failed turns stay separate for their error notice",
+  1,
+  "failed turns keep their native outcome within the shared presentation",
+);
+assert.equal(
+  historyPresentationGroups([
+    ...runGroups.slice(0, 1),
+    { ...runGroups[1], outcome: "interrupted" },
+  ])[0].outcome,
+  "interrupted",
+  "interrupted status stays attributable to the last native turn",
 );
 assert.equal(
   historyPresentationGroups([

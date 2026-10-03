@@ -564,12 +564,18 @@ try {
     .evaluate((element) => (element.dataset.retained = "yes"));
   items.splice(2, 0, tool("third-result", "Third result received"));
   await emit();
+  await page.locator('.tool-card[data-message="third-result"]').waitFor();
   assert.equal(
     await blocks.first().evaluate((element) => element.tagName),
     "DETAILS",
   );
   assert.notEqual(await blocks.first().getAttribute("open"), null);
   assert.equal(await blocks.first().locator(".tool-card").count(), 3);
+  assert.equal(
+    await blocks.first().locator('[data-message="third-result"]').count(),
+    1,
+    "the added tool is inside the first activity group",
+  );
   assert.equal(
     await blocks
       .first()
@@ -603,6 +609,11 @@ try {
     null,
     "the user's closed choice survives reload",
   );
+  assert.notEqual(
+    await blocks.nth(1).getAttribute("open"),
+    null,
+    "the next activity run keeps an independent expansion choice",
+  );
   assert.equal(
     await blocks.first().locator(".tool-card").count(),
     0,
@@ -617,10 +628,19 @@ try {
   );
   assert.equal(await middle.isVisible(), true);
   turn = "cross-b";
-  turnDone = true;
+  turnDone = false;
   items = [
     {
-      ...tool("cross-tool-a", "First turn tool"),
+      ...shared(),
+      id: "cross-command-a",
+      role: "output",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command: "check previous turn",
+        status: "completed",
+        exitCode: 0,
+      }),
       turnId: "cross-a",
       turnStatus: "completed",
     },
@@ -638,21 +658,73 @@ try {
     {
       ...tool("cross-tool-b", "Second turn tool"),
       turnId: "cross-b",
-      turnStatus: "completed",
+      toolStatus: "running",
+      text: JSON.stringify({
+        type: "dynamicToolCall",
+        tool: "Second turn tool",
+        status: "inProgress",
+      }),
     },
   ];
   await emit();
-  const crossTurnWork = page.locator('[data-turn="cross-a"] .turn-work');
+  const crossTurnWork = page.locator('[data-turns~="cross-b"] .turn-work');
+  await crossTurnWork
+    .locator('.tool-card[data-message="cross-tool-b"]')
+    .waitFor();
   assert.equal(
     await page.locator(".turn-work").count(),
     1,
     "adjacent completed turns share one disclosure",
   );
-  assert.equal(await crossTurnWork.locator(".tool-card").count(), 2);
+  assert.equal(
+    await crossTurnWork.locator(".tool-card").count(),
+    1,
+    "a historical completed command stays hidden while the active turn's command remains visible",
+  );
+  assert.match(
+    await crossTurnWork.locator(":scope > summary").innerText(),
+    /1 tool call/,
+    "the merged summary uses only visible tool activity",
+  );
   assert.equal(await crossTurnWork.locator(".reasoning-duration").count(), 1);
+  await crossTurnWork
+    .locator('.tool-card[data-message="cross-tool-b"] > summary')
+    .click();
   await page.locator('[data-message="cross-tool-b"]').evaluate((element) => {
     element.dataset.retained = "yes";
   });
+  items = items.map((item) =>
+    item.id === "cross-tool-b"
+      ? {
+          ...item,
+          toolStatus: "completed",
+          turnStatus: "completed",
+          text: JSON.stringify({
+            type: "dynamicToolCall",
+            tool: "Second turn tool",
+            status: "completed",
+            success: true,
+          }),
+        }
+      : item,
+  );
+  turnDone = true;
+  await emit();
+  await crossTurnWork
+    .locator('.tool-card[data-message="cross-tool-b"]')
+    .waitFor();
+  assert.equal(
+    await page
+      .locator('[data-message="cross-tool-b"]')
+      .getAttribute("data-retained"),
+    "yes",
+    "turn completion preserves the current tool card node",
+  );
+  assert.notEqual(
+    await page.locator('[data-message="cross-tool-b"]').getAttribute("open"),
+    null,
+    "turn completion preserves the selected tool card's open state",
+  );
   items.push({
     id: "cross-final",
     role: "assistant",
@@ -662,6 +734,7 @@ try {
     turnStatus: "completed",
   });
   await emit();
+  await page.locator('[data-message="cross-final"]').waitFor();
   assert.equal(
     await page.locator(".turn-work").count(),
     1,
@@ -677,14 +750,62 @@ try {
   await crossTurnWork.locator(":scope > summary").click();
   await page.reload();
   await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.locator('[data-message="cross-final"]').waitFor();
   assert.equal(
     await page.locator('[data-turn="cross-a"] .turn-work').getAttribute("open"),
     null,
     "the cross-turn disclosure keeps its manual choice after reload",
   );
+  turn = "unattributed";
+  items = [
+    {
+      id: "loose-tool-a",
+      role: "output",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "dynamicToolCall",
+        tool: "first",
+        status: "completed",
+        success: true,
+      }),
+    },
+    {
+      id: "loose-reasoning",
+      role: "reasoning",
+      text: "",
+      reasoningMs: 1000,
+      reasoningSince: null,
+      reasoningObservedAt: Date.now() / 1000,
+    },
+    {
+      id: "loose-tool-b",
+      role: "output",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "dynamicToolCall",
+        tool: "second",
+        status: "completed",
+        success: true,
+      }),
+    },
+  ];
+  await emit();
+  await page.locator('[data-message="loose-reasoning"]').waitFor();
+  assert.equal(
+    await page.locator(".tool-group .tool-card").count(),
+    2,
+    "reasoning without a native turn stays outside the tool card group",
+  );
+  assert.equal(
+    await page
+      .locator('.reasoning-duration[data-message="loose-reasoning"]')
+      .count(),
+    1,
+    "the ungrouped view renders reasoning duration directly",
+  );
   await page.setViewportSize({ width: 390, height: 900 });
   await page.screenshot({ path: join(directory, "commentary-mobile.png") });
-  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.unroute("**/api/transcript?*");
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
@@ -721,6 +842,7 @@ try {
         "small groups preserve saved closed choice",
         "reasoning stays chronological inside counted tool groups",
         "adjacent completed turns share stable work disclosure",
+        "ungrouped tool activity leaves reasoning outside tool cards",
         "manual choice",
         "reload",
         "reader anchor",

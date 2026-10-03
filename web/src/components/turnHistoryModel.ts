@@ -23,8 +23,7 @@ export interface HistoryGroup {
 }
 
 function activityRow(item: Message): boolean {
-  if (item.pending || item.streaming || item.nativeNotice || item.nativeError)
-    return false;
+  if (item.pending || item.nativeNotice || item.nativeError) return false;
   if (item.role === "reasoning") return true;
   if (["tool", "output"].includes(item.role)) {
     if (item.title === "fileChange") return false;
@@ -34,7 +33,11 @@ function activityRow(item: Message): boolean {
       return true;
     }
   }
-  return item.role === "assistant" && isEmptyAssistantMessage(item);
+  return (
+    item.role === "assistant" &&
+    !item.streaming &&
+    isEmptyAssistantMessage(item)
+  );
 }
 
 function activityEdge(group: HistoryGroup, fromEnd: boolean): boolean {
@@ -56,10 +59,13 @@ export function historyPresentationGroups(
     const previous = result.at(-1);
     const priorTurns = previous?.turns || (previous ? [previous] : []);
     const priorNativeTurn = priorTurns.at(-1);
+    const joinableOutcome =
+      !group.outcome ||
+      ["completed", "failed", "interrupted", "ended"].includes(group.outcome);
     const canJoin =
       previous &&
       priorNativeTurn?.outcome === "completed" &&
-      group.outcome === "completed" &&
+      joinableOutcome &&
       activityEdge(previous, true) &&
       activityEdge(group, false);
     if (!canJoin) {
@@ -71,11 +77,8 @@ export function historyPresentationGroups(
     result[result.length - 1] = {
       id: items[0].id,
       items,
-      outcome: "completed",
-      result: turns
-        .map((turn) => turn.result)
-        .filter(Boolean)
-        .at(-1),
+      outcome: turns.at(-1)?.outcome,
+      result: turns.at(-1)?.result,
       turns,
     };
   }

@@ -35,16 +35,24 @@ import "./turn-history.css";
 import { messageRenderKey } from "../../messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 
+type CommandVisibility = boolean | ReadonlyMap<string, boolean>;
+
 function messageGroups(
   items: Message[],
-  showCompletedCommands = false,
+  showCompletedCommands: CommandVisibility = false,
   includeReasoning = false,
 ) {
+  const showItem = (item: Message) =>
+    typeof showCompletedCommands === "boolean"
+      ? showCompletedCommands
+      : item.turnId
+        ? (showCompletedCommands.get(item.turnId) ?? true)
+        : true;
   const groups: (Message | Message[])[] = [];
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     if (isEmptyAssistantMessage(item)) continue;
-    if (!showCompletedCommands && isPastCommand(item)) continue;
+    if (!showItem(item) && isPastCommand(item)) continue;
     const isTool =
       ["tool", "output"].includes(item.role) && !isFileChange(item);
     if (isTool || (includeReasoning && item.role === "reasoning")) {
@@ -56,10 +64,11 @@ function messageGroups(
           continue;
         }
         if (
-          (!showCompletedCommands && isPastCommand(next)) ||
-          (next.role !== "reasoning" &&
-            !(["tool", "output"].includes(next.role) && !isFileChange(next)) &&
-            !(includeReasoning && next.role === "reasoning"))
+          (!showItem(next) && isPastCommand(next)) ||
+          !(
+            (includeReasoning && next.role === "reasoning") ||
+            (["tool", "output"].includes(next.role) && !isFileChange(next))
+          )
         )
           break;
         run.push(next);
@@ -217,11 +226,26 @@ function Turn({
   retryFailure: () => void;
 }) {
   const result = group.result;
-  // Keep the visible calls when this turn ends, so the transcript does not jump.
-  const [showCompletedCommands] = useState(() => !group.outcome);
+  const turns = group.turns || [group];
+  const [savedCommandVisibility, setSavedCommandVisibility] = useState(() => {
+    const visibility = new Map<string, boolean>();
+    for (const turn of turns) {
+      const turnId = turn.items[0].turnId;
+      if (turnId) visibility.set(turnId, !turn.outcome);
+    }
+    return visibility;
+  });
+  let commandVisibility = savedCommandVisibility;
+  for (const turn of turns) {
+    const turnId = turn.items[0].turnId;
+    if (!turnId || commandVisibility.has(turnId)) continue;
+    commandVisibility = new Map(commandVisibility).set(turnId, !turn.outcome);
+  }
+  if (commandVisibility !== savedCommandVisibility)
+    setSavedCommandVisibility(commandVisibility);
   const groupedMessages = useMemo(
-    () => messageGroups(group.items, showCompletedCommands, true),
-    [group.items, showCompletedCommands],
+    () => messageGroups(group.items, commandVisibility, true),
+    [group.items, commandVisibility],
   );
   const visibleError = group.items.some(
     (item) =>
@@ -236,7 +260,15 @@ function Turn({
   return (
     <section
       className="turn-history"
-      data-turn={group.items[0].turnId}
+      data-turn={
+        !group.outcome || ["failed", "interrupted"].includes(group.outcome)
+          ? turns.at(-1)?.items[0].turnId
+          : group.items[0].turnId
+      }
+      data-turns={turns
+        .map((turn) => turn.items[0].turnId)
+        .filter(Boolean)
+        .join(" ")}
       data-outcome={group.outcome || "active"}
     >
       {groupedMessages.map((item) =>
@@ -245,13 +277,11 @@ function Turn({
             key={item[0].id}
             items={item}
             storageKey={storageKey}
-            storageIds={
-              group.turns?.map(
-                (turn) =>
-                  item.find((entry) => entry.turnId === turn.items[0].turnId)
-                    ?.id || turn.items[0].id,
-              ) || [item[0].id]
-            }
+            storageIds={turns.flatMap((turn) => {
+              const turnId = turn.items[0].turnId;
+              const contributor = item.find((entry) => entry.turnId === turnId);
+              return contributor ? [contributor.id] : [];
+            })}
             agentId={agentId}
             active={!group.outcome}
           />
@@ -375,27 +405,31 @@ export default function TurnHistory({
     return <>{messages(items, renderMessage, agentId, agent?.cwd)}</>;
   return (
     <>
-      {groups.map((group) =>
-        group.items[0].role === "user" || !group.items[0].turnId ? (
-          <Fragment key={messageRenderKey(group.items[0])}>
-            {messages(group.items, renderMessage, agentId, agent?.cwd)}
-          </Fragment>
-        ) : (
+      {groups.map((group) => {
+        if (group.items[0].role === "user" || !group.items[0].turnId)
+          return (
+            <Fragment key={messageRenderKey(group.items[0])}>
+              {messages(group.items, renderMessage, agentId, agent?.cwd)}
+            </Fragment>
+          );
+        const outcomeTurn = group.turns?.at(-1) || group;
+        const turnId = outcomeTurn.items[0].turnId;
+        return (
           <Turn
             key={group.id}
             group={group}
-            failurePending={loading.has(group.items[0].turnId)}
-            failureLookupFailed={failed.has(group.items[0].turnId)}
-            retryFailure={() => retry(group.items[0].turnId)}
-            failureReason={failureReasons.get(group.items[0].turnId) || ""}
+            failurePending={loading.has(turnId)}
+            failureLookupFailed={failed.has(turnId)}
+            retryFailure={() => retry(turnId)}
+            failureReason={failureReasons.get(turnId) || ""}
             storageKey={storageKey}
             render={renderMessage}
             agentId={agentId}
             cwd={agent?.cwd}
             onJump={onJump}
           />
-        ),
-      )}
+        );
+      })}
     </>
   );
 }
