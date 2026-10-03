@@ -461,6 +461,15 @@ try {
   });
   items = [
     tool("worker-result", "Worker result received"),
+    {
+      ...shared(),
+      id: "reasoning-between-tools",
+      role: "reasoning",
+      text: "",
+      reasoningMs: 2400,
+      reasoningSince: null,
+      reasoningObservedAt: Date.now() / 1000,
+    },
     tool("agent-message", "Agent message received"),
     {
       ...shared(),
@@ -486,6 +495,21 @@ try {
     "text is never inside a tool disclosure",
   );
   assert.equal(await blocks.locator(".message").count(), 0);
+  assert.equal(
+    await blocks.first().locator(".tool-card").count(),
+    2,
+    "reasoning stays within one disclosure without counting as a tool",
+  );
+  assert.match(
+    await blocks.first().locator(":scope > summary").innerText(),
+    /2 tool calls/,
+    "the summary counts tools only",
+  );
+  assert.equal(
+    await blocks.first().locator(".reasoning-duration").count(),
+    1,
+    "reasoning timing remains visible in the activity sequence",
+  );
   for (const [index, count] of [2, 1].entries()) {
     const block = blocks.nth(index);
     assert.equal(await block.evaluate((element) => element.tagName), "DETAILS");
@@ -592,6 +616,72 @@ try {
     "the user can reopen the small group",
   );
   assert.equal(await middle.isVisible(), true);
+  turn = "cross-b";
+  turnDone = true;
+  items = [
+    {
+      ...tool("cross-tool-a", "First turn tool"),
+      turnId: "cross-a",
+      turnStatus: "completed",
+    },
+    {
+      ...shared(),
+      id: "cross-reasoning",
+      role: "reasoning",
+      text: "",
+      turnId: "cross-a",
+      turnStatus: "completed",
+      reasoningMs: 1200,
+      reasoningSince: null,
+      reasoningObservedAt: Date.now() / 1000,
+    },
+    {
+      ...tool("cross-tool-b", "Second turn tool"),
+      turnId: "cross-b",
+      turnStatus: "completed",
+    },
+  ];
+  await emit();
+  const crossTurnWork = page.locator('[data-turn="cross-a"] .turn-work');
+  assert.equal(
+    await page.locator(".turn-work").count(),
+    1,
+    "adjacent completed turns share one disclosure",
+  );
+  assert.equal(await crossTurnWork.locator(".tool-card").count(), 2);
+  assert.equal(await crossTurnWork.locator(".reasoning-duration").count(), 1);
+  await page.locator('[data-message="cross-tool-b"]').evaluate((element) => {
+    element.dataset.retained = "yes";
+  });
+  items.push({
+    id: "cross-final",
+    role: "assistant",
+    text: "The adjacent checks passed.",
+    phase: "final_answer",
+    turnId: "cross-b",
+    turnStatus: "completed",
+  });
+  await emit();
+  assert.equal(
+    await page.locator(".turn-work").count(),
+    1,
+    "answer text begins after the shared activity disclosure",
+  );
+  assert.equal(
+    await page
+      .locator('[data-message="cross-tool-b"]')
+      .getAttribute("data-retained"),
+    "yes",
+    "adding the terminal answer preserves the selected tool card node",
+  );
+  await crossTurnWork.locator(":scope > summary").click();
+  await page.reload();
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  assert.equal(
+    await page.locator('[data-turn="cross-a"] .turn-work').getAttribute("open"),
+    null,
+    "the cross-turn disclosure keeps its manual choice after reload",
+  );
   await page.setViewportSize({ width: 390, height: 900 });
   await page.screenshot({ path: join(directory, "commentary-mobile.png") });
   await page.setViewportSize({ width: 1100, height: 900 });
@@ -629,6 +719,8 @@ try {
         "current groups start open with tool details closed",
         "small groups start open; added tools preserve expansion",
         "small groups preserve saved closed choice",
+        "reasoning stays chronological inside counted tool groups",
+        "adjacent completed turns share stable work disclosure",
         "manual choice",
         "reload",
         "reader anchor",

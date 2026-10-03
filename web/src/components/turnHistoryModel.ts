@@ -18,6 +18,68 @@ export interface HistoryGroup {
   items: Message[];
   outcome?: string;
   result?: Message;
+  /** Native turn groups represented by this renderer-only presentation group. */
+  turns?: HistoryGroup[];
+}
+
+function activityRow(item: Message): boolean {
+  if (item.pending || item.streaming || item.nativeNotice || item.nativeError)
+    return false;
+  if (item.role === "reasoning") return true;
+  if (["tool", "output"].includes(item.role)) {
+    if (item.title === "fileChange") return false;
+    try {
+      return JSON.parse(item.text)?.type !== "fileChange";
+    } catch {
+      return true;
+    }
+  }
+  return item.role === "assistant" && isEmptyAssistantMessage(item);
+}
+
+function activityEdge(group: HistoryGroup, fromEnd: boolean): boolean {
+  const rows = fromEnd ? [...group.items].reverse() : group.items;
+  for (const item of rows) {
+    if (isEmptyAssistantMessage(item)) continue;
+    return activityRow(item);
+  }
+  return false;
+}
+
+/** Join only uninterrupted tool/reasoning presentation runs. Native turn
+ * groups remain attached so outcome and error attribution never crosses turns. */
+export function historyPresentationGroups(
+  groups: HistoryGroup[],
+): HistoryGroup[] {
+  const result: HistoryGroup[] = [];
+  for (const group of groups) {
+    const previous = result.at(-1);
+    const priorTurns = previous?.turns || (previous ? [previous] : []);
+    const priorNativeTurn = priorTurns.at(-1);
+    const canJoin =
+      previous &&
+      priorNativeTurn?.outcome === "completed" &&
+      group.outcome === "completed" &&
+      activityEdge(previous, true) &&
+      activityEdge(group, false);
+    if (!canJoin) {
+      result.push({ ...group, turns: [group] });
+      continue;
+    }
+    const turns = [...priorTurns, group];
+    const items = turns.flatMap((turn) => turn.items);
+    result[result.length - 1] = {
+      id: items[0].id,
+      items,
+      outcome: "completed",
+      result: turns
+        .map((turn) => turn.result)
+        .filter(Boolean)
+        .at(-1),
+      turns,
+    };
+  }
+  return result;
 }
 
 // A terminal record is required. Silence, a completed tool, or a final-looking

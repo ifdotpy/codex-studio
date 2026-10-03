@@ -26,6 +26,7 @@ import { toolLimitNotice } from "../../toolLimitNotice";
 import { turnFailureReason } from "../../turnFailureReason";
 import ConversationResults from "./ConversationResults";
 import {
+  historyPresentationGroups,
   incrementalHistoryGroups,
   isEmptyAssistantMessage,
   type HistoryGroup,
@@ -34,16 +35,39 @@ import "./turn-history.css";
 import { messageRenderKey } from "../../messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 
-function messageGroups(items: Message[], showCompletedCommands = false) {
+function messageGroups(
+  items: Message[],
+  showCompletedCommands = false,
+  includeReasoning = false,
+) {
   const groups: (Message | Message[])[] = [];
-  for (const item of items) {
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
     if (isEmptyAssistantMessage(item)) continue;
     if (!showCompletedCommands && isPastCommand(item)) continue;
-    if (isFileChange(item)) groups.push(item);
-    else if (["tool", "output"].includes(item.role)) {
-      const last = groups.at(-1);
-      if (Array.isArray(last)) last.push(item);
-      else groups.push([item]);
+    const isTool =
+      ["tool", "output"].includes(item.role) && !isFileChange(item);
+    if (isTool || (includeReasoning && item.role === "reasoning")) {
+      const run = [item];
+      while (index + 1 < items.length) {
+        const next = items[index + 1];
+        if (isEmptyAssistantMessage(next)) {
+          index++;
+          continue;
+        }
+        if (
+          (!showCompletedCommands && isPastCommand(next)) ||
+          (next.role !== "reasoning" &&
+            !(["tool", "output"].includes(next.role) && !isFileChange(next)) &&
+            !(includeReasoning && next.role === "reasoning"))
+        )
+          break;
+        run.push(next);
+        index++;
+      }
+      if (run.some((entry) => ["tool", "output"].includes(entry.role)))
+        groups.push(run);
+      else groups.push(...run);
     } else groups.push(item);
   }
   return groups;
@@ -75,24 +99,27 @@ function messages(
 const WorkBlock = memo(function WorkBlock({
   items,
   storageKey,
+  storageIds,
   agentId,
   active,
 }: {
   items: Message[];
   storageKey: string;
+  storageIds: string[];
   agentId?: string;
   active: boolean;
 }) {
   const key = `${storageKey}:tools-v3`;
-  const id = items[0].id;
+  const tools = items.filter((item) => ["tool", "output"].includes(item.role));
+  const id = storageIds[0] || items[0].id;
   const [open, setOpen] = useState(
     () =>
       saved<Record<string, boolean>>(key, {})[id] ??
-      (active || items.length < 3),
+      (active || tools.length < 3),
   );
   const [visited, setVisited] = useState(open);
-  const summary = activitySummary(items);
-  const hasLimit = items.some((item) => toolLimitNotice(item));
+  const summary = activitySummary(tools);
+  const hasLimit = tools.some((item) => toolLimitNotice(item));
   const update = (value: boolean) => {
     setOpen(value);
     if (value) setVisited(true);
@@ -100,9 +127,9 @@ const WorkBlock = memo(function WorkBlock({
       key,
       Object.fromEntries([
         ...Object.entries(saved<Record<string, boolean>>(key, {}))
-          .filter(([entry]) => entry !== id)
+          .filter(([entry]) => !storageIds.includes(entry))
           .slice(-499),
-        [id, value],
+        ...storageIds.map((entry) => [entry, value]),
       ]),
     );
   };
@@ -147,8 +174,10 @@ const WorkBlock = memo(function WorkBlock({
         <ChevronRight size={14} className="turn-expand-icon" />
       </summary>
       <div className="turn-work-body">
-        {items.map((item) =>
-          visited ? (
+        {items.map((item) => {
+          if (item.role === "reasoning")
+            return <ReasoningDuration key={item.id} item={item} />;
+          return visited ? (
             <ToolCard key={item.id} item={item} agentId={agentId} />
           ) : (
             <span
@@ -157,8 +186,8 @@ const WorkBlock = memo(function WorkBlock({
               data-lazy-message
               hidden
             />
-          ),
-        )}
+          );
+        })}
       </div>
     </details>
   );
@@ -191,7 +220,7 @@ function Turn({
   // Keep the visible calls when this turn ends, so the transcript does not jump.
   const [showCompletedCommands] = useState(() => !group.outcome);
   const groupedMessages = useMemo(
-    () => messageGroups(group.items, showCompletedCommands),
+    () => messageGroups(group.items, showCompletedCommands, true),
     [group.items, showCompletedCommands],
   );
   const visibleError = group.items.some(
@@ -216,6 +245,13 @@ function Turn({
             key={item[0].id}
             items={item}
             storageKey={storageKey}
+            storageIds={
+              group.turns?.map(
+                (turn) =>
+                  item.find((entry) => entry.turnId === turn.items[0].turnId)
+                    ?.id || turn.items[0].id,
+              ) || [item[0].id]
+            }
             agentId={agentId}
             active={!group.outcome}
           />
@@ -306,19 +342,20 @@ export default function TurnHistory({
     groups: HistoryGroup[];
   } | null>(null);
   const groups = useMemo(() => {
-    const next = incrementalHistoryGroups(
+    const nativeGroups = incrementalHistoryGroups(
       items,
       currentTurn,
       previousGroups.current,
     );
-    previousGroups.current = { items, currentTurn, groups: next };
-    return next;
+    previousGroups.current = { items, currentTurn, groups: nativeGroups };
+    return historyPresentationGroups(nativeGroups);
   }, [items, currentTurn]);
   const failureReasons = useMemo(() => {
     const failedTurns = new Set(
       groups
-        .filter((group) => group.outcome === "failed")
-        .map((group) => group.items[0].turnId),
+        .flatMap((group) => group.turns || [group])
+        .filter((turn) => turn.outcome === "failed")
+        .map((turn) => turn.items[0].turnId),
     );
     const byTurn = new Map<string, Message[]>();
     for (const item of items) {

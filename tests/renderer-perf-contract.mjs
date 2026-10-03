@@ -7,7 +7,10 @@ import {
   boundTranscriptItems,
   trimTranscriptPageCache,
 } from "../web/src/transcriptPageBounds.ts";
-import { incrementalHistoryGroups } from "../web/src/components/turnHistoryModel.ts";
+import {
+  historyPresentationGroups,
+  incrementalHistoryGroups,
+} from "../web/src/components/turnHistoryModel.ts";
 
 const row = (collection, id, value, seq, deleted = false) => ({
   id: `entity:${collection}:${id}`,
@@ -185,6 +188,69 @@ assert.equal(appendGroups.length, firstGroups.length);
 assert.deepEqual(
   appendGroups.at(-1).items.map((item) => item.id),
   ["a2", "tool2"],
+);
+const runGroups = [
+  {
+    id: "tool-a",
+    items: [
+      message("tool-a", "tool", "a", { turnStatus: "completed" }),
+      message("reasoning-a", "reasoning", "a", { turnStatus: "completed" }),
+    ],
+    outcome: "completed",
+  },
+  {
+    id: "tool-b",
+    items: [message("tool-b", "output", "b", { turnStatus: "completed" })],
+    outcome: "completed",
+  },
+];
+const presentation = historyPresentationGroups(runGroups);
+assert.equal(
+  presentation.length,
+  1,
+  "adjacent completed tool turns share a disclosure",
+);
+assert.deepEqual(
+  presentation[0].items.map((item) => item.id),
+  ["tool-a", "reasoning-a", "tool-b"],
+  "reasoning remains chronological between tools",
+);
+assert.equal(
+  presentation[0].turns.length,
+  2,
+  "native turn records remain attributable",
+);
+assert.equal(
+  historyPresentationGroups([
+    ...runGroups.slice(0, 1),
+    {
+      ...runGroups[1],
+      items: [message("commentary", "assistant", "b", { text: "visible" })],
+    },
+  ]).length,
+  2,
+  "visible commentary splits activity",
+);
+assert.equal(
+  historyPresentationGroups([
+    ...runGroups.slice(0, 1),
+    { ...runGroups[1], outcome: "failed" },
+  ]).length,
+  2,
+  "failed turns stay separate for their error notice",
+);
+assert.equal(
+  historyPresentationGroups([
+    ...runGroups.slice(0, 1),
+    {
+      ...runGroups[1],
+      items: [
+        message("file", "output", "b", { text: '{"type":"fileChange"}' }),
+      ],
+    },
+  ]).length,
+  2,
+  "file changes split activity",
 );
 const bigBound = boundTranscriptItems(
   Array.from({ length: 10 }, (_, index) => ({
