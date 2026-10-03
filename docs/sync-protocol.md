@@ -61,6 +61,20 @@ page is short. Clients persist each page before advancing the checkpoint.
 Pull remains available to every protocol version and is the recovery path for
 all stream resynchronization events.
 
+Entity pulls use one SQLite read snapshot for the documents, floor, and checkpoint.
+They do not wait for transcript scope locks or for another entity pull's writer wait.
+Projection maintenance uses SQLite's writer lock and reads the source again after
+it obtains that lock. A maintenance failure returns an error without a checkpoint.
+
+The server records global API reads that exceed one second in
+`<state-directory>/diagnostics/http-requests.json`. The existing update tick saves
+active requests and their stack locations without the runtime lock. The journal
+retains at most 128 active requests and 32 completed slow requests. It stores
+constant endpoint names and scope types. It excludes query values, chat IDs,
+request bodies, and tokens. Streams and writes do not enter this journal.
+The first journal write preserves a nonempty previous session in
+`http-requests.previous.json`.
+
 ## Entity floor, reset, and fresh baselines
 
 The entity server retains at most 10,000 non-transcript tombstones. Pruning is

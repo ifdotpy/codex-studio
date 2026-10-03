@@ -167,6 +167,12 @@ def _archive_previous(path):
 def transaction_watchdog(root):
     """Use the existing update tick to save held and completed slow transactions."""
     global _REVISION, _SAVED, _JOURNAL
+    try:
+        from codex_http_traces import watchdog as http_watchdog
+        http_watchdog(root)
+    except Exception as error:
+        import logging
+        logging.getLogger("codex.http").warning("HTTP request journal tick failed: %s", type(error).__name__)
     if not _PERSIST_LOCK.acquire(blocking=False):
         return
     try:

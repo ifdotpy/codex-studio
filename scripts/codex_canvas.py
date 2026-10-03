@@ -27,6 +27,7 @@ from codex_backend_identity import BACKEND_BUILD
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
+import codex_http_traces
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -684,6 +685,39 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
             return sync_store[0]
 
     class Handler(BaseHTTPRequestHandler):
+        def parse_request(self):
+            accepted = BaseHTTPRequestHandler.parse_request(self)
+            if accepted and getattr(self, "_http_trace_enabled", False):
+                try:
+                    self._http_trace = codex_http_traces.begin(self.command, self.path)
+                except Exception as error:
+                    codex_http_traces.report_failure(error)
+            return accepted
+
+        def handle_one_request(self):
+            self._http_trace = None
+            self._http_status = None
+            self._http_trace_enabled = True
+            outcome = "complete"
+            try:
+                BaseHTTPRequestHandler.handle_one_request(self)
+            except Exception:
+                outcome = "error"
+                raise
+            finally:
+                self._http_trace_enabled = False
+                try:
+                    codex_http_traces.finish(self._http_trace, self._http_status, outcome)
+                except Exception as error:
+                    codex_http_traces.report_failure(error)
+                    try:
+                        codex_http_traces.discard(self._http_trace)
+                    except Exception as cleanup_error:
+                        codex_http_traces.report_failure(cleanup_error)
+
+        def log_request(self, code="-", size="-"):
+            self._http_status = code
+
         def log_message(self, *_args):
             pass
 
