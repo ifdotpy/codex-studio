@@ -15,7 +15,7 @@ test("Native action retry browser", async () => {
   );
   const evidence = await mkdtemp(join(tmpdir(), "studio-action-retry-"));
   const fixture = spawn(
-    process.env.PYTHON || "/opt/homebrew/bin/python3",
+    process.env.PYTHON || "python3",
     ["-B", join(repo, "tests/native-action-ui-fixture.py"), evidence],
     { stdio: ["ignore", "pipe", "pipe"] },
   );

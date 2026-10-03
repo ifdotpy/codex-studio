@@ -6,6 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+test.use({ viewport: { width: 1200, height: 900 } });
 test("Token rate ui", async ({
   browser: testBrowser,
   page: runnerPage,

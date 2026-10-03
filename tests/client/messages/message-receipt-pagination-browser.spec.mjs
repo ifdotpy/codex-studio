@@ -18,7 +18,7 @@ test("Message receipt pagination browser", async ({
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
-  const python = process.env.PYTHON_BIN || "/opt/homebrew/bin/python3.14";
+  const python = process.env.PYTHON || process.env.PYTHON_BIN || "python3";
   const dist = process.env.RECEIPTS_DIST || join(repo, "web/dist");
   const index = await readFile(join(dist, "index.html"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-message-receipts-"));
@@ -85,7 +85,7 @@ test("Message receipt pagination browser", async ({
               now = time.time()
               # Both aggregate event and transcript windows now omit the original.
               # The exact durable receipt remains available by its primary key.
-              for number in range(125):
+              for number in range(225):
                   item = {'id': agent + ':later-' + str(number), 'role': 'tool', 'title': 'Tool',
                           'text': 'Later tool result ' + str(number), 'at': now + number / 100,
                           'toolStatus': 'completed'}
@@ -96,7 +96,7 @@ test("Message receipt pagination browser", async ({
           db.commit()
   finally:
       db.close()
-  `,
+  `.replace(/^ {2}/gm, ""),
         join(repo, "scripts"),
         temporary,
         agent,
@@ -325,6 +325,10 @@ test("Message receipt pagination browser", async ({
         `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts })}`,
       );
     }
+    await bubble(text)
+      .getByRole("status")
+      .filter({ hasText: "Waiting for agent" })
+      .waitFor({ state: "detached" });
     assert.equal(
       await bubble(text)
         .getByRole("status")

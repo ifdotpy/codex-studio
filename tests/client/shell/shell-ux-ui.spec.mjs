@@ -111,7 +111,7 @@ test("Shell ux ui", async ({
           (await dialog.getByRole("tab").allTextContents()).map((label) =>
             label.trim(),
           ),
-          ["Accounts", "Appearance", "Hotkeys"],
+          ["Accounts", "Appearance", "Federation", "Hotkeys"],
         );
         await dialog
           .getByRole("tab", { name: "Appearance", exact: true })
@@ -435,7 +435,7 @@ test("Shell ux ui", async ({
       (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
         label.trim(),
       ),
-      ["Accounts", "Appearance", "Hotkeys"],
+      ["Accounts", "Appearance", "Federation", "Hotkeys"],
     );
     await studioSettings
       .getByRole("tab", { name: "Appearance", exact: true })

@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("Ux request recovery browser", async ({
   browser: testBrowser,
-  page: runnerPage,
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
@@ -91,7 +90,7 @@ test("Ux request recovery browser", async ({
           "unready",
           "transfer",
         ]) {
-      const page = runnerPage;
+      const page = await runnerContext.newPage();
       await page.setViewportSize({ width: 390, height: 844 });
       page.setDefaultTimeout(3000);
       const writes = [],
@@ -282,7 +281,7 @@ test("Ux request recovery browser", async ({
         } else if (mode === "transfer") {
           const text = await page.locator('[role="status"]').innerText();
           assert.equal(text.includes("0 waiting"), false);
-          assert.match(text, /next reply/);
+          assert.match(text, /History transfer in progress: 1 remaining/);
         } else if (mode === "unready") {
           assert.equal(
             await page
