@@ -751,6 +751,9 @@ export default function App() {
       teamAgents.map((item) => item.accountKey || "default"),
     );
     keys.add(agent.accountKey || "default");
+    for (const account of accounts.data.accounts) {
+      if (!account.disconnected) keys.add(account.id);
+    }
     const labelFor = (key: string) => {
       const account = accounts.data.accounts.find((item) => item.id === key);
       return account?.email || account?.label || key;
@@ -784,6 +787,8 @@ export default function App() {
           email: account?.email,
           provider: account?.provider,
           accountId: account?.accountId,
+          signedOut:
+            !!account && (account.disconnected || account.status !== "ready"),
           limits,
           loading: !!limitsLoading[key],
           reload: (force = false) => reloadLimitsFor(key, force),

@@ -46,6 +46,58 @@
 .account-limits-warning {
   color: light-dark(#8a4700, #ffbd78);
 }
+.account-limits-dots {
+  display: flex;
+  flex: 0 0 100%;
+  min-width: 0;
+  height: 44px;
+  overflow-x: auto;
+  justify-content: safe flex-end;
+  margin-top: -12px;
+}
+.account-limits-dot-target {
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.account-limits-dot-target:hover,
+.account-limits-dot-target:focus-visible {
+  background: var(--hover);
+}
+.account-limits-dot-target:focus-visible {
+  outline: 2px solid var(--muted);
+  outline-offset: -2px;
+}
+.account-limits-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: light-dark(#8b909a, #858b96);
+}
+.account-limits-dot[data-color="green"] {
+  background: light-dark(#34866d, #67ad91);
+}
+.account-limits-dot[data-color="yellow"] {
+  background: light-dark(#a67c21, #d5ad52);
+}
+.account-limits-dot[data-color="red"] {
+  background: light-dark(#b35151, #cc7777);
+}
+.account-limits-dot[data-current] {
+  outline: 1px solid var(--muted);
+  outline-offset: 3px;
+}
+.account-limits-dot-tooltip {
+  white-space: pre-line;
+  font-size: 11px;
+}
 .account-limits-popover {
   padding: 0;
   overflow: hidden;
@@ -182,6 +234,9 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 600px) {
+  .account-limits-dots {
+    margin-top: -8px;
+  }
   .usage-footer .account-limits-toggle {
     margin-left: 0;
   }
