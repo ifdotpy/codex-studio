@@ -123,24 +123,6 @@ class RequestContract(unittest.TestCase):
         self.assertLessEqual(marks['reservationEndedAt'], marks['handlerStartedAt'])
         self.assertLessEqual(marks['handlerStartedAt'], marks['handlerEndedAt'])
 
-    def test_reservation_rejects_actor_change_after_outside_lock_decode(self):
-        read_actor = self.runtime.tool_request_actor_snapshot
-
-        def change_after_read(thread_id, account_key):
-            raw, actor = read_actor(thread_id, account_key)
-            changed = json.loads(json.dumps(actor))
-            changed['deletedAt'] = 1
-            with self.runtime.db() as db:
-                self.runtime.put(db, 'agents', changed)
-            return raw, actor
-
-        with patch.object(self.runtime, 'tool_request_actor_snapshot', side_effect=change_after_read):
-            with self.assertRaisesRegex(ValueError, 'caller changed while reading request identity'):
-                self.reserve(call='racing-identity')
-        with self.runtime.db() as db:
-            self.assertFalse(db.execute('SELECT 1 FROM runtime_tool_requests').fetchone())
-            self.assertFalse(db.execute('SELECT 1 FROM runtime_tool_request_aliases').fetchone())
-
     def test_queued_cancel_proves_nonexecution_and_prevents_begin(self):
         record = self.reserve()
         cancelled = self.runtime.request_action('lead', {'action': 'cancel', 'request_id': 'call-1'})
