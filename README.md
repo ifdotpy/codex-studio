@@ -439,60 +439,23 @@ Closing Electron leaves the backend active.
 
 ## Checks
 
-Run checks for the changed area. These commands use isolated fixtures:
+Tests are separated into client and server suites. Keep unit tests beside the
+source module in its feature folder. Browser scenarios that cross component
+boundaries live under `tests/client/<feature>/`.
 
 ```sh
-python3 -B tests/test_isolation_contract.py
-node tests/portable-smoke.mjs
-node tests/state-contract-smoke.mjs
-python3 -B tests/daemon-contract.py
-python3 -B tests/runtime-contract.py
-python3 -B tests/role-skills-contract.py
-python3 -B tests/turn-start-contract.py
-python3 -B tests/prepare-steer-contract.py
-python3 -B tests/monitor-lifecycle-contract.py
-python3 -B tests/worker-lifecycle-scenarios-11-14.py
-python3 -B tests/harness-response-contract.py
-python3 -B tests/protocol-reader-contract.py
-python3 -B tests/catalog-recovery-contract.py
-python3 -B tests/native-binary-contract.py
-python3 -B tests/native-runtime-updates-contract.py
-python3 -B tests/process-supervisor-contract.py
-python3 -B tests/upgrade-contract.py
-node desktop/supervisor-independence-test.mjs
-python3 -B tests/model-catalog-reader-contract.py
-python3 -B tests/tool-request-contract.py
-python3 -B tests/spawn-request-recovery-contract.py
-python3 -B tests/tool-request-http-contract.py
-python3 -B tests/control-requests-contract.py
-python3 -B tests/task-completion-recovery-contract.py
-python3 -B tests/analytics-contract.py
-python3 -B -m unittest discover -s scripts/analytics/tests -v
-python3 -B tests/analytics-history-contract.py
-python3 -B tests/accounts-contract.py
-python3 -B tests/runtime-accounts-contract.py
-python3 -B tests/limits-refresh-contract.py
-python3 -B tests/canvas-contract.py
-python3 -B tests/install-cli-contract.py
-python3 -B tests/live-updates-contract.py
-python3 -B tests/source-contract.py
-python3 -B tests/worker-overview-contract.py
-python3 -B tests/turn-history-contract.py
-python3 -B tests/question-history-contract.py
-npm --prefix web test
-npm --prefix desktop test
+npm run test:client:unit
+npm run test:client:browser
+npm run test:server:list
+npm run test:server
+npm run test:mutation
+npm run test:pre-commit
 ```
 
-`tests/process-supervisor-contract.py` covers supervisor child recovery and
-durable receipts. `tests/upgrade-contract.py` protects startup behavior for
-installations that have no saved supervisor setting.
-
-Browser checks use the installed Chrome, or `CHROME_BIN`. Desktop checks use hidden
-Electron windows. Native protocol fixtures can run without paid model requests.
-Read each test before running a check that uses the live Codex service.
-Contracts that start Studio code import the shared `tests/test_isolation.py`
-fixture before creating the runtime; browser fixtures that start Studio's
-backend use the same helper in their Python fixture process.
+See the [testing guide](docs/testing.md) for discovery, focused runs, browser
+setup, native checks, and mutation reports. Run checks for the changed area.
+Fixtures use isolated state; they must not attach to a live user backend or
+send paid model requests. Desktop checks use hidden Electron windows.
 
 Inside a project, drag teams, folders, and loose chats to set their order.
 Drop near a row edge to change the order. Alt + Up or Down also works.

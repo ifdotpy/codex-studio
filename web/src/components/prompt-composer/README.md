@@ -55,7 +55,7 @@ removes its temporary worktree and linked dependency directory when complete.
 The command needs enough free disk quota for that baseline checkout and browser
 build. Set `CHROME_BIN` if Chromium is not at the default path.
 
-`PromptInput.test.mjs` directly mounts the production input without App or
+`PromptInput.spec.mjs` directly mounts the production input without App or
 Conversation. It checks controlled and programmatic value changes, disabled
 and overlength states, Enter, Shift+Enter, Tab, IME composition, and skill
 insertion. The 500-draft fixture has 20 edits and checks the real
