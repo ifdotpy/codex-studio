@@ -59,12 +59,14 @@ function messageGroups(
       const run = [item];
       while (index + 1 < items.length) {
         const next = items[index + 1];
-        if (isEmptyAssistantMessage(next)) {
+        if (
+          isEmptyAssistantMessage(next) ||
+          (!showItem(next) && isPastCommand(next))
+        ) {
           index++;
           continue;
         }
         if (
-          (!showItem(next) && isPastCommand(next)) ||
           !(
             (includeReasoning && next.role === "reasoning") ||
             (["tool", "output"].includes(next.role) && !isFileChange(next))

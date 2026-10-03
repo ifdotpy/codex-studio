@@ -813,6 +813,49 @@ try {
     null,
     "the cross-turn disclosure keeps its manual choice after reload",
   );
+  turn = "hidden-command-boundary";
+  turnDone = true;
+  items = [
+    tool("hidden-before", "First visible tool"),
+    {
+      ...shared(),
+      id: "hidden-command",
+      role: "output",
+      toolStatus: "completed",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command: "historical command",
+        status: "completed",
+        exitCode: 0,
+      }),
+    },
+    tool("hidden-after", "Second visible tool"),
+    {
+      ...shared(),
+      id: "hidden-commentary",
+      role: "assistant",
+      phase: "commentary",
+      text: "This visible comment remains a boundary.",
+    },
+    tool("hidden-next", "Tool after commentary"),
+  ].map((item) => ({ ...item, turnStatus: "completed" }));
+  await emit();
+  await page.reload();
+  await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.locator('[data-message="hidden-next"]').waitFor();
+  const hiddenBlocks = page.locator(
+    '[data-turn="hidden-command-boundary"] .turn-work',
+  );
+  assert.equal(
+    await hiddenBlocks.count(),
+    2,
+    "hidden commands do not split adjacent tools; visible commentary does",
+  );
+  assert.equal(await hiddenBlocks.first().locator(".tool-card").count(), 2);
+  assert.equal(
+    await page.locator('[data-message="hidden-command"]').count(),
+    0,
+  );
   turn = "unattributed";
   items = [
     {
