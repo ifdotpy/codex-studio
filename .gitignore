@@ -5,6 +5,7 @@ coverage/
 test-results/
 playwright-report/
 reports/mutation/
+web/reports/mutation/
 .stryker-tmp/
 __pycache__/
 *.py[cod]
