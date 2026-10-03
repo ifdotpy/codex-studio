@@ -2469,7 +2469,16 @@ export default function App() {
           </section>
           {agent?.provider === "claude" && (
             <Suspense fallback={null}>
-              <ClaudeSettings agent={agent} />
+              <ClaudeSettings
+                agent={agent}
+                account={accounts.data.accounts.find(
+                  (item) => item.id === (agent.accountKey || "default"),
+                )}
+                onSignIn={(key) => {
+                  setSettingsOpen(false);
+                  setClaudeLoginKey(key);
+                }}
+              />
             </Suspense>
           )}
           {agent?.cwd && (

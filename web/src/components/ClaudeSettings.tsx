@@ -3,6 +3,8 @@ import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
 import { api, errorText, saved } from "../api";
 import { busy, type Agent, type Json } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
+import AccountSignInNotice from "./AccountSignInNotice";
+import type { Account } from "./Accounts";
 import { requiresThinking } from "../../../scripts/claude_bridge/thinking.mjs";
 import "./claude-settings.css";
 
@@ -22,8 +24,19 @@ const valuesFrom = (value: Json, agent: Agent): ClaudeValues => ({
     : {}),
 });
 
-export function ClaudeSettings({ agent }: { agent: Agent }) {
-  const catalog = useWorkerModels(agent.accountKey || "default", true);
+export function ClaudeSettings({
+  agent,
+  account,
+  onSignIn,
+}: {
+  agent: Agent;
+  account?: Account;
+  onSignIn?: (accountKey: string) => void;
+}) {
+  const catalog = useWorkerModels(
+    agent.accountKey || "default",
+    !account || account.status === "ready",
+  );
   const thinkingRequired = requiresThinking(agent.model, catalog.models);
   const [state, setState] = useState<Json>({});
   const [stateLoaded, setStateLoaded] = useState(false);
@@ -91,7 +104,7 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
       if (timer.current) clearTimeout(timer.current);
       if (windowSaveTimer.current) clearTimeout(windowSaveTimer.current);
     };
-  }, [agent.id, agent.accountKey, loadAttempt]);
+  }, [agent.id, agent.accountKey, account?.status, loadAttempt]);
 
   const saveSetting = async (field: string, patch: Partial<ClaudeValues>) => {
     if (busyAction || savingField) return;
@@ -338,6 +351,13 @@ export function ClaudeSettings({ agent }: { agent: Agent }) {
         <p role="alert" className="claude-setting-error">
           {error}
         </p>
+      )}
+      {onSignIn && (
+        <AccountSignInNotice
+          account={account}
+          errors={[error, agent.error, agent.nativeStatus?.error]}
+          onSignIn={onSignIn}
+        />
       )}
       {!stateLoaded && error && (
         <Button onClick={() => setLoadAttempt((value) => value + 1)}>

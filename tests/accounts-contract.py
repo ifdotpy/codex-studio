@@ -102,6 +102,26 @@ class AccountsContract(unittest.TestCase):
         self.assertEqual(self.store.home("default"), before)
         self.assertEqual(self.store.get("default")["email"], "updated@example.invalid")
 
+    def test_sign_out_and_auth_read_error_preserve_pinned_identity(self):
+        (self.primary / 'auth.json').unlink()
+        row = self.store.get('default')
+        self.assertEqual(row['status'], 'signedOut')
+        self.assertEqual(row['accountId'], 'account-one')
+        self.assertEqual(row['email'], 'test@example.invalid')
+        self.assertNotIn('error', row)
+        self.assertEqual(self.store.data['accounts']['default']['_credentialIdentity'], 'chatgpt:account-one')
+        self.store._save()
+        self.store = AccountStore(self.root / 'state')
+        (self.primary / 'auth.json').write_text('{"tokens": SECRET')
+        row = self.store.get('default')
+        self.assertEqual(row['status'], 'error')
+        self.assertEqual(row['error'], "Cannot read this Codex profile's authentication")
+        self.assertEqual(row['accountId'], 'account-one')
+        auth(self.primary, 'account-one')
+        self.assertEqual(self.store.get('default')['status'], 'ready')
+        auth(self.primary, 'replacement')
+        self.assertEqual(self.store.get('default')['status'], 'changed')
+
     def test_login_duplicate_reconciliation_restores_deleted_identity(self):
         other = self.home / "Projects" / "deleted"
         auth(other, "account-two")

@@ -81,6 +81,49 @@ class Profiles(unittest.TestCase):
         with patch.object(c, 'auth_metadata', return_value={**AUTH, 'accountId': 'claude:other'}):
             self.assertEqual(store.get(key)['status'], 'changed')
 
+    def test_missing_auth_keeps_original_identity_and_recovers(self):
+        store = AccountStore(self.root / 'state')
+        with patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            key = store.register_claude({'configDir': str(self.root / 'claude')}, 'Work')
+        for metadata in (
+            {'status': 'signedOut', 'accountId': None, 'email': None,
+             '_credentialIdentity': None, 'plan': None},
+            {'status': 'error', 'accountId': None, 'email': None,
+             '_credentialIdentity': None, 'error': 'Cannot read Claude Code sign-in status'},
+        ):
+            with self.subTest(status=metadata['status']), \
+                 patch.object(c, 'auth_metadata', return_value=metadata):
+                row = store.get(key)
+                self.assertEqual(row['status'], metadata['status'])
+                self.assertEqual(row['accountId'], AUTH['accountId'])
+                self.assertEqual(row['email'], AUTH['email'])
+                self.assertEqual(row['plan'], AUTH['plan'])
+                self.assertEqual(store.data['accounts'][key]['_credentialIdentity'], AUTH['_credentialIdentity'])
+                self.assertEqual(row.get('error'), metadata.get('error'))
+                store._save()
+                store = AccountStore(self.root / 'state')
+                self.assertEqual(store.get(key)['status'], metadata['status'])
+        with patch.object(c, 'auth_metadata', return_value=AUTH):
+            self.assertEqual(store.get(key)['status'], 'ready')
+            self.assertIsNone(store.get(key).get('error'))
+        with patch.object(c, 'auth_metadata', return_value={
+                **AUTH, 'accountId': 'claude:other', '_credentialIdentity': 'claude:other'}):
+            self.assertEqual(store.get(key)['status'], 'changed')
+
+    def test_ready_without_pinned_identity_fails_closed(self):
+        store = AccountStore(self.root / 'state')
+        with patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            key = store.register_claude({'configDir': str(self.root / 'claude')}, 'Work')
+        for missing in ('accountId', '_credentialIdentity'):
+            with self.subTest(missing=missing), \
+                 patch.object(c, 'auth_metadata', return_value={**AUTH, missing: None}):
+                self.assertEqual(store.get(key)['status'], 'error')
+                with self.assertRaisesRegex(ValueError, 'Cannot verify'):
+                    store.home(key)
+                self.assertEqual(store.data['accounts'][key][missing], AUTH[missing])
+
     def test_explicit_add_restores_discovered_claude_local_identity(self):
         store = AccountStore(self.root / 'state')
         home = self.root / 'home'

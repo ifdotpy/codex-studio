@@ -153,13 +153,24 @@ class AccountStore:
                 metadata = auth_metadata(row["home"])
             expected = row.get("accountId")
             credential_identity = row.get("_credentialIdentity")
-            if (expected and metadata.get("accountId") != expected) or (
-                credential_identity
-                and metadata.get("_credentialIdentity") != credential_identity
+            observed = metadata.get("accountId")
+            observed_credential = metadata.get("_credentialIdentity")
+            if (expected and observed and observed != expected) or (
+                credential_identity and observed_credential
+                and observed_credential != credential_identity
             ):
                 row.update(
                     status="changed",
                     error="This profile's account changed. Restore its original login or add a separate profile.",
+                )
+            elif metadata["status"] == "ready" and (
+                (expected and not observed)
+                or (credential_identity and not observed_credential)
+                or (not observed and not observed_credential)
+            ):
+                row.update(
+                    status="error",
+                    error="Cannot verify this profile's account. Sign in to its original account again.",
                 )
             elif (
                 row.get("source") == "Codex Agents"
@@ -168,7 +179,9 @@ class AccountStore:
             ):
                 pass
             else:
-                row.update(metadata)
+                # Missing authentication does not prove an account change or erase its pin.
+                row.update({k: v for k, v in metadata.items()
+                            if v or k not in {"accountId", "_credentialIdentity", "email", "plan"}})
                 if metadata["status"] != "error":
                     row.pop("error", None)
             return {k: v for k, v in row.items() if not k.startswith("_")}
