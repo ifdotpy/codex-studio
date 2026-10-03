@@ -13,7 +13,7 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
     join(repo, "tests/simple-ui-fixture.py"),
     root,
   ]);
-  log = "";
+  let log = "";
   fixture.stderr.on("data", (data) => (log += data));
   try {
     const port = await new Promise((resolve, reject) => {
@@ -31,6 +31,11 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
     const state = await (await fetch(origin + "/api/state")).json();
     const lead = state.threads.find((agent) => agent.name === "Other project");
     const page = runnerPage;
+    const requests = [];
+    page.on("request", (request) => {
+      if (request.url().startsWith("https://external.invalid/"))
+        requests.push(request.url());
+    });
     await page.route("https://external.invalid/**", (route) =>
       route.fulfill({
         contentType: "image/png",

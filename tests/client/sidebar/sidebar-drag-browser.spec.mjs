@@ -12,7 +12,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  log = "";
+  let log = "";
   proc.stderr.on("data", (d) => (log += d));
   try {
     const port = await new Promise((resolve, reject) => {

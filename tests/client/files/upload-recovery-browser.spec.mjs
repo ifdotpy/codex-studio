@@ -436,12 +436,38 @@ test("upload recovery browser", async ({ browser }) => {
       await Promise.all([write(page, "tab-a"), write(other, "tab-b")]),
       [true, true],
     );
-    for (const tab of [page, other])
-      await tab.waitForFunction(() =>
-        ["tab-a", "tab-b"].every((id) =>
-          window.fixture.attachments.lead.some((asset) => asset.id === id),
+    const tabs = [page, other];
+    try {
+      await Promise.all(
+        tabs.map((tab) =>
+          tab.waitForFunction(
+            () =>
+              ["tab-a", "tab-b"].every((id) =>
+                window.fixture.attachments.lead.some(
+                  (asset) => asset.id === id,
+                ),
+              ),
+            undefined,
+            { timeout: 10_000 },
+          ),
         ),
       );
+    } catch (error) {
+      const state = await Promise.all(
+        tabs.map((tab) =>
+          tab.evaluate(() => ({
+            attachments: window.fixture.attachments,
+            stored: JSON.parse(
+              localStorage.getItem("codex-agent-attachments:fixture") || "{}",
+            ),
+          })),
+        ),
+      );
+      throw new Error(
+        `Cross-tab attachment writes did not converge: ${JSON.stringify(state)}`,
+        { cause: error },
+      );
+    }
     const shared = await page.evaluate(() =>
       JSON.parse(
         localStorage.getItem("codex-agent-attachments:fixture"),

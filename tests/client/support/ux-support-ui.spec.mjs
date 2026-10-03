@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, extname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { expect, test } from "../playwright.mjs";
 
 test("ux support ui", async ({ page: runnerPage }) => {
   const repo = dirname(
@@ -32,6 +32,10 @@ test("ux support ui", async ({ page: runnerPage }) => {
           {
             find: /^react\/jsx-runtime$/,
             replacement: require.resolve("react/jsx-runtime"),
+          },
+          {
+            find: /^react\/jsx-dev-runtime$/,
+            replacement: require.resolve("react/jsx-dev-runtime"),
           },
           {
             find: /^react-dom\/client$/,
@@ -79,6 +83,25 @@ test("ux support ui", async ({ page: runnerPage }) => {
     const page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 800 });
     const writes = [];
+    const taskSummary = (id, created, agent = "lead") => ({
+      id,
+      created,
+      agent,
+      kind: "command",
+      name: "commandExecution",
+      command: id,
+      status: "running",
+    });
+    let workspaceTasks = {};
+    await page.exposeFunction("setWorkspaceTaskFixture", (stage) => {
+      workspaceTasks = {
+        initial: { lead: [taskSummary("first", 10)] },
+        newer: {
+          lead: [taskSummary("new", 20), taskSummary("first", 10)],
+        },
+        scope: { other: [taskSummary("other-task", 30, "other")] },
+      }[stage];
+    });
     const shell = {
       id: "fixture-shell",
       agent: "lead",
@@ -99,6 +122,37 @@ test("ux support ui", async ({ page: runnerPage }) => {
       const path = new URL(request.url()).pathname;
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
+      if (path === "/api/workspace/tasks") {
+        const agent = new URL(request.url()).searchParams.get("agent");
+        const tasks = workspaceTasks[agent] || [];
+        const latest = tasks.reduce(
+          (result, task) => (task.created > result.created ? task : result),
+          { id: "", created: 0 },
+        );
+        return route.fulfill({
+          json: {
+            tasks,
+            cursor: { updated: latest.created, id: latest.id },
+            hasMore: false,
+            hasMoreChanges: false,
+            nextBefore: null,
+            reset: false,
+          },
+        });
+      }
+      if (path === "/api/task") {
+        const id = new URL(request.url()).searchParams.get("id");
+        const summary = Object.values(workspaceTasks)
+          .flat()
+          .find((task) => task.id === id);
+        return route.fulfill({
+          json: {
+            ...summary,
+            arguments: JSON.stringify({ fixture: true }),
+            tail: `${id} output`,
+          },
+        });
+      }
       const result =
         path === "/api/terminals"
           ? { items: [shell] }
@@ -165,15 +219,30 @@ test("ux support ui", async ({ page: runnerPage }) => {
       [{ path: "/api/terminals/close", body: { id: "fixture-shell" } }],
     );
     await page.getByRole("button", { name: "Hide panel", exact: true }).click();
+    await page.evaluate(() => window.setWorkspaceTaskFixture("initial"));
     await page.getByRole("button", { name: "Tasks", exact: true }).click();
-    await page.evaluate(() => window.support.initial());
+    const support = async (name) => {
+      await page.evaluate((method) => {
+        const update = window.support[method];
+        window.support[method] = async (...args) => {
+          await window.setWorkspaceTaskFixture(method);
+          return update(...args);
+        };
+      }, name);
+      await page.evaluate((method) => window.support[method](), name);
+    };
+    await support("initial");
     await page.locator('[data-task-detail="first"]').waitFor();
-    await page.evaluate(() => window.support.newer());
+    await expect(page.locator('[data-task="first"]')).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await support("newer");
     await page.locator('[data-task="new"]').waitFor();
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
     await page.waitForTimeout(5200);
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
-    await page.evaluate(() => window.support.scope());
+    await support("scope");
     await page.locator('[data-task-detail="other-task"]').waitFor();
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 0);
     await page.keyboard.press("Escape");

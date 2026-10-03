@@ -38,10 +38,6 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
     await page.setViewportSize({ width: 1200, height: 900 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    // This suite verifies the native transcript transport without optional sync.
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
     await page.goto(origin);
     await page
       .locator("[data-chat]")
@@ -63,8 +59,8 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
           params: { threadId: agent.threadId, turnId: agent.turnId, ...params },
         }) + "\n",
       );
-    event("item/started", { item: { id: "reason-live", type: "reasoning" } });
     await page.locator('[data-phase="thinking"]').waitFor();
+    event("item/started", { item: { id: "reason-live", type: "reasoning" } });
     event("item/started", {
       item: { id: "live-text", type: "agentMessage", text: "" },
     });
@@ -73,6 +69,9 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
       delta: "First paragraph",
     });
     await page.locator('[data-phase="writing"]').waitFor();
+    await expect(
+      page.locator("#messages .prose").filter({ hasText: "First paragraph" }),
+    ).toHaveCount(1);
     assert.equal(
       await page
         .locator("#messages .prose")
@@ -211,7 +210,11 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
     );
     console.log("Browser evidence:", root);
   } catch (error) {
-    await page?.screenshot({ path: join(root, "failure.png") });
+    try {
+      await page?.screenshot({ path: join(root, "failure.png") });
+    } catch (screenshotError) {
+      console.error("Failure screenshot unavailable:", screenshotError);
+    }
     console.error("Evidence:", root);
     throw error;
   } finally {
