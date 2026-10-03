@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   createCommandTransport,
   commandEnvironment,
@@ -31,6 +32,16 @@ const alive = (pid) => {
     return true;
   } catch (error) {
     if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM" && process.platform === "linux") {
+      try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const state = stat[stat.lastIndexOf(") ") + 2];
+        return state !== "Z" && state !== "X";
+      } catch (statError) {
+        if (statError.code === "ENOENT") return false;
+        throw statError;
+      }
+    }
     throw error;
   }
 };

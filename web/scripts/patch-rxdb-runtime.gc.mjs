@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-const require = createRequire(new URL("../web/package.json", import.meta.url));
+const require = createRequire(new URL("../package.json", import.meta.url));
 if (!global.gc) {
   const result = spawnSync(
     process.execPath,
@@ -14,7 +14,7 @@ if (!global.gc) {
   );
   process.exit(result.status ?? 1);
 }
-const { patchRxdb } = require("../web/scripts/patch-rxdb-runtime.cjs");
+const { patchRxdb } = require("./scripts/patch-rxdb-runtime.cjs");
 const root = dirname(require.resolve("rxdb/package.json"));
 patchRxdb(root);
 assert.equal(patchRxdb(root), false, "The patch is idempotent");

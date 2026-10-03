@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test } from "vitest";
 import {
   mkdtempSync,
   mkdirSync,
@@ -110,104 +110,110 @@ test("only the installed Studio bundle can configure background recovery", async
   }
 });
 
-test("register and read back the exact-state launch agent without storing credentials", async () => {
-  const fixtureData = fixture();
-  const calls = [];
-  const registered = new Set();
-  const paths = recoveryPaths(fixtureData.env, fixtureData.home);
-  try {
-    const result = await configureRecovery({
-      ...fixtureData,
-      enabled: true,
-      port: 4721,
-      run: async (file, args) => {
-        assert.equal(file, "/bin/launchctl");
-        calls.push(args);
-        if (args[0] === "print" && !registered.has(args[1]))
-          throw new Error("absent");
-        if (args[0] === "bootstrap")
-          registered.add(
-            args[2] === paths.supervisorPlist
-              ? `gui/777/${paths.supervisorLabel}`
-              : `gui/777/${paths.label}`,
-          );
-      },
-    });
-    assert.equal(result.enabled, true);
-    assert.deepEqual(
-      calls.map((args) => args[0]),
-      ["print", "bootstrap", "print"],
-    );
-    assert.equal(calls[1][1], "gui/777");
-    const config = JSON.parse(readFileSync(result.config, "utf8"));
-    assert.equal(config.supervisorEnabled, false);
-    assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
-    assert.equal(
-      config.environment.CODEX_CANVAS_CWD,
-      fixtureData.env.CODEX_CANVAS_CWD,
-    );
-    assert.equal(config.environment.OPENAI_API_KEY, undefined);
-    assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
-    assert.equal(statSync(result.config).mode & 0o777, 0o600);
-    const plist = JSON.parse(
-      execFileSync(
-        "/usr/bin/plutil",
-        ["-convert", "json", "-o", "-", result.plist],
-        { encoding: "utf8" },
-      ),
-    );
-    assert.equal(plist.KeepAlive, true);
-    assert.equal(plist.AbandonProcessGroup, true);
-    assert.equal(plist.ProgramArguments[2], fixtureData.supervisor);
-    assert.equal(plist.ProgramArguments[4], result.config);
-    assert.equal(plist.Label, result.label);
-  } finally {
-    rmSync(fixtureData.root, { recursive: true, force: true });
-  }
-});
+test.skipIf(process.platform !== "darwin")(
+  "register and read back the exact-state launch agent without storing credentials",
+  async () => {
+    const fixtureData = fixture();
+    const calls = [];
+    const registered = new Set();
+    const paths = recoveryPaths(fixtureData.env, fixtureData.home);
+    try {
+      const result = await configureRecovery({
+        ...fixtureData,
+        enabled: true,
+        port: 4721,
+        run: async (file, args) => {
+          assert.equal(file, "/bin/launchctl");
+          calls.push(args);
+          if (args[0] === "print" && !registered.has(args[1]))
+            throw new Error("absent");
+          if (args[0] === "bootstrap")
+            registered.add(
+              args[2] === paths.supervisorPlist
+                ? `gui/777/${paths.supervisorLabel}`
+                : `gui/777/${paths.label}`,
+            );
+        },
+      });
+      assert.equal(result.enabled, true);
+      assert.deepEqual(
+        calls.map((args) => args[0]),
+        ["print", "bootstrap", "print"],
+      );
+      assert.equal(calls[1][1], "gui/777");
+      const config = JSON.parse(readFileSync(result.config, "utf8"));
+      assert.equal(config.supervisorEnabled, false);
+      assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
+      assert.equal(
+        config.environment.CODEX_CANVAS_CWD,
+        fixtureData.env.CODEX_CANVAS_CWD,
+      );
+      assert.equal(config.environment.OPENAI_API_KEY, undefined);
+      assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
+      assert.equal(statSync(result.config).mode & 0o777, 0o600);
+      const plist = JSON.parse(
+        execFileSync(
+          "/usr/bin/plutil",
+          ["-convert", "json", "-o", "-", result.plist],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.equal(plist.KeepAlive, true);
+      assert.equal(plist.AbandonProcessGroup, true);
+      assert.equal(plist.ProgramArguments[2], fixtureData.supervisor);
+      assert.equal(plist.ProgramArguments[4], result.config);
+      assert.equal(plist.Label, result.label);
+    } finally {
+      rmSync(fixtureData.root, { recursive: true, force: true });
+    }
+  },
+);
 
-test("supervisor mode is opt-in in the saved launchd configuration", async () => {
-  const data = fixture();
-  let registered = false;
-  try {
-    const result = await configureRecovery({
-      ...data,
-      enabled: true,
-      restartEnvironment: { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
-      run: async (_file, args) => {
-        if (args[0] === "print" && !registered) throw new Error("absent");
-        if (args[0] === "bootstrap") registered = true;
-      },
-    });
-    const config = JSON.parse(readFileSync(result.config, "utf8"));
-    assert.equal(config.supervisorEnabled, true);
-    assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, undefined);
-    const supervisorPlist = JSON.parse(
-      execFileSync(
-        "/usr/bin/plutil",
-        ["-convert", "json", "-o", "-", result.supervisorPlist],
-        { encoding: "utf8" },
-      ),
-    );
-    assert.equal(supervisorPlist.KeepAlive, true);
-    assert.equal(supervisorPlist.AbandonProcessGroup, true);
-    assert.equal(supervisorPlist.Label, result.supervisorLabel);
-    assert.deepEqual(supervisorPlist.ProgramArguments.slice(-3), [
-      "--state",
-      result.state,
-      "--wait-for-lease",
-    ]);
-    await configureRecovery({
-      ...data,
-      enabled: true,
-      run: async () => {},
-    });
-    const relaunched = JSON.parse(readFileSync(result.config, "utf8"));
-    assert.equal(relaunched.supervisorEnabled, true);
-  } finally {
-    rmSync(data.root, { recursive: true, force: true });
-  }
-});
+test.skipIf(process.platform !== "darwin")(
+  "supervisor mode is opt-in in the saved launchd configuration",
+  async () => {
+    const data = fixture();
+    let registered = false;
+    try {
+      const result = await configureRecovery({
+        ...data,
+        enabled: true,
+        restartEnvironment: { CODEX_AGENTS_SUPERVISOR_MODE: "1" },
+        run: async (_file, args) => {
+          if (args[0] === "print" && !registered) throw new Error("absent");
+          if (args[0] === "bootstrap") registered = true;
+        },
+      });
+      const config = JSON.parse(readFileSync(result.config, "utf8"));
+      assert.equal(config.supervisorEnabled, true);
+      assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, undefined);
+      const supervisorPlist = JSON.parse(
+        execFileSync(
+          "/usr/bin/plutil",
+          ["-convert", "json", "-o", "-", result.supervisorPlist],
+          { encoding: "utf8" },
+        ),
+      );
+      assert.equal(supervisorPlist.KeepAlive, true);
+      assert.equal(supervisorPlist.AbandonProcessGroup, true);
+      assert.equal(supervisorPlist.Label, result.supervisorLabel);
+      assert.deepEqual(supervisorPlist.ProgramArguments.slice(-3), [
+        "--state",
+        result.state,
+        "--wait-for-lease",
+      ]);
+      await configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => {},
+      });
+      const relaunched = JSON.parse(readFileSync(result.config, "utf8"));
+      assert.equal(relaunched.supervisorEnabled, true);
+    } finally {
+      rmSync(data.root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("recovery rewrite refuses to stop its legacy supervisor while handles are live", async () => {
   const data = fixture();
@@ -337,57 +343,60 @@ test("launchd registration failure is an error and cannot report success", async
   }
 });
 
-test("the hidden desktop survives crash loops and resets its recovery budget", async () => {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const { createServer } = await import("node:net");
-  const root = path.dirname(new URL(import.meta.url).pathname);
-  const temp = mkdtempSync("/tmp/studio-renderer-recovery-");
-  const port = await new Promise((resolve) => {
-    const server = createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const port = server.address().port;
-      server.close(() => resolve(port));
+test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
+  "the hidden desktop survives crash loops and resets its recovery budget",
+  async () => {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const { createServer } = await import("node:net");
+    const root = path.dirname(new URL(import.meta.url).pathname);
+    const temp = mkdtempSync("/tmp/studio-renderer-recovery-");
+    const port = await new Promise((resolve) => {
+      const server = createServer();
+      server.listen(0, "127.0.0.1", () => {
+        const port = server.address().port;
+        server.close(() => resolve(port));
+      });
     });
-  });
-  let pid;
-  try {
-    const executable = createRequire(import.meta.url)("electron");
-    const { stdout } = await promisify(execFile)(
-      executable,
-      [path.join(root, "recovery-renderer-test.cjs"), "--hidden"],
-      {
-        timeout: 125000,
-        env: {
-          ...process.env,
-          CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),
-          CODEX_AGENTS_SUPERVISOR_MODE: "0",
-          CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
-          CODEX_DESKTOP_PORT: String(port),
+    let pid;
+    try {
+      const executable = createRequire(import.meta.url)("electron");
+      const { stdout } = await promisify(execFile)(
+        executable,
+        [path.join(root, "recovery-renderer-test.cjs"), "--hidden"],
+        {
+          timeout: 125000,
+          env: {
+            ...process.env,
+            CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),
+            CODEX_AGENTS_SUPERVISOR_MODE: "0",
+            CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
+            CODEX_DESKTOP_PORT: String(port),
+          },
         },
-      },
-    );
-    const result = stdout
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line))
-      .find((record) => record.rendererRecovered);
-    assert.ok(result);
-    pid = result.backendPid;
-  } finally {
-    if (!pid) {
-      try {
-        const state = JSON.parse(
-          await (await fetch(`http://127.0.0.1:${port}/api/desktop`)).text(),
-        );
-        if (state.stateDir === realpathSync(path.join(temp, "state")))
-          pid = state.pid;
-      } catch {}
+      );
+      const result = stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .find((record) => record.rendererRecovered);
+      assert.ok(result);
+      pid = result.backendPid;
+    } finally {
+      if (!pid) {
+        try {
+          const state = JSON.parse(
+            await (await fetch(`http://127.0.0.1:${port}/api/desktop`)).text(),
+          );
+          if (state.stateDir === realpathSync(path.join(temp, "state")))
+            pid = state.pid;
+        } catch {}
+      }
+      if (pid) process.kill(pid, "SIGTERM");
+      // Keep this isolated crash fixture and its logs for inspection.
     }
-    if (pid) process.kill(pid, "SIGTERM");
-    // Keep this isolated crash fixture and its logs for inspection.
-  }
-});
+  },
+);
 
 test("a graceful desktop exit always withdraws open intent", async () => {
   const { EventEmitter } = await import("node:events");

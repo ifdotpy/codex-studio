@@ -1,13 +1,16 @@
 // Run with: node --experimental-strip-types tests/native-commands-contract.mjs
 import assert from "node:assert/strict";
-import test from "node:test";
-import {
-  menuActions,
-  studioCommand,
-} from "../web/src/nativeCommands.ts";
+import { test } from "vitest";
+import { menuActions, studioCommand } from "./nativeCommands.ts";
 
 test("Codex chats run compact and review as Studio actions", () => {
-  for (const text of ["/compact", "/review", "/stop", "/stop-team", "/review extra"])
+  for (const text of [
+    "/compact",
+    "/review",
+    "/stop",
+    "/stop-team",
+    "/review extra",
+  ])
     assert.equal(studioCommand(text, "codex"), true, text);
   assert.equal(studioCommand("/compacting", "codex"), false);
   assert.equal(studioCommand("please /review", undefined), false);
