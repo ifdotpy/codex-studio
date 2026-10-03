@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import ctypes
 import fnmatch
 import math
 import os
@@ -51,6 +52,8 @@ NATIVE_SUITES = frozenset({
     "tests/native-safety-contract.py", "tests/native-tools-contract.py",
     "tests/native-tools-shutdown-contract.py", "tests/native-voice-admission-contract.py",
     "tests/native-voice-contract.py",
+    "tests/tool-parity.py", "tests/workspace-native-turn.py",
+    "tests/workspace-protocol.py",
 })
 BROWSER_SUITES = frozenset({
     "tests/browser-backend-smoke.py", "tests/browser-lock-contract.py",
@@ -200,17 +203,34 @@ def selected(entries, pattern):
 
 def run_process(command, cwd, timeout, environment):
     """Run one suite in its own process group and reap it on every exit path."""
+    options = {"start_new_session": os.name != "nt"}
+    job_handle = None
+    if os.name == "nt":
+        # Keep the root suspended until it is assigned to the job. This closes
+        # the window in which it could create children outside the job.
+        options["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004)
     process = subprocess.Popen(command, cwd=cwd, env=environment,
-                               start_new_session=(os.name != "nt"))
+                               **options)
+
+    if os.name == "nt":
+        job_handle = _assign_windows_job(process)
 
     def terminate_group():
+        nonlocal job_handle
         try:
             if os.name != "nt":
                 os.killpg(process.pid, signal.SIGKILL)
             else:
-                process.kill()
+                if job_handle:
+                    _close_windows_job(job_handle)
+                job_handle = None
         except ProcessLookupError:
             pass
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -218,13 +238,146 @@ def run_process(command, cwd, timeout, environment):
             process.wait()
 
     try:
-        return process.wait(timeout=timeout), None
-    except subprocess.TimeoutExpired:
-        terminate_group()
-        return None, f"timed out after {timeout:g}s"
+        if os.name == "nt":
+            _resume_windows_process(process)
+        if os.name != "nt" and _supports_waitid_nowait():
+            deadline = time.monotonic() + timeout
+            while True:
+                # Keep the leader as a zombie until its process group is
+                # cleaned, preventing its PID/PGID from being reused first.
+                exited = os.waitid(os.P_PID, process.pid,
+                                   os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if exited and exited.si_pid:
+                    terminate_group()
+                    return process.returncode, None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    terminate_group()
+                    return None, f"timed out after {timeout:g}s"
+                time.sleep(min(.01, remaining))
+        try:
+            returncode = process.wait(timeout=timeout)
+            terminate_group()
+            return returncode, None
+        except subprocess.TimeoutExpired:
+            terminate_group()
+            return None, f"timed out after {timeout:g}s"
     except BaseException:
         terminate_group()
         raise
+    finally:
+        if job_handle:
+            _close_windows_job(job_handle)
+
+
+def _supports_waitid_nowait():
+    return hasattr(os, "waitid") and hasattr(os, "WNOWAIT")
+
+
+def _windows_kernel32():
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _assign_windows_job(process):
+    """Assign a suspended suite process to a kill-on-close Windows job."""
+    from ctypes import wintypes
+
+    class BasicLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class ExtendedLimitInformation(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimitInformation),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = _windows_kernel32()
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+
+    job = None
+    try:
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return job
+    except BaseException:
+        # The process was created suspended. Kill it even if job creation or
+        # assignment failed, so no orphaned suspended process remains.
+        if job:
+            try:
+                _close_windows_job(job)
+            except OSError:
+                pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        raise
+
+
+def _resume_windows_process(process):
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    status = ntdll.NtResumeProcess(ctypes.c_void_p(process._handle))
+    if status != 0:
+        process.kill()
+        process.wait()
+        raise OSError(f"NtResumeProcess failed with NTSTATUS {status:#x}")
+
+
+def _close_windows_job(job):
+    if job:
+        from ctypes import wintypes
+
+        kernel32 = _windows_kernel32()
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = wintypes.HANDLE(job)
+        termination_error = None
+        if not kernel32.TerminateJobObject(handle, 1):
+            termination_error = ctypes.WinError(ctypes.get_last_error())
+        closed = kernel32.CloseHandle(handle)
+        close_error = None if closed else ctypes.WinError(ctypes.get_last_error())
+        if close_error:
+            raise close_error
+        if termination_error:
+            raise termination_error
 
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT, execute=run_process):
