@@ -909,10 +909,8 @@ class WorkMixin:
                     "files": files,
                     "created": time.time(),
                 }
-                from codex_execution import actor_run
-                execution = actor_run(db, self.agent(submitter, db))
-                if execution:
-                    result.update(runId=execution["id"], attemptId=execution.get("latestAttemptId"))
+                from codex_execution import safe_record, submission_identity
+                result.update(safe_record(submission_identity, db, self.agent(submitter, db)) or {})
                 result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
                 w["results"].append(result)
                 w["status"] = "review"

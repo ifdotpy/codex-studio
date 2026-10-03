@@ -2203,11 +2203,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if table == "agents":
             previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
             previous = json.loads(previous_row[0]) if previous_row else None
-        if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
-            from codex_execution import reconcile_effect
-            reconcile_effect(self, db, table, record, previous)
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
+        if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
+            from codex_execution import reconcile_effect, safe_record
+            safe_record(reconcile_effect, self, db, table, record, previous)
         from codex_sync_entities import put as sync_entity_put
         collection = {
             "agents": "agent", "tasks": "task", "monitors": "monitor",
@@ -4843,8 +4843,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # Native definitively rejected this busy input. It is safe to
                 # return the exact batch to the outbox, but another busy attempt
                 # would repeat the rejection until this native turn ends.
-                from codex_execution import reject_attempt
-                reject_attempt(db, attempt, error)
+                from codex_execution import reject_attempt, safe_record
+                safe_record(reject_attempt, db, attempt, error)
                 a["steerRejectedTurnId"] = a.get("turnId") or ""
                 a.update(status="running" if a.get("inFlight") else "queued", error=None)
                 a.pop("startAttempt", None)
@@ -5168,33 +5168,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid LIMIT 1",
                              (tid, account_key)).fetchone()
             if row is None:
-                parent_thread = p.get("parentThreadId")
-                if parent_thread:
-                    parent = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? AND COALESCE(json_extract(record,'$.accountKey'),'default')=? LIMIT 1", (parent_thread, account_key)).fetchone()
-                    if parent:
-                        from codex_execution import observe_native
-                        observe_native(db, json.loads(parent[0]), method, p)
+                if p.get("parentThreadId"):
+                    from codex_execution import observe_child_thread, safe_record
+                    safe_record(observe_child_thread, db, account_key, method, p)
                 return
             a = json.loads(row[0])
             if a.get("deletedAt"):
                 return
-            from codex_execution import child_event, observe_native
-            observe_native(db, a, method, p)
-            if method in {"turn/started", "turn/completed"}:
-                if child_event(p):
-                    return
-                native_id = (p.get("turn") or {}).get("id")
-                saved_root = a.get("restartRecovery") or {}
-                recovery_root = (saved_root.get("turnId") == native_id
-                    and saved_root.get("stage") in {"pending", "continued", "superseded", "reattached"}
-                    and saved_root.get("epoch") == a.get("epoch")
-                    and saved_root.get("accountKey", "default") == account_key
-                    and saved_root.get("threadId") == tid)
-                if method == "turn/completed" and not a.get("turnId") and not recovery_root:
-                    # A late or unowned completion has no authority over this agent.
-                    return
-                if method == "turn/started" and a.get("turnId") and a["turnId"] != native_id:
-                    return
             restart = a.get('restartRecovery') or {}
             native_turn_id = ((p.get('turn') or {}).get('id') if method == 'turn/completed'
                               else (p.get('turn') or {}).get('id') if method == 'turn/started'
@@ -5226,6 +5206,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and (p.get('status') or {}).get('type') == 'notLoaded'):
                     stream.flush_locked(db, account=account_key, thread_id=tid, close=True, force=True)
                 a = self.agent(a['id'], db)
+            from codex_execution import observe_native, safe_record
+            safe_record(observe_native, db, a, method, p)
             attempt = a.get("startAttempt") or {}
             if (a.get("nativeReview") and attempt.get("action") == "review"
                     and attempt.get("submitted") and method in {"item/started", "item/completed"}
@@ -5865,8 +5847,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for spec, child in zip(planned, children):
                 if child["id"] not in existing:
                     self.put(db, "agents", child)
-                    from codex_execution import actor_run, effect
-                    effect(db, actor_run(db, current), "spawn", child["id"], requestId=key, status=child.get("status"))
+                    from codex_execution import record_spawn, safe_record
+                    safe_record(record_spawn, db, current, child, key)
                     text = child["prompt"]
                     if child.get("workerBaseCommit"):
                         text += ("\n\n[Studio worker worktree base] Commit " + child["workerBaseCommit"]

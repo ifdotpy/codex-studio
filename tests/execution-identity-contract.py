@@ -57,20 +57,30 @@ class ExecutionIdentityContract(unittest.TestCase):
         self.assertEqual(identity['attemptId'], run['attempts'][0]['id'])
         self.assertEqual(message_identity(self.runtime, a['id'], 'other-thread', a['turnId']), {})
 
+    def test_completion_before_start_response_keeps_terminal_run(self):
+        self.runtime.connect().finish_before_reply = True
+        a = self.runtime.create({'name': 'Early completion', 'cwd': str(self.root), 'prompt': 'Finish'})
+        fixture.eventually(lambda: self.runtime.agent(a['id'])['status'] == 'completed')
+        fixture.eventually(lambda: self.records(a)[0]['attempts'][0]['submission'] == 'accepted')
+        run = self.records(a)[0]
+        self.assertEqual(run['status'], 'completed')
+        self.assertEqual(run['result'], 'Result with evidence')
+
     def test_child_and_background_completion_cannot_end_root(self):
         a = self.lead()
         run_id = self.records(a)[0]['id']
+        self.runtime.notification({'method': 'item/completed', 'params': {
+            'threadId': a['threadId'], 'turnId': a['turnId'],
+            'item': {'id': a['turnId'] + '-answer', 'type': 'agentMessage', 'text': 'Root result'}}})
         for turn in ('child-turn', a['turnId']):
             self.event(a, 'turn/completed', {'id': turn, 'status': 'completed'}, parentTurnId=a['turnId'])
-            self.assertEqual(self.runtime.agent(a['id'])['turnId'], a['turnId'])
             self.assertEqual(self.records(a)[0]['status'], 'running')
         self.event(a, 'turn/started', {'id': 'background-turn', 'status': 'inProgress'}, background=True)
-        self.runtime.server.complete(a['threadId'], a['turnId'], 'Root result')
-        before = self.runtime.agent(a['id'])
+        self.event(a, 'turn/completed', {'id': a['turnId'], 'status': 'completed'})
         self.event(a, 'turn/completed', {'id': 'background-turn', 'status': 'failed'}, background=True)
         self.event(a, 'turn/completed', {'id': 'unowned-late-turn', 'status': 'failed'})
-        after = self.runtime.agent(a['id'])
-        self.assertEqual((after['status'], after['lastCompletedTurn']), (before['status'], a['turnId']))
+        # The observer does not change the pre-existing agent state machine.
+        # Only the execution record requires exact non-child root evidence.
         run = self.records(a)[0]
         self.assertEqual((run['id'], run['status'], run['result']), (run_id, 'completed', 'Root result'))
         self.assertTrue(any(node['kind'] == 'background' and node['status'] == 'failed' for node in run['nodes']))
@@ -256,6 +266,110 @@ class ExecutionIdentityContract(unittest.TestCase):
         child_run = self.records(child)[0]
         self.assertTrue(any(effect['kind'] == 'task_submit' and effect['taskId'] == task['id'] for effect in child_run['effects']))
         self.assertEqual(next(node for node in run['nodes'] if node['kind'] == 'managed_worker')['agentId'], child['id'])
+
+    def test_record_failure_does_not_discard_native_completion_or_items_and_tasks(self):
+        a = self.lead()
+        with self.runtime.db() as db:
+            self.runtime.item(db, a['id'], 'fault-item', 'assistant', 'Result', turnId=a['turnId'])
+            self.runtime.put(db, 'tasks', {'id': 'fault-task', 'agent': a['id'], 'turnId': a['turnId'],
+                                          'kind': 'tool', 'status': 'running', 'created': 1})
+        with patch('codex_execution.observe_native', side_effect=RuntimeError('observer fault')), \
+                patch('codex_execution.reconcile_effect', side_effect=RuntimeError('record fault')), \
+                self.assertLogs('codex_execution', level='ERROR') as logs:
+            self.event(a, 'turn/completed', {'id': a['turnId'], 'status': 'completed'})
+        self.assertGreaterEqual(len(logs.output), 2)
+        self.assertEqual(self.runtime.agent(a['id'])['lastCompletedTurn'], a['turnId'])
+        with self.runtime.db() as db:
+            item = json.loads(db.execute('SELECT record FROM runtime_items WHERE id=?', (a['id'] + ':fault-item',)).fetchone()[0])
+            task = json.loads(db.execute("SELECT record FROM runtime_tasks WHERE id='fault-task'").fetchone()[0])
+        self.assertEqual(item['turnStatus'], 'completed')
+        self.assertEqual(task['status'], 'interrupted')
+
+    def test_completion_after_cleared_turn_finishes_items_and_failure_notice(self):
+        a = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(a['id'], db)
+            current.update(turnId=None, inFlight=False)
+            self.runtime.put(db, 'agents', current)
+            self.runtime.item(db, a['id'], 'cleared-item', 'assistant', 'Partial', turnId=a['turnId'])
+        self.event(a, 'turn/completed', {'id': a['turnId'], 'status': 'failed', 'error': {'message': 'Cleared turn failed'}})
+        with self.runtime.db() as db:
+            rows = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_items WHERE agent=?', (a['id'],))]
+        self.assertEqual(next(item for item in rows if item['id'].endswith(':cleared-item'))['turnStatus'], 'failed')
+        self.assertTrue(any('Cleared turn failed' in item.get('text', '') for item in rows))
+        self.assertEqual(self.records(a)[0]['status'], 'failed')
+
+    def test_native_self_started_turn_keeps_existing_agent_transition(self):
+        a = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(a['id'], db)
+            current.pop('startAttempt', None)
+            self.runtime.put(db, 'agents', current)
+        self.event(a, 'turn/started', {'id': 'self-started-turn', 'status': 'inProgress'})
+        self.assertEqual(self.runtime.agent(a['id'])['turnId'], 'self-started-turn')
+        self.assertEqual(self.runtime.agent(a['id'])['status'], 'running')
+        self.assertEqual({run['turnId'] for run in self.records(a)}, {a['turnId'], 'self-started-turn'})
+
+    def test_old_completion_still_finishes_its_tasks_items_and_notice(self):
+        a = self.lead()
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(a['id'], db)
+            current.pop('startAttempt', None)
+            current.update(turnId='new-root', inFlight=True)
+            self.runtime.put(db, 'agents', current)
+            self.runtime.item(db, a['id'], 'old-item', 'assistant', 'Partial', turnId=a['turnId'])
+            self.runtime.put(db, 'tasks', {'id': 'old-task', 'agent': a['id'], 'turnId': a['turnId'],
+                                          'kind': 'tool', 'status': 'running', 'created': 1})
+        self.event(a, 'turn/completed', {'id': a['turnId'], 'status': 'failed', 'error': {'message': 'Old turn failed'}})
+        with self.runtime.db() as db:
+            rows = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_items WHERE agent=?', (a['id'],))]
+            task = json.loads(db.execute("SELECT record FROM runtime_tasks WHERE id='old-task'").fetchone()[0])
+        self.assertEqual(task['status'], 'interrupted')
+        self.assertEqual(next(item for item in rows if item['id'].endswith(':old-item'))['turnStatus'], 'failed')
+        self.assertTrue(any('Old turn failed' in item.get('text', '') for item in rows))
+        self.assertEqual(self.runtime.agent(a['id'])['turnId'], 'new-root')
+        self.assertEqual(next(run for run in self.records(a) if run['turnId'] == 'new-root')['status'], 'running')
+
+    def test_hourly_server_maintenance_prunes_finished_runs_in_bounded_batches(self):
+        import time
+        from codex_canvas import Canvas, make_server
+        from codex_execution import _save_run, prune, RETENTION_SECONDS, PRUNE_LIMIT
+        a = self.lead()
+        active = self.records(a)[0]['id']
+        now = time.time()
+        with self.runtime.db() as db:
+            for index in range(PRUNE_LIMIT + 1):
+                run = {'id': 'expired-' + str(index), 'agent': a['id'], 'accountKey': a['accountKey'], 'epoch': a['epoch'],
+                       'created': now - RETENTION_SECONDS - 1, 'status': 'completed'}
+                _save_run(db, run)
+                db.execute('INSERT INTO runtime_execution_inputs VALUES (?,?)', (run['id'], 'retained-event'))
+                for table in ('attempts', 'effects', 'nodes'):
+                    if table == 'effects':
+                        db.execute('INSERT INTO runtime_execution_effects VALUES (?,?,?,?,?)', (run['id'], run['id'], 'tool_requests', 'retained-request', '{}'))
+                    else:
+                        db.execute('INSERT INTO runtime_execution_' + table + ' VALUES (?,?,?)', (run['id'], run['id'], '{}'))
+            for status in ('running', 'unknown'):
+                _save_run(db, {'id': 'old-' + status, 'agent': a['id'], 'accountKey': a['accountKey'],
+                               'epoch': a['epoch'], 'created': now - RETENTION_SECONDS - 1, 'status': status})
+            self.assertEqual(prune(db, now=now - 2), 0)
+        canvas = Canvas(self.root)
+        canvas.runtime = self.runtime
+        server = make_server(canvas)
+        try:
+            server.service_actions()
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 1)
+            server.service_actions()  # The same hourly window does not prune again.
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 1)
+                self.assertEqual(prune(db, now=now), 1)
+                for table in ('attempts', 'inputs', 'effects', 'nodes'):
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_execution_' + table + " WHERE run LIKE 'expired-%'").fetchone()[0], 0)
+                self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_execution_runs WHERE id=?', (active,)).fetchone())
+                self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id IN ('old-running','old-unknown')").fetchone()[0], 2)
+                self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (self.records(a)[0]['inputEventIds'][0],)).fetchone())
+        finally:
+            server.server_close()
 
     def test_agent_and_execution_writes_rollback_together_and_deltas_do_not_write(self):
         a = self.lead()

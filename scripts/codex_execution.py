@@ -4,6 +4,7 @@ These records explain native runs. Receipts and recovery markers still own
 submission evidence and continuation permission. No helper commits or retries.
 """
 import json
+import logging
 import time
 import uuid
 
@@ -28,6 +29,58 @@ AGENT_FIELDS = ('startAttempt', 'turnId', 'threadId', 'accountKey', 'epoch',
                 'lastCompletedTurn', 'lastCompletedTurnStatus', 'lastCompletedTurnError',
                 'restartRecovery', 'disconnectRecovery', 'connectionRecovery',
                 'status', 'inFlight', 'prepareAttempt')
+
+
+RETENTION_SECONDS = 30 * 86400
+PRUNE_LIMIT = 200
+
+
+def safe_record(callback, *args, **kwargs):
+    """A side record failure must not discard the caller's native event."""
+    try:
+        return callback(*args, **kwargs)
+    except Exception as error:
+        # Do not log provider input, results, or request arguments.
+        logging.getLogger(__name__).error("Execution record failed: %s (%s)",
+                                         getattr(callback, '__name__', type(callback).__name__), type(error).__name__)
+        return None
+
+
+def prune(db, *, now=None, limit=PRUNE_LIMIT):
+    """Delete at most 200 expired finished runs in server maintenance."""
+    cutoff = (time.time() if now is None else now) - RETENTION_SECONDS
+    ids = [row[0] for row in db.execute(
+        "SELECT id FROM runtime_execution_runs WHERE created<? AND "
+        "json_extract(record,'$.status') IN ('completed','failed','interrupted','cancelled','rejected') "
+        "ORDER BY created LIMIT ?", (cutoff, min(PRUNE_LIMIT, max(1, limit))))]
+    if ids:
+        slots = ','.join('?' for _ in ids)
+        # Delete dependents first. Existing receipts and input events remain.
+        for table in ('attempts', 'inputs', 'effects', 'nodes'):
+            db.execute('DELETE FROM runtime_execution_' + table + ' WHERE run IN (' + slots + ')', ids)
+        db.execute('DELETE FROM runtime_execution_runs WHERE id IN (' + slots + ')', ids)
+    return len(ids)
+
+
+def maintenance(runtime):
+    # The HTTP server already performs hourly maintenance. Never run in put().
+    with runtime.db() as db:
+        return safe_record(prune, db)
+
+
+def observe_child_thread(db, account, method, params):
+    parent = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? AND COALESCE(json_extract(record,'$.accountKey'),'default')=? LIMIT 1", (params['parentThreadId'], account)).fetchone()
+    if parent:
+        observe_native(db, json.loads(parent[0]), method, params)
+
+
+def record_spawn(db, actor, child, request_id):
+    effect(db, actor_run(db, actor), 'spawn', child['id'], requestId=request_id, status=child.get('status'))
+
+
+def submission_identity(db, actor):
+    run = actor_run(db, actor)
+    return {'runId': run['id'], 'attemptId': run.get('latestAttemptId')} if run else {}
 
 
 def ensure_tables(db):
@@ -106,7 +159,7 @@ def reconcile_agent(db, agent, previous):
         attempt = historical
     run = _load(db, 'runs', historical_saved['runId']) if not attempt and historical_saved else None
     if attempt.get('id'):
-        stored = _load(db, 'attempts', attempt['id'])
+        stored = historical_saved if historical.get('id') == attempt['id'] else _load(db, 'attempts', attempt['id'])
         if stored:
             run = _load(db, 'runs', stored['runId'])
         if not run and attempt.get('activeAtReservation'):
@@ -157,6 +210,10 @@ def reconcile_agent(db, agent, previous):
         run = native_run(db, agent['id'], agent.get('accountKey', 'default'), agent.get('threadId'), turn)
         if not run:
             identity = str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps([agent['id'], agent.get('accountKey', 'default'), agent.get('threadId'), turn])))
+            if _load(db, 'nodes', 'native:' + identity):
+                # Native child activity can change the agent's visible turn.
+                # Its node still has no authority to become a root run.
+                return
             run = _new_run(agent, identity)
             run.update(turnId=turn, status='running', reconciled=True)
     elif turn and run and not run.get('turnId'):
@@ -168,11 +225,8 @@ def reconcile_agent(db, agent, previous):
         return
     # Provider terminal evidence only. Agent interruption on disconnect is not
     # proof that the native run ended.
-    completed = agent.get('lastCompletedTurn')
-    status = agent.get('lastCompletedTurnStatus')
     recovery = agent.get('connectionRecovery') or {}
-    if not (completed == run.get('turnId') and status in TERMINAL):
-        completed, status = recovery.get('turnId'), recovery.get('outcome')
+    completed, status = recovery.get('turnId'), recovery.get('outcome')
     same_native_scope = run['accountKey'] == agent.get('accountKey', 'default') and run.get('threadId') == agent.get('threadId')
     if same_native_scope and run.get('turnId') and completed == run['turnId'] and status in TERMINAL:
         if run['status'] not in TERMINAL:
@@ -203,7 +257,7 @@ def reconcile_effect(runtime, db, table, record, previous=None):
                 effect(db, run, 'spawn', record['id'], status=record.get('status'))
                 _save(db, 'nodes', 'worker:' + record['id'], run['id'],
                       {'id': 'worker:' + record['id'], 'runId': run['id'], 'kind': 'managed_worker', 'agentId': record['id'], 'status': record.get('status')})
-        elif previous and previous.get('status') != record.get('status'):
+        elif previous and record.get('parentId') and previous.get('status') != record.get('status'):
             node = _load(db, 'nodes', 'worker:' + record['id'])
             if node:
                 node['status'] = record.get('status')
@@ -224,7 +278,7 @@ def reconcile_effect(runtime, db, table, record, previous=None):
     elif table == 'work':
         for result in record.get('results', [])[-1:]:
             if result.get('runId'):
-                effect(db, {'id': result['runId']}, 'task_submit', result['id'], taskId=record['id'],
+                effect(db, {'id': result['runId'], 'latestAttemptId': result.get('attemptId')}, 'task_submit', result['id'], taskId=record['id'],
                        status='submitted', resultReference=result.get('resultFile'), revision=result.get('revision'))
 
 
@@ -248,8 +302,8 @@ def observe_native(db, agent, method, params):
     run = native_run(db, agent['id'], agent.get('accountKey', 'default'), agent.get('threadId'), turn_id)
     related = child_event(params)
     if not related and run:
-        if (method == 'turn/completed' and turn_id != agent.get('turnId')
-                and turn.get('status') in TERMINAL and run['status'] not in TERMINAL):
+        if (method == 'turn/completed' and turn.get('status') in TERMINAL
+                and run['status'] not in TERMINAL):
             row = db.execute("SELECT record FROM runtime_items WHERE agent=? AND created>=? AND json_extract(record,'$.turnId')=? AND json_extract(record,'$.role')='assistant' AND COALESCE(json_extract(record,'$.phase'),'')!='commentary' ORDER BY created DESC LIMIT 1", (agent['id'], run['created'] - 60, turn_id)).fetchone()
             item = json.loads(row[0]) if row else {}
             run.update(status=turn['status'], finished=time.time(), result=item.get('text', '')[:16000], resultItemId=item.get('id'), error=turn.get('error'))

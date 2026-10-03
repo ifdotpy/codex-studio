@@ -1664,6 +1664,8 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 self.voice_pruned_at = time.monotonic()
                 if canvas.runtime:
                     from codex_voice import prune_audio
+                    from codex_execution import maintenance, safe_record
+                    safe_record(maintenance, canvas.runtime)
                     try:
                         prune_audio(canvas.root)
                     except OSError as error:

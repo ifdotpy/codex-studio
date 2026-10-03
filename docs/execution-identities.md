@@ -25,8 +25,15 @@ acceptance. An observed native start confirms activity only.
 `Runtime.put`, native event handlers, and task submission write these records in
 their existing transactions. Text deltas do not write execution records.
 Disconnect and backend restart do not establish a native terminal outcome.
-A native completion must identify the root turn. Unowned completions cannot
-change the agent. Late background events update their original node.
+A native completion record must identify the exact root turn, account, and thread.
+Child and background events update nodes only. The observer preserves the existing
+agent, item, task, and failure notice handlers. Record failures log the function
+and exception type. They do not discard native events.
+
+The existing hourly HTTP server maintenance removes at most 200 finished or
+rejected runs older than 30 days per pass. It removes their dependent records
+first. Active and unknown runs remain available for recovery. Existing receipts
+and input events remain outside this retention policy.
 
 ## Reads
 
@@ -66,4 +73,28 @@ Run the fixture again:
 
 ```sh
 python3 -B tests/execution-migration-benchmark.py --payload-bytes 9780
+```
+
+## Extra SQL statements
+
+The measurement uses the actual `Runtime.put` caller and temporary state. It
+counts only SQL executed by the additional record hook. Existing source writes,
+sync projections, and transaction commits remain outside these counts.
+
+| Put case                                                   | Reads | Writes | Total |
+| ---------------------------------------------------------- | ----: | -----: | ----: |
+| Agent text delta or no execution field change              |     0 |      0 |     0 |
+| Agent accepted attempt with one input, changed preparation |     3 |      3 |     6 |
+| Agent first unsent attempt with one input                  |     2 |      3 |     5 |
+| New tool request linked to an active run                   |     4 |      1 |     5 |
+| Unchanged tool request                                     |     3 |      0 |     3 |
+| Tool request terminal status                               |     3 |      1 |     4 |
+
+The count varies with the state. Each additional input adds one link insert.
+A terminal run update adds one attempt status update. A worker status change
+adds one node read and, when its node exists, one node write. Child creation also
+links the parent run and creates a worker node. The record hook adds no commits.
+
+```sh
+python3 -B tests/execution-write-cost.py
 ```
