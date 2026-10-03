@@ -316,7 +316,7 @@ test("Messages loading", async () => {
     );
     assert.equal(typeof releaseComplaintDetail, "function");
     releaseComplaintDetail();
-    await drawer.getByText(detail.text, { exact: true }).waitFor();
+    await complaintCard.getByText(detail.text, { exact: true }).waitFor();
     const roomDetail = drawer.locator(".team-room-detail");
     await drawer.locator(`[data-room="${broadcast.id}"]`).click();
     await roomDetail
