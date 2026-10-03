@@ -68,6 +68,11 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await page.route("**/api/accounts", (route) =>
     route.fulfill({ json: state() }),
   );
+  await page.route("**/api/accounts/default", async (route) => {
+    defaultAccountCalls++;
+    defaultAccountKey = route.request().postDataJSON().account_key;
+    await route.fulfill({ json: state() });
+  });
   await page.route("**/api/models?*", (route) =>
     route.fulfill({
       json: {
@@ -339,8 +344,8 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
       label.trim(),
     ),
-    ["Accounts", "Appearance", "Hotkeys"],
-    "Global Studio settings has separate Accounts, Appearance, and Hotkeys tabs",
+    ["Accounts", "Appearance", "Federation", "Hotkeys"],
+    "Global Studio settings exposes each available settings tab",
   );
   await studioSettings
     .getByRole("tab", { name: "Accounts", exact: true })

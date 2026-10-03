@@ -54,6 +54,76 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       "Check approval and interrupted worker navigation across a large release team";
     page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.fallback();
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.reset || !data.documents?.length)
+        return route.fulfill({ response, json: data });
+      let sequence = data.maxSeq || data.checkpoint?.seq || 0;
+      const desiredStatus = new Map([
+        [worker(3).id, "failed"],
+        [worker(4).id, "paused"],
+        [worker(25).id, "queued"],
+        [worker(38).id, "completed"],
+        [worker(39).id, "completed"],
+      ]);
+      let answerRequestPresent = false;
+      for (const document of data.documents) {
+        if (document._deleted) continue;
+        const payload = JSON.parse(document.payload);
+        if (payload.collection === "agent" && payload.id === worker(2).id) {
+          payload.value.name = longName;
+          payload.value.status = "approval";
+          payload.value.inFlight = false;
+          document.payload = JSON.stringify(payload);
+          document.seq = ++sequence;
+        } else if (
+          payload.collection === "agent" &&
+          desiredStatus.has(payload.id)
+        ) {
+          payload.value.status = desiredStatus.get(payload.id);
+          payload.value.inFlight = false;
+          document.payload = JSON.stringify(payload);
+          document.seq = ++sequence;
+        } else if (
+          payload.collection === "request" &&
+          payload.value.agent === worker(2).id
+        ) {
+          answerRequestPresent = true;
+        }
+      }
+      if (!answerRequestPresent) {
+        data.documents.push({
+          id: "entity:request:team-navigation-answer",
+          seq: ++sequence,
+          _deleted: false,
+          payload: JSON.stringify({
+            collection: "request",
+            id: "team-navigation-answer",
+            value: {
+              id: "team-navigation-answer",
+              method: "agent/asyncQuestion",
+              agent: worker(2).id,
+              epoch: worker(2).epoch,
+              status: "pending",
+              params: {
+                questions: [{ id: "scope", question: "Which scope?" }],
+              },
+            },
+          }),
+        });
+      }
+      data.documents.sort((left, right) => left.seq - right.seq);
+      data.checkpoint = { ...data.checkpoint, seq: sequence };
+      data.maxSeq = sequence;
+      data.initialHigh = sequence;
+      await route.fulfill({ response, json: data });
+    });
     await page.goto(origin);
     const selectLead = () => page.locator(`[data-chat="${lead.id}"]`).click();
     await selectLead();
@@ -178,7 +248,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .getByRole("region", { name, exact: true })
         .locator("[data-worker]")
         .evaluateAll((nodes) => nodes.map((node) => node.dataset.worker));
-    assert.deepEqual(await groupIds("Need you"), [worker(2).id]);
+    await expect.poll(() => groupIds("Need you")).toEqual([worker(2).id]);
     assert.deepEqual(
       (await groupIds("Failed")).sort(),
       [worker(3).id, worker(7).id].sort(),
@@ -186,6 +256,11 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     assert.deepEqual(
       (await groupIds("Working")).sort(),
       [0, 1, 5, 6].map((n) => worker(n).id).sort(),
+      JSON.stringify(
+        (await groupIds("Working")).map(
+          (id) => workers.find((agent) => agent.id === id)?.name,
+        ),
+      ),
     );
     assert.equal((await groupIds("Waiting")).length, 18);
     assert.equal(

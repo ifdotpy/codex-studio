@@ -68,22 +68,62 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.searchParams.get("scope") !== "state:chat") return route.fallback();
+    if (url.searchParams.get("scope") !== "state:entities:v1")
+      return route.fallback();
     const after = Number(url.searchParams.get("after") || 0);
+    const data = snapshot();
+    const rows = new Map();
+    const sequenceBase = stateSeq * 1000;
+    let sequence = sequenceBase;
+    const add = (collection, values) => {
+      for (const value of values || [])
+        rows.set(`${collection}:${value.id}`, {
+          id: `entity:${collection}:${value.id}`,
+          seq: sequence++,
+          _deleted: false,
+          payload: JSON.stringify({ collection, id: value.id, value }),
+        });
+    };
+    add("agent", data.threads);
+    for (const collection of [
+      "requests",
+      "tasks",
+      "monitors",
+      "complaints",
+      "userTasks",
+      "projects",
+      "peerTeams",
+      "rooms",
+    ]) {
+      const collectionName = {
+        requests: "request",
+        tasks: "task",
+        monitors: "monitor",
+        complaints: "complaint",
+        userTasks: "task",
+        projects: "project",
+        peerTeams: "peerTeam",
+        rooms: "room",
+      }[collection];
+      add(collectionName, data.runtime[collection]);
+    }
+    if (answered) {
+      for (const request of initial.runtime.requests || [])
+        rows.set(`request:${request.id}`, {
+          id: `entity:request:${request.id}`,
+          seq: sequence++,
+          _deleted: true,
+          payload: "{}",
+        });
+    }
+    const checkpoint = sequence - 1;
     await route.fulfill({
       json: {
         ...identity,
-        documents:
-          after < stateSeq
-            ? [
-                {
-                  id: "state:chat",
-                  seq: stateSeq,
-                  payload: JSON.stringify(snapshot()),
-                },
-              ]
-            : [],
-        checkpoint: { seq: Math.max(after, stateSeq) },
+        documents: after < checkpoint ? [...rows.values()] : [],
+        checkpoint: { seq: Math.max(after, checkpoint) },
+        initialHigh: checkpoint,
+        maxSeq: checkpoint,
       },
     });
   });

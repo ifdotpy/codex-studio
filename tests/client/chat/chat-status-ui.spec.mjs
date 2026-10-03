@@ -424,10 +424,17 @@ test("chat-status-ui", async ({ browser }) => {
       '.agent-phase[data-wait-state="live"] summary',
     );
     await waitSummary.getByText(waitLabel, { exact: true }).waitFor();
+    const conversationStatus = await page
+      .locator("#conversation-status")
+      .innerText();
+    const [projectPrefix, ...statusParts] = conversationStatus.split(" · ");
     assert.equal(
-      (await page.locator("#conversation-status").innerText()).split(" · ")[0],
-      waitLabel,
+      projectPrefix,
+      state.runtime.projects?.find((project) => project.path === lead.cwd)
+        ?.name || lead.cwd.split("/").filter(Boolean).at(-1),
+      "the mobile conversation header keeps its project prefix",
     );
+    assert.equal(statusParts.join(" · "), waitLabel);
     assert.equal(
       await page
         .locator("#conversation-title .chat-status")
@@ -457,8 +464,12 @@ test("chat-status-ui", async ({ browser }) => {
       await page.locator("#conversation-title .chat-status-working").count(),
       0,
     );
+    const endedStatus = (
+      await page.locator("#conversation-status").innerText()
+    ).split(" · ");
+    assert.equal(endedStatus[0], projectPrefix);
     assert.equal(
-      (await page.locator("#conversation-status").innerText()).split(" · ")[0],
+      endedStatus.slice(1).join(" · "),
       "Turn ended. Send a message to continue.",
     );
     console.log(

@@ -20,6 +20,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let browser,
+    pages,
     log = "";
   fixture.stderr.on("data", (data) => (log += data));
   try {
@@ -38,7 +39,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await fetch(`${origin}/api/transcript?id=${lead.id}`)
     ).json();
     browser = fixtureBrowser;
-    const pages = new Set();
+    pages = new Set();
     const measurements = [];
     for (const width of [1440, 900, 390]) {
       const transcript = structuredClone(originalTranscript);

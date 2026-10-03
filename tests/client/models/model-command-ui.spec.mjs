@@ -1,5 +1,6 @@
 // Production renderer, isolated runtime, real settings and message endpoints.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,12 +68,33 @@ test("model-command-ui", async ({ browser }) => {
     const worker = initial.threads.find((agent) => agent.name === "Worker 00");
     const agent = async (id) =>
       (await snapshot()).runtime.agents.find((value) => value.id === id);
+    // The API projection below is deliberately stale in this scenario; read
+    // the fixture's persisted row independently instead of extending its wait.
+    const persistedAgent = (id) => {
+      const query = `import json, sqlite3, sys
+db = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=2)
+row = db.execute("SELECT record FROM runtime_agents WHERE id = ?", (sys.argv[2],)).fetchone()
+if row is None:
+    raise SystemExit("fixture agent row is missing")
+record = json.loads(row[0])
+print(json.dumps({key: record.get(key) for key in ("id", "model", "effort", "pendingSettings")}))
+db.close()`;
+      const result = spawnSync(
+        process.env.PYTHON || "python3",
+        ["-c", query, join(root, "canvas.sqlite3"), id],
+        { encoding: "utf8", timeout: 4000 },
+      );
+      assert.equal(result.status, 0, result.stderr || result.error?.message);
+      return JSON.parse(result.stdout);
+    };
     const wait = async (test, label) => {
       for (let i = 0; i < 100; i++) {
         if (await test()) return;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      throw Error(label + "\n" + log);
+      throw Error(
+        `${label}\nMain: ${JSON.stringify(await agent(main.id))}\nWorker: ${JSON.stringify(await agent(worker.id))}\nSettings: ${JSON.stringify(settings)}\nPage errors: ${JSON.stringify(errors)}\n${log}`,
+      );
     };
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
@@ -91,27 +113,47 @@ test("model-command-ui", async ({ browser }) => {
     });
     let lagMainSettings = false;
     let laggedProjections = 0;
+    const staleEntityVersions = [];
     await page.route("**/api/sync/pull?*", async (route) => {
       const scope = new URL(route.request().url()).searchParams.get("scope");
-      if (!lagMainSettings || !["state", "state:chat"].includes(scope))
+      if (
+        !lagMainSettings ||
+        !["state", "state:chat", "state:entities:v1"].includes(scope)
+      )
         return route.continue();
       const response = await route.fetch();
       const data = await response.json();
+      let staleRows = 0;
       for (const document of data.documents || []) {
         const payload = JSON.parse(document.payload);
-        for (const value of [
-          ...(payload.threads || []),
-          ...(payload.runtime?.agents || []),
-        ]) {
+        const values =
+          payload.collection === "agent"
+            ? [payload.value]
+            : [...(payload.threads || []), ...(payload.runtime?.agents || [])];
+        let changedMain = false;
+        for (const value of values) {
           if (value.id === main.id) {
+            staleEntityVersions.push({
+              scope,
+              id: document.id,
+              seq: document.seq,
+              returnedModel: value.model,
+              returnedEffort: value.effort,
+              staleModel: main.model,
+              staleEffort: main.effort,
+            });
             value.model = main.model;
             value.effort = main.effort;
+            changedMain = true;
           }
         }
-        document.payload = JSON.stringify(payload);
-        laggedProjections++;
+        if (changedMain) {
+          document.payload = JSON.stringify(payload);
+          staleRows++;
+        }
       }
       await route.fulfill({ response, json: data });
+      laggedProjections += staleRows;
     });
     await page.addInitScript(
       ({ id, stateDir }) => {
@@ -131,6 +173,10 @@ test("model-command-ui", async ({ browser }) => {
         name: worker ? "Subagent settings" : "Main agent settings",
         exact: true,
       });
+    const saved = async (worker = false) =>
+      expect(dialog(worker).locator(".execution-status")).toHaveText(
+        /^Saved(?: ·.*)?$/,
+      );
     let openedBySend = false;
     const open = async (text = "/model", send = false, worker = false) => {
       openedBySend = send;
@@ -187,26 +233,47 @@ test("model-command-ui", async ({ browser }) => {
       "PASS case-insensitive standalone command; Escape changes no settings; attachment retained",
     );
     await open("/model", true);
-    lagMainSettings = true;
     await selectModel(
       dialog().getByLabel("Main agent model", { exact: true }),
       "gpt-5.6-sol",
     );
-    await wait(
-      async () => (await agent(main.id)).model === "gpt-5.6-sol",
-      "Main model persists",
+    await saved();
+    const mainAfterModel = persistedAgent(main.id);
+    assert.deepEqual(
+      { model: mainAfterModel.model, effort: mainAfterModel.effort },
+      { model: "gpt-5.6-sol", effort: "medium" },
+      "The main model is persisted in the isolated fixture",
     );
     await dialog()
       .getByLabel("Main agent reasoning", { exact: true })
       .selectOption("high");
-    await wait(
-      async () => (await agent(main.id)).effort === "high",
-      "Main reasoning persists",
+    await saved();
+    const mainAfterReasoning = persistedAgent(main.id);
+    assert.deepEqual(
+      { model: mainAfterReasoning.model, effort: mainAfterReasoning.effort },
+      { model: "gpt-5.6-sol", effort: "high" },
+      "Main reasoning is persisted in the isolated fixture",
     );
+    lagMainSettings = true;
     await wait(
       () => laggedProjections > 0,
       "The replica returned stale main settings",
     );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const afterStaleSync = persistedAgent(main.id);
+    assert.deepEqual(
+      { model: afterStaleSync.model, effort: afterStaleSync.effort },
+      { model: "gpt-5.6-sol", effort: "high" },
+      "A stale sync projection cannot overwrite persisted settings",
+    );
+    // Restrict the stale-replica behavior to this assertion; later deliberate
+    // settings changes must reach the real fixture without stale pulls racing them.
+    lagMainSettings = false;
     assert.equal(messages.length, 0);
     assert(
       settings
@@ -243,6 +310,13 @@ test("model-command-ui", async ({ browser }) => {
     const reopened = await modelValue(
       dialog().getByLabel("Main agent model", { exact: true }),
     );
+    assert.equal(
+      await dialog()
+        .getByLabel("Main agent reasoning", { exact: true })
+        .inputValue(),
+      "high",
+      "The stale sync response does not replace saved reasoning",
+    );
     if (reopened !== "gpt-5.6-sol")
       console.error("Reopened model:", {
         shown: reopened,
@@ -255,6 +329,7 @@ test("model-command-ui", async ({ browser }) => {
             next_turn,
           })),
       });
+    await saved();
     assert.equal(
       reopened,
       "gpt-5.6-sol",
@@ -286,21 +361,43 @@ test("model-command-ui", async ({ browser }) => {
       dialog(true).getByLabel("Subagent model", { exact: true }),
       "gpt-5.6-sol",
     );
-    await wait(
-      async () =>
-        (await agent(worker.id)).pendingSettings?.model === "gpt-5.6-sol",
-      "Active worker queues selected model",
+    await saved(true);
+    const workerAfterModel = persistedAgent(worker.id);
+    assert.deepEqual(
+      {
+        model: workerAfterModel.model,
+        effort: workerAfterModel.effort,
+        pendingModel: workerAfterModel.pendingSettings?.model,
+        pendingEffort: workerAfterModel.pendingSettings?.effort,
+      },
+      {
+        model: worker.model,
+        effort: worker.effort,
+        pendingModel: "gpt-5.6-sol",
+        pendingEffort: "high",
+      },
+      "Active worker's next-turn model is persisted",
     );
     await dialog(true)
       .getByLabel("Subagent reasoning", { exact: true })
       .selectOption("medium");
-    await wait(
-      async () => (await agent(worker.id)).pendingSettings?.effort === "medium",
-      "Active worker queues reasoning",
+    await saved(true);
+    const running = persistedAgent(worker.id);
+    assert.deepEqual(
+      {
+        model: running.model,
+        effort: running.effort,
+        pendingModel: running.pendingSettings?.model,
+        pendingEffort: running.pendingSettings?.effort,
+      },
+      {
+        model: worker.model,
+        effort: worker.effort,
+        pendingModel: "gpt-5.6-sol",
+        pendingEffort: "medium",
+      },
+      "Active worker's next-turn reasoning is persisted",
     );
-    const running = await agent(worker.id);
-    assert.equal(running.model, worker.model);
-    assert.equal(running.effort, worker.effort);
     assert(
       settings
         .filter((body) => body.id === worker.id)
@@ -337,9 +434,15 @@ test("model-command-ui", async ({ browser }) => {
     await dialog()
       .getByLabel("Main agent reasoning", { exact: true })
       .selectOption("medium");
-    await wait(
-      async () => (await agent(main.id)).effort === "medium",
-      "Mobile picker persists reasoning",
+    await saved();
+    const mainAfterMobileReasoning = persistedAgent(main.id);
+    assert.deepEqual(
+      {
+        model: mainAfterMobileReasoning.model,
+        effort: mainAfterMobileReasoning.effort,
+      },
+      { model: "gpt-5.6-sol", effort: "medium" },
+      "Mobile reasoning is persisted in the isolated fixture",
     );
     assert.equal(
       await dialog().evaluate(
@@ -388,6 +491,8 @@ test("model-command-ui", async ({ browser }) => {
         browser: browser.browserType().name(),
         evidence: root,
         settings: settings.length,
+        settingRequests: settings,
+        staleEntityVersions,
         messages: messages.length,
       }),
     );

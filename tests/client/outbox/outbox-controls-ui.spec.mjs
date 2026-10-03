@@ -231,8 +231,8 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         await entry(text).waitFor();
         assert.equal(
           await entry(text).getByRole("status").innerText(),
-          "Sending…",
-          "A queued after-tool message remains marked as sending",
+          "Waiting for agent",
+          "A locally accepted pending message waits for agent delivery",
         );
       } else {
         const body = posts.at(-1);
