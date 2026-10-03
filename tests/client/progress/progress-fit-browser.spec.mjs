@@ -5,767 +5,736 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, expect } from "../playwright.mjs";
 
-test(
-  "progress-fit-browser",
-  async () => {
-    const root = join(import.meta.dirname, "../../../web");
-    const require = createRequire(join(root, "package.json"));
-    const { chromium, webkit } = require("playwright");
-    const { createServer } = await import(require.resolve("vite"));
-    const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
-    const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-fit-"));
-    const evidenceDir = await mkdtemp(join(tmpdir(), "studio-progress-hide-"));
-    const entry = join(root, "progress-fit-fixture.tsx");
-    const server = await createServer({
-      configFile: false,
-      root,
-      cacheDir,
-      server: { host: "127.0.0.1", port: 0 },
-      optimizeDeps: {
-        noDiscovery: true,
-        include: [
-          "react",
-          "react/jsx-runtime",
-          "react/jsx-dev-runtime",
-          "react-dom",
-          "react-dom/client",
-          "@mantine/core",
-          "marked",
-          "dompurify",
-        ],
-      },
-      plugins: [
-        {
-          name: "progress-fit-fixture",
-          configureServer(server) {
-            server.middlewares.use("/check", (_req, res) => {
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                '<div id="root"></div><script type="module" src="/progress-fit-fixture.tsx"></script>',
-              );
-            });
-          },
-          resolveId(id) {
-            if (id === "/progress-fit-fixture.tsx") return entry;
-          },
-          load(id) {
-            if (id !== entry) return;
-            return `
+test("progress-fit-browser", async ({ browser, page }) => {
+  test.setTimeout(120_000);
+  const root = join(import.meta.dirname, "../../../web");
+  const require = createRequire(join(root, "package.json"));
+  const { createServer } = await import(require.resolve("vite"));
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-fit-"));
+  const evidenceDir = await mkdtemp(join(tmpdir(), "studio-progress-hide-"));
+  const entry = join(root, "progress-fit-fixture.tsx");
+  const server = await createServer({
+    configFile: false,
+    root,
+    cacheDir,
+    server: { host: "127.0.0.1", port: 0 },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [
+        "react",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "react-dom",
+        "react-dom/client",
+        "@mantine/core",
+        "marked",
+        "dompurify",
+      ],
+    },
+    plugins: [
+      {
+        name: "progress-fit-fixture",
+        configureServer(server) {
+          server.middlewares.use("/check", (_req, res) => {
+            res.setHeader("Content-Type", "text/html");
+            res.end(
+              '<div id="root"></div><script type="module" src="/progress-fit-fixture.tsx"></script>',
+            );
+          });
+        },
+        resolveId(id) {
+          if (id === "/progress-fit-fixture.tsx") return entry;
+        },
+        load(id) {
+          if (id !== entry) return;
+          return `
   import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/agents/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
   function Fixture(){const[agent,setAgent]=useState('first');window.switchAgent=id=>flushSync(()=>setAgent(id));return <MantineProvider><div id='host' style={{width:'100%',maxWidth:520}}><AgentPanel agentId={agent} stateDir='/workspace'/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
-          },
         },
-      ],
-    });
-    let browser;
-    try {
-      await server.listen();
-      browser = await engine.launch({
-        headless: true,
-        ...(engine === chromium
-          ? {
-              executablePath: browserExecutablePath,
-            }
-          : {}),
+      },
+    ],
+  });
+  try {
+    await server.listen();
+    await page.setViewportSize({ width: 540, height: 800 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      let markdown = "# Stage\n\nReady.",
+        revision = "1",
+        hidden = false,
+        online = true,
+        offset = 0,
+        mode = "ok";
+      const now = Date.now;
+      Date.now = () => now() + offset;
+      Object.defineProperty(document, "hidden", {
+        get: () => hidden,
+        configurable: true,
       });
-      const page = await browser.newPage({
-        viewport: { width: 540, height: 800 },
+      Object.defineProperty(navigator, "onLine", {
+        get: () => online,
+        configurable: true,
       });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      await page.addInitScript(() => {
-        let markdown = "# Stage\n\nReady.",
-          revision = "1",
-          hidden = false,
-          online = true,
-          offset = 0,
-          mode = "ok";
-        const now = Date.now;
-        Date.now = () => now() + offset;
-        Object.defineProperty(document, "hidden", {
-          get: () => hidden,
-          configurable: true,
-        });
-        Object.defineProperty(navigator, "onLine", {
-          get: () => online,
-          configurable: true,
-        });
-        window.visibility = (value) => {
-          hidden = value;
-          document.dispatchEvent(new Event("visibilitychange"));
-        };
-        window.online = (value) => {
-          online = value;
-          window.dispatchEvent(new Event(value ? "online" : "offline"));
-        };
-        window.advance = () => {
-          offset += 31000;
-          window.dispatchEvent(new Event("pageshow"));
-        };
-        window.changeProgress = (text) => {
-          markdown = text;
-          revision = String(Number(revision) + 1);
-          window.dispatchEvent(new Event("pageshow"));
-          return revision;
-        };
-        window.reportMode = (value) => {
-          mode = value;
-        };
-        window.reports = [];
-        window.fileReads = [];
-        window.activeReports = 0;
-        window.maxActiveReports = 0;
-        const original = window.fetch;
-        window.fetch = (input, options = {}) => {
-          const url = new URL(String(input), location.href);
-          if (url.pathname === "/api/panel")
-            return Promise.resolve(
-              new Response(
-                JSON.stringify({
-                  agent: url.searchParams.get("agent"),
-                  format: "markdown",
-                  markdown,
-                  revision,
-                  path:
-                    "/workspace/progress/" +
-                    url.searchParams.get("agent") +
-                    "/PROGRESS.md",
-                  error: null,
-                }),
-                { status: 200 },
-              ),
-            );
-          if (url.pathname === "/api/file") {
-            window.fileReads.push(Object.fromEntries(url.searchParams));
-            return Promise.resolve(
-              new Response(
-                JSON.stringify({
-                  name: "PROGRESS.md",
-                  mime: "text/markdown",
-                  base64: btoa(markdown),
-                }),
-                { status: 200 },
-              ),
-            );
-          }
-          if (url.pathname === "/api/panel/layout") {
-            const report = {
-              body: JSON.parse(options.body),
-              headers: options.headers,
-              aborted: false,
-              mode,
-            };
-            window.reports.push(report);
-            window.activeReports++;
-            window.maxActiveReports = Math.max(
-              window.maxActiveReports,
-              window.activeReports,
-            );
-            const response = () => {
-              window.activeReports--;
-              return new Response(
-                JSON.stringify(
-                  mode === "failed" ? { error: "fixture report failed" } : {},
-                ),
-                {
-                  status:
-                    mode === "failed" ? 503 : mode === "stale" ? 409 : 200,
-                },
-              );
-            };
-            if (mode === "hold")
-              return new Promise((resolve, reject) => {
-                window.releaseReport = () => {
-                  window.releaseReport = null;
-                  resolve(response());
-                };
-                options.signal.addEventListener(
-                  "abort",
-                  () => {
-                    report.aborted = true;
-                    window.activeReports--;
-                    window.releaseReport = null;
-                    reject(new DOMException("Aborted", "AbortError"));
-                  },
-                  { once: true },
-                );
-              });
-            return Promise.resolve(response());
-          }
-          return original(input, options);
-        };
-      });
-      await page.goto(
-        `http://127.0.0.1:${server.httpServer.address().port}/check`,
-        { waitUntil: "commit" },
-      );
-      const panel = page.getByRole("region", { name: "Agent progress" }),
-        current = panel.locator(".agent-panel-current");
-      await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "yes",
-        "Phone default is Hidden",
-      );
-      assert.equal(await current.isVisible(), false);
-      assert.equal(
-        await panel.locator(".agent-panel-summary").innerText(),
-        "Ready.",
-      );
-      assert.ok((await panel.boundingBox()).height <= 45);
-      for (const button of await panel
-        .locator(".agent-panel-compact button")
-        .all()) {
-        const bounds = await button.boundingBox();
-        assert.ok(bounds.width >= 44 && bounds.height >= 44);
-      }
-      await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
-      const hiddenReport = await page.evaluate(() => reports.at(-1).body);
-      assert.equal(hiddenReport.visibleLines, hiddenReport.totalLines);
-      assert.equal(hiddenReport.lastVisibleLine, "Ready.");
-      await panel.getByRole("button", { name: "Show", exact: true }).click();
-      await current.waitFor();
-      assert.equal(
-        await panel.getAttribute("data-expanded"),
-        "no",
-        "Show returns to Preview",
-      );
-      await page.reload();
-      await current.waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "no",
-        "Show persists on phones after reload",
-      );
-      await panel.getByRole("button", { name: "Hide", exact: true }).click();
-      await page.reload();
-      await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "yes",
-        "Hide persists after reload",
-      );
-      await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
-      assert.deepEqual(
-        await page.evaluate(() => {
-          const {
-            client: _client,
-            sequence: _sequence,
-            ...layout
-          } = reports.at(-1).body;
-          return layout;
-        }),
-        (() => {
-          const {
-            client: _client,
-            sequence: _sequence,
-            ...layout
-          } = hiddenReport;
-          return layout;
-        })(),
-      );
-      assert.equal(
-        await panel.getByRole("status", { name: "Progress changed" }).count(),
-        0,
-      );
-      await page.evaluate(() =>
-        window.changeProgress("# Status\n\nNew **status** with `code`."),
-      );
-      await panel.getByRole("status", { name: "Progress changed" }).waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "yes",
-        "A new revision cannot auto-open",
-      );
-      assert.equal(
-        await panel.locator(".agent-panel-summary").innerText(),
-        "New status with code.",
-      );
-      await page.waitForFunction(() => reports.at(-1)?.body.revision === "2");
-      assert.equal(
-        await page.evaluate(() => reports.at(-1).body.visibleLines),
-        2,
-      );
-      await page.evaluate(() =>
-        window.changeProgress("- Ready\n  - Child detail"),
-      );
-      await page.waitForFunction(
-        () =>
-          document.querySelector(".agent-panel-summary")?.textContent ===
-          "Ready",
-      );
-      await page.evaluate(() =>
-        window.changeProgress("A long status sentence. ".repeat(30)),
-      );
-      await page.waitForFunction(() =>
-        document
-          .querySelector(".agent-panel-summary")
-          ?.textContent.startsWith("A long status"),
-      );
-      assert.equal(
-        await panel
-          .locator(".agent-panel-summary")
-          .evaluate(
-            (el) =>
-              el.scrollWidth > el.clientWidth &&
-              getComputedStyle(el).textOverflow === "ellipsis",
-          ),
-        true,
-        "A long status uses ellipsis in the compact row",
-      );
-      await page.evaluate(() => window.switchAgent("second"));
-      await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "yes",
-        "Workspace preference applies to another agent",
-      );
-      await page.evaluate(() => window.switchAgent("first"));
-      await panel.getByRole("button", { name: "Show", exact: true }).click();
-      assert.equal(
-        await panel.getByRole("status", { name: "Progress changed" }).count(),
-        0,
-      );
-      await page.evaluate(() => window.changeProgress("# Stage\n\nReady."));
-      await current.getByText("Ready.", { exact: true }).waitFor();
-      await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
-      const report = await page.evaluate(() => reports.at(-1));
-      assert.equal(report.headers["X-Canvas-Token"], "fixture-token");
-      assert.deepEqual(
-        Object.keys(report.body).sort(),
-        [
-          "agent",
-          "client",
-          "sequence",
-          "renderer",
-          "revision",
-          "width",
-          "height",
-          "contentWidth",
-          "contentHeight",
-          "overflowX",
-          "overflowY",
-          "totalLines",
-          "visibleLines",
-          "lastVisibleLine",
-          "lastVisibleHeading",
-          "fits",
-          "reason",
-        ].sort(),
-      );
-      assert.equal(report.body.renderer, "progress-markdown-v2");
-      assert.match(report.body.client, /^[\w-]{36}$/);
-      assert.equal(report.body.reason, null);
-      assert(
-        report.body.width > 0 &&
-          report.body.height > 0 &&
-          report.body.height < 280,
-      );
-      const change = async (text) => {
-        const revision = await page.evaluate(
-          (value) => window.changeProgress(value),
-          text,
-        );
-        await page.waitForFunction(
-          (revision) => reports.at(-1)?.body.revision === revision,
-          revision,
-        );
+      window.visibility = (value) => {
+        hidden = value;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+      window.online = (value) => {
+        online = value;
+        window.dispatchEvent(new Event(value ? "online" : "offline"));
+      };
+      window.advance = () => {
+        offset += 31000;
+        window.dispatchEvent(new Event("pageshow"));
+      };
+      window.changeProgress = (text) => {
+        markdown = text;
+        revision = String(Number(revision) + 1);
+        window.dispatchEvent(new Event("pageshow"));
         return revision;
       };
-      await page.evaluate(() => {
-        document.getElementById("host").style.width = "0px";
-      });
-      await page.waitForTimeout(80);
-      const zero = await page.evaluate(() => {
-        window.advance();
-        return reports.length;
-      });
-      await page.waitForTimeout(100);
-      assert.equal(
-        await page.evaluate(() => reports.length),
-        zero,
-        "Zero available dimensions remain unmeasured",
-      );
-      await page.evaluate(() => {
-        document.getElementById("host").style.width = "100%";
-      });
-      await current.waitFor();
-      await change("Literal `&lt;tag&gt;` and **strong**.");
-      assert.equal(await current.locator("code").innerText(), "&lt;tag&gt;");
-      await page.addStyleTag({
-        content:
-          ".progress-markdown{font-size:14.7px!important;line-height:1.35!important}.agent-panel-heading{line-height:16.25px!important;padding-top:4.25px!important}",
-      });
-      await change(
-        Array.from({ length: 6 }, (_, i) => `Line ${i}.`).join("  \n"),
-      );
-      const fractional = await page.evaluate(() => reports.at(-1).body);
-      assert.equal(fractional.fits, true);
-      assert.notEqual(fractional.height % 1, 0);
-      assert(fractional.contentHeight <= fractional.height + 0.5);
-      await page.addStyleTag({
-        content:
-          ".progress-markdown{font-size:12px!important}.agent-panel-heading{line-height:16px!important;padding-top:4px!important}",
-      });
-      await change("1. Ready\n2. Review");
-      assert.equal(await current.locator("ol").count(), 1);
-      await change(
-        "999999999. Long ordered marker with text that must remain inside the candidate bounds.",
-      );
-      await page.setViewportSize({ width: 190, height: 800 });
-      await page.waitForFunction(() => reports.at(-1)?.body.width < 200);
-      assert.equal(
-        await panel
-          .locator(".agent-panel-measure ol")
-          .evaluate((el) => getComputedStyle(el).listStylePosition),
-        "inside",
-      );
-      const marker = await page.evaluate(() => reports.at(-1).body);
-      if (marker.fits)
-        assert(
-          marker.contentWidth <= marker.width + 0.5 &&
-            marker.contentHeight <= marker.height + 0.5,
-        );
-      await page.setViewportSize({ width: 540, height: 800 });
-      const wrapping =
-        "A measured progress sentence that wraps when the available width becomes smaller. ".repeat(
-          4,
-        );
-      await change(wrapping);
-      await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
-      await page.setViewportSize({ width: 210, height: 800 });
-      await panel
-        .getByRole("button", { name: "Expand", exact: true })
-        .waitFor();
-      assert.equal(await current.count(), 1);
-      const narrow = await page.evaluate(() => reports.at(-1).body);
-      assert.equal(narrow.reason, "overflow");
-      assert(
-        narrow.contentHeight > narrow.height ||
-          narrow.contentWidth > narrow.width,
-      );
-      assert.equal(
-        await panel
-          .locator(".agent-panel-content")
-          .evaluate(
-            (el) =>
-              el.scrollHeight > el.clientHeight ||
-              el.scrollWidth > el.clientWidth,
-          ),
-        true,
-      );
-      await page.setViewportSize({ width: 540, height: 800 });
-      await current.waitFor();
-      await change(
-        "First line.  \nSecond line.  \nThird line.  \nFourth line.  \nFifth line.  \nSixth line.",
-      );
-      await page.setViewportSize({ width: 540, height: 270 });
-      await panel
-        .getByRole("button", { name: "Expand", exact: true })
-        .waitFor();
-      assert.equal(
-        await panel
-          .locator(".agent-panel-measure .progress-markdown")
-          .evaluate((el) => getComputedStyle(el).fontSize),
-        "12px",
-      );
-      assert((await panel.boundingBox()).height <= 100.5);
-      await page.setViewportSize({ width: 540, height: 800 });
-      await change("Measured font change. ".repeat(12));
-      await current.waitFor();
-      await page.addStyleTag({
-        content: ".progress-markdown{font-size:24px!important}",
-      });
-      await panel
-        .getByRole("button", { name: "Expand", exact: true })
-        .waitFor();
-      await page.addStyleTag({
-        content: ".progress-markdown{font-size:12px!important}",
-      });
-      await current.waitFor();
-      for (const unsupported of [
-        "![image](https://invalid.example/x.png)",
-        "```html\n<button>Go</button>\n```",
-        "| A | B |\n| - | - |\n| x | y |",
-        "<form><input></form>",
-        "[bad](javascript:alert(1))",
-      ]) {
-        await change(unsupported);
-        await panel
-          .getByText("Progress format is unsupported.", { exact: true })
-          .waitFor();
-        assert.equal(await current.count(), 0);
-        assert.equal(
-          (await page.evaluate(() => reports.at(-1).body)).reason,
-          "unsupported",
-        );
-        assert.equal(await panel.locator("img,iframe,form,input").count(), 0);
-      }
-      const long = Array.from(
-        { length: 50 },
-        (_, i) => `- Complete step ${i}`,
-      ).join("\n");
-      await change(long);
-      await panel
-        .getByRole("button", { name: "Expand", exact: true })
-        .waitFor();
-      const beforeHide = await page.evaluate(() => reports.at(-1).body);
-      await panel.getByRole("button", { name: "Hide", exact: true }).click();
-      await page.waitForTimeout(100);
-      assert.equal(
-        await panel
-          .locator(".agent-panel-heading .agent-panel-expand")
-          .isVisible(),
-        false,
-        "The Preview control must not paint over the Hidden header",
-      );
-      assert.deepEqual(
-        await page.evaluate(() => reports.at(-1).body),
-        beforeHide,
-        "Hide must preserve Preview reports, including full revision and clipped lines",
-      );
-      for (const width of [1440, 390]) {
-        await page.setViewportSize({ width, height: 900 });
-        await page.waitForTimeout(100);
-        assert.equal(await panel.getAttribute("data-hidden"), "yes");
-        await page.screenshot({
-          path: join(evidenceDir, `hidden-${width}.png`),
-        });
-        const summary = await panel
-          .locator(".agent-panel-summary")
-          .evaluate((el) => ({
-            overflow: getComputedStyle(el).textOverflow,
-            width: el.clientWidth,
-          }));
-        assert.equal(summary.overflow, "ellipsis");
-        assert.ok(summary.width > 0);
-        await panel.getByRole("button", { name: "Show", exact: true }).click();
-        await page.screenshot({
-          path: join(evidenceDir, `preview-${width}.png`),
-        });
-        await panel.getByRole("button", { name: "Hide", exact: true }).click();
-      }
-      console.log(JSON.stringify({ evidence: evidenceDir }));
-      await page.setViewportSize({ width: 540, height: 800 });
-      await panel.getByRole("button", { name: "Show", exact: true }).click();
-      if (process.env.PROGRESS_SCREENSHOTS) {
-        for (const width of [1440, 390]) {
-          await page.setViewportSize({ width, height: 900 });
-          await page.waitForTimeout(150);
-          if (width === 390) {
-            assert.ok(
-              (
-                await panel
-                  .getByRole("button", { name: "Expand", exact: true })
-                  .boundingBox()
-              ).height >= 44,
-            );
-          }
-          await page.screenshot({
-            path: `docs/verification/progress-fit/${process.env.PROGRESS_SCREENSHOTS}-${width}.png`,
-          });
+      window.reportMode = (value) => {
+        mode = value;
+      };
+      window.reports = [];
+      window.fileReads = [];
+      window.activeReports = 0;
+      window.maxActiveReports = 0;
+      const original = window.fetch;
+      window.fetch = (input, options = {}) => {
+        const url = new URL(String(input), location.href);
+        if (url.pathname === "/api/panel")
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                agent: url.searchParams.get("agent"),
+                format: "markdown",
+                markdown,
+                revision,
+                path:
+                  "/workspace/progress/" +
+                  url.searchParams.get("agent") +
+                  "/PROGRESS.md",
+                error: null,
+              }),
+              { status: 200 },
+            ),
+          );
+        if (url.pathname === "/api/file") {
+          window.fileReads.push(Object.fromEntries(url.searchParams));
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                name: "PROGRESS.md",
+                mime: "text/markdown",
+                base64: btoa(markdown),
+              }),
+              { status: 200 },
+            ),
+          );
         }
-        await page.setViewportSize({ width: 540, height: 800 });
-      }
-      const clippedReport = await page.evaluate(() => reports.at(-1).body);
-      assert.equal(clippedReport.totalLines, 50);
-      assert.ok(
-        clippedReport.visibleLines > 0 && clippedReport.visibleLines < 50,
-      );
-      assert.equal(
-        clippedReport.lastVisibleLine,
-        `Complete step ${clippedReport.visibleLines - 1}`,
-      );
-      assert.equal(clippedReport.lastVisibleHeading, null);
-      assert.equal(
-        clippedReport.overflowY,
-        clippedReport.contentHeight - clippedReport.height,
-      );
-      assert.equal(clippedReport.overflowX, 0);
-      await page.waitForFunction(() => reports.at(-1)?.body.width > 400);
-      const reportCount = await page.evaluate(() => reports.length);
-      await panel.getByRole("button", { name: "Expand", exact: true }).click();
-      await page.waitForTimeout(100);
-      assert.equal(
-        await page.evaluate(() => reports.length),
-        reportCount,
-        "Expansion must not replace the collapsed preview measurement",
-      );
-      assert.equal(await panel.getAttribute("data-expanded"), "yes");
-      assert.ok((await panel.boundingBox()).height <= 400.5);
-      await panel.getByRole("button", { name: "Hide", exact: true }).click();
-      assert.equal(await panel.getAttribute("data-hidden"), "yes");
-      await panel.getByRole("button", { name: "Show", exact: true }).click();
-      assert.equal(
-        await panel.getAttribute("data-expanded"),
-        "no",
-        "Show returns from Hidden to Preview after hiding Expanded",
-      );
-      await panel.getByRole("button", { name: "Expand", exact: true }).click();
+        if (url.pathname === "/api/panel/layout") {
+          const report = {
+            body: JSON.parse(options.body),
+            headers: options.headers,
+            aborted: false,
+            mode,
+          };
+          window.reports.push(report);
+          window.activeReports++;
+          window.maxActiveReports = Math.max(
+            window.maxActiveReports,
+            window.activeReports,
+          );
+          const response = () => {
+            window.activeReports--;
+            return new Response(
+              JSON.stringify(
+                mode === "failed" ? { error: "fixture report failed" } : {},
+              ),
+              {
+                status: mode === "failed" ? 503 : mode === "stale" ? 409 : 200,
+              },
+            );
+          };
+          if (mode === "hold")
+            return new Promise((resolve, reject) => {
+              window.releaseReport = () => {
+                window.releaseReport = null;
+                resolve(response());
+              };
+              options.signal.addEventListener(
+                "abort",
+                () => {
+                  report.aborted = true;
+                  window.activeReports--;
+                  window.releaseReport = null;
+                  reject(new DOMException("Aborted", "AbortError"));
+                },
+                { once: true },
+              );
+            });
+          return Promise.resolve(response());
+        }
+        return original(input, options);
+      };
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/check`,
+      { waitUntil: "commit" },
+    );
+    const panel = page.getByRole("region", { name: "Agent progress" }),
+      current = panel.locator(".agent-panel-current");
+    await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "yes",
+      "Phone default is Hidden",
+    );
+    assert.equal(await current.isVisible(), false);
+    assert.equal(
+      await panel.locator(".agent-panel-summary").innerText(),
+      "Ready.",
+    );
+    assert.ok((await panel.boundingBox()).height <= 45);
+    for (const button of await panel
+      .locator(".agent-panel-compact button")
+      .all()) {
+      const bounds = await button.boundingBox();
+      assert.ok(bounds.width >= 44 && bounds.height >= 44);
+    }
+    await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
+    const hiddenReport = await page.evaluate(() => reports.at(-1).body);
+    assert.equal(hiddenReport.visibleLines, hiddenReport.totalLines);
+    assert.equal(hiddenReport.lastVisibleLine, "Ready.");
+    await panel.getByRole("button", { name: "Show", exact: true }).click();
+    await current.waitFor();
+    assert.equal(
+      await panel.getAttribute("data-expanded"),
+      "no",
+      "Show returns to Preview",
+    );
+    await page.reload();
+    await current.waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "no",
+      "Show persists on phones after reload",
+    );
+    await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    await page.reload();
+    await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "yes",
+      "Hide persists after reload",
+    );
+    await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const {
+          client: _client,
+          sequence: _sequence,
+          ...layout
+        } = reports.at(-1).body;
+        return layout;
+      }),
+      (() => {
+        const {
+          client: _client,
+          sequence: _sequence,
+          ...layout
+        } = hiddenReport;
+        return layout;
+      })(),
+    );
+    assert.equal(
+      await panel.getByRole("status", { name: "Progress changed" }).count(),
+      0,
+    );
+    await page.evaluate(() =>
+      window.changeProgress("# Status\n\nNew **status** with `code`."),
+    );
+    await panel.getByRole("status", { name: "Progress changed" }).waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "yes",
+      "A new revision cannot auto-open",
+    );
+    assert.equal(
+      await panel.locator(".agent-panel-summary").innerText(),
+      "New status with code.",
+    );
+    await page.waitForFunction(() => reports.at(-1)?.body.revision === "2");
+    assert.equal(
+      await page.evaluate(() => reports.at(-1).body.visibleLines),
+      2,
+    );
+    await page.evaluate(() =>
+      window.changeProgress("- Ready\n  - Child detail"),
+    );
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".agent-panel-summary")?.textContent === "Ready",
+    );
+    await page.evaluate(() =>
+      window.changeProgress("A long status sentence. ".repeat(30)),
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector(".agent-panel-summary")
+        ?.textContent.startsWith("A long status"),
+    );
+    assert.equal(
       await panel
-        .getByRole("button", { name: "Collapse", exact: true })
-        .click();
-      await panel.getByRole("button", { name: "Open PROGRESS.md" }).click();
-      const fileDialog = page.getByRole("dialog", {
-        name: "PROGRESS.md",
-        exact: true,
-      });
-      await fileDialog.waitFor();
-      await fileDialog
-        .getByRole("button", { name: "Source", exact: true })
-        .click();
-      assert.equal(await fileDialog.locator("pre").innerText(), long);
-      await page.keyboard.press("Escape");
-      await fileDialog.waitFor({ state: "hidden" });
-      await change(
-        "# Status\n\n- Ready\n- Verified\n\n## Next step\n\n" + long,
-      );
-      const sections = await page.evaluate(() => reports.at(-1).body);
-      assert.equal(sections.totalLines, 54);
-      assert.equal(sections.lastVisibleHeading, "Next step");
-      assert.ok(sections.visibleLines > 4 && sections.visibleLines < 54);
-      await change("[Result](../../project/report.txt)");
-      await current.getByRole("link", { name: "Result" }).click();
-      await page.waitForFunction(
-        () =>
-          fileReads.at(-1)?.path ===
-          "/workspace/progress/first/../../project/report.txt",
-      );
-      await page.keyboard.press("Escape");
-      await change("Recovery.");
-      await current.getByText("Recovery.", { exact: true }).waitFor();
-      const beforeHeartbeat = await page.evaluate(() => reports.length);
-      await page.evaluate(() => window.advance());
-      await page.waitForFunction(
-        (count) => reports.length > count,
-        beforeHeartbeat,
-      );
-      const heartbeat = await page.evaluate(() =>
-        reports.slice(-2).map((item) => item.body),
-      );
-      assert.equal(heartbeat[0].client, heartbeat[1].client);
-      assert(heartbeat[1].sequence > heartbeat[0].sequence);
-      await page.evaluate(() => window.reportMode("failed"));
-      await change("Failure source.");
-      await panel
-        .getByRole("button", { name: "Cannot report panel size" })
-        .waitFor();
-      await page.evaluate(() => window.reportMode("ok"));
-      await panel
-        .getByRole("button", { name: "Cannot report panel size" })
-        .waitFor({ state: "hidden", timeout: 3000 });
-      await page.evaluate(() => window.reportMode("failed"));
-      await change("Another failure.");
-      await panel
-        .getByRole("button", { name: "Cannot report panel size" })
-        .waitFor();
-      const beforeNarrowFailure = await page.evaluate(() => reports.length);
-      await page.setViewportSize({ width: 190, height: 800 });
-      await page.waitForTimeout(500);
-      assert.equal(
-        await panel
-          .getByRole("button", { name: "Cannot report panel size" })
-          .count(),
-        1,
-      );
-      assert(
-        await page.evaluate(
-          (count) => reports.length - count < 6,
-          beforeNarrowFailure,
+        .locator(".agent-panel-summary")
+        .evaluate(
+          (el) =>
+            el.scrollWidth > el.clientWidth &&
+            getComputedStyle(el).textOverflow === "ellipsis",
         ),
-        "A wrapped report-error label must not oscillate the geometry or reports",
-      );
-      await page.setViewportSize({ width: 540, height: 800 });
-      await page.evaluate(() => window.reportMode("hold"));
-      const fresh = await page.evaluate(() =>
-        window.changeProgress("Fresh revision."),
+      true,
+      "A long status uses ellipsis in the compact row",
+    );
+    await page.evaluate(() => window.switchAgent("second"));
+    await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "yes",
+      "Workspace preference applies to another agent",
+    );
+    await page.evaluate(() => window.switchAgent("first"));
+    await panel.getByRole("button", { name: "Show", exact: true }).click();
+    assert.equal(
+      await panel.getByRole("status", { name: "Progress changed" }).count(),
+      0,
+    );
+    await page.evaluate(() => window.changeProgress("# Stage\n\nReady."));
+    await current.getByText("Ready.", { exact: true }).waitFor();
+    await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
+    const report = await page.evaluate(() => reports.at(-1));
+    assert.equal(report.headers["X-Canvas-Token"], "fixture-token");
+    assert.deepEqual(
+      Object.keys(report.body).sort(),
+      [
+        "agent",
+        "client",
+        "sequence",
+        "renderer",
+        "revision",
+        "width",
+        "height",
+        "contentWidth",
+        "contentHeight",
+        "overflowX",
+        "overflowY",
+        "totalLines",
+        "visibleLines",
+        "lastVisibleLine",
+        "lastVisibleHeading",
+        "fits",
+        "reason",
+      ].sort(),
+    );
+    assert.equal(report.body.renderer, "progress-markdown-v2");
+    assert.match(report.body.client, /^[\w-]{36}$/);
+    assert.equal(report.body.reason, null);
+    assert(
+      report.body.width > 0 &&
+        report.body.height > 0 &&
+        report.body.height < 280,
+    );
+    const change = async (text) => {
+      const revision = await page.evaluate(
+        (value) => window.changeProgress(value),
+        text,
       );
       await page.waitForFunction(
         (revision) => reports.at(-1)?.body.revision === revision,
-        fresh,
+        revision,
       );
+      return revision;
+    };
+    await page.evaluate(() => {
+      document.getElementById("host").style.width = "0px";
+    });
+    await page.waitForTimeout(80);
+    const zero = await page.evaluate(() => {
+      window.advance();
+      return reports.length;
+    });
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.evaluate(() => reports.length),
+      zero,
+      "Zero available dimensions remain unmeasured",
+    );
+    await page.evaluate(() => {
+      document.getElementById("host").style.width = "100%";
+    });
+    await current.waitFor();
+    await change("Literal `&lt;tag&gt;` and **strong**.");
+    assert.equal(await current.locator("code").innerText(), "&lt;tag&gt;");
+    await page.addStyleTag({
+      content:
+        ".progress-markdown{font-size:14.7px!important;line-height:1.35!important}.agent-panel-heading{line-height:16.25px!important;padding-top:4.25px!important}",
+    });
+    await change(
+      Array.from({ length: 6 }, (_, i) => `Line ${i}.`).join("  \n"),
+    );
+    const fractional = await page.evaluate(() => reports.at(-1).body);
+    assert.equal(fractional.fits, true);
+    assert.notEqual(fractional.height % 1, 0);
+    assert(fractional.contentHeight <= fractional.height + 0.5);
+    await page.addStyleTag({
+      content:
+        ".progress-markdown{font-size:12px!important}.agent-panel-heading{line-height:16px!important;padding-top:4px!important}",
+    });
+    await change("1. Ready\n2. Review");
+    assert.equal(await current.locator("ol").count(), 1);
+    await change(
+      "999999999. Long ordered marker with text that must remain inside the candidate bounds.",
+    );
+    await page.setViewportSize({ width: 190, height: 800 });
+    await page.waitForFunction(() => reports.at(-1)?.body.width < 200);
+    assert.equal(
+      await panel
+        .locator(".agent-panel-measure ol")
+        .evaluate((el) => getComputedStyle(el).listStylePosition),
+      "inside",
+    );
+    const marker = await page.evaluate(() => reports.at(-1).body);
+    if (marker.fits)
+      assert(
+        marker.contentWidth <= marker.width + 0.5 &&
+          marker.contentHeight <= marker.height + 0.5,
+      );
+    await page.setViewportSize({ width: 540, height: 800 });
+    const wrapping =
+      "A measured progress sentence that wraps when the available width becomes smaller. ".repeat(
+        4,
+      );
+    await change(wrapping);
+    await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
+    await page.setViewportSize({ width: 210, height: 800 });
+    await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+    assert.equal(await current.count(), 1);
+    const narrow = await page.evaluate(() => reports.at(-1).body);
+    assert.equal(narrow.reason, "overflow");
+    assert(
+      narrow.contentHeight > narrow.height ||
+        narrow.contentWidth > narrow.width,
+    );
+    assert.equal(
+      await panel
+        .locator(".agent-panel-content")
+        .evaluate(
+          (el) =>
+            el.scrollHeight > el.clientHeight ||
+            el.scrollWidth > el.clientWidth,
+        ),
+      true,
+    );
+    await page.setViewportSize({ width: 540, height: 800 });
+    await current.waitFor();
+    await change(
+      "First line.  \nSecond line.  \nThird line.  \nFourth line.  \nFifth line.  \nSixth line.",
+    );
+    await page.setViewportSize({ width: 540, height: 270 });
+    await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+    assert.equal(
+      await panel
+        .locator(".agent-panel-measure .progress-markdown")
+        .evaluate((el) => getComputedStyle(el).fontSize),
+      "12px",
+    );
+    assert((await panel.boundingBox()).height <= 100.5);
+    await page.setViewportSize({ width: 540, height: 800 });
+    await change("Measured font change. ".repeat(12));
+    await current.waitFor();
+    await page.addStyleTag({
+      content: ".progress-markdown{font-size:24px!important}",
+    });
+    await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+    await page.addStyleTag({
+      content: ".progress-markdown{font-size:12px!important}",
+    });
+    await current.waitFor();
+    for (const unsupported of [
+      "![image](https://invalid.example/x.png)",
+      "```html\n<button>Go</button>\n```",
+      "| A | B |\n| - | - |\n| x | y |",
+      "<form><input></form>",
+      "[bad](javascript:alert(1))",
+    ]) {
+      await change(unsupported);
+      await panel
+        .getByText("Progress format is unsupported.", { exact: true })
+        .waitFor();
+      assert.equal(await current.count(), 0);
       assert.equal(
-        await panel
-          .getByRole("button", { name: "Cannot report panel size" })
-          .count(),
-        0,
-        "A new revision must not show the old report error",
+        (await page.evaluate(() => reports.at(-1).body)).reason,
+        "unsupported",
       );
-      await page.evaluate(() => window.visibility(true));
-      await page.waitForFunction(() => reports.at(-1)?.aborted === true);
-      const hidden = await page.evaluate(() => reports.length);
-      await page.waitForTimeout(1100);
-      assert.equal(await page.evaluate(() => reports.length), hidden);
-      await page.evaluate(() => {
-        window.reportMode("stale");
-        window.visibility(false);
-      });
-      await page.waitForFunction((count) => reports.length > count, hidden);
-      assert.equal(
-        await panel
-          .getByRole("button", { name: "Cannot report panel size" })
-          .count(),
-        0,
-        "Stale 409 is handled by the next poll",
-      );
-      await page.evaluate(() => window.reportMode("hold"));
-      await change("Held report.");
-      const held = await page.evaluate(() => reports.length);
-      await page.waitForTimeout(1100);
-      assert.equal(await page.evaluate(() => reports.length), held);
-      await page.evaluate(() => {
-        window.online(false);
-      });
-      await page.waitForFunction(() => reports.at(-1)?.aborted);
-      await page.evaluate(() => {
-        window.reportMode("ok");
-        window.online(true);
-        window.switchAgent("second");
-      });
-      await page.waitForFunction(() => reports.at(-1)?.body.agent === "second");
-      assert.equal(await panel.getAttribute("data-agent"), "second");
-      assert.equal(await page.evaluate(() => maxActiveReports), 1);
-      const payloads = await page.evaluate(() =>
-        reports.map((item) => item.body),
-      );
-      execFileSync(
-        process.env.PYTHON || "python3",
-        [
-          "-B",
-          "-c",
-          'import json,sys;sys.path.insert(0,"scripts");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
-        ],
-        { cwd: join(root, ".."), input: JSON.stringify(payloads) },
-      );
-      expect(errors).toEqual([]);
-      await page.setViewportSize({ width: 1440, height: 800 });
-      await page.evaluate(() =>
-        localStorage.removeItem("codex-progress-hidden:/workspace"),
-      );
-      await page.reload();
-      await current.waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "no",
-        "Desktop default is Preview",
-      );
-      await page.setViewportSize({ width: 390, height: 800 });
-      await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
-      assert.equal(
-        await panel.getAttribute("data-hidden"),
-        "yes",
-        "Narrow default applies without a user choice",
-      );
-      console.log(
-        `PASS ${engine.name()}: exact fit, wrapped markers, resize/height/font invalidation, unsupported rejection, source link, full file access, report identity/heartbeat/failure/cancel/409, no overlapping reports`,
-      );
-    } finally {
-      await browser?.close();
-      await server.close();
-      await rm(cacheDir, { recursive: true, force: true });
+      assert.equal(await panel.locator("img,iframe,form,input").count(), 0);
     }
-  },
-  { timeout: 120_000 },
-);
+    const long = Array.from(
+      { length: 50 },
+      (_, i) => `- Complete step ${i}`,
+    ).join("\n");
+    await change(long);
+    await panel.getByRole("button", { name: "Expand", exact: true }).waitFor();
+    const beforeHide = await page.evaluate(() => reports.at(-1).body);
+    await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    await page.waitForTimeout(100);
+    assert.equal(
+      await panel
+        .locator(".agent-panel-heading .agent-panel-expand")
+        .isVisible(),
+      false,
+      "The Preview control must not paint over the Hidden header",
+    );
+    assert.deepEqual(
+      await page.evaluate(() => reports.at(-1).body),
+      beforeHide,
+      "Hide must preserve Preview reports, including full revision and clipped lines",
+    );
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForTimeout(100);
+      assert.equal(await panel.getAttribute("data-hidden"), "yes");
+      await page.screenshot({
+        path: join(evidenceDir, `hidden-${width}.png`),
+      });
+      const summary = await panel
+        .locator(".agent-panel-summary")
+        .evaluate((el) => ({
+          overflow: getComputedStyle(el).textOverflow,
+          width: el.clientWidth,
+        }));
+      assert.equal(summary.overflow, "ellipsis");
+      assert.ok(summary.width > 0);
+      await panel.getByRole("button", { name: "Show", exact: true }).click();
+      await page.screenshot({
+        path: join(evidenceDir, `preview-${width}.png`),
+      });
+      await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    }
+    console.log(JSON.stringify({ evidence: evidenceDir }));
+    await page.setViewportSize({ width: 540, height: 800 });
+    await panel.getByRole("button", { name: "Show", exact: true }).click();
+    if (process.env.PROGRESS_SCREENSHOTS) {
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForTimeout(150);
+        if (width === 390) {
+          assert.ok(
+            (
+              await panel
+                .getByRole("button", { name: "Expand", exact: true })
+                .boundingBox()
+            ).height >= 44,
+          );
+        }
+        await page.screenshot({
+          path: `docs/verification/progress-fit/${process.env.PROGRESS_SCREENSHOTS}-${width}.png`,
+        });
+      }
+      await page.setViewportSize({ width: 540, height: 800 });
+    }
+    const clippedReport = await page.evaluate(() => reports.at(-1).body);
+    assert.equal(clippedReport.totalLines, 50);
+    assert.ok(
+      clippedReport.visibleLines > 0 && clippedReport.visibleLines < 50,
+    );
+    assert.equal(
+      clippedReport.lastVisibleLine,
+      `Complete step ${clippedReport.visibleLines - 1}`,
+    );
+    assert.equal(clippedReport.lastVisibleHeading, null);
+    assert.equal(
+      clippedReport.overflowY,
+      clippedReport.contentHeight - clippedReport.height,
+    );
+    assert.equal(clippedReport.overflowX, 0);
+    await page.waitForFunction(() => reports.at(-1)?.body.width > 400);
+    const reportCount = await page.evaluate(() => reports.length);
+    await panel.getByRole("button", { name: "Expand", exact: true }).click();
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.evaluate(() => reports.length),
+      reportCount,
+      "Expansion must not replace the collapsed preview measurement",
+    );
+    assert.equal(await panel.getAttribute("data-expanded"), "yes");
+    assert.ok((await panel.boundingBox()).height <= 400.5);
+    await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    assert.equal(await panel.getAttribute("data-hidden"), "yes");
+    await panel.getByRole("button", { name: "Show", exact: true }).click();
+    assert.equal(
+      await panel.getAttribute("data-expanded"),
+      "no",
+      "Show returns from Hidden to Preview after hiding Expanded",
+    );
+    await panel.getByRole("button", { name: "Expand", exact: true }).click();
+    await panel.getByRole("button", { name: "Collapse", exact: true }).click();
+    await panel.getByRole("button", { name: "Open PROGRESS.md" }).click();
+    const fileDialog = page.getByRole("dialog", {
+      name: "PROGRESS.md",
+      exact: true,
+    });
+    await fileDialog.waitFor();
+    await fileDialog
+      .getByRole("button", { name: "Source", exact: true })
+      .click();
+    assert.equal(await fileDialog.locator("pre").innerText(), long);
+    await page.keyboard.press("Escape");
+    await fileDialog.waitFor({ state: "hidden" });
+    await change("# Status\n\n- Ready\n- Verified\n\n## Next step\n\n" + long);
+    const sections = await page.evaluate(() => reports.at(-1).body);
+    assert.equal(sections.totalLines, 54);
+    assert.equal(sections.lastVisibleHeading, "Next step");
+    assert.ok(sections.visibleLines > 4 && sections.visibleLines < 54);
+    await change("[Result](../../project/report.txt)");
+    await current.getByRole("link", { name: "Result" }).click();
+    await page.waitForFunction(
+      () =>
+        fileReads.at(-1)?.path ===
+        "/workspace/progress/first/../../project/report.txt",
+    );
+    await page.keyboard.press("Escape");
+    await change("Recovery.");
+    await current.getByText("Recovery.", { exact: true }).waitFor();
+    const beforeHeartbeat = await page.evaluate(() => reports.length);
+    await page.evaluate(() => window.advance());
+    await page.waitForFunction(
+      (count) => reports.length > count,
+      beforeHeartbeat,
+    );
+    const heartbeat = await page.evaluate(() =>
+      reports.slice(-2).map((item) => item.body),
+    );
+    assert.equal(heartbeat[0].client, heartbeat[1].client);
+    assert(heartbeat[1].sequence > heartbeat[0].sequence);
+    await page.evaluate(() => window.reportMode("failed"));
+    await change("Failure source.");
+    await panel
+      .getByRole("button", { name: "Cannot report panel size" })
+      .waitFor();
+    await page.evaluate(() => window.reportMode("ok"));
+    await panel
+      .getByRole("button", { name: "Cannot report panel size" })
+      .waitFor({ state: "hidden", timeout: 3000 });
+    await page.evaluate(() => window.reportMode("failed"));
+    await change("Another failure.");
+    await panel
+      .getByRole("button", { name: "Cannot report panel size" })
+      .waitFor();
+    const beforeNarrowFailure = await page.evaluate(() => reports.length);
+    await page.setViewportSize({ width: 190, height: 800 });
+    await page.waitForTimeout(500);
+    assert.equal(
+      await panel
+        .getByRole("button", { name: "Cannot report panel size" })
+        .count(),
+      1,
+    );
+    assert(
+      await page.evaluate(
+        (count) => reports.length - count < 6,
+        beforeNarrowFailure,
+      ),
+      "A wrapped report-error label must not oscillate the geometry or reports",
+    );
+    await page.setViewportSize({ width: 540, height: 800 });
+    await page.evaluate(() => window.reportMode("hold"));
+    const fresh = await page.evaluate(() =>
+      window.changeProgress("Fresh revision."),
+    );
+    await page.waitForFunction(
+      (revision) => reports.at(-1)?.body.revision === revision,
+      fresh,
+    );
+    assert.equal(
+      await panel
+        .getByRole("button", { name: "Cannot report panel size" })
+        .count(),
+      0,
+      "A new revision must not show the old report error",
+    );
+    await page.evaluate(() => window.visibility(true));
+    await page.waitForFunction(() => reports.at(-1)?.aborted === true);
+    const hidden = await page.evaluate(() => reports.length);
+    await page.waitForTimeout(1100);
+    assert.equal(await page.evaluate(() => reports.length), hidden);
+    await page.evaluate(() => {
+      window.reportMode("stale");
+      window.visibility(false);
+    });
+    await page.waitForFunction((count) => reports.length > count, hidden);
+    assert.equal(
+      await panel
+        .getByRole("button", { name: "Cannot report panel size" })
+        .count(),
+      0,
+      "Stale 409 is handled by the next poll",
+    );
+    await page.evaluate(() => window.reportMode("hold"));
+    await change("Held report.");
+    const held = await page.evaluate(() => reports.length);
+    await page.waitForTimeout(1100);
+    assert.equal(await page.evaluate(() => reports.length), held);
+    await page.evaluate(() => {
+      window.online(false);
+    });
+    await page.waitForFunction(() => reports.at(-1)?.aborted);
+    await page.evaluate(() => {
+      window.reportMode("ok");
+      window.online(true);
+      window.switchAgent("second");
+    });
+    await page.waitForFunction(() => reports.at(-1)?.body.agent === "second");
+    assert.equal(await panel.getAttribute("data-agent"), "second");
+    assert.equal(await page.evaluate(() => maxActiveReports), 1);
+    const payloads = await page.evaluate(() =>
+      reports.map((item) => item.body),
+    );
+    execFileSync(
+      process.env.PYTHON || "python3",
+      [
+        "-B",
+        "-c",
+        'import json,sys;sys.path.insert(0,"scripts");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
+      ],
+      { cwd: join(root, ".."), input: JSON.stringify(payloads) },
+    );
+    expect(errors).toEqual([]);
+    await page.setViewportSize({ width: 1440, height: 800 });
+    await page.evaluate(() =>
+      localStorage.removeItem("codex-progress-hidden:/workspace"),
+    );
+    await page.reload();
+    await current.waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "no",
+      "Desktop default is Preview",
+    );
+    await page.setViewportSize({ width: 390, height: 800 });
+    await panel.getByRole("button", { name: "Show", exact: true }).waitFor();
+    assert.equal(
+      await panel.getAttribute("data-hidden"),
+      "yes",
+      "Narrow default applies without a user choice",
+    );
+    console.log(
+      `PASS ${browser.browserType().name()}: exact fit, wrapped markers, resize/height/font invalidation, unsupported rejection, source link, full file access, report identity/heartbeat/failure/cancel/409, no overlapping reports`,
+    );
+  } finally {
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

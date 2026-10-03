@@ -5,20 +5,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, expect } from "../playwright.mjs";
 
-test(
-  "ui-error-boundary-browser",
-  async () => {
-    const repo = dirname(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-    );
-    const require = createRequire(join(repo, "web/package.json"));
-    const { chromium, webkit } = require("playwright");
-    const { createServer } = await import(require.resolve("vite"));
-    const cache = await mkdtemp(join(tmpdir(), "studio-display-boundary-"));
-    const entry = join(repo, "web/__display-boundary.jsx");
-    const source = `
+test("ui-error-boundary-browser", async ({ page }) => {
+  test.setTimeout(120_000);
+  const repo = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const require = createRequire(join(repo, "web/package.json"));
+  const { createServer } = await import(require.resolve("vite"));
+  const cache = await mkdtemp(join(tmpdir(), "studio-display-boundary-"));
+  const entry = join(repo, "web/__display-boundary.jsx");
+  const source = `
   import React, {useState} from 'react';
   import {createRoot} from 'react-dom/client';
   import Boundary from '/src/components/UIErrorBoundary.tsx';
@@ -32,96 +30,83 @@ test(
       <Boundary label='this conversation' resetKey={scope}><Broken bad={bad}/></Boundary></>;
   }
   createRoot(document.getElementById('root')).render(<Boundary label='Studio' fullPage><App/></Boundary>);`;
-    const server = await createServer({
-      configFile: false,
-      cacheDir: cache,
-      root: join(repo, "web"),
-      server: { host: "127.0.0.1", port: 0 },
-      plugins: [
-        {
-          name: "display-boundary-fixture",
-          resolveId(id) {
-            if (id === "/__display-boundary.jsx") return entry;
-          },
-          load(id) {
-            if (id === entry) return source;
-          },
-          configureServer(vite) {
-            vite.middlewares.use((req, res, next) => {
-              if (req.url !== "/") return next();
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                '<div id="root"></div><script type="module" src="/__display-boundary.jsx"></script>',
-              );
-            });
-          },
+  const server = await createServer({
+    configFile: false,
+    cacheDir: cache,
+    root: join(repo, "web"),
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "display-boundary-fixture",
+        resolveId(id) {
+          if (id === "/__display-boundary.jsx") return entry;
         },
-      ],
+        load(id) {
+          if (id === entry) return source;
+        },
+        configureServer(vite) {
+          vite.middlewares.use((req, res, next) => {
+            if (req.url !== "/") return next();
+            res.setHeader("Content-Type", "text/html");
+            res.end(
+              '<div id="root"></div><script type="module" src="/__display-boundary.jsx"></script>',
+            );
+          });
+        },
+      },
+    ],
+  });
+  try {
+    await server.listen();
+    const useWebkit = process.env.BROWSER === "webkit";
+    const writes = [];
+    page.on("request", (request) => {
+      if (request.method() !== "GET") writes.push(request.url());
     });
-    let browser;
-    try {
-      await server.listen();
-      const useWebkit = process.env.BROWSER === "webkit";
-      browser = await (useWebkit ? webkit : chromium).launch({
-        headless: true,
-        ...(useWebkit
-          ? {}
-          : {
-              executablePath: browserExecutablePath,
-            }),
-      });
-      const page = await browser.newPage();
-      const writes = [];
-      page.on("request", (request) => {
-        if (request.method() !== "GET") writes.push(request.url());
-      });
-      await page.goto(server.resolvedUrls.local[0]);
-      await page.getByText("Feature ready").waitFor();
-      await page
-        .getByRole("textbox", { name: "Draft" })
-        .fill("Unsent input remains");
-      await page.evaluate(() => fixture.setBad(true));
-      await page
-        .getByRole("alert", { name: "this conversation display error" })
-        .waitFor();
-      assert.equal(
-        await page.getByRole("textbox", { name: "Draft" }).inputValue(),
-        "Unsent input remains",
-      );
-      await page.getByRole("button", { name: "Try again" }).click();
-      await page.getByRole("alert").waitFor();
-      await page.getByRole("button", { name: "Other chat" }).click();
-      await page.getByText("Feature ready").waitFor();
-      assert.equal(await page.getByRole("alert").count(), 0);
-      assert.equal(
-        await page.getByRole("textbox", { name: "Draft" }).inputValue(),
-        "Unsent input remains",
-      );
-      await page.evaluate(() => fixture.setBad(true));
-      await page.getByRole("alert").waitFor();
-      await page.evaluate(() => fixture.setBad(false));
-      await page.getByRole("button", { name: "Try again" }).click();
-      await page.getByText("Feature ready").waitFor();
-      await page.evaluate(() => {
-        localStorage.setItem("retained-draft", "durable input");
-        fixture.setFatal(true);
-      });
-      await page.getByRole("alert", { name: "Studio display error" }).waitFor();
-      await page.getByRole("button", { name: "Reload Studio" }).click();
-      await page.getByText("Feature ready").waitFor();
-      assert.equal(
-        await page.evaluate(() => localStorage.getItem("retained-draft")),
-        "durable input",
-      );
-      expect(writes).toEqual([]);
-      console.log(
-        `PASS (${useWebkit ? "WebKit" : "Chromium"}): scoped failure preserves navigation and input, chat switch/retry recover, root fallback reload preserves storage, no writes`,
-      );
-    } finally {
-      await browser?.close();
-      await server.close();
-      await rm(cache, { recursive: true, force: true });
-    }
-  },
-  { timeout: 120_000 },
-);
+    await page.goto(server.resolvedUrls.local[0]);
+    await page.getByText("Feature ready").waitFor();
+    await page
+      .getByRole("textbox", { name: "Draft" })
+      .fill("Unsent input remains");
+    await page.evaluate(() => fixture.setBad(true));
+    await page
+      .getByRole("alert", { name: "this conversation display error" })
+      .waitFor();
+    assert.equal(
+      await page.getByRole("textbox", { name: "Draft" }).inputValue(),
+      "Unsent input remains",
+    );
+    await page.getByRole("button", { name: "Try again" }).click();
+    await page.getByRole("alert").waitFor();
+    await page.getByRole("button", { name: "Other chat" }).click();
+    await page.getByText("Feature ready").waitFor();
+    assert.equal(await page.getByRole("alert").count(), 0);
+    assert.equal(
+      await page.getByRole("textbox", { name: "Draft" }).inputValue(),
+      "Unsent input remains",
+    );
+    await page.evaluate(() => fixture.setBad(true));
+    await page.getByRole("alert").waitFor();
+    await page.evaluate(() => fixture.setBad(false));
+    await page.getByRole("button", { name: "Try again" }).click();
+    await page.getByText("Feature ready").waitFor();
+    await page.evaluate(() => {
+      localStorage.setItem("retained-draft", "durable input");
+      fixture.setFatal(true);
+    });
+    await page.getByRole("alert", { name: "Studio display error" }).waitFor();
+    await page.getByRole("button", { name: "Reload Studio" }).click();
+    await page.getByText("Feature ready").waitFor();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("retained-draft")),
+      "durable input",
+    );
+    expect(writes).toEqual([]);
+    console.log(
+      `PASS (${useWebkit ? "WebKit" : "Chromium"}): scoped failure preserves navigation and input, chat switch/retry recover, root fallback reload preserves storage, no writes`,
+    );
+  } finally {
+    await server.close();
+    await rm(cache, { recursive: true, force: true });
+  }
+});

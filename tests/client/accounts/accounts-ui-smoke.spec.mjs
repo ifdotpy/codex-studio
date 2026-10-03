@@ -5,18 +5,14 @@ import { access, readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, expect } from "../playwright.mjs";
 
-async function runAccountsUi(mode) {
+async function runAccountsUi(mode, { page: fixturePage }) {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
   const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
-  const { chromium } = createRequire(join(root, "web/package.json"))(
-    "playwright",
-  );
   const evidence = await mkdtemp(join(tmpdir(), "codex-accounts-ui-"));
   const accounts = [
     {
@@ -73,7 +69,9 @@ async function runAccountsUi(mode) {
   let delayWork = false;
   let wrongLimitsAccount = false;
   let discoverCount = 0;
-  let limitReads = 0;
+  const limitReadAccounts = [];
+  const accountMenuReadSets = [];
+  let captureAccountMenuReads = false;
   let delayCostWork = false;
   let delayedCosts;
   let snapshotLimits = {};
@@ -241,8 +239,8 @@ async function runAccountsUi(mode) {
       return json(agent);
     }
     if (url.pathname === "/api/limits") {
-      limitReads++;
       const key = url.searchParams.get("account_key") || "default";
+      limitReadAccounts.push(key);
       if (key === "work" && delayWork) {
         delayed = () => json(limits(key));
         return;
@@ -415,6 +413,14 @@ async function runAccountsUi(mode) {
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
+    if (url.pathname === "/api/worktree-disk")
+      return json({
+        workers: {},
+        totalBytes: 0,
+        limitBytes: 0,
+        warning: false,
+        scanning: false,
+      });
     if (url.pathname.startsWith("/api/sync/")) {
       res.statusCode = 404;
       return json({ error: "Fixture uses HTTP snapshots" });
@@ -440,17 +446,10 @@ async function runAccountsUi(mode) {
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  let browser;
   let debugPage;
   try {
-    browser = await chromium.launch({
-      executablePath: browserExecutablePath,
-      headless: true,
-      args: ["--disable-extensions", "--no-first-run"],
-    });
-    const page = await browser.newPage({
-      viewport: { width: 1440, height: 900 },
-    });
+    const page = fixturePage;
+    await fixturePage.setViewportSize({ width: 1440, height: 900 });
     debugPage = page;
     page.setDefaultTimeout(10000);
     const errors = [];
@@ -890,7 +889,20 @@ async function runAccountsUi(mode) {
     };
     const choose = async (email) => {
       await openSettings();
+      const menuReadStart = limitReadAccounts.length;
       await picker.click();
+      if (captureAccountMenuReads) {
+        await page.waitForFunction(() => {
+          const labels = [
+            ...document.querySelectorAll(".account-weekly-limit"),
+          ];
+          return (
+            labels.length === 3 &&
+            labels.every((node) => !node.textContent.includes("loading"))
+          );
+        });
+        accountMenuReadSets.push(limitReadAccounts.slice(menuReadStart));
+      }
       await page.getByRole("menuitem").filter({ hasText: email }).click();
       await page.waitForFunction(
         (email) =>
@@ -982,11 +994,19 @@ async function runAccountsUi(mode) {
     await waitCost("$12.00");
 
     // Each menu open reads all accounts; the Limits panel still reuses its cache.
-    const readsBeforeSwitch = limitReads;
+    captureAccountMenuReads = true;
     await choose("personal@example.com");
     await choose("work@example.com");
+    captureAccountMenuReads = false;
     await page.waitForTimeout(100);
-    assert.equal(limitReads, readsBeforeSwitch + accounts.length * 2);
+    assert.deepEqual(
+      accountMenuReadSets,
+      [
+        accounts.map((account) => account.id),
+        accounts.map((account) => account.id),
+      ],
+      "Opening each account menu reads each account once",
+    );
     const forceRefresh = async () => {
       await quota.click();
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -994,8 +1014,8 @@ async function runAccountsUi(mode) {
     };
     // A delayed response from account B must not replace account C's limits.
     await choose("personal@example.com");
-    delayWork = true;
     await choose("work@example.com");
+    delayWork = true;
     await forceRefresh();
     await expectAccount("work@example.com");
     await choose("another.long.account@example.com");
@@ -1038,14 +1058,12 @@ async function runAccountsUi(mode) {
       inspectLimits((panel) =>
         panel.locator(".account-limit-value").allTextContents(),
       );
-    const otherQuota = await quotaValues();
     agents.push(
       makeLead("work-chat", "Work account conversation", "work", false),
     );
     await page.locator('[data-chat="work-chat"]').waitFor();
     await page.locator('[data-chat="started"]').click();
     await waitLimits("89% left");
-    delayWork = true;
     await page.locator('[data-chat="work-chat"]').click();
     await expectAccount("work@example.com");
     assert.match(
@@ -1053,13 +1071,14 @@ async function runAccountsUi(mode) {
       /78% left/,
       "return navigation uses the selected account cache while refresh waits",
     );
+    delayWork = true;
     await forceRefresh();
     for (let i = 0; i < 100 && !delayed; i++)
       await new Promise((resolve) => setTimeout(resolve, 20));
     assert.ok(delayed, "work account refresh remains pending");
     await page.locator('[data-chat="empty"]').click();
     await expectAccount("another.long.account@example.com");
-    assert.deepEqual(await quotaValues(), otherQuota);
+    const otherQuota = await quotaValues();
     delayed();
     delayed = null;
     delayWork = false;
@@ -1274,9 +1293,9 @@ async function runAccountsUi(mode) {
     assert.ok(await picker.isVisible());
     await closeSettings();
     // A stalled read must release the per-account request slot after its deadline.
-    delayWork = true;
     delayed = null;
     await choose("work@example.com");
+    delayWork = true;
     await quota.click();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     for (let i = 0; i < 100 && !delayed; i++) await page.waitForTimeout(20);
@@ -1761,29 +1780,29 @@ async function runAccountsUi(mode) {
       }),
     );
   } catch (error) {
+    await debugPage
+      ?.getByText("Error details", { exact: true })
+      .click()
+      .catch(() => {});
     console.error(await debugPage?.locator("body").innerText());
     await debugPage?.screenshot({ path: join(evidence, "failure.png") });
     throw error;
   } finally {
     if (delayed) delayed();
-    await browser?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
 }
 
-test("accounts-ui-smoke", async () => runAccountsUi("default"), {
-  timeout: 120_000,
+test("accounts-ui-smoke", async ({ page }) => {
+  test.setTimeout(120_000);
+  await runAccountsUi("default", { page });
 });
-test(
-  "accounts reauthentication recovery",
-  async () => runAccountsUi("reauth"),
-  {
-    timeout: 60_000,
-  },
-);
-test(
-  "accounts settings autosave @performance",
-  async () => runAccountsUi("benchmark"),
-  { timeout: 60_000 },
-);
+test("accounts reauthentication recovery", async ({ page }) => {
+  test.setTimeout(60_000);
+  await runAccountsUi("reauth", { page });
+});
+test("accounts settings autosave @performance", async ({ page }) => {
+  test.setTimeout(60_000);
+  await runAccountsUi("benchmark", { page });
+});

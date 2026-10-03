@@ -1,420 +1,410 @@
 // Same-origin Chromium proof: one elected sync stream fans out to eight tabs.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, browserExecutablePath } from "../playwright.mjs";
+import { test, expect } from "../playwright.mjs";
 
-test(
-  "sync-cross-tab-browser @performance",
-  async () => {
-    const require = createRequire(
-      new URL("../../../web/package.json", import.meta.url),
-    );
-    const { chromium } = require("playwright");
-    const { createServer } = await import(
-      new URL(
-        "../../../web/node_modules/vite/dist/node/index.js",
-        import.meta.url,
-      )
-    );
-    const server = await createServer({
-      configFile: false,
-      root: fileURLToPath(new URL("../../../web", import.meta.url)),
-      server: { host: "127.0.0.1", port: 0 },
+test("sync-cross-tab-browser @performance", async ({
+  browser: fixtureBrowser,
+}) => {
+  test.setTimeout(120_000);
+  const { createServer } = await import(
+    new URL(
+      "../../../web/node_modules/vite/dist/node/index.js",
+      import.meta.url,
+    )
+  );
+  const server = await createServer({
+    configFile: false,
+    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  const workspaceId = "b".repeat(32);
+  const otherWorkspaceId = "a".repeat(32);
+  const workspaceFor = (req) =>
+    req.headers.host?.startsWith("localhost:") ? otherWorkspaceId : workspaceId;
+  const generationsByWorkspace = new Map([
+    [workspaceId, { drafts: 0, state: 0, transcripts: 0 }],
+    [otherWorkspaceId, { drafts: 0, state: 0, transcripts: 0 }],
+  ]);
+  let generationsWorkspaceOverride;
+  const streams = new Set();
+  let streamsOpened = 0;
+  const streamWorkspaces = new Map();
+  const sendGeneration = (currentWorkspace = workspaceId) => {
+    const value = JSON.stringify({
+      protocol: 2,
+      workspaceId: currentWorkspace,
+      generations: generationsByWorkspace.get(currentWorkspace),
     });
-    const workspaceId = "b".repeat(32);
-    const otherWorkspaceId = "a".repeat(32);
-    const workspaceFor = (req) =>
-      req.headers.host?.startsWith("localhost:")
-        ? otherWorkspaceId
-        : workspaceId;
-    const generationsByWorkspace = new Map([
-      [workspaceId, { drafts: 0, state: 0, transcripts: 0 }],
-      [otherWorkspaceId, { drafts: 0, state: 0, transcripts: 0 }],
-    ]);
-    let generationsWorkspaceOverride;
-    const streams = new Set();
-    let streamsOpened = 0;
-    const streamWorkspaces = new Map();
-    const sendGeneration = (currentWorkspace = workspaceId) => {
-      const value = JSON.stringify({
-        protocol: 2,
-        workspaceId: currentWorkspace,
-        generations: generationsByWorkspace.get(currentWorkspace),
+    for (const response of streams)
+      if (streamWorkspaces.get(response) === currentWorkspace)
+        response.write(`data: ${value}\n\n`);
+  };
+  const apiFixture = (req, res, next) => {
+    const path = new URL(req.url || "/", "http://localhost").pathname;
+    if (path === "/sync-check") {
+      res.setHeader("Content-Type", "text/html");
+      res.end("<!doctype html><title>Cross tab sync</title>");
+    } else if (path === "/api/sync/identity") {
+      const currentWorkspace = workspaceFor(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ workspaceId: currentWorkspace }));
+    } else if (path === "/api/sync/generations") {
+      const currentWorkspace =
+        workspaceFor(req) === workspaceId
+          ? (generationsWorkspaceOverride ?? workspaceId)
+          : otherWorkspaceId;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          protocol: 2,
+          workspaceId: currentWorkspace,
+          generations: generationsByWorkspace.get(currentWorkspace),
+        }),
+      );
+    } else if (path === "/api/sync/pull") {
+      const currentWorkspace = workspaceFor(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          workspaceId: currentWorkspace,
+          documents: [],
+          checkpoint: { seq: 0 },
+        }),
+      );
+    } else if (path === "/api/sync/stream") {
+      const currentWorkspace = workspaceFor(req);
+      streamsOpened++;
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
       });
-      for (const response of streams)
-        if (streamWorkspaces.get(response) === currentWorkspace)
-          response.write(`data: ${value}\n\n`);
-    };
-    const apiFixture = (req, res, next) => {
-      const path = new URL(req.url || "/", "http://localhost").pathname;
-      if (path === "/sync-check") {
-        res.setHeader("Content-Type", "text/html");
-        res.end("<!doctype html><title>Cross tab sync</title>");
-      } else if (path === "/api/sync/identity") {
-        const currentWorkspace = workspaceFor(req);
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ workspaceId: currentWorkspace }));
-      } else if (path === "/api/sync/generations") {
-        const currentWorkspace =
-          workspaceFor(req) === workspaceId
-            ? (generationsWorkspaceOverride ?? workspaceId)
-            : otherWorkspaceId;
-        res.setHeader("Content-Type", "application/json");
-        res.end(
-          JSON.stringify({
-            protocol: 2,
-            workspaceId: currentWorkspace,
-            generations: generationsByWorkspace.get(currentWorkspace),
-          }),
-        );
-      } else if (path === "/api/sync/pull") {
-        const currentWorkspace = workspaceFor(req);
-        res.setHeader("Content-Type", "application/json");
-        res.end(
-          JSON.stringify({
-            workspaceId: currentWorkspace,
-            documents: [],
-            checkpoint: { seq: 0 },
-          }),
-        );
-      } else if (path === "/api/sync/stream") {
-        const currentWorkspace = workspaceFor(req);
-        streamsOpened++;
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        streams.add(res);
-        streamWorkspaces.set(res, currentWorkspace);
-        sendGeneration(currentWorkspace);
-        res.on("close", () => {
-          streams.delete(res);
-          streamWorkspaces.delete(res);
-        });
-      } else next();
-    };
-    // The fixture must precede Vite's history fallback so API paths stay JSON.
-    server.middlewares.stack.unshift({ route: "", handle: apiFixture });
-    await server.listen();
-    const browser = await chromium.launch({
-      executablePath: browserExecutablePath,
-      headless: true,
-    });
-    const context = await browser.newContext();
-    const pages = [];
-    const waitFor = async (predicate, message, timeoutMs = 10000) => {
-      const end = Date.now() + timeoutMs;
-      while (Date.now() < end) {
-        if (predicate()) return;
-        await new Promise((resolve) => setTimeout(resolve, 40));
-      }
-      assert.fail(message);
-    };
-    try {
-      const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-      const streamLockName = `codex-sync-stream:${origin}:${workspaceId}`;
-      const competingOwner = await context.newPage();
-      await competingOwner.goto(`${origin}/sync-check`);
-      await competingOwner.evaluate(async (name) => {
-        if (!navigator.locks?.request)
-          throw new Error("Web Locks are required for single-stream ownership");
-        window.lockReady = new Promise((resolve) => {
-          window.resolveLockReady = resolve;
-        });
-        void navigator.locks.request(name, async (lock) => {
-          if (!lock)
-            throw new Error("Failed to establish competing stream lease");
-          window.resolveLockReady();
-          await new Promise((resolve) => {
-            window.releaseStreamLock = resolve;
-          });
-        });
-        await window.lockReady;
-      }, streamLockName);
-      await context.addInitScript(() => {
-        window.__syncDiagnostics = {
-          sse: [],
-          sources: [],
-          sent: [],
-          received: [],
-        };
-        const NativeSource = window.EventSource;
-        window.EventSource = class extends NativeSource {
-          constructor(...args) {
-            super(...args);
-            window.__syncDiagnostics.sources.push(this);
-            this.addEventListener("message", (event) =>
-              window.__syncDiagnostics.sse.push(event.data),
-            );
-          }
-        };
-        const NativeChannel = window.BroadcastChannel;
-        window.BroadcastChannel = class extends NativeChannel {
-          constructor(...args) {
-            super(...args);
-            this.addEventListener("message", (event) =>
-              window.__syncDiagnostics.received.push(event.data),
-            );
-          }
-          postMessage(data) {
-            window.__syncDiagnostics.sent.push(data);
-            return super.postMessage(data);
-          }
-        };
+      streams.add(res);
+      streamWorkspaces.set(res, currentWorkspace);
+      sendGeneration(currentWorkspace);
+      res.on("close", () => {
+        streams.delete(res);
+        streamWorkspaces.delete(res);
       });
-      for (let i = 0; i < 8; i++) {
-        const page = await context.newPage();
-        pages.push(page);
-        await page.goto(`${origin}/sync-check`);
-        await page.evaluate(async () => {
-          const client = await import("/src/sync/client.ts");
-          const identity = await client.syncDatabase();
-          window.workspace = identity.workspaceId;
-          window.syncDb = identity.db;
-          window.counts = { state: 0, transcripts: 0 };
-          window.stopState = client.watchSyncInvalidations("state", () => {
-            window.counts.state++;
-          });
-          window.stopTranscript = client.watchSyncInvalidations(
-            "transcript:session-one",
-            () => {
-              window.counts.transcripts++;
-            },
-          );
-        });
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      assert.equal(
-        streams.size,
-        0,
-        "no elected tab may open SSE while another owner holds the stream lease",
-      );
-      await competingOwner.evaluate(() => window.releaseStreamLock());
-      await competingOwner.close();
-      await waitFor(
-        () => streams.size === 1 && streamsOpened >= 1,
-        "the eight tabs did not settle on exactly one server stream",
-      );
-      await Promise.all(
-        pages.map((page) =>
-          page.waitForFunction(
-            () =>
-              window.workspace &&
-              window.counts &&
-              (window.__syncDiagnostics.sse.length > 0 ||
-                window.__syncDiagnostics.received.some(
-                  (message) =>
-                    message.kind === "heartbeat" && message.generations,
-                )),
-            null,
-            { timeout: 5000 },
-          ),
-        ),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 1400));
-      const before = await Promise.all(
-        pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
-      );
-      generationsByWorkspace.get(workspaceId).transcripts++;
-      sendGeneration();
-      try {
-        await Promise.all(
-          pages.map((page, index) =>
-            page.waitForFunction(
-              (prior) =>
-                window.counts.transcripts > prior.transcripts &&
-                window.counts.state === prior.state,
-              before[index],
-              { timeout: 5000 },
-            ),
-          ),
-        );
-      } catch (error) {
-        const diagnostics = await Promise.all(
-          pages.map((page) =>
-            page.evaluate(() => ({
-              counts: window.counts,
-              sse: window.__syncDiagnostics.sse,
-              sent: window.__syncDiagnostics.sent,
-              received: window.__syncDiagnostics.received,
-            })),
-          ),
-        );
-        process.stderr.write(
-          `fan-out diagnostic: ${JSON.stringify({ streamsOpened, diagnostics })}\n`,
-        );
-        throw error;
-      }
-      const initialOwnerIndex = await Promise.any(
-        pages.map(async (page, index) =>
-          (await page.evaluate(() =>
-            window.__syncDiagnostics.sources.some(
-              (source) => source.readyState === EventSource.OPEN,
-            ),
-          ))
-            ? index
-            : Promise.reject(),
-        ),
-      );
-      await pages[initialOwnerIndex].evaluate(() => {
-        Object.defineProperty(document, "hidden", {
-          configurable: true,
-          value: true,
-        });
-        document.dispatchEvent(new Event("visibilitychange"));
-      });
-      await waitFor(
-        () => streams.size === 0,
-        "a hidden stream owner did not release its SSE and lease",
-      );
-      const visibilityFailoverStarted = Date.now();
-      await waitFor(
-        () => streams.size === 1,
-        "a visible peer did not take ownership after the active owner was hidden",
-        5000,
-      );
-      assert.ok(
-        Date.now() - visibilityFailoverStarted <= 5000,
-        "visible-peer ownership recovery exceeded five seconds",
-      );
-      await pages[initialOwnerIndex].evaluate(() => {
-        Object.defineProperty(document, "hidden", {
-          configurable: true,
-          value: false,
-        });
-        document.dispatchEvent(new Event("visibilitychange"));
-      });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.equal(
-        streams.size,
-        1,
-        "a resumed former owner cannot duplicate the current SSE",
-      );
-      const beforeOffline = await Promise.all(
-        pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
-      );
-      await context.setOffline(true);
-      await waitFor(
-        () => streams.size === 0,
-        "the owner stream remained open after all tabs went offline",
-      );
-      await context.setOffline(false);
-      await waitFor(
-        () => streams.size === 1,
-        "the owner stream did not reconnect when the profile returned online",
-        5000,
-      );
-      await Promise.all(
-        pages.map((page, index) =>
-          page.waitForFunction(
-            (prior) =>
-              window.counts.state > prior.state &&
-              window.counts.transcripts > prior.transcripts,
-            beforeOffline[index],
-            { timeout: 5000 },
-          ),
-        ),
-      );
-      const streamOwnerIndex = await Promise.any(
-        pages.map(async (page, index) =>
-          (await page.evaluate(() =>
-            window.__syncDiagnostics.sources.some(
-              (source) => source.readyState === EventSource.OPEN,
-            ),
-          ))
-            ? index
-            : Promise.reject(),
-        ),
-      );
-      const failoverStarted = Date.now();
-      await pages[streamOwnerIndex].close();
-      await waitFor(
-        () => streams.size === 1 && streamsOpened >= 2,
-        "a replacement owner did not open its stream within five seconds",
-        5000,
-      );
-      const failoverMs = Date.now() - failoverStarted;
-      assert.ok(failoverMs <= 5000, "owner failover exceeded five seconds");
-      assert.equal(
-        streams.size,
-        1,
-        "only one stream should remain after failover",
-      );
-      pages.splice(streamOwnerIndex, 1);
-      const isolatedPage = await context.newPage();
-      await isolatedPage.goto(
-        `http://localhost:${server.httpServer.address().port}/sync-check`,
-      );
-      await isolatedPage.evaluate(async () => {
-        const client = await import("/src/sync/client.ts");
-        window.identity = (await client.syncDatabase()).workspaceId;
-        window.stop = client.watchSyncInvalidations("state", () => {});
-      });
-      await waitFor(
-        () => streams.size === 2,
-        "a second workspace did not get its own elected stream",
-      );
-      assert.equal(
-        await isolatedPage.evaluate(() => window.identity),
-        otherWorkspaceId,
-      );
-      const beforeWorkspaceMove = await Promise.all(
-        pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
-      );
-      const restartedWorkspaceId = "c".repeat(32);
-      generationsByWorkspace.set(restartedWorkspaceId, {
-        ...generationsByWorkspace.get(workspaceId),
-      });
-      generationsWorkspaceOverride = restartedWorkspaceId;
-      await Promise.all(
-        pages.map((page, index) =>
-          page.waitForFunction(
-            (prior) =>
-              window.counts.state > prior.state &&
-              window.counts.transcripts > prior.transcripts,
-            beforeWorkspaceMove[index],
-            { timeout: 4500 },
-          ),
-        ),
-      );
-      await context.close();
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(streams.size).toBe(0);
-      const noCoordination = await browser.newPage();
-      await noCoordination.addInitScript(() => {
-        Object.defineProperty(window, "BroadcastChannel", { value: undefined });
-      });
-      await noCoordination.goto(`${origin}/sync-check`);
-      let generationPollCount = 0;
-      noCoordination.on("request", (request) => {
-        if (request.url().includes("/api/sync/generations"))
-          generationPollCount++;
-      });
-      await noCoordination.evaluate(async () => {
-        const client = await import("/src/sync/client.ts");
-        window.stop = client.watchSyncInvalidations("state", () => {});
-      });
-      await waitFor(
-        () => generationPollCount > 0,
-        "generation polling did not take over when BroadcastChannel was unavailable",
-      );
-      assert.equal(
-        streams.size,
-        0,
-        "uncoordinated mode must not open an SSE stream",
-      );
-      await noCoordination.close();
-      process.stdout.write(
-        `PASS: 8 tabs, 1 active SSE, scoped transcript fan-out, failover ${failoverMs}ms\n`,
-      );
-    } finally {
-      await context.close();
-      await browser.close();
-      await server.close();
+    } else next();
+  };
+  // The fixture must precede Vite's history fallback so API paths stay JSON.
+  server.middlewares.stack.unshift({ route: "", handle: apiFixture });
+  await server.listen();
+  const browser = fixtureBrowser;
+  const context = await browser.newContext();
+  let noCoordination;
+  const pages = [];
+  const waitFor = async (predicate, message, timeoutMs = 10000) => {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 40));
     }
-  },
-  { timeout: 120_000 },
-);
+    assert.fail(message);
+  };
+  try {
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const streamLockName = `codex-sync-stream:${origin}:${workspaceId}`;
+    const competingOwner = await context.newPage();
+    await competingOwner.goto(`${origin}/sync-check`);
+    await competingOwner.evaluate(async (name) => {
+      if (!navigator.locks?.request)
+        throw new Error("Web Locks are required for single-stream ownership");
+      window.lockReady = new Promise((resolve) => {
+        window.resolveLockReady = resolve;
+      });
+      void navigator.locks.request(name, async (lock) => {
+        if (!lock)
+          throw new Error("Failed to establish competing stream lease");
+        window.resolveLockReady();
+        await new Promise((resolve) => {
+          window.releaseStreamLock = resolve;
+        });
+      });
+      await window.lockReady;
+    }, streamLockName);
+    await context.addInitScript(() => {
+      window.__syncDiagnostics = {
+        sse: [],
+        sources: [],
+        sent: [],
+        received: [],
+      };
+      const NativeSource = window.EventSource;
+      window.EventSource = class extends NativeSource {
+        constructor(...args) {
+          super(...args);
+          window.__syncDiagnostics.sources.push(this);
+          this.addEventListener("message", (event) =>
+            window.__syncDiagnostics.sse.push(event.data),
+          );
+        }
+      };
+      const NativeChannel = window.BroadcastChannel;
+      window.BroadcastChannel = class extends NativeChannel {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener("message", (event) =>
+            window.__syncDiagnostics.received.push(event.data),
+          );
+        }
+        postMessage(data) {
+          window.__syncDiagnostics.sent.push(data);
+          return super.postMessage(data);
+        }
+      };
+    });
+    for (let i = 0; i < 8; i++) {
+      const page = await context.newPage();
+      pages.push(page);
+      await page.goto(`${origin}/sync-check`);
+      await page.evaluate(async () => {
+        const client = await import("/src/sync/client.ts");
+        const identity = await client.syncDatabase();
+        window.workspace = identity.workspaceId;
+        window.syncDb = identity.db;
+        window.counts = { state: 0, transcripts: 0 };
+        window.stopState = client.watchSyncInvalidations("state", () => {
+          window.counts.state++;
+        });
+        window.stopTranscript = client.watchSyncInvalidations(
+          "transcript:session-one",
+          () => {
+            window.counts.transcripts++;
+          },
+        );
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(
+      streams.size,
+      0,
+      "no elected tab may open SSE while another owner holds the stream lease",
+    );
+    await competingOwner.evaluate(() => window.releaseStreamLock());
+    await competingOwner.close();
+    await waitFor(
+      () => streams.size === 1 && streamsOpened >= 1,
+      "the eight tabs did not settle on exactly one server stream",
+    );
+    await Promise.all(
+      pages.map((page) =>
+        page.waitForFunction(
+          () =>
+            window.workspace &&
+            window.counts &&
+            (window.__syncDiagnostics.sse.length > 0 ||
+              window.__syncDiagnostics.received.some(
+                (message) =>
+                  message.kind === "heartbeat" && message.generations,
+              )),
+          null,
+          { timeout: 5000 },
+        ),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+    const before = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    generationsByWorkspace.get(workspaceId).transcripts++;
+    sendGeneration();
+    try {
+      await Promise.all(
+        pages.map((page, index) =>
+          page.waitForFunction(
+            (prior) =>
+              window.counts.transcripts > prior.transcripts &&
+              window.counts.state === prior.state,
+            before[index],
+            { timeout: 5000 },
+          ),
+        ),
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        pages.map((page) =>
+          page.evaluate(() => ({
+            counts: window.counts,
+            sse: window.__syncDiagnostics.sse,
+            sent: window.__syncDiagnostics.sent,
+            received: window.__syncDiagnostics.received,
+          })),
+        ),
+      );
+      process.stderr.write(
+        `fan-out diagnostic: ${JSON.stringify({ streamsOpened, diagnostics })}\n`,
+      );
+      throw error;
+    }
+    const initialOwnerIndex = await Promise.any(
+      pages.map(async (page, index) =>
+        (await page.evaluate(() =>
+          window.__syncDiagnostics.sources.some(
+            (source) => source.readyState === EventSource.OPEN,
+          ),
+        ))
+          ? index
+          : Promise.reject(),
+      ),
+    );
+    await pages[initialOwnerIndex].evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(
+      () => streams.size === 0,
+      "a hidden stream owner did not release its SSE and lease",
+    );
+    const visibilityFailoverStarted = Date.now();
+    await waitFor(
+      () => streams.size === 1,
+      "a visible peer did not take ownership after the active owner was hidden",
+      5000,
+    );
+    assert.ok(
+      Date.now() - visibilityFailoverStarted <= 5000,
+      "visible-peer ownership recovery exceeded five seconds",
+    );
+    await pages[initialOwnerIndex].evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(
+      streams.size,
+      1,
+      "a resumed former owner cannot duplicate the current SSE",
+    );
+    const beforeOffline = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    await context.setOffline(true);
+    await waitFor(
+      () => streams.size === 0,
+      "the owner stream remained open after all tabs went offline",
+    );
+    await context.setOffline(false);
+    await waitFor(
+      () => streams.size === 1,
+      "the owner stream did not reconnect when the profile returned online",
+      5000,
+    );
+    await Promise.all(
+      pages.map((page, index) =>
+        page.waitForFunction(
+          (prior) =>
+            window.counts.state > prior.state &&
+            window.counts.transcripts > prior.transcripts,
+          beforeOffline[index],
+          { timeout: 5000 },
+        ),
+      ),
+    );
+    const streamOwnerIndex = await Promise.any(
+      pages.map(async (page, index) =>
+        (await page.evaluate(() =>
+          window.__syncDiagnostics.sources.some(
+            (source) => source.readyState === EventSource.OPEN,
+          ),
+        ))
+          ? index
+          : Promise.reject(),
+      ),
+    );
+    const failoverStarted = Date.now();
+    await pages[streamOwnerIndex].close();
+    await waitFor(
+      () => streams.size === 1 && streamsOpened >= 2,
+      "a replacement owner did not open its stream within five seconds",
+      5000,
+    );
+    const failoverMs = Date.now() - failoverStarted;
+    assert.ok(failoverMs <= 5000, "owner failover exceeded five seconds");
+    assert.equal(
+      streams.size,
+      1,
+      "only one stream should remain after failover",
+    );
+    pages.splice(streamOwnerIndex, 1);
+    const isolatedPage = await context.newPage();
+    await isolatedPage.goto(
+      `http://localhost:${server.httpServer.address().port}/sync-check`,
+    );
+    await isolatedPage.evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.identity = (await client.syncDatabase()).workspaceId;
+      window.stop = client.watchSyncInvalidations("state", () => {});
+    });
+    await waitFor(
+      () => streams.size === 2,
+      "a second workspace did not get its own elected stream",
+    );
+    assert.equal(
+      await isolatedPage.evaluate(() => window.identity),
+      otherWorkspaceId,
+    );
+    const beforeWorkspaceMove = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    const restartedWorkspaceId = "c".repeat(32);
+    generationsByWorkspace.set(restartedWorkspaceId, {
+      ...generationsByWorkspace.get(workspaceId),
+    });
+    generationsWorkspaceOverride = restartedWorkspaceId;
+    await Promise.all(
+      pages.map((page, index) =>
+        page.waitForFunction(
+          (prior) =>
+            window.counts.state > prior.state &&
+            window.counts.transcripts > prior.transcripts,
+          beforeWorkspaceMove[index],
+          { timeout: 4500 },
+        ),
+      ),
+    );
+    await context.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(streams.size).toBe(0);
+    noCoordination = await browser.newPage();
+    await noCoordination.addInitScript(() => {
+      Object.defineProperty(window, "BroadcastChannel", { value: undefined });
+    });
+    await noCoordination.goto(`${origin}/sync-check`);
+    let generationPollCount = 0;
+    noCoordination.on("request", (request) => {
+      if (request.url().includes("/api/sync/generations"))
+        generationPollCount++;
+    });
+    await noCoordination.evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.stop = client.watchSyncInvalidations("state", () => {});
+    });
+    await waitFor(
+      () => generationPollCount > 0,
+      "generation polling did not take over when BroadcastChannel was unavailable",
+    );
+    assert.equal(
+      streams.size,
+      0,
+      "uncoordinated mode must not open an SSE stream",
+    );
+    await noCoordination.close();
+    process.stdout.write(
+      `PASS: 8 tabs, 1 active SSE, scoped transcript fan-out, failover ${failoverMs}ms\n`,
+    );
+  } finally {
+    await noCoordination?.close();
+    await context.close().catch(() => {});
+    await server.close();
+  }
+});
