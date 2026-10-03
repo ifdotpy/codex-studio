@@ -116,6 +116,9 @@ try {
         headers: {
           "Content-Type": "application/json",
           "X-Canvas-Token": initial.token,
+          ...(initial.workspaceId
+            ? { "X-Canvas-Workspace": initial.workspaceId }
+            : {}),
         },
         body: JSON.stringify({
           id: body.id,
