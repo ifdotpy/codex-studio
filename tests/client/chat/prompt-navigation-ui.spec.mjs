@@ -1,0 +1,699 @@
+// Production client with an isolated runtime. No model service or user state.
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { spawnFixture as spawn, test } from "../playwright.mjs";
+
+test("prompt navigation ui", async ({ browser: _browser }) => {
+  test.setTimeout(120_000);
+  const skill = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const root = await mkdtemp(join(tmpdir(), "codex-prompt-navigation-"));
+  const proc = spawn(
+    "python3",
+    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let browser,
+    log = "";
+  proc.stderr.on("data", (d) => (log += d));
+  try {
+    const port = await new Promise((resolve, reject) => {
+      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+      proc.once("exit", () => reject(Error(log)));
+    });
+    const url = `http://127.0.0.1:${port}`;
+    browser = _browser;
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 960 },
+    });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.setDefaultTimeout(12000);
+    const state = await (await fetch(url + "/api/state")).json();
+    const lead = state.runtime.agents.find((a) => a.name === "Release lead");
+    const original = await (
+      await fetch(url + "/api/transcript?id=" + lead.id)
+    ).json();
+    const prompts = Array.from({ length: 8 }, (_, i) => ({
+      id: "prompt-" + i,
+      role: "user",
+      text: `Question ${i + 1}: Review component ${i + 1}`,
+      title: "You",
+      at: i * 2 + 1,
+    }));
+    const items = prompts.flatMap((prompt, i) => [
+      prompt,
+      {
+        id: "answer-" + i,
+        at: i * 2 + 2,
+        role: "assistant",
+        title: "Lead",
+        text: Array.from(
+          { length: 8 },
+          (_, j) =>
+            `Result ${i + 1}.${j + 1}. The component passed the scoped check. Review the evidence before release.`,
+        ).join("\n\n"),
+      },
+    ]);
+    const transcript = {
+      ...original,
+      items,
+      order: items.map((m) => m.id),
+      replace: true,
+      truncated: true,
+      nextCursor: "prompt-0",
+    };
+    let pauseRecall = false;
+    let releaseRecall;
+    let recallStarted;
+    await page.route("**/api/transcript**", async (route) => {
+      if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
+        return route.continue();
+      const params = new URL(route.request().url()).searchParams;
+      if (
+        params.get("before") === "prompt-0" &&
+        params.get("limit") === "500"
+      ) {
+        if (pauseRecall) {
+          await new Promise((resolve) => {
+            releaseRecall = resolve;
+            recallStarted?.();
+          });
+        }
+        return route.fulfill({
+          json: {
+            ...original,
+            historyVersion: transcript.historyVersion,
+            items: [
+              { id: "older-tool", role: "tool", text: "Tool activity", at: 0 },
+            ],
+            nextCursor: "older-tool",
+            truncated: true,
+          },
+        });
+      }
+      if (
+        ["prompt-0", "older-tool", "later-answer"].includes(
+          params.get("before"),
+        )
+      ) {
+        return route.fulfill({
+          json: {
+            ...original,
+            historyVersion: transcript.historyVersion,
+            items: [
+              {
+                id: "earlier-prompt",
+                role: "user",
+                text: "Earlier saved input",
+                at: 0,
+              },
+            ],
+            nextCursor: null,
+            truncated: false,
+          },
+        });
+      }
+      if (
+        new URL(route.request().url()).pathname === "/api/transcript/search"
+      ) {
+        const query = new URL(route.request().url()).searchParams
+          .get("q")
+          .toLowerCase();
+        return route.fulfill({
+          json: {
+            results: items.filter((item) =>
+              item.text.toLowerCase().includes(query),
+            ),
+          },
+        });
+      }
+      if (route.request().url().includes("/stream?"))
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: "data: " + JSON.stringify(transcript) + "\n\n",
+        });
+      await route.fulfill({ json: transcript });
+    });
+    // This suite verifies the native transcript transport without optional sync.
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+    );
+    await page.goto(url);
+    const openCompactHeaderTools = async () => {
+      const menu = page.locator(
+        '.conversation-header-tools-menu[data-compact="yes"]',
+      );
+      if (!(await menu.count())) return;
+      if ((await menu.getAttribute("open")) === null) {
+        await page
+          .locator(
+            '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+          )
+          .click();
+        await page.waitForFunction(() =>
+          document
+            .querySelector(
+              '.conversation-header-tools-menu[data-compact="yes"]',
+            )
+            ?.hasAttribute("open"),
+        );
+      }
+    };
+    const openLead = async () => {
+      await page
+        .locator("[data-chat]")
+        .filter({ hasText: "Release lead" })
+        .click();
+      await page.locator('[data-message="prompt-0"]').waitFor();
+    };
+    const nav = page.getByRole("navigation", { name: "Conversation prompts" });
+    await openLead();
+    for (let i = 0; i < 30; i++) {
+      await page.locator("#messages").evaluate((el, i) => {
+        el.scrollTop = i % 2 ? el.scrollHeight : 0;
+      }, i);
+      await page.waitForTimeout(20);
+      assert.equal(await nav.count(), 1, "scroll retains one prompt bar");
+    }
+    await page.locator("#messages").evaluate((el) => {
+      el.scrollTop = 0;
+      el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await page.waitForFunction(() => {
+      const messages = document.querySelector("#messages");
+      return (
+        messages?.scrollTop === 0 &&
+        document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
+          "1 / 8"
+      );
+    });
+    assert.equal(
+      await page
+        .getByRole("button", { name: /^(Next|Previous) prompt$/ })
+        .count(),
+      0,
+    );
+    const composer = page.locator("#message");
+    const scrollTop = await page
+      .locator("#messages")
+      .evaluate((el) => el.scrollTop);
+    await composer.press("ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      prompts[7].text,
+      "Up recalls the latest message",
+    );
+    await composer.press("ArrowUp");
+    assert.equal(await composer.inputValue(), prompts[6].text);
+    await composer.press("ArrowDown");
+    assert.equal(await composer.inputValue(), prompts[7].text);
+    await composer.press("ArrowDown");
+    assert.equal(
+      await composer.inputValue(),
+      "",
+      "Down restores the empty draft",
+    );
+    assert.equal(
+      await page.locator("#messages").evaluate((el) => el.scrollTop),
+      scrollTop,
+      "Recall does not navigate the transcript",
+    );
+    for (let i = 0; i < 10; i++) await composer.press("ArrowUp");
+    await page.waitForFunction(
+      () => document.querySelector("#message").value === "Earlier saved input",
+    );
+    await composer.press("ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      "Earlier saved input",
+      "Up loads beyond the visible range and clamps at the true oldest input",
+    );
+    assert.equal(
+      await page.locator('[data-message="earlier-prompt"]').count(),
+      0,
+      "Recall does not insert historical pages into the transcript",
+    );
+    await composer.press("ArrowDown");
+    await page.waitForFunction(
+      (text) => document.querySelector("#message").value === text,
+      prompts[0].text,
+    );
+    assert.equal(
+      await composer.inputValue(),
+      prompts[0].text,
+      "Down crosses the fetched page boundary",
+    );
+    await composer.fill("Draft stays editable\nSecond line");
+    await composer.press("ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      "Draft stays editable\nSecond line",
+    );
+    await composer.fill("");
+    await composer.press("Shift+ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      "",
+      "Modified arrows keep native behavior",
+    );
+    await composer.press("ArrowUp");
+    await page
+      .locator("[data-chat]")
+      .filter({ hasText: "Other project" })
+      .click();
+    await composer.fill("");
+    await composer.press("ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      "",
+      "Another chat cannot recall this chat's messages",
+    );
+    await openLead();
+    await composer.fill("");
+    await composer.press("ArrowDown");
+    assert.equal(
+      await composer.inputValue(),
+      "",
+      "Chat changes reset the history cursor",
+    );
+    await page
+      .getByRole("button", { name: "Browse prompts", exact: true })
+      .click();
+    const history = page.getByRole("dialog", { name: "Prompt history" });
+    await history
+      .getByRole("button", { name: "Bookmark prompt 2", exact: true })
+      .click();
+    await history
+      .getByRole("button", { name: "Show bookmarked prompts", exact: true })
+      .click();
+    assert.equal(await history.locator(".prompt-history-entry").count(), 1);
+    await history.locator(".prompt-history-entry").click();
+    for (let i = 0; i < 4; i++) {
+      await page
+        .locator("[data-chat]")
+        .filter({ hasText: "Other project" })
+        .click();
+      await page.waitForFunction(
+        () => !document.querySelector(".prompt-navigation"),
+      );
+      await openLead();
+      assert.equal(
+        await nav.count(),
+        1,
+        "chat change removes the previous navigation",
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.reload();
+    await openLead();
+    await page
+      .getByRole("button", { name: "Browse prompts", exact: true })
+      .click();
+    assert.equal(
+      await history
+        .getByRole("button", {
+          name: "Remove bookmark from prompt 2",
+          exact: true,
+        })
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    await history
+      .getByRole("textbox", { name: "Search this chat" })
+      .fill("component 6");
+    await history
+      .locator(".prompt-history-entry")
+      .filter({ hasText: "Question 6" })
+      .waitFor();
+    assert.equal(await history.locator(".prompt-history-entry").count(), 1);
+    await history.locator(".prompt-history-entry").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".prompt-history-toggle")?.textContent.trim() ===
+        "6 / 8",
+    );
+    await history.waitFor({ state: "hidden" });
+    await page.screenshot({ path: join(root, "prompt-desktop.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          '.conversation-header-tools-menu[data-compact="yes"]',
+        ) !== null,
+    );
+    await openCompactHeaderTools();
+    await page
+      .getByRole("button", { name: "Browse prompts", exact: true })
+      .click();
+    await page.waitForTimeout(250);
+    const box = await history.boundingBox();
+    assert.ok(
+      box.x >= 0 && box.x + box.width <= 391,
+      "prompt menu fits a narrow viewport",
+    );
+    assert.equal(await nav.count(), 1);
+    await page.screenshot({ path: join(root, "prompt-mobile.png") });
+    await page
+      .getByRole("button", { name: "Browse prompts", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".prompt-history-toggle")
+          ?.getAttribute("aria-expanded") === "false",
+    );
+    await history.waitFor({ state: "hidden" });
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await composer.fill("");
+    const update = {
+      id: "later-answer",
+      role: "assistant",
+      text: "New live page",
+      at: 1000,
+    };
+    Object.assign(transcript, {
+      items: [update],
+      order: [update.id],
+      truncated: true,
+      nextCursor: "prompt-0",
+    });
+    await page.locator('[data-message="later-answer"]').waitFor();
+    assert.equal(
+      await page.locator('[data-message="prompt-0"]').count(),
+      1,
+      "Live page rollover retains loaded user messages",
+    );
+    await composer.press("ArrowUp");
+    assert.equal(
+      await composer.inputValue(),
+      prompts[7].text,
+      "Recall retains user messages after a live page contains only agent activity",
+    );
+    await page.locator(".prompt-navigation").scrollIntoViewIfNeeded();
+    const promptToggle = page.getByRole("button", {
+      name: "Browse prompts",
+      exact: true,
+    });
+    await promptToggle.click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".prompt-history-toggle")
+          ?.getAttribute("aria-expanded") === "true",
+    );
+    await history.waitFor({ state: "visible" });
+    await history.getByRole("textbox", { name: "Search this chat" }).fill("");
+    assert.equal(
+      await history.locator(".prompt-history-entry").count(),
+      8,
+      "Prompt history retains all loaded user messages after rollover",
+    );
+    await history.locator(".prompt-history-list").evaluate((list) => {
+      list.style.scrollBehavior = "auto";
+      list.scrollTop = list.scrollHeight;
+    });
+    const loadEarlier = history.getByRole("button", {
+      name: "Load earlier messages",
+      exact: true,
+    });
+    try {
+      await loadEarlier.waitFor({ state: "visible" });
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        dialog: document.querySelector(".prompt-history")?.innerText,
+        historyButtons: [
+          ...document.querySelectorAll(".prompt-history-list button"),
+        ].map((button) => ({
+          text: button.textContent.trim(),
+          disabled: button.disabled,
+          rect: button.getBoundingClientRect().toJSON(),
+        })),
+        nav: document.querySelector(".prompt-navigation")?.outerHTML,
+      }));
+      throw new Error(
+        `Load earlier did not appear: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
+    try {
+      await page.waitForFunction(() => {
+        return new Promise((resolve) => {
+          let previous = "";
+          let stableFrames = 0;
+          const sample = () => {
+            const dialog = document.querySelector(".prompt-history");
+            const button = [
+              ...document.querySelectorAll(".prompt-history-list button"),
+            ].find(
+              (item) => item.textContent.trim() === "Load earlier messages",
+            );
+            if (
+              !(dialog instanceof HTMLElement) ||
+              !(button instanceof HTMLButtonElement) ||
+              button.disabled
+            ) {
+              requestAnimationFrame(sample);
+              return;
+            }
+            const dialogBox = dialog.getBoundingClientRect();
+            const buttonBox = button.getBoundingClientRect();
+            const x = buttonBox.left + buttonBox.width / 2;
+            const y = buttonBox.top + buttonBox.height / 2;
+            const hit = document.elementFromPoint(x, y);
+            const values = [
+              dialogBox.x,
+              dialogBox.y,
+              dialogBox.width,
+              dialogBox.height,
+              buttonBox.x,
+              buttonBox.y,
+              buttonBox.width,
+              buttonBox.height,
+            ].join(":");
+            const ready =
+              dialogBox.width > 0 &&
+              buttonBox.width > 0 &&
+              buttonBox.top >= 0 &&
+              buttonBox.bottom <= window.innerHeight &&
+              (hit === button || button.contains(hit));
+            stableFrames = ready && values === previous ? stableFrames + 1 : 0;
+            previous = values;
+            if (stableFrames >= 3) resolve(true);
+            else requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        });
+      });
+    } catch (error) {
+      const state = await page.evaluate(() => {
+        const dialog = document.querySelector(".prompt-history");
+        const list = document.querySelector(".prompt-history-list");
+        const button = [
+          ...document.querySelectorAll(".prompt-history-list button"),
+        ].find((item) => item.textContent.trim() === "Load earlier messages");
+        return {
+          expanded: document
+            .querySelector(".prompt-history-toggle")
+            ?.getAttribute("aria-expanded"),
+          dialog: dialog?.getBoundingClientRect().toJSON(),
+          list: list && {
+            box: list.getBoundingClientRect().toJSON(),
+            scrollTop: list.scrollTop,
+            scrollHeight: list.scrollHeight,
+            clientHeight: list.clientHeight,
+          },
+          button: button && {
+            disabled: button.disabled,
+            box: button.getBoundingClientRect().toJSON(),
+          },
+        };
+      });
+      throw Error(
+        `Load earlier geometry did not settle: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
+    const loadEarlierBox = await loadEarlier.boundingBox();
+    assert.ok(
+      loadEarlierBox &&
+        loadEarlierBox.y >= 0 &&
+        loadEarlierBox.y + loadEarlierBox.height <= 960,
+      "Load earlier stays inside the visible prompt history panel",
+    );
+    // Locator.click scrolls the page and closes this popover before the click.
+    const olderPage = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/transcript/page" &&
+        url.searchParams.get("id") === lead.id &&
+        url.searchParams.has("before")
+      );
+    });
+    await page.mouse.click(
+      loadEarlierBox.x + loadEarlierBox.width / 2,
+      loadEarlierBox.y + loadEarlierBox.height / 2,
+    );
+    const olderResponse = await olderPage;
+    assert.equal(
+      olderResponse.status(),
+      200,
+      "Earlier history request succeeds",
+    );
+    assert.equal(
+      new URL(olderResponse.url()).searchParams.get("before"),
+      "prompt-0",
+      "The current transcript cursor selects the older page",
+    );
+    const olderResult = await olderResponse.json();
+    assert.equal(olderResult.items[0]?.text, "Earlier saved input");
+    const earlierEntry = history.getByRole("button", {
+      name: "1 Earlier saved input",
+      exact: true,
+    });
+    await page.locator('[data-message="earlier-prompt"]').waitFor();
+    const historyToggle = page.getByRole("button", {
+      name: "Browse prompts",
+      exact: true,
+    });
+    if ((await historyToggle.getAttribute("aria-expanded")) !== "true") {
+      await historyToggle.click();
+    }
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".prompt-history-toggle")
+          ?.getAttribute("aria-expanded") === "true",
+    );
+    await history.waitFor({ state: "visible" });
+    try {
+      await earlierEntry.waitFor();
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        dialog: document.querySelector(".prompt-history")?.outerHTML,
+        navigation: document.querySelector(".prompt-navigation")?.outerHTML,
+        alerts: [...document.querySelectorAll('[role="alert"]')].map(
+          (notice) => notice.textContent,
+        ),
+      }));
+      throw new Error(
+        `Earlier page ${olderResponse.url()} returned ${JSON.stringify(olderResult)} but did not render: ${JSON.stringify(state)}. ${error}`,
+      );
+    }
+    assert.equal(
+      await history.locator(".prompt-history-entry").count(),
+      9,
+      "Prompt history can load saved messages outside the initial range",
+    );
+    await page.keyboard.press("Escape");
+    const restored = {
+      id: "restored-answer",
+      role: "assistant",
+      text: "Restored conversation",
+      at: 2000,
+    };
+    Object.assign(transcript, {
+      items: [restored],
+      order: [restored.id],
+      historyVersion: "restored-version",
+    });
+    await page.locator('[data-message="restored-answer"]').waitFor();
+    assert.equal(
+      await page.locator('[data-message="prompt-0"]').count(),
+      0,
+      "A changed history version invalidates the retained range",
+    );
+    const replacement = {
+      id: "replacement-answer",
+      role: "assistant",
+      text: "Full replacement",
+      at: 3000,
+    };
+    Object.assign(transcript, {
+      items: [replacement],
+      order: [replacement.id],
+      truncated: false,
+      nextCursor: null,
+    });
+    await page.locator('[data-message="replacement-answer"]').waitFor();
+    assert.equal(
+      await page.locator('[data-message="restored-answer"]').count(),
+      0,
+      "A full authoritative snapshot still removes obsolete records",
+    );
+    Object.assign(transcript, { truncated: true, nextCursor: "prompt-0" });
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.reload();
+    await page
+      .locator("[data-chat]")
+      .filter({ hasText: "Release lead" })
+      .click();
+    await page.locator('[data-message="replacement-answer"]').waitFor();
+    await composer.fill("");
+    await composer.press("ArrowUp");
+    await page.waitForFunction(
+      () => document.querySelector("#message").value === "Earlier saved input",
+    );
+    assert.equal(
+      await page.locator('[data-message="earlier-prompt"]').count(),
+      0,
+      "After reload, Up finds saved input even when no user messages are visible",
+    );
+    await composer.press("ArrowDown");
+    assert.equal(await composer.inputValue(), "");
+    pauseRecall = true;
+    const started = new Promise((resolve) => {
+      recallStarted = resolve;
+    });
+    await composer.press("ArrowUp");
+    await started;
+    await composer.fill("Keep my new draft");
+    const response = page.waitForResponse(
+      (r) =>
+        r.url().includes("before=prompt-0") && r.url().includes("limit=500"),
+    );
+    releaseRecall();
+    await response;
+    await page.waitForTimeout(100);
+    assert.equal(
+      await composer.inputValue(),
+      "Keep my new draft",
+      "A late history response cannot overwrite an edited draft",
+    );
+    await composer.fill("");
+    const switched = new Promise((resolve) => {
+      recallStarted = resolve;
+    });
+    await composer.press("ArrowUp");
+    await switched;
+    await page
+      .locator("[data-chat]")
+      .filter({ hasText: "Other project" })
+      .click();
+    await composer.fill("Other chat draft");
+    const stale = page.waitForResponse(
+      (r) =>
+        r.url().includes("before=prompt-0") && r.url().includes("limit=500"),
+    );
+    releaseRecall();
+    await stale;
+    await page.waitForTimeout(100);
+    assert.equal(
+      await composer.inputValue(),
+      "Other chat draft",
+      "A late history response cannot write into another chat",
+    );
+    assert.deepEqual(errors, []);
+    console.log(
+      "PASS prompt navigation, bookmarks, scroll, chat changes, and responsive layout. Evidence: " +
+        root,
+    );
+  } finally {
+    proc.kill();
+  }
+});

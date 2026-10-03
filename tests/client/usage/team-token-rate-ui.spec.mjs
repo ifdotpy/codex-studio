@@ -1,24 +1,17 @@
-#!/usr/bin/env node
 // Real batch SSE, hidden Chrome, temp state. No model calls.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
-const repo = dirname(dirname(fileURLToPath(import.meta.url)));
-const { chromium } = createRequire(join(repo, "web/package.json"))(
-  "playwright-core",
-);
-let browser;
-try {
-  browser = await chromium.launch({
-    headless: true,
-    executablePath:
-      process.env.CHROME_BIN ||
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  });
+
+import { spawnFixture as spawn, test } from "../playwright.mjs";
+
+test("team token rate ui", async ({ browser: _browser }) => {
+  test.setTimeout(120_000);
+  const repo = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
   for (const [size, width] of [
     [3, 390],
     [8, 1200],
@@ -567,10 +560,6 @@ try {
       await follower?.close();
       await context.close();
       proc.kill("SIGTERM");
-      if (proc.exitCode === null)
-        await new Promise((resolve) => proc.once("exit", resolve));
     }
   }
-} finally {
-  await browser?.close();
-}
+});
