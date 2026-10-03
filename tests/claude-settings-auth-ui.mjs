@@ -163,6 +163,57 @@ try {
   assert.equal(modelReads, 1);
   assert.deepEqual(mutations, []);
   assert.deepEqual(errors, []);
+
+  // A chat without a native thread can return stored settings after sign-out.
+  const emptyChat = await browser.newPage();
+  const emptyChatRequests = [];
+  await emptyChat.route("**/api/**", async (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    if (url.pathname === "/api/claude/session") {
+      emptyChatRequests.push(req.postDataJSON());
+      return route.fulfill({
+        json: {
+          settings: { permissionMode: "acceptEdits", thinking: true },
+          turns: [],
+        },
+      });
+    }
+    assert.notEqual(url.pathname, "/api/models");
+    return route.fulfill({ json: {} });
+  });
+  await emptyChat.goto(
+    `http://127.0.0.1:${server.httpServer.address().port}/check`,
+  );
+  await emptyChat.waitForFunction(
+    () =>
+      document
+        .querySelector('[aria-label="Claude settings"]')
+        ?.getAttribute("aria-busy") === "false",
+  );
+  await emptyChat.getByText("Claude needs sign-in. work@example.com").waitFor();
+  assert.equal(
+    await emptyChat.getByLabel("Permission mode").inputValue(),
+    "acceptEdits",
+  );
+  assert.equal(
+    await emptyChat.getByLabel("Permission mode").isDisabled(),
+    true,
+  );
+  assert.equal(
+    await emptyChat.getByLabel("Extended thinking").isDisabled(),
+    true,
+  );
+  await emptyChat.getByText("Advanced", { exact: true }).click();
+  assert.equal(
+    await emptyChat.getByLabel("Auto-compact token limit").isDisabled(),
+    true,
+  );
+  assert.deepEqual(
+    emptyChatRequests.map((request) => request.action),
+    ["state"],
+  );
+  await emptyChat.close();
   console.log(
     "PASS Claude settings sign-out, pinned account login, disabled writes, model load and settings reload after sign-in",
   );

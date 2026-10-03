@@ -174,7 +174,11 @@ export function ClaudeSettings({
     if (turn && !historyTurns.some((item) => item.id === turn)) setTurn("");
   }, [state, turn]);
   const locked =
-    !stateLoaded || busy.has(agent.status) || busyAction || !!savingField;
+    !stateLoaded ||
+    (!!account && account.status !== "ready") ||
+    busy.has(agent.status) ||
+    busyAction ||
+    !!savingField;
 
   return (
     <section

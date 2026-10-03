@@ -2471,9 +2471,7 @@ export default function App() {
             <Suspense fallback={null}>
               <ClaudeSettings
                 agent={agent}
-                account={accounts.data.accounts.find(
-                  (item) => item.id === (agent.accountKey || "default"),
-                )}
+                account={selectedAccount}
                 onSignIn={(key) => {
                   setSettingsOpen(false);
                   setClaudeLoginKey(key);
