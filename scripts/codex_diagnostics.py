@@ -180,14 +180,14 @@ def snapshot(runtime, root_pid=None, ps_output=None):
                      for key, _server in servers}
         studio_loaded = len(runtime.loaded)
         queues = {"recoveryPending": runtime.recovery_pool._work_queue.qsize()}
-        with runtime.db() as db:
-            queues["durableInputPending"] = db.execute(
-                "SELECT COUNT(*) FROM runtime_events WHERE status IN "
-                "('pending','reserved','dispatching','uncertain')").fetchone()[0]
         for index, (_account, server) in enumerate(servers, 1):
             alias = "account" + str(index)
             for name in ("callbacks", "clock_replies", "tool_requests"):
                 queues[alias + "." + name] = _queue_size(getattr(server, name, None))
+    with runtime.db() as db:
+        queues["durableInputPending"] = db.execute(
+            "SELECT COUNT(*) FROM runtime_events WHERE status IN "
+            "('pending','reserved','dispatching','uncertain')").fetchone()[0]
 
     def native(account, server):
         started = time.monotonic()
@@ -223,7 +223,7 @@ def snapshot(runtime, root_pid=None, ps_output=None):
     attribution.append({"component": "runtime", "operation": "lockSample",
                         "count": len(sampled), "durationMs": round(sum(x["waitMs"] for x in sampled), 2)})
     attribution.sort(key=lambda row: (row["component"], row["operation"]))
-    return {"at": datetime.now(timezone.utc).isoformat(), "processTree": tree,
+    result = {"at": datetime.now(timezone.utc).isoformat(), "processTree": tree,
             "hostResources": host_resources(), "resourceAttribution": attribution,
             "nativeAccounts": dict(sorted(native_accounts.items())),
             "studioLoadedThreads": studio_loaded, "queues": queues,
@@ -233,3 +233,7 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "migrations": migration_status(runtime),
             "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"}),
             "searchMigrationError": getattr(runtime, "search_migration_error", None)}
+    lock_metrics = getattr(runtime.lock, "runtime_lock_metrics", None)
+    if callable(lock_metrics):
+        result["runtimeLockOperations"] = lock_metrics()
+    return result

@@ -14,7 +14,6 @@ import sys
 import tempfile
 import threading
 from types import SimpleNamespace
-from contextlib import nullcontext
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +21,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_canvas import Canvas, make_server
 from codex_diagnostics import process_tree, snapshot
+from codex_lock_metrics import MeasuredRLock
 
 
 class Server:
@@ -61,12 +61,22 @@ class DiagnosticsContract(unittest.TestCase):
         self.addCleanup(db.close)
         db.execute("CREATE TABLE runtime_events (status TEXT)")
         db.execute("INSERT INTO runtime_events VALUES ('pending')")
+        lock = MeasuredRLock()
+        class UnlockedDb:
+            def __enter__(self):
+                if lock._is_owned():
+                    raise AssertionError("Diagnostics opened SQLite under Runtime.lock")
+                return db
+
+            def __exit__(self, *_):
+                return False
+
         runtime = SimpleNamespace(
-            lock=threading.RLock(), servers={"private-account": codex, "other": claude},
+            lock=lock, servers={"private-account": codex, "other": claude},
             accounts={"private-account": {"provider": "codex"},
                       "other": {"provider": "claude"}},
             loaded={"agent"}, recovery_pool=SimpleNamespace(_work_queue=queue.Queue()),
-            db=lambda: nullcontext(db),
+            db=UnlockedDb,
             sample_dispatch_lock_holder=lambda result, waited: result.append("test"),
         )
         with patch("codex_diagnostics.host_resources", return_value={"cpuCount": 8}):
@@ -79,6 +89,9 @@ class DiagnosticsContract(unittest.TestCase):
         self.assertEqual(result["hostResources"]["cpuCount"], 8)
         self.assertTrue(any(row["operation"] == "nativeStatus" for row in result["resourceAttribution"]))
         self.assertEqual(len(result["runtimeLockSamples"]), 5)
+        self.assertTrue(result["runtimeLockOperations"])
+        self.assertTrue(all("waitMs" in row and "holdMs" in row
+                            for row in result["runtimeLockOperations"]))
         self.assertNotIn("private-account", json.dumps(result))
 
     def test_http_route_returns_diagnostics_without_a_token(self):

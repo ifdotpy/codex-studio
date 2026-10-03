@@ -219,6 +219,11 @@ about one more minute to unload. Idle Claude queries close after 15 minutes.
 Native background tasks and unresolved input keep their sessions open. New work
 resumes the saved thread.
 
+Set `CODEX_RUNTIME_LOCK_METRICS=1` before you start Studio to include
+`runtimeLockOperations` by source call site. Each row reports count and total wait and hold time.
+Percentiles and maxima use the latest 512 acquisitions at that call site.
+Without this flag, Studio uses its normal runtime lock and reports no per-call-site data.
+
 SQLite scopes above one second retain their owner, start location, wait stack,
 duration, and completion result. Read `sqliteContention.slowTransactions` in
 the diagnostics response. The existing update worker saves this evidence in

@@ -143,17 +143,31 @@ def operation_receipt_evidence(db, key):
 
 
 class RequestMixin:
-    def tool_request_actor(self, db, thread_id, account_key):
+    @staticmethod
+    def _tool_request_actor_row(db, thread_id, account_key):
         if not thread_id:
             return None
-        row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
-                         "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
-                         "ELSE json_extract(record,'$.accountKey') END=? LIMIT 1",
-                         (thread_id, account_key)).fetchone()
+        return db.execute("SELECT id,record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
+                          "AND CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
+                          "ELSE json_extract(record,'$.accountKey') END=? LIMIT 1",
+                          (thread_id, account_key)).fetchone()
+
+    def tool_request_actor(self, db, thread_id, account_key):
+        row = self._tool_request_actor_row(db, thread_id, account_key)
         if row is None:
             return None
         from codex_agent_modes import mode_fields
-        return mode_fields(json.loads(row[0]))
+        return mode_fields(json.loads(row[1]))
+
+    def tool_request_actor_snapshot(self, thread_id, account_key):
+        """Decode the caller outside Runtime.lock and return exact commit evidence."""
+        read_db = getattr(self, "read_db", self.db)
+        with read_db() as db:
+            row = self._tool_request_actor_row(db, thread_id, account_key)
+        if row is None:
+            return None, None
+        from codex_agent_modes import mode_fields
+        return row[1], mode_fields(json.loads(row[1]))
 
     def setup_tool_requests(self, db):
         db.executescript("""
@@ -269,13 +283,17 @@ class RequestMixin:
             {"tool": identity_tool, "arguments": identity_args}, sort_keys=True,
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode()).hexdigest()
+        actor_record, actor = self.tool_request_actor_snapshot(params.get("threadId"), account_key)
         with self.lock, self.db() as db:
             reservation_locked = time.monotonic_ns()
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ValueError("The caller connection changed before request reservation")
-            actor = self.tool_request_actor(db, params.get("threadId"), account_key)
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
+            current_actor = self._tool_request_actor_row(db, params.get("threadId"), account_key)
+            if (current_actor is None or current_actor[0] != actor["id"]
+                    or current_actor[1] != actor_record):
+                raise ValueError("The caller changed while reading request identity")
             record = self.tool_request(key, db)
             if record and (record["signature"] != signature or record["agent"] != actor["id"]):
                 raise ValueError("This request id has different content")
