@@ -10,6 +10,7 @@ export interface AgentEntityDto {
   autoWake?: any;
   canSend?: any;
   compactions?: any;
+  concurrency?: any;
   contextUsage?: any;
   created?: any;
   cwd?: any;

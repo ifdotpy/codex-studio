@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import uuid
 
 spec = importlib.util.spec_from_file_location('wake_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -28,6 +29,11 @@ class WakeupContract(unittest.TestCase):
 
     def calls(self):
         return [params for method, params in self.runtime.server.calls if method == 'turn/start']
+
+    def set_single(self, lead):
+        current = self.runtime.agent(lead['id'])
+        return self.runtime.conversation_settings(lead['id'], {'subagent_concurrency': 0,
+            'expected_mode_revision': current['agentModeRevision'], 'request_id': str(uuid.uuid4())})
 
     def complete(self, agent, text='Done; no further action.'):
         current = self.runtime.agent(agent['id'])
@@ -100,7 +106,7 @@ class WakeupContract(unittest.TestCase):
         lead = self.start(self.lead())
         worker = self.worker(lead)
         task = self.task(lead, worker)
-        self.agent_update(lead, agentMode='single')
+        self.set_single(lead)
         task = self.submit(task, worker)
         self.assertEqual(self.events(lead, 'work_review')[0]['status'], 'pending')
         self.decide(task, lead, lead['id'])

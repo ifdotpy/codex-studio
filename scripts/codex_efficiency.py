@@ -220,18 +220,14 @@ class EfficiencyMixin:
             defaults = self.worker_defaults(self.agent(actor['rootId'], db))
             from codex_native_errors import native_thread_block
             from codex_safety_buffering import active as safety_retry_active
-            global_limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
+            from codex_agent_modes import global_concurrency_limit
+            global_limit = global_concurrency_limit()
             active_statuses = ('running', 'starting', 'approval')
             live_agents = "(json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt') IN (0,''))"
-            active_by_status = db.execute(
-                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_global_active WHERE " +
-                live_agents + " AND json_extract(record,'$.status') IN ('running','starting','approval')").fetchone()[0]
-            active_by_flight = db.execute(
-                "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_inflight WHERE " + live_agents +
-                " AND json_extract(record,'$.inFlight')=1 "
-                "AND json_extract(record,'$.status') NOT IN (?,?,?)", active_statuses).fetchone()[0]
-            global_active = active_by_status + active_by_flight
-            team_active = sum(bool(a.get('inFlight')) or a['status'] in active_statuses for a in team)
+            active_slots = self.dispatch_active_slots(db)
+            global_active = len(active_slots)
+            team_active = sum(slot['rootId'] == actor['rootId'] and slot['id'] != slot['rootId']
+                              for slot in active_slots)
             root = self.agent(actor['rootId'], db)
             reservations = {str(Path(cwd).resolve()): key for key, cwd in db.execute(
                 "SELECT id,json_extract(record,'$.cwd') FROM runtime_agents INDEXED BY runtime_agent_reservation_cwd "
@@ -259,15 +255,16 @@ class EfficiencyMixin:
                     reasons.append('workspace_operation')
                 if global_active >= global_limit:
                     reasons.append('global_concurrency')
-                if team_active >= a['concurrency']:
+                if a['id'] != root['id'] and team_active >= root['concurrency']:
                     reasons.append('team_concurrency')
                 queued.append({'id': a['id'], 'reasons': reasons or ['awaiting_dispatch'],
                                **({'blockingAgent': blocker} if blocker else {})})
+            team_active_all = sum(bool(a.get('inFlight')) or a['status'] in active_statuses for a in team)
             capacity = {'teamLimit': root['concurrency'], 'globalLimit': global_limit,
-                        'teamActive': team_active, 'globalActive': global_active,
+                        'occupied': team_active, 'queuedCount': len(queued),
+                        'teamActive': team_active_all, 'globalActive': global_active,
                         'maxAgents': root['maxAgents'], 'queued': queued,
-                        'configure': {'command': 'codex-control configure ' + actor['rootId'] + ' --concurrency N',
-                                      'minimum': 1, 'maximum': 64}}
+                        'configure': {'userOnly': True, 'minimum': 0, 'maximum': 512}}
             counts = {state: sum(a['status'] == state for a in team) for state in sorted({a['status'] for a in team})}
             revision = digest([records, finished_counts, counts, defaults, capacity])
             db.execute('CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))')

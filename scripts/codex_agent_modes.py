@@ -1,17 +1,48 @@
-"""Team-local delegation mode. Existing accepted work keeps its identity and state."""
+"""Per-chat subagent concurrency and its derived delegation mode."""
 import time
+
+DEFAULT_SUBAGENT_CONCURRENCY = 32
+MAX_SUBAGENT_CONCURRENCY = 512
+DEFAULT_MAX_TEAM_AGENTS = 64
+MAX_TEAM_AGENTS = 1024
+LEAD_TEAM_RECORDS = 1
+QUEUED_WORKER_HEADROOM = 1
+DEFAULT_GLOBAL_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS
+CONCURRENCY_SCHEMA_VERSION = 2
+
+
+def concurrency(agent):
+    """Read the canonical limit, migrating old mode-only records in memory."""
+    if agent.get('subagentConcurrencyVersion', 0) < CONCURRENCY_SCHEMA_VERSION:
+        if agent.get('agentMode') == 'single':
+            return 0
+    if 'concurrency' in agent:
+        return agent['concurrency']
+    return 0 if agent.get('agentMode') == 'single' else DEFAULT_SUBAGENT_CONCURRENCY
 
 
 def mode_fields(agent):
     if agent.get('isLead'):
-        agent.setdefault('agentMode', 'multi')
+        limit = concurrency(agent)
+        agent['concurrency'] = limit
+        agent['subagentConcurrencyVersion'] = CONCURRENCY_SCHEMA_VERSION
+        agent['agentMode'] = 'multi' if limit else 'single'
         agent.setdefault('agentModeRevision', 0)
         agent['agentModeSupported'] = True
+        agent.setdefault('maxAgentsExplicit', agent.get('maxAgents', DEFAULT_MAX_TEAM_AGENTS) != DEFAULT_MAX_TEAM_AGENTS)
+    else:
+        agent.pop('concurrency', None)
     return agent
 
 
+def global_concurrency_limit():
+    """Global process resource ceiling; per-chat limits remain separate."""
+    import os
+    return max(1, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', str(DEFAULT_GLOBAL_CONCURRENCY))))
+
+
 def assert_delegation(root):
-    if root.get('agentMode', 'multi') != 'multi':
+    if concurrency(root) == 0:
         raise ValueError('Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent.')
 
 
@@ -21,44 +52,75 @@ def assert_worker_input(runtime, db, target):
 
 
 def change_mode(runtime, key, data):
-    allowed = {'id', 'agent_mode', 'expected_mode_revision', 'request_id', 'expected_account_key'}
+    """Apply new limit requests and exact legacy mode retries atomically."""
+    new_request = 'subagent_concurrency' in data
+    legacy_request = 'agent_mode' in data
+    if new_request and legacy_request:
+        raise ValueError('Send one subagent concurrency setting')
+    if new_request:
+        allowed = {'id', 'subagent_concurrency', 'expected_mode_revision', 'request_id', 'expected_account_key'}
+        limit = data.get('subagent_concurrency')
+    elif legacy_request:
+        allowed = {'id', 'agent_mode', 'expected_mode_revision', 'request_id', 'expected_account_key'}
+        mode = data.get('agent_mode')
+        if not isinstance(mode, str) or mode not in {'multi', 'single'}:
+            raise ValueError('Choose multi or single agent mode')
+        limit = DEFAULT_SUBAGENT_CONCURRENCY if mode == 'multi' else 0
+    else:
+        raise ValueError('A subagent concurrency setting is required')
     if set(data) - allowed:
-        raise ValueError('Change agent mode separately from execution settings')
-    mode, revision, request = data.get('agent_mode'), data.get('expected_mode_revision'), data.get('request_id')
-    if not isinstance(mode, str) or mode not in {'multi', 'single'}:
-        raise ValueError('Choose multi or single agent mode')
+        raise ValueError('Change subagent concurrency separately from execution settings')
+    revision, request = data.get('expected_mode_revision'), data.get('request_id')
+    if type(limit) is not int or not 0 <= limit <= MAX_SUBAGENT_CONCURRENCY:
+        raise ValueError('Subagent concurrency must be an integer from 0 to 512')
     if type(revision) is not int or revision < 0:
         raise ValueError('A nonnegative expected mode revision is required')
     if not isinstance(request, str) or not 1 <= len(request) <= 200:
-        raise ValueError('An agent mode request id is required')
+        raise ValueError('A subagent concurrency request id is required')
     with runtime.lock, runtime.db() as db:
         agent = runtime.checked_actor(db, key)
         if not agent.get('isLead') or agent['rootId'] != key:
             raise ValueError('Change agent mode on the lead chat')
-        body = {'operation': 'agent_mode', 'agent': key, 'mode': mode, 'expectedRevision': revision}
+        body = ({'operation': 'subagent_concurrency', 'agent': key, 'concurrency': limit,
+                 'expectedRevision': revision} if new_request else
+                {'operation': 'agent_mode', 'agent': key, 'mode': mode, 'expectedRevision': revision})
         signature, previous = runtime.operation_receipt(db, request, body)
         if previous is not None:
             return mode_fields(agent)
+        current = concurrency(agent)
         if agent.get('agentModeRevision', 0) != revision:
-            raise ValueError('Agent mode changed. Read the current mode before saving')
-        if agent.get('agentMode', 'multi') != mode:
-            agent.update(agentMode=mode, agentModeRevision=revision + 1,
+            raise ValueError('Subagent concurrency changed. Read the current value before saving')
+        if current != limit:
+            agent.update(concurrency=limit, agentModeRevision=revision + 1,
                          agentModeChangedAt=time.time(), agentModeChangedBy='user')
+            # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
+            # enough records available for the requested workers plus the lead.
+            if not agent.get('maxAgentsExplicit'):
+                minimum_records = limit + LEAD_TEAM_RECORDS + QUEUED_WORKER_HEADROOM
+                agent['maxAgents'] = max(agent.get('maxAgents', DEFAULT_MAX_TEAM_AGENTS), minimum_records)
             runtime.put(db, 'agents', mode_fields(agent))
+        canonical = mode_fields(runtime.agent(key, db))
         runtime.save_receipt(db, request, signature,
-                             {'applied': True, 'agentMode': mode, 'agentModeRevision': agent.get('agentModeRevision', 0)})
-        return mode_fields(agent)
+                             {'applied': True, 'concurrency': concurrency(canonical),
+                              'agentMode': canonical['agentMode'],
+                              'agentModeRevision': canonical.get('agentModeRevision', 0)})
+        runtime.changed.set()
+        return canonical
 
 
 def guidance(root):
+    limit = concurrency(root)
     revision = root.get('agentModeRevision', 0)
-    if root.get('agentMode', 'multi') == 'single':
-        text = ('Single agent mode: the lead completes new work itself. Do not spawn agents or delegate new work. '
-                'Existing workers finish accepted work and report to the lead. '
-                'This user setting overrides earlier delegation guidance. Only the user can change this mode.')
+    mode = 'Single' if limit == 0 else 'Multi'
+    if limit == 0:
+        text = ('Single agent mode (subagent concurrency 0): the lead completes new work itself. '
+                'Do not delegate or start new worker turns. Existing active turns finish; queued work '
+                'stays queued until the user raises the limit. Do not interrupt or stop workers.')
     else:
-        text = 'Multi agent mode: delegation within this team is available under the user instructions.'
-    return f'[Studio agent mode, revision {revision}] {text}'
+        text = (f'{mode} agent mode (subagent concurrency {limit}): delegate sensibly up to {limit} '
+                'simultaneous descendant turns across all providers and reviewer roles. The lead does '
+                'not use a subagent slot. Excess worker turns queue. Do not poll unchanged status.')
+    return f'[Studio subagent concurrency, revision {revision}] {text}'
 
 
 def tool_mode_context(runtime, actor_id, result, key=None):
@@ -68,9 +130,7 @@ def tool_mode_context(runtime, actor_id, result, key=None):
         import json
         from codex_efficiency import digest, packed
         actor = runtime.agent(actor_id, db)
-        root = runtime.agent(actor['rootId'], db)
-        if not root.get('agentModeRevision'):
-            return result
+        root = mode_fields(runtime.agent(actor['rootId'], db))
         epoch, _, known = runtime.model_known_context(db, actor)
         text = guidance(root)
         version = digest(text)
@@ -82,7 +142,7 @@ def tool_mode_context(runtime, actor_id, result, key=None):
         if row:
             record = json.loads(row[0])
         else:
-            record = {'epoch': epoch, 'version': version, 'revision': root['agentModeRevision'],
+            record = {'epoch': epoch, 'version': version, 'revision': root.get('agentModeRevision', 0),
                       'text': text if known.get('agentMode') != version else None}
             if key and record['text']:
                 db.execute('INSERT INTO runtime_model_modes VALUES (?,?,?,?)',

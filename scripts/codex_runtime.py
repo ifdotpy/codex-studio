@@ -39,6 +39,9 @@ from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
+from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
+                               MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
+                               global_concurrency_limit)
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_lock_metrics import runtime_lock
@@ -3066,10 +3069,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
             if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
-            concurrency = int(data.get("concurrency", 32))
-            max_agents = int(data.get("maxAgents", 64))
-            if not 1 <= concurrency <= 64 or not 1 <= max_agents <= 256:
-                raise ValueError("Concurrency must be 1 to 64; team size must be 1 to 256")
+            concurrency = data.get("concurrency", DEFAULT_SUBAGENT_CONCURRENCY)
+            max_agents = int(data.get("maxAgents", DEFAULT_MAX_TEAM_AGENTS))
+            if type(concurrency) is not int or not 0 <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not 1 <= max_agents <= MAX_TEAM_AGENTS:
+                raise ValueError(f"Concurrency must be 0 to {MAX_SUBAGENT_CONCURRENCY}; team size must be 1 to {MAX_TEAM_AGENTS}")
             budget = data.get("tokenBudget") or None
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
@@ -3088,12 +3091,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "needsTitle": draft,
                 "parentId": parent,
                 "rootId": root["id"] if root else key,
+                **({"subagentConcurrencyVersion": 2,
+                    "maxAgentsExplicit": "maxAgents" in data} if is_lead else {}),
                 "model": model,
                 "effort": effort,
                 "fastMode": fast_mode,
                 "daybreakEnabled": daybreak,
                 "cyberAccessProgram": program,
-                "concurrency": root["concurrency"] if root else concurrency,
+                **({"concurrency": concurrency} if not root else {}),
                 "maxAgents": root["maxAgents"] if root else max_agents,
                 "tokenBudget": root["tokenBudget"] if root else budget,
                 "status": "idle" if draft else "paused" if defer else "queued",
@@ -3329,7 +3334,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
-        if "agent_mode" in data or "expected_mode_revision" in data:
+        if ("agent_mode" in data or "expected_mode_revision" in data
+                or "subagent_concurrency" in data):
             from codex_agent_modes import change_mode
             return change_mode(self, key, data)
         expected_account = data.get("expected_account_key")
@@ -4288,8 +4294,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             )
             if fast_event_ids:
                 fast_marks["fastCandidatesAt"] = time.monotonic_ns()
-            global_limit = max(1, min(64, int(os.environ.get("CODEX_CANVAS_CONCURRENCY", "32"))))
+            global_limit = global_concurrency_limit()
             for a in candidates:
+                # The root owns the setting. Resolve it from the current DB
+                # record instead of trusting a cached descendant projection.
+                root = self.agent(a["rootId"], db)
+                a["concurrency"] = root["concurrency"]
                 busy = bool(a.get("inFlight"))
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
@@ -4298,7 +4308,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
                 if not busy and len(active) >= global_limit:
                     continue
-                if not busy and sum(t["rootId"] == a["rootId"] for t in active) >= a["concurrency"]:
+                if (not busy and a["id"] != a["rootId"]
+                        and sum(t["rootId"] == a["rootId"] and t["id"] != t["rootId"]
+                                for t in active) >= a["concurrency"]):
                     continue
                 if fast_event_ids:
                     fast_marks["fastCapacityCheckedAt"] = time.monotonic_ns()
@@ -8203,23 +8215,46 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return runtime_catalog(self, account_key)
 
     def configure(self, key, data):
+        if 'concurrency' in data:
+            allowed = {'id', 'concurrency', 'expected_mode_revision', 'request_id'}
+            if set(data) - allowed:
+                raise ValueError('Set subagent concurrency separately from team storage and token limits')
+            from codex_agent_modes import change_mode
+            return change_mode(self, key, {
+                'id': key,
+                'subagent_concurrency': data['concurrency'],
+                'expected_mode_revision': data.get('expected_mode_revision'),
+                'request_id': data.get('request_id'),
+            })
         with self.lock, self.db() as db:
             root = self.agent(key, db)
             if root.get("parentId"):
                 raise ValueError("Configure the lead agent")
-            concurrency = int(data.get("concurrency", root["concurrency"]))
-            limit = int(data.get("maxAgents", root["maxAgents"]))
+            if set(data) - {'id', 'maxAgents', 'tokenBudget'}:
+                raise ValueError('Configure only team storage and token limits')
+            limit = data.get("maxAgents", root["maxAgents"])
             budget = data.get("tokenBudget", root["tokenBudget"])
-            if not 1 <= concurrency <= 64 or not 1 <= limit <= 256:
-                raise ValueError("Concurrency must be 1 to 64; team size must be 1 to 256")
-            if budget is not None and (not isinstance(budget, int) or budget <= 0):
+            if type(limit) is not int or not 1 <= limit <= MAX_TEAM_AGENTS:
+                raise ValueError("Team size must be an integer from 1 to 1024")
+            if budget is not None and (type(budget) is not int or budget <= 0):
                 raise ValueError("Token budget must be positive or null")
             for a in self.records(db, "agents"):
                 if a["rootId"] == key:
-                    a.update(concurrency=concurrency, maxAgents=limit, tokenBudget=budget)
+                    if a['id'] == key:
+                        a.update(maxAgents=limit, tokenBudget=budget)
+                        if 'maxAgents' in data:
+                            a['maxAgentsExplicit'] = True
+                        from codex_agent_modes import mode_fields
+                        mode_fields(a)
+                    else:
+                        a.pop('concurrency', None)
+                        a.update(maxAgents=limit, tokenBudget=budget)
                     self.put(db, "agents", a)
             self.changed.set()
-            return {"id": key, "concurrency": concurrency, "maxAgents": limit, "tokenBudget": budget}
+            return {"id": key, "concurrency": root['concurrency'],
+                    "agentMode": 'multi' if root['concurrency'] else 'single',
+                    "agentModeRevision": root.get('agentModeRevision', 0),
+                    "maxAgents": limit, "tokenBudget": budget}
 
     def native_action(self, key, action, request_id=None, context=None):
         if isinstance(action, dict) and 'safety' in action:
@@ -8243,6 +8278,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if action == "review":
                 from codex_agent_modes import assert_worker_input
                 assert_worker_input(self, db, a)
+                active = [slot for slot in self.dispatch_active_slots(db) if slot['id'] != a['id']]
+                global_limit = global_concurrency_limit()
+                if len(active) >= global_limit:
+                    raise ValueError('Wait for an available agent slot before review.')
+                if a['id'] != a['rootId']:
+                    root = self.agent(a['rootId'], db)
+                    team_active = sum(slot['rootId'] == a['rootId'] and slot['id'] != slot['rootId']
+                                      for slot in active)
+                    if team_active >= root['concurrency']:
+                        raise ValueError('Wait for an available agent slot before review.')
             self.assert_workspace_available(db, a)
             assert_native_thread_open(a)
             if a["status"] in {"queued", "starting", "running", "approval"}:

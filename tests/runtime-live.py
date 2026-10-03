@@ -18,7 +18,10 @@ print('Evidence:', root, flush=True)
 try:
     lead = r.new_lead({})
     r.conversation_settings(lead['id'], {'cwd': str(root)})
-    r.configure(lead['id'], {'concurrency': 3, 'maxAgents': 4, 'tokenBudget': 300000})
+    lead = r.agent(lead['id'])
+    r.conversation_settings(lead['id'], {'subagent_concurrency': 3,
+        'expected_mode_revision': lead['agentModeRevision'], 'request_id': 'runtime-live-concurrency'})
+    r.configure(lead['id'], {'maxAgents': 4, 'tokenBudget': 300000})
     r.send(lead['id'], """Test this orchestration runtime. Do not inspect files or use native shell tools.
 First, set the conversation title with orchestration_title.
 Then use functions.exec to print ALL_TOOLS.map(t => t.name) once, without executing any nested tool.

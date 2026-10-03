@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+import uuid
 
 spec = importlib.util.spec_from_file_location('resource_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -22,6 +23,13 @@ class ResourceReceiptContract(unittest.TestCase):
     worker = f.WorkspaceContract.worker
     tool = f.WorkspaceContract.tool
     agent_update = f.WorkspaceContract.agent_update
+
+    def set_limit(self, lead, limit):
+        current = self.runtime.agent(lead['id'])
+        return self.runtime.conversation_settings(lead['id'], {
+            'subagent_concurrency': limit,
+            'expected_mode_revision': current['agentModeRevision'],
+            'request_id': str(uuid.uuid4())})
 
     def test_removed_resource_routes_fail_without_board_writes(self):
         lead = self.lead()
@@ -63,7 +71,7 @@ class ResourceReceiptContract(unittest.TestCase):
     def test_status_exposes_actual_limits_and_block_reasons(self):
         lead = self.lead()
         worker = self.worker(lead)
-        self.runtime.configure(lead['id'], {'concurrency': 1})
+        self.set_limit(lead, 1)
         self.agent_update(lead, status='running', inFlight=True)
         self.agent_update(worker, status='queued', autoWake=True)
         with patch.dict(os.environ, {'CODEX_CANVAS_CONCURRENCY': '1'}):
@@ -72,8 +80,8 @@ class ResourceReceiptContract(unittest.TestCase):
         self.assertEqual(capacity['teamLimit'], 1)
         self.assertEqual(capacity['globalLimit'], 1)
         self.assertEqual(capacity['teamActive'], 1)
-        self.assertEqual(capacity['queued'][0]['reasons'], ['global_concurrency', 'team_concurrency'])
-        self.runtime.configure(lead['id'], {'concurrency': 3})
+        self.assertEqual(capacity['queued'][0]['reasons'], ['global_concurrency'])
+        self.set_limit(lead, 3)
         with patch.dict(os.environ, {'CODEX_CANVAS_CONCURRENCY': '4'}):
             second = self.runtime.model_directory(lead['id'], 'orchestration_status', {'since_revision': first['revision']})
         self.assertFalse(second['unchanged'])

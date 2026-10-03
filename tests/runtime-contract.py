@@ -893,7 +893,9 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(child['id'])['error'], 'Stopped by agent ' + lead['name'])
 
     def test_forty_children_respect_limit_and_wake_finished_parent(self):
-        lead = self.lead(concurrency=5)
+        lead = self.lead()
+        self.runtime.conversation_settings(lead['id'], {'subagent_concurrency': 5,
+            'expected_mode_revision': lead['agentModeRevision'], 'request_id': 'five-worker-limit'})
         self.runtime.server.request({'id': 100, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'batch', 'tool': 'orchestration_spawn',
             'arguments': {'agents': [{'name': f'Review {i}', 'prompt': f'Review file {i}', 'role': 'reviewer'} for i in range(40)]}}})
@@ -904,10 +906,11 @@ class RuntimeContract(unittest.TestCase):
         peak = 0
         for _ in range(1000):
             agents = self.snapshot()['agents']
-            running = [a for a in agents if a['status'] in ('running', 'starting', 'approval')]
-            peak = max(peak, len(running))
-            self.assertLessEqual(len(running), 5)
-            for a in running:
+            active = [a for a in agents if a['status'] in ('running', 'starting', 'approval')]
+            running_workers = [a for a in active if a['id'] != lead['id']]
+            peak = max(peak, len(running_workers))
+            self.assertLessEqual(len(running_workers), 5)
+            for a in active:
                 if a['status'] == 'running':
                     self.complete(a)
             if all(a['status'] == 'completed' for a in self.snapshot()['agents']):
@@ -1046,7 +1049,11 @@ class RuntimeContract(unittest.TestCase):
         eventually(lambda: not self.runtime.agent(lead['id'])['autoWake'])
         with self.assertRaisesRegex(ValueError, 'budget'):
             self.runtime.send(lead['id'], 'Continue')
-        self.runtime.configure(lead['id'], {'tokenBudget': 1000, 'concurrency': 2})
+        current = self.runtime.agent(lead['id'])
+        self.runtime.conversation_settings(lead['id'], {'subagent_concurrency': 2,
+            'expected_mode_revision': current['agentModeRevision'],
+            'request_id': 'budget-concurrency-change'})
+        self.runtime.configure(lead['id'], {'tokenBudget': 1000})
         with self.assertRaisesRegex(ValueError, 'budget cannot be verified'):
             self.runtime.send(lead['id'], 'Continue')
         self.assertFalse(self.runtime.agent(lead['id'])['autoWake'])

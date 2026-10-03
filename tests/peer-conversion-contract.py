@@ -50,6 +50,11 @@ class Conversion(unittest.TestCase):
             a.update(fields)
             self.rt.put(db, 'agents', a)
 
+    def set_concurrency(self, key, limit):
+        current = self.rt.agent(key)
+        return self.rt.conversation_settings(key, {'subagent_concurrency': limit,
+            'expected_mode_revision': current['agentModeRevision'], 'request_id': str(uuid.uuid4())})
+
     def test_move_preserves_threads_settings_descendants_board_rooms_and_progress(self):
         self.change(self.a['id'], autoWake=True)
         self.change(self.c['id'], autoWake=True)
@@ -184,10 +189,11 @@ class Conversion(unittest.TestCase):
                      self.body | {'actor': self.b['id']}, self.body | {'expected_revision': 0}):
             with self.subTest(body=body), self.assertRaises(ValueError):
                 manage(self.rt, body)
-        self.change(self.c['id'], agentMode='single')
+        self.set_concurrency(self.c['id'], 0)
         with self.assertRaisesRegex(ValueError, 'Single agent'):
             manage(self.rt, self.body)
-        self.change(self.c['id'], agentMode='multi', deletedAt=1)
+        self.set_concurrency(self.c['id'], 32)
+        self.change(self.c['id'], deletedAt=1)
         with self.assertRaisesRegex(ValueError, 'deleted'):
             manage(self.rt, self.body)
         self.change(self.c['id'], deletedAt=None, cwd=self.path + '/other')

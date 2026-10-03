@@ -153,13 +153,17 @@ class CapacityRetryMixin:
             raise ValueError('Resolve the pending request before retry.')
         agents = self.records(db, 'agents')
         root = self.agent(a['rootId'], db)
+        if a['id'] != root['id']:
+            from codex_agent_modes import assert_delegation
+            assert_delegation(root)
         if root.get('tokenBudget') and sum(t['tokensUsed'] for t in agents
                 if t['rootId'] == root['id']) >= root['tokenBudget']:
             raise ValueError('Team token budget reached. Increase the budget before retry.')
-        active = [t for t in agents if t['id'] != a['id'] and
-                  (t.get('inFlight') or t['status'] in {'running', 'starting', 'approval'})]
-        limit = max(1, min(64, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', '32'))))
-        if len(active) >= limit or sum(t['rootId'] == a['rootId'] for t in active) >= a['concurrency']:
+        active = [slot for slot in self.dispatch_active_slots(db) if slot['id'] != a['id']]
+        from codex_agent_modes import global_concurrency_limit
+        limit = global_concurrency_limit()
+        team_active = sum(slot['rootId'] == a['rootId'] and slot['id'] != slot['rootId'] for slot in active)
+        if len(active) >= limit or (a['id'] != root['id'] and team_active >= root['concurrency']):
             raise ValueError('Wait for an available agent slot before retry.')
 
     def capacity_retry(self, key, retry_id, action, *, _automatic=False):

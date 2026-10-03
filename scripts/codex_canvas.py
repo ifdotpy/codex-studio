@@ -1627,7 +1627,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                             created["empty"] = runtime.empty_lead(db, created)
                         return self.send(created)
                     if self.path == "/api/conversation":
-                        if "agent_mode" in body:
+                        if any(field in body for field in ("agent_mode", "expected_mode_revision", "subagent_concurrency")):
                             try:
                                 result = canvas.runtime.conversation_settings(body.get("id"), body)
                             except ValueError as error:
