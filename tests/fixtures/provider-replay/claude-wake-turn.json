@@ -66,9 +66,60 @@
     }
   ],
   "expectedStatus": "completed",
+  "rpcReplies": {
+    "initialize": {
+      "direction": "in",
+      "responseFor": "initialize",
+      "message": {
+        "result": {
+          "userAgent": "studio-claude-bridge",
+          "platform": "$platform",
+          "capabilities": { "claudeVersion": 15 }
+        }
+      }
+    },
+    "model/list": {
+      "direction": "in",
+      "responseFor": "model/list",
+      "message": {
+        "result": {
+          "data": [
+            {
+              "id": "default",
+              "model": "default",
+              "resolvedModel": "claude-replay",
+              "displayName": "Claude · Default",
+              "isDefault": true,
+              "hidden": false,
+              "supportedReasoningEfforts": [
+                { "reasoningEffort": "low", "description": "low" },
+                { "reasoningEffort": "medium", "description": "medium" },
+                { "reasoningEffort": "high", "description": "high" }
+              ],
+              "defaultReasoningEffort": "medium",
+              "serviceTiers": []
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    }
+  },
   "assert": {
     "eventKinds": ["user"],
     "usage": ["inputTokens", "16"],
-    "turnStarts": 2
+    "turnStarts": 2,
+    "answerItems": [
+      {
+        "owner": "lead",
+        "nativeId": "claude-first-answer",
+        "text": "Claude first answer."
+      },
+      {
+        "owner": "lead",
+        "nativeId": "claude-wake-answer",
+        "text": "Claude wake answer."
+      }
+    ]
   }
 }

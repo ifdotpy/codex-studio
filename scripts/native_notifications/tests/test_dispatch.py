@@ -41,6 +41,13 @@ class FakeRuntime:
             self.connection.rollback()
             raise
 
+    @contextmanager
+    def notification_db(self):
+        """Mirror Runtime.notification_db's locked database context for dispatch tests."""
+        with self.lock:
+            with self.db() as db:
+                yield db
+
     def connection_current(self, account_key, connection_id):
         return self.connection_ids.get(account_key) == connection_id
 

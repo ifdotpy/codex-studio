@@ -17,7 +17,11 @@ isolate_supervisor_environment()
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+sys.path.insert(0, str(ROOT / "tests" / "server"))
+from rpc_replay_contract import EMPTY_RESULT_METHODS
 from codex_runtime import AppServer, Runtime
+
+OUTBOUND_NOTIFICATION_METHODS = frozenset({"initialized"})
 
 
 def eventually(check, timeout=8):
@@ -111,9 +115,12 @@ class ProviderReplay(unittest.TestCase):
                     events = [dict(row) for row in db.execute(
                         "SELECT kind,status,text FROM runtime_events WHERE agent=? ORDER BY created,id",
                         (agent["id"],))]
+                    items = [json.loads(row[0]) for row in db.execute(
+                        "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
+                        (agent["id"],))]
                 self.assertEqual(saved["status"], "completed")
                 self.assertIn("user", [row["kind"] for row in events])
-                return saved, events
+                return saved, events, items
             finally:
                 if first:
                     first.close()
@@ -138,10 +145,13 @@ class ProviderReplay(unittest.TestCase):
 
             if fixture.get("supervisorReplay"):
                 transcript_path = root / "captured.jsonl"
-                self.run_supervisor_fixture(root, executable, fixture_path, transcript_path)
+                _saved, _events, answer_items = self.run_supervisor_fixture(
+                    root, executable, fixture_path, transcript_path)
                 frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
+                self.assert_replay_rpc_contract(frames, json.loads(replies_path.read_text()), fixture)
+                self.assert_durable_answers(fixture, {"lead": answer_items, "child": []})
                 return
 
             def factory(server_root, notify, request, died):
@@ -242,6 +252,9 @@ class ProviderReplay(unittest.TestCase):
                             events = [dict(row) for row in db.execute(
                                 "SELECT id,kind,status,text FROM runtime_events WHERE agent=? ORDER BY created,id",
                                 (agent["id"],))]
+                            answer_items = [json.loads(row[0]) for row in db.execute(
+                                "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
+                                (agent["id"],))]
                             usage_rows = [json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM analytics_usage WHERE agent=?", (agent["id"],))]
                             tasks = [json.loads(row[0]) for row in db.execute(
@@ -249,7 +262,10 @@ class ProviderReplay(unittest.TestCase):
                                 (agent["id"],))]
                             child_events = ([dict(row) for row in db.execute(
                                 "SELECT kind,status,text FROM runtime_events WHERE agent=? ORDER BY created,id",
-                                (agent["id"],))] if child else [])
+                                (child["id"],))] if child else [])
+                            child_items = ([json.loads(row[0]) for row in db.execute(
+                                "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
+                                (child["id"],))] if child else [])
                         self.assertEqual(saved_agent["status"], expected, saved_agent)
                         self.assertTrue(events, "lead runtime_events must persist")
                         for expected_kind in fixture.get("assert", {}).get("eventKinds", []):
@@ -265,8 +281,14 @@ class ProviderReplay(unittest.TestCase):
                             self.assertIn(task_status, [task.get("status") for task in tasks])
                         if child:
                             self.assertIn("child_result", [event["kind"] for event in events])
+                            self.assertEqual(sum(event["kind"] == "child_result" for event in events),
+                                             fixture.get("assert", {}).get("childResultCount", 1))
                             child_agent = runtime.agent(child["id"])
                             self.assertTrue(child_agent.get("lastCompletedTurn"), child_agent)
+                        self.assert_durable_answers(fixture, {
+                            "lead": answer_items,
+                            "child": child_items,
+                        })
                     finally:
                         runtime.close()
                         for provider_patch in reversed(provider_patches):
@@ -275,6 +297,7 @@ class ProviderReplay(unittest.TestCase):
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
                 self.assertTrue(all(row["provider"] == fixture.get("provider", "codex") for row in frames))
+                self.assert_replay_rpc_contract(frames, json.loads(replies_path.read_text()), fixture)
                 required_turn_starts = fixture.get("assert", {}).get("turnStarts")
                 if required_turn_starts:
                     observed = sum(row["direction"] == "in" and row["message"].get("method") == "turn/started"
@@ -286,7 +309,157 @@ class ProviderReplay(unittest.TestCase):
                     self.assertLess(completions.index("replay-thread-2"),
                                     completions.index("replay-thread-1"))
                 return {"agent": saved_agent, "events": events, "usage": usage_rows,
-                        "tasks": tasks, "frames": frames}
+                        "tasks": tasks, "items": answer_items, "childItems": child_items,
+                        "childEvents": child_events, "frames": frames}
+
+    def assert_durable_answers(self, fixture, items_by_owner):
+        expected = fixture.get("assert", {}).get("answerItems", [])
+        observed = []
+        for owner, items in items_by_owner.items():
+            for item in items:
+                if item.get("role") == "assistant":
+                    observed.append({"owner": owner, "id": item["id"], "text": item["text"]})
+        expected_observed = []
+        for answer in expected:
+            matches = [item for item in observed if item["owner"] == answer["owner"]
+                       and item["id"].endswith(":" + answer["nativeId"])]
+            self.assertEqual(len(matches), answer.get("count", 1),
+                             f"durable answer cardinality mismatch for {answer}; observed={observed!r}")
+            for match in matches:
+                self.assertEqual(match["text"], answer["text"])
+            expected_observed.extend(matches)
+        self.assertEqual(sorted(observed, key=lambda item: (item["owner"], item["id"])),
+                         sorted(expected_observed, key=lambda item: (item["owner"], item["id"])),
+                         "unexpected or missing durable assistant answer item")
+
+    def assert_replay_rpc_contract(self, frames, recorded_replies, fixture):
+        recorded_replies = {**recorded_replies, **fixture.get("rpcReplies", {})}
+        def matches_template(actual, template):
+            if isinstance(template, dict):
+                return (isinstance(actual, dict) and actual.keys() == template.keys()
+                        and all(matches_template(actual[key], value) for key, value in template.items()))
+            if isinstance(template, list):
+                return (isinstance(actual, list) and len(actual) == len(template)
+                        and all(matches_template(value, expected)
+                                for value, expected in zip(actual, template)))
+            if isinstance(template, str) and template.startswith("$"):
+                return isinstance(actual, str) and bool(actual)
+            return actual == template
+
+        epochs = []
+        current = {"requests": {}, "responses": {}}
+        epochs.append(current)
+        for frame in frames:
+            message = frame["message"]
+            if frame["direction"] == "out":
+                method = message.get("method")
+                self.assertTrue(
+                    method in recorded_replies or method in EMPTY_RESULT_METHODS
+                    or ("id" not in message and method in OUTBOUND_NOTIFICATION_METHODS),
+                    f"outbound provider method is not explicitly replayed or allowlisted: {method}")
+            if frame["direction"] == "out" and "id" in message:
+                if (message.get("method") in {"initialize", "thread/loaded/list"}
+                        and message["id"] in current["requests"]):
+                    current = {"requests": {}, "responses": {}}
+                    epochs.append(current)
+                requests = current["requests"]
+                self.assertNotIn(message["id"], requests,
+                                 f"duplicate outbound RPC id: {message}")
+                requests[message["id"]] = message
+
+        # Provider request IDs restart with a connection. A response from the
+        # previous connection may arrive in the captured stream after reattach,
+        # so correlate it to the oldest still-unanswered matching request ID.
+        unmatched_responses = []
+        for frame in frames:
+            message = frame["message"]
+            if frame["direction"] != "in" or "id" not in message:
+                continue
+            candidates = [epoch for epoch in epochs
+                          if message["id"] in epoch["requests"]
+                          and message["id"] not in epoch["responses"]]
+            if len(candidates) > 1 and "result" in message:
+                matching = []
+                for epoch in candidates:
+                    request = epoch["requests"][message["id"]]
+                    method = request["method"]
+                    template = (recorded_replies.get(method, {}).get("message", {}).get("result")
+                                if method in recorded_replies else {})
+                    if matches_template(message["result"], template):
+                        matching.append(epoch)
+                if len(matching) == 1:
+                    candidates = matching
+            if not candidates:
+                unmatched_responses.append(message)
+                continue
+            candidates[0]["responses"][message["id"]] = message
+        allowed_orphans = fixture.get("allowedOrphanResponses", [])
+        self.assertEqual(unmatched_responses, allowed_orphans,
+                         "provider returned a duplicate or unrequested response")
+
+        missing_replies = []
+        for epoch in epochs:
+            for request_id, request in epoch["requests"].items():
+                method = request["method"]
+                if request_id not in epoch["responses"]:
+                    missing_replies.append((method, request_id))
+            for request_id, response in epoch["responses"].items():
+                request = epoch["requests"].get(request_id)
+                self.assertIsNotNone(request, f"response has no exact outbound request id {request_id!r}")
+                method = request["method"]
+                self.assertNotIn("error", response,
+                                 f"provider returned a JSON-RPC error for {method}: {response}")
+                self.assertIn("result", response,
+                              f"provider response has no result for {method}: {response}")
+                if fixture.get("provider") == "claude" and method == "thread/start":
+                    actual_result = response["result"]
+                    thread = actual_result.get("thread")
+                    echoed = {key: value for key, value in actual_result.items() if key != "thread"}
+                    expected_echo = dict(request.get("params", {}))
+                    expected_echo.update({"model": request.get("params", {}).get("model", "default"),
+                                          "sandbox": None})
+                    self.assertEqual(echoed, expected_echo,
+                                     "Claude thread/start must echo its exact parameters")
+                    self.assertIsInstance(thread, dict)
+                    self.assertEqual(set(thread), {"id", "cwd", "createdAt", "updatedAt", "preview",
+                                                   "name", "historyVersion", "turns", "status", "modelProvider"})
+                    self.assertTrue(thread.get("id"))
+                    self.assertEqual(thread.get("cwd"), request.get("params", {}).get("cwd"))
+                    self.assertIsInstance(thread.get("createdAt"), int)
+                    self.assertIsInstance(thread.get("updatedAt"), int)
+                    self.assertEqual(thread.get("preview"), "")
+                    self.assertIsNone(thread.get("name"))
+                    self.assertRegex(thread.get("historyVersion", ""), r"^[0-9a-f]{64}$")
+                    self.assertEqual(thread.get("turns"), [])
+                    self.assertEqual(thread.get("status"), {"type": "idle"})
+                    self.assertEqual(thread.get("modelProvider"), "claude")
+                    continue
+                if method not in recorded_replies:
+                    self.assertEqual(response.get("result"), {},
+                                     f"unexpected nonempty result for explicit replay method {method}")
+                    continue
+                recorded = recorded_replies[method]
+                self.assertEqual(recorded.get("direction"), "in", method)
+                self.assertEqual(recorded.get("responseFor"), method)
+                expected_result = json.dumps(recorded["message"].get("result"))
+                actual_result = response.get("result", {})
+                thread_id = (actual_result.get("thread") or {}).get("id") or \
+                            request.get("params", {}).get("threadId") or "replay-thread-1"
+                turn_id = (actual_result.get("turn") or {}).get("id") or "replay-turn-1"
+                expected_result = expected_result.replace("$threadId", thread_id)
+                expected_result = expected_result.replace("$turnId", turn_id)
+                expected_result = expected_result.replace(
+                    "$model", request.get("params", {}).get("model", "fixture-model"))
+                expected_result = expected_result.replace("$platform", sys.platform)
+                self.assertEqual(actual_result, json.loads(expected_result),
+                                 f"exact provider RPC result mismatch for {method}; "
+                                 f"request={request!r}; response={response!r}")
+        expected_missing = fixture.get("expectedMissingReplies")
+        if expected_missing is not None:
+            self.assertEqual([{"method": method, "id": request_id}
+                              for method, request_id in missing_replies], expected_missing)
+        else:
+            self.assertEqual(missing_replies, [], "every outbound RPC requires exactly one reply")
 
     def test_all_recorded_fixtures(self):
         fixture_dir = ROOT / "tests" / "fixtures" / "provider-replay"

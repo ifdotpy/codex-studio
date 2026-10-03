@@ -35,6 +35,20 @@
       "result": { "thread": { "id": "$threadId" }, "model": "$model" }
     }
   },
+  "thread/read": {
+    "direction": "in",
+    "responseFor": "thread/read",
+    "timestamp": 0,
+    "message": {
+      "result": { "thread": { "id": "$threadId" } }
+    }
+  },
+  "thread/turns/list": {
+    "direction": "in",
+    "responseFor": "thread/turns/list",
+    "timestamp": 0,
+    "message": { "result": { "data": [] } }
+  },
   "turn/start": {
     "direction": "in",
     "responseFor": "turn/start",

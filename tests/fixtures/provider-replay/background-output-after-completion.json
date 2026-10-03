@@ -45,5 +45,9 @@
     }
   ],
   "expectedStatus": "completed",
-  "assert": { "eventKinds": ["user"], "taskStatuses": ["completed"] }
+  "assert": {
+    "eventKinds": ["user"],
+    "taskStatuses": ["completed"],
+    "answerItems": []
+  }
 }

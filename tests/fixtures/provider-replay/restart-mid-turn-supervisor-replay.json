@@ -32,5 +32,21 @@
     }
   ],
   "expectedStatus": "completed",
-  "assert": { "eventKinds": ["user"] }
+  "allowedOrphanResponses": [
+    {
+      "id": "supervisor-orphan-3",
+      "result": { "turn": { "id": "replay-turn-1", "status": "inProgress" } }
+    }
+  ],
+  "expectedMissingReplies": [{ "method": "turn/start", "id": 3 }],
+  "assert": {
+    "eventKinds": ["user"],
+    "answerItems": [
+      {
+        "owner": "lead",
+        "nativeId": "resume-answer",
+        "text": "Recovered output."
+      }
+    ]
+  }
 }

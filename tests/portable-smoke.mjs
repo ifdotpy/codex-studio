@@ -50,8 +50,12 @@ async function runAsync(command, args, options = {}) {
   });
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (data) => { stdout += data; });
-  child.stderr.on("data", (data) => { stderr += data; });
+  child.stdout.on("data", (data) => {
+    stdout += data;
+  });
+  child.stderr.on("data", (data) => {
+    stderr += data;
+  });
   const status = await new Promise((resolveStatus, rejectStatus) => {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
@@ -64,7 +68,11 @@ async function runAsync(command, args, options = {}) {
     });
   });
   const expected = options.status ?? 0;
-  assert.equal(status, expected, `${command} ${args.join(" ")}\nstdout: ${stdout}\nstderr: ${stderr}`);
+  assert.equal(
+    status,
+    expected,
+    `${command} ${args.join(" ")}\nstdout: ${stdout}\nstderr: ${stderr}`,
+  );
   return { status, stdout, stderr };
 }
 
@@ -76,7 +84,8 @@ function writeJson(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 }
 
-const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+const delay = (milliseconds) =>
+  new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
 async function waitFor(check, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -90,11 +99,17 @@ async function waitFor(check, timeout = 5000) {
 
 function readRpc(path) {
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  return readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map(JSON.parse);
 }
 
 function createFakeCodex(path) {
-  writeFileSync(path, String.raw`#!/usr/bin/env node
+  writeFileSync(
+    path,
+    String.raw`#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -116,7 +131,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           isDefault: false,
           supportedReasoningEfforts: [{ reasoningEffort: "low" }]
         }] : [{
-          id: "gpt-5.6-luna",
+          id: "gpt-6-luna",
           isDefault: true,
           supportedReasoningEfforts: [
             { reasoningEffort: "low" },
@@ -221,7 +236,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     });
   }
 });
-`);
+`,
+  );
   chmodSync(path, 0o755);
 }
 
@@ -234,7 +250,14 @@ function createWorktrees() {
   run("git", ["-C", source, "add", "README.md"]);
   run("git", ["-C", source, "commit", "-m", "smoke baseline"]);
 
-  const names = ["complete", "limited", "reviewer", "active", "steer-error", "waiting"];
+  const names = [
+    "complete",
+    "limited",
+    "reviewer",
+    "active",
+    "steer-error",
+    "waiting",
+  ];
   return names.map((name) => {
     const path = join(ROOT, `worker-${name}`);
     const branch = `codex/smoke-${name}`;
@@ -251,7 +274,7 @@ async function testLauncher() {
   const models = runScript("codex-models", [], {
     env: { CODEX_BIN: fakeCodex, FAKE_CODEX_LOG: rpcLog },
   });
-  assert.match(models.stdout, /gpt-5\.6-luna/);
+  assert.match(models.stdout, /gpt-6-luna/);
   assert.match(models.stdout, /low,max/);
   assert.match(models.stdout, /gpt-secondary/);
 
@@ -264,14 +287,17 @@ async function testLauncher() {
     { name: "worker-steer-error", role: "implementer", worktree: worktrees[4] },
     { name: "worker-waiting", role: "implementer", worktree: worktrees[5] },
   ];
-  writeJson(join(STATE, "codex-tasks.smoke.json"), workers.map((worker) => ({
-    name: worker.name,
-    role: worker.role,
-    cwd: worker.worktree.path,
-    branch: worker.worktree.branch,
-    objective: `Run the ${worker.name} smoke case.`,
-    prompt: `Return the ${worker.name} smoke result.`,
-  })));
+  writeJson(
+    join(STATE, "codex-tasks.smoke.json"),
+    workers.map((worker) => ({
+      name: worker.name,
+      role: worker.role,
+      cwd: worker.worktree.path,
+      branch: worker.worktree.branch,
+      objective: `Run the ${worker.name} smoke case.`,
+      prompt: `Return the ${worker.name} smoke result.`,
+    })),
+  );
 
   const launcher = spawn(join(SCRIPTS, "codex-swarm.mjs"), [], {
     env: environment({
@@ -290,14 +316,18 @@ async function testLauncher() {
   });
   let stdout = "";
   let stderr = "";
-  launcher.stdout.on("data", (data) => { stdout += data; });
-  launcher.stderr.on("data", (data) => { stderr += data; });
+  launcher.stdout.on("data", (data) => {
+    stdout += data;
+  });
+  launcher.stderr.on("data", (data) => {
+    stderr += data;
+  });
 
   try {
     await waitFor(() => stdout.includes("\n") && stdout);
     const summary = JSON.parse(stdout.trim().split("\n")[0]);
     assert.equal(summary.workers.length, 6);
-    assert.equal(summary.workers[0].model, "gpt-5.6-luna");
+    assert.equal(summary.workers[0].model, "gpt-6-luna");
 
     const refused = runScript("codex-swarm.mjs", [], {
       status: 2,
@@ -309,14 +339,16 @@ async function testLauncher() {
     });
     assert.match(refused.stderr, /launcher=.* is active/);
 
-    writeJson(join(STATE, "codex-tasks.overlap.json"), [{
-      name: "worker-overlap",
-      role: "implementer",
-      cwd: worktrees[3].path,
-      branch: worktrees[3].branch,
-      objective: "Prove the cross-wave worktree lock.",
-      prompt: "Do not start.",
-    }]);
+    writeJson(join(STATE, "codex-tasks.overlap.json"), [
+      {
+        name: "worker-overlap",
+        role: "implementer",
+        cwd: worktrees[3].path,
+        branch: worktrees[3].branch,
+        objective: "Prove the cross-wave worktree lock.",
+        prompt: "Do not start.",
+      },
+    ]);
     const overlap = runScript("codex-swarm.mjs", [], {
       status: 2,
       env: {
@@ -327,7 +359,9 @@ async function testLauncher() {
     });
     assert.match(overlap.stderr, /worktree .* is active in wave smoke/);
 
-    const ready = JSON.parse(readFileSync(join(STATE, "codex-swarm-ready.smoke.json"), "utf8"));
+    const ready = JSON.parse(
+      readFileSync(join(STATE, "codex-swarm-ready.smoke.json"), "utf8"),
+    );
     assert.equal(ready.threadIds.length, 6);
     assert.equal(ready.runId, summary.runId);
 
@@ -336,23 +370,28 @@ async function testLauncher() {
       if (!existsSync(statusPath)) return null;
       const value = JSON.parse(readFileSync(statusPath, "utf8"));
       const byName = Object.fromEntries(value.map((item) => [item.name, item]));
-      return byName["worker-complete"]?.turnStatus === "completed"
-        && byName["worker-limited"]?.turnStatus === "failed"
-        && byName["worker-reviewer"]?.turnStatus === "interrupted"
-        && byName["worker-active"]?.turnId === "turn-thread-4-2"
-        && byName["worker-waiting"]?.turnStatus === "waiting"
+      return byName["worker-complete"]?.turnStatus === "completed" &&
+        byName["worker-limited"]?.turnStatus === "failed" &&
+        byName["worker-reviewer"]?.turnStatus === "interrupted" &&
+        byName["worker-active"]?.turnId === "turn-thread-4-2" &&
+        byName["worker-waiting"]?.turnStatus === "waiting"
         ? value
         : null;
     });
     const byName = Object.fromEntries(status.map((item) => [item.name, item]));
-    assert.ok(status.every(row => row.orchestratorId === "fixture-orchestrator"));
-    assert.ok(status.every(row => row.orchestratorName === "Fixture lead"));
+    assert.ok(
+      status.every((row) => row.orchestratorId === "fixture-orchestrator"),
+    );
+    assert.ok(status.every((row) => row.orchestratorName === "Fixture lead"));
     assert.equal(byName["worker-limited"].goalStatus, "budgetLimited");
     assert.match(byName["worker-limited"].error, /goal budgetLimited/);
     assert.equal(byName["worker-reviewer"].role, "reviewer");
     assert.equal(byName["worker-active"].turnStatus, "running");
     assert.equal("prompt" in byName["worker-active"], false);
-    assert.match(byName["worker-active"].agentOwner, /^smoke:[0-9a-f-]+:worker-active$/);
+    assert.match(
+      byName["worker-active"].agentOwner,
+      /^smoke:[0-9a-f-]+:worker-active$/,
+    );
 
     const calls = readRpc(rpcLog);
     const threadStarts = calls.filter((call) => call.method === "thread/start");
@@ -362,67 +401,131 @@ async function testLauncher() {
     assert.equal(threadStarts[0].params.sandbox, "workspace-write");
     assert.equal(threadStarts[2].params.sandbox, "read-only");
     assert.equal("effort" in threadStarts[0].params, false);
-    assert.equal(turnStarts[0].params.model, "gpt-5.6-luna");
-    assert.equal(turnStarts[0].params.effort, "max");
+    assert.equal(turnStarts[0].params.model, "gpt-6-luna");
+    assert.equal(turnStarts[0].params.effort, "xhigh");
     assert.equal(turnStarts[0].params.sandboxPolicy.type, "workspaceWrite");
-    assert.deepEqual(
-      turnStarts[0].params.sandboxPolicy.writableRoots,
-      [realpathSync(worktrees[0].path)],
-    );
+    assert.deepEqual(turnStarts[0].params.sandboxPolicy.writableRoots, [
+      realpathSync(worktrees[0].path),
+    ]);
     assert.equal(turnStarts[0].params.sandboxPolicy.excludeSlashTmp, true);
     assert.equal(turnStarts[0].params.sandboxPolicy.excludeTmpdirEnvVar, true);
     assert.equal(turnStarts[2].params.sandboxPolicy.type, "readOnly");
     assert.match(turnStarts[0].params.clientUserMessageId, /^[0-9a-f-]+$/);
-    assert.match(turnStarts[0].params.input[0].text, /Commit each finished part/);
-    assert.match(turnStarts[2].params.input[0].text, /Do not edit files\. Do not commit\./);
-    assert.doesNotMatch(turnStarts[2].params.input[0].text, /Run the affected tests/);
-    assert.match(turnStarts[2].params.input[0].text, /Run only read-only checks/);
+    assert.match(
+      turnStarts[0].params.input[0].text,
+      /Commit each finished part/,
+    );
+    assert.match(
+      turnStarts[2].params.input[0].text,
+      /Do not edit files\. Do not commit\./,
+    );
+    assert.doesNotMatch(
+      turnStarts[2].params.input[0].text,
+      /Run the affected tests/,
+    );
+    assert.match(
+      turnStarts[2].params.input[0].text,
+      /Run only read-only checks/,
+    );
 
-    runScript("luna", ["say", "--wave", "smoke", "worker-active", "Inspect", "one", "path."]);
-    await waitFor(() => readRpc(rpcLog).some(
-      (call) => call.method === "turn/steer" && call.params.threadId === "thread-4",
-    ));
+    runScript("luna", [
+      "say",
+      "--wave",
+      "smoke",
+      "worker-active",
+      "Inspect",
+      "one",
+      "path.",
+    ]);
+    await waitFor(() =>
+      readRpc(rpcLog).some(
+        (call) =>
+          call.method === "turn/steer" && call.params.threadId === "thread-4",
+      ),
+    );
     const successSteer = readRpc(rpcLog).find(
-      (call) => call.method === "turn/steer" && call.params.threadId === "thread-4",
+      (call) =>
+        call.method === "turn/steer" && call.params.threadId === "thread-4",
     );
     assert.equal(successSteer.params.expectedTurnId, "turn-thread-4-2");
     assert.match(successSteer.params.clientUserMessageId, /^[0-9a-f-]+$/);
     assert.equal(successSteer.params.input[0].text, "Inspect one path.\n");
-    await waitFor(() => !existsSync(
-      join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-active.json"),
-    ));
-
-    runScript(
-      "codex-steer",
-      ["--wave", "smoke", "worker-waiting", "Start", "the", "next", "turn."],
+    await waitFor(
+      () =>
+        !existsSync(
+          join(
+            STATE,
+            `codex-inbox.smoke.${summary.runId}`,
+            "worker-active.json",
+          ),
+        ),
     );
-    await waitFor(() => readRpc(rpcLog).filter(
-      (call) => call.method === "turn/start" && call.params.threadId === "thread-6",
-    ).length >= 2);
+
+    runScript("codex-steer", [
+      "--wave",
+      "smoke",
+      "worker-waiting",
+      "Start",
+      "the",
+      "next",
+      "turn.",
+    ]);
+    await waitFor(
+      () =>
+        readRpc(rpcLog).filter(
+          (call) =>
+            call.method === "turn/start" && call.params.threadId === "thread-6",
+        ).length >= 2,
+    );
     const waitingStarts = readRpc(rpcLog).filter(
-      (call) => call.method === "turn/start" && call.params.threadId === "thread-6",
+      (call) =>
+        call.method === "turn/start" && call.params.threadId === "thread-6",
     );
-    assert.equal(waitingStarts[1].params.input[0].text, "Start the next turn.\n");
+    assert.equal(
+      waitingStarts[1].params.input[0].text,
+      "Start the next turn.\n",
+    );
     assert.match(waitingStarts[1].params.clientUserMessageId, /^[0-9a-f-]+$/);
-    await waitFor(() => !existsSync(
-      join(STATE, `codex-inbox.smoke.${summary.runId}`, "worker-waiting.json"),
-    ));
+    await waitFor(
+      () =>
+        !existsSync(
+          join(
+            STATE,
+            `codex-inbox.smoke.${summary.runId}`,
+            "worker-waiting.json",
+          ),
+        ),
+    );
 
-    runScript(
-      "codex-steer",
-      ["--wave", "smoke", "worker-steer-error", "Keep", "this", "message."],
+    runScript("codex-steer", [
+      "--wave",
+      "smoke",
+      "worker-steer-error",
+      "Keep",
+      "this",
+      "message.",
+    ]);
+    await waitFor(
+      () =>
+        readRpc(rpcLog).filter(
+          (call) =>
+            call.method === "turn/steer" && call.params.threadId === "thread-5",
+        ).length >= 2,
     );
-    await waitFor(() => readRpc(rpcLog).filter(
-      (call) => call.method === "turn/steer" && call.params.threadId === "thread-5",
-    ).length >= 2);
     const failedSteers = readRpc(rpcLog).filter(
-      (call) => call.method === "turn/steer" && call.params.threadId === "thread-5",
+      (call) =>
+        call.method === "turn/steer" && call.params.threadId === "thread-5",
     );
-    assert.equal(new Set(failedSteers.map((call) => call.params.clientUserMessageId)).size, 1);
+    assert.equal(
+      new Set(failedSteers.map((call) => call.params.clientUserMessageId)).size,
+      1,
+    );
     const deadLetters = join(STATE, `codex-dead-letter.smoke.${summary.runId}`);
     const deadLetter = await waitFor(() => {
-      const files = existsSync(deadLetters) ? run("find", [deadLetters, "-type", "f"]).stdout.trim() : "";
-      return files && files;
+      const files = existsSync(deadLetters)
+        ? run("find", [deadLetters, "-type", "f"]).stdout.trim()
+        : "";
+      return files || "";
     });
     const deadMessage = JSON.parse(readFileSync(deadLetter, "utf8"));
     assert.equal(deadMessage.text, "Keep this message.\n");
@@ -432,12 +535,19 @@ async function testLauncher() {
     assert.match(report.stdout, /worker-limited/);
     assert.match(report.stdout, /budgetLimited/);
 
-    const stopped = await runAsync(join(SCRIPTS, "codex-stop"), ["--wave", "smoke"]);
+    const stopped = await runAsync(join(SCRIPTS, "codex-stop"), [
+      "--wave",
+      "smoke",
+    ]);
     assert.match(stopped.stdout, /CODEX STOPPED wave=smoke/);
-    await waitFor(() => launcher.exitCode !== null || launcher.signalCode !== null);
+    await waitFor(
+      () => launcher.exitCode !== null || launcher.signalCode !== null,
+    );
 
     const stoppedStatus = JSON.parse(readFileSync(statusPath, "utf8"));
-    const stoppedByName = Object.fromEntries(stoppedStatus.map((item) => [item.name, item]));
+    const stoppedByName = Object.fromEntries(
+      stoppedStatus.map((item) => [item.name, item]),
+    );
     assert.equal(stoppedByName["worker-active"].turnStatus, "interrupted");
     assert.equal(stoppedByName["worker-steer-error"].turnStatus, "interrupted");
     assert.equal(stoppedByName["worker-waiting"].turnStatus, "interrupted");
@@ -455,8 +565,11 @@ async function testLauncher() {
     );
     assert.match(failedWatchAgain.stdout, /failures=5/);
   } finally {
-    if (launcher.exitCode === null && launcher.signalCode === null) launcher.kill("SIGTERM");
-    await waitFor(() => launcher.exitCode !== null || launcher.signalCode !== null).catch(() => null);
+    if (launcher.exitCode === null && launcher.signalCode === null)
+      launcher.kill("SIGTERM");
+    await waitFor(
+      () => launcher.exitCode !== null || launcher.signalCode !== null,
+    ).catch(() => null);
   }
 
   assert.equal(stderr, "");
@@ -464,19 +577,21 @@ async function testLauncher() {
 
 async function testWatchBehavior() {
   const runId = "watch-success-run";
-  writeJson(join(STATE, "codex-swarm-status.watch-success.json"), [{
-    wave: "watch-success",
-    runId,
-    launcherPid: process.pid,
-    name: "worker-done",
-    threadId: "thread-done",
-    branch: "codex/done",
-    requestedModel: "gpt-5.6-luna",
-    model: "gpt-5.6-luna",
-    effort: "max",
-    events: 4,
-    turnStatus: "completed",
-  }]);
+  writeJson(join(STATE, "codex-swarm-status.watch-success.json"), [
+    {
+      wave: "watch-success",
+      runId,
+      launcherPid: process.pid,
+      name: "worker-done",
+      threadId: "thread-done",
+      branch: "codex/done",
+      requestedModel: "gpt-5.6-luna",
+      model: "gpt-5.6-luna",
+      effort: "max",
+      events: 4,
+      turnStatus: "completed",
+    },
+  ]);
   writeJson(join(STATE, "codex-swarm-ready.watch-success.json"), {
     wave: "watch-success",
     runId,
@@ -484,14 +599,21 @@ async function testWatchBehavior() {
     readyAt: new Date().toISOString(),
     threadIds: ["thread-done"],
   });
-  const watch = runScript(
-    "codex-watch",
-    ["--wave", "watch-success", "--poll", "0.05", "--start-timeout", "1"],
-  );
+  const watch = runScript("codex-watch", [
+    "--wave",
+    "watch-success",
+    "--poll",
+    "0.05",
+    "--start-timeout",
+    "1",
+  ]);
   assert.match(watch.stdout, /CODEX COMPLETED worker-done/);
   assert.match(watch.stdout, /CODEX WAVE DONE 1 workers failures=0/);
 
-  writeFileSync(join(STATE, "codex-swarm-ready.watch-corrupt.json"), "{bad json\n");
+  writeFileSync(
+    join(STATE, "codex-swarm-ready.watch-corrupt.json"),
+    "{bad json\n",
+  );
   const corrupt = runScript(
     "codex-watch",
     ["--wave", "watch-corrupt", "--poll", "0.05", "--start-timeout", "1"],
@@ -513,7 +635,9 @@ async function testWatchBehavior() {
     startedAt: new Date().toISOString(),
     turnStatus: "running",
   };
-  writeJson(join(STATE, "codex-swarm-status.watch-replace.json"), [replaceStatus]);
+  writeJson(join(STATE, "codex-swarm-status.watch-replace.json"), [
+    replaceStatus,
+  ]);
   writeJson(join(STATE, "codex-swarm-ready.watch-replace.json"), {
     wave: "watch-replace",
     runId: "replace-run-a",
@@ -521,14 +645,18 @@ async function testWatchBehavior() {
     readyAt: new Date().toISOString(),
     threadIds: ["thread-replace-a"],
   });
-  const watcher = spawn(join(SCRIPTS, "codex-watch"), [
-    "--wave", "watch-replace", "--poll", "0.05", "--start-timeout", "2",
-  ], {
-    env: environment(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const watcher = spawn(
+    join(SCRIPTS, "codex-watch"),
+    ["--wave", "watch-replace", "--poll", "0.05", "--start-timeout", "2"],
+    {
+      env: environment(),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   let watcherStderr = "";
-  watcher.stderr.on("data", (data) => { watcherStderr += data; });
+  watcher.stderr.on("data", (data) => {
+    watcherStderr += data;
+  });
   await delay(150);
   writeJson(join(STATE, "codex-swarm-ready.watch-replace.json"), {
     wave: "watch-replace",
@@ -537,18 +665,22 @@ async function testWatchBehavior() {
     readyAt: new Date().toISOString(),
     threadIds: ["thread-replace-b"],
   });
-  const watcherStatus = await new Promise((resolveStatus) => watcher.on("exit", resolveStatus));
+  const watcherStatus = await new Promise((resolveStatus) =>
+    watcher.on("exit", resolveStatus),
+  );
   assert.equal(watcherStatus, 1);
   assert.match(watcherStderr, /CODEX WAVE REPLACED/);
 
-  writeJson(join(STATE, "codex-swarm-status.watch-stall.json"), [{
-    ...replaceStatus,
-    wave: "watch-stall",
-    runId: "stall-run",
-    name: "worker-stall",
-    threadId: "thread-stall",
-    startedAt: new Date(Date.now() - 5_000).toISOString(),
-  }]);
+  writeJson(join(STATE, "codex-swarm-status.watch-stall.json"), [
+    {
+      ...replaceStatus,
+      wave: "watch-stall",
+      runId: "stall-run",
+      name: "worker-stall",
+      threadId: "thread-stall",
+      startedAt: new Date(Date.now() - 5_000).toISOString(),
+    },
+  ]);
   writeJson(join(STATE, "codex-swarm-ready.watch-stall.json"), {
     wave: "watch-stall",
     runId: "stall-run",
@@ -559,8 +691,14 @@ async function testWatchBehavior() {
   const stalled = runScript(
     "codex-watch",
     [
-      "--wave", "watch-stall", "--poll", "0.05", "--stall-seconds", "0.1",
-      "--start-timeout", "1",
+      "--wave",
+      "watch-stall",
+      "--poll",
+      "0.05",
+      "--stall-seconds",
+      "0.1",
+      "--start-timeout",
+      "1",
     ],
     { status: 1 },
   );

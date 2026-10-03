@@ -2,11 +2,14 @@
 """Small JSON-RPC provider which replays fixture frames over stdio."""
 import json
 import os
+from pathlib import Path
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
+from rpc_replay_contract import EMPTY_RESULT_METHODS
 
 fixture = json.load(open(sys.argv[1], encoding="utf-8"))
 reply_frames = json.load(open(sys.argv[2], encoding="utf-8"))
@@ -15,7 +18,6 @@ thread_count = 0
 turn_number = 0
 lock = threading.Lock()
 child_finished = threading.Event()
-
 
 def send(message):
     with lock:
@@ -48,9 +50,11 @@ def handle(line):
     if method == "initialized":
         return
     if "id" not in request:
-        return
+        raise AssertionError(f"Unexpected provider RPC notification in replay: {method!r}")
     params = request.get("params") or {}
-    if method in {"initialize", "config/read", "skills/extraRoots/set", "model/list", "account/rateLimits/read", "thread/resume"}:
+    if method in {"initialize", "config/read", "skills/extraRoots/set", "model/list",
+                  "account/rateLimits/read", "thread/resume", "thread/read",
+                  "thread/turns/list"}:
         send(recorded_reply(method, request, thread))
         return
     if method == "thread/start":
@@ -91,7 +95,12 @@ def handle(line):
             return
         send(recorded_reply(method, request, thread, turn_id))
         return
-    send({"id": request["id"], "result": {}})
+    if method in EMPTY_RESULT_METHODS:
+        send({"id": request["id"], "result": {}})
+        return
+    message = f"Unexpected provider RPC method in replay: {method!r}"
+    send({"id": request["id"], "error": {"code": -32601, "message": message}})
+    raise AssertionError(message)
 
 
 with ThreadPoolExecutor(max_workers=16) as pool:

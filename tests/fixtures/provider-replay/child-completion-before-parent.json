@@ -45,5 +45,20 @@
     }
   ],
   "expectedStatus": "completed",
-  "assert": { "eventKinds": ["user"] }
+  "assert": {
+    "eventKinds": ["user"],
+    "childResultCount": 1,
+    "answerItems": [
+      {
+        "owner": "lead",
+        "nativeId": "parent-answer",
+        "text": "Lead completed after child."
+      },
+      {
+        "owner": "child",
+        "nativeId": "child-answer",
+        "text": "Child completed first."
+      }
+    ]
+  }
 }

@@ -1,6 +1,7 @@
 {
   "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.fail_start",
   "lostStartReply": true,
+  "expectedMissingReplies": [{ "method": "turn/start", "id": 4 }],
   "events": [
     {
       "method": "turn/completed",
@@ -11,5 +12,9 @@
     }
   ],
   "expectedStatus": "completed",
-  "assert": { "eventKinds": ["user"], "eventStatuses": ["dispatching"] }
+  "assert": {
+    "eventKinds": ["user"],
+    "eventStatuses": ["dispatching"],
+    "answerItems": []
+  }
 }
