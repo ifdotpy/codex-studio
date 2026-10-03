@@ -1,21 +1,42 @@
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-const tests = [
-  "web/src/components/prompt-composer/PromptInput.test.mjs",
-  "tests/composer-stability-ui.mjs",
-  "tests/skill-autocomplete-ui.mjs",
-  "tests/draft-render-performance-browser.mjs",
+const testFiles = [
+  "PromptInput.spec.mjs",
+  "composer-stability-ui.spec.mjs",
+  "skill-autocomplete-ui.spec.mjs",
+  "draft-render-performance-browser.spec.mjs",
 ];
-const root = fileURLToPath(new URL("../../../../", import.meta.url));
+const web = fileURLToPath(new URL("../../../", import.meta.url));
+const require = createRequire(
+  new URL("../../../package.json", import.meta.url),
+);
+const playwrightCli = require.resolve("@playwright/test/cli");
 
-for (const test of tests) {
-  const result = spawnSync(process.execPath, [`${root}${test}`], {
+function run(command, args, cwd, env = process.env) {
+  const result = spawnSync(command, args, {
+    cwd,
     stdio: "inherit",
-    env: process.env,
+    env,
     timeout: 90_000,
   });
   if (result.error) throw result.error;
-  if (result.signal) throw new Error(`${test} timed out`);
+  if (result.signal) throw new Error(`${args.join(" ")} timed out`);
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
+
+run(
+  process.execPath,
+  [
+    playwrightCli,
+    "test",
+    "--config",
+    "playwright.config.ts",
+    "--project=client",
+    "--project=performance",
+    ...testFiles,
+  ],
+  web,
+  { ...process.env, PLAYWRIGHT_INCLUDE_SPECIAL: "1" },
+);
