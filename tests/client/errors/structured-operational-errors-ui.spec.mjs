@@ -111,6 +111,38 @@ test("Structured operational errors ui", async ({
         return route.fulfill({ status: 503, json: { error: messageFailure } });
       if (url.pathname === "/api/panel" && getFailure !== undefined)
         return route.fulfill({ status: 503, json: getFailure });
+      if (url.pathname === "/api/workspace/tasks")
+        return route.fulfill({
+          json: {
+            tasks: [
+              {
+                id: "tool",
+                agent: "lead",
+                kind: "tool",
+                name: "dynamicToolCall",
+                status: "running",
+                created: 1,
+              },
+            ],
+            cursor: { updated: 1, id: "tool" },
+            hasMore: false,
+            nextBefore: null,
+            reset: false,
+          },
+        });
+      if (url.pathname === "/api/task")
+        return route.fulfill({
+          json: {
+            id: "tool",
+            agent: "lead",
+            kind: "tool",
+            name: "dynamicToolCall",
+            status: "running",
+            created: 1,
+            error: value,
+            stdinError: value,
+          },
+        });
       return route.fulfill({
         json: { tasks: [], monitors: [], requests: [], id: "tool" },
       });
@@ -245,6 +277,7 @@ test("Structured operational errors ui", async ({
       await page.evaluate((value) => window.renderCase("panel", value), body);
       await page
         .getByText("Cannot read PROGRESS.md.", { exact: false })
+        .first()
         .waitFor();
       assert.equal(
         writes.length,
@@ -252,9 +285,7 @@ test("Structured operational errors ui", async ({
         "Read errors cannot send callback requests",
       );
       if (body) {
-        await page
-          .getByRole("button", { name: "Error details", exact: true })
-          .click();
+        await page.getByRole("button", { name: /Error details/ }).click();
         const dialog = page.getByRole("dialog");
         await dialog
           .getByRole("button", { name: "Error details", exact: true })
