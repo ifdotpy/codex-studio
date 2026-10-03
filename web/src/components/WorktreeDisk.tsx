@@ -34,7 +34,6 @@ export function WorkerDiskLabel({
       title={disk?.measure || "Disk size is not measured yet."}
     >
       Disk: {label}
-      {disk?.state === "ready" && disk.measure ? ` (${disk.measure})` : ""}
     </small>
   );
 }
@@ -73,7 +72,6 @@ export function TeamDiskTotal({
     >
       <span>
         Worktrees: {formatDiskBytes(bytes)}
-        {measure ? ` (${measure})` : ""}
         {unknown ? `, ${unknown} not measured` : ""}
       </span>
       {disk.error && <span>Disk measure unavailable.</span>}

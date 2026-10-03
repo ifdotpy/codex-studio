@@ -233,6 +233,15 @@ try {
       await panel.locator(".worker-disk").getAttribute("title"),
       /private on APFS/,
     );
+    // The measure method stays in the tooltip, not in the visible label.
+    assert.doesNotMatch(
+      await panel.locator(".team-disk-total").innerText(),
+      /APFS|allocated blocks/,
+    );
+    assert.doesNotMatch(
+      await panel.locator(".worker-disk").innerText(),
+      /APFS/,
+    );
     assert.match(
       await panel.locator(".team-disk-total").innerText(),
       /Disk limit reached/,
