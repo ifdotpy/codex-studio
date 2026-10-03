@@ -8,6 +8,9 @@ const MIN_CONCURRENCY = 0;
 const MAX_CONCURRENCY = 512;
 const CONCURRENCY_HELP =
   "0 disables subagents. The lead does not count. Extra work waits in the queue.";
+const UNSUPPORTED_HELP =
+  "Update the backend to enable numeric subagent parallelism. Saved changes are retained until then.";
+const CONCURRENCY_SCHEMA_VERSION = 2;
 
 type Confirmed = { concurrency: number; revision: number };
 type LimitRequest = {
@@ -37,14 +40,19 @@ const validConcurrency = (value: unknown): value is number =>
   Number(value) <= MAX_CONCURRENCY;
 const validRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
-const concurrencyOf = (agent: Agent): number =>
-  validConcurrency(agent.concurrency) ? agent.concurrency : DEFAULT_CONCURRENCY;
-const stateOf = (agent: Agent): Confirmed => ({
-  concurrency: concurrencyOf(agent),
-  revision: validRevision(agent.agentModeRevision)
-    ? agent.agentModeRevision
-    : 0,
-});
+const stateOf = (agent: Agent): Confirmed | undefined => {
+  if (
+    !Number.isSafeInteger(agent.subagentConcurrencyVersion) ||
+    agent.subagentConcurrencyVersion! < CONCURRENCY_SCHEMA_VERSION ||
+    !validConcurrency(agent.concurrency) ||
+    !validRevision(agent.agentModeRevision)
+  )
+    return undefined;
+  return {
+    concurrency: agent.concurrency,
+    revision: agent.agentModeRevision,
+  };
+};
 const pendingTarget = (
   request: PendingRequest | undefined,
 ): number | undefined => {
@@ -102,6 +110,7 @@ function ScopedConcurrencyControl({
   refresh,
 }: Props & { storageKey: string }) {
   const snapshot = stateOf(lead);
+  const supported = snapshot !== undefined;
   const [initial, setInitial] = useState(() => {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey) || "{}") as {
@@ -145,8 +154,10 @@ function ScopedConcurrencyControl({
   const [stored, setStored] = useState(initial.value);
   const [error, setError] = useState(initial.error);
   const [saving, setSaving] = useState(false);
-  const [draft, setDraft] = useState<number | string>(
-    () => pendingTarget(initial.value.pending) ?? concurrencyOf(lead),
+  const [draft, setDraft] = useState<number | string>(() =>
+    snapshot
+      ? (pendingTarget(initial.value.pending) ?? snapshot.concurrency)
+      : "",
   );
   const dirty = useRef(false);
   const lock = useRef(false);
@@ -157,10 +168,11 @@ function ScopedConcurrencyControl({
       mounted.current = false;
     };
   }, []);
-  const confirmed =
-    stored.confirmed && stored.confirmed.revision > snapshot.revision
+  const confirmed = snapshot
+    ? stored.confirmed && stored.confirmed.revision > snapshot.revision
       ? stored.confirmed
-      : snapshot;
+      : snapshot
+    : undefined;
   const latest = useRef(confirmed);
   latest.current = confirmed;
 
@@ -168,6 +180,7 @@ function ScopedConcurrencyControl({
   // cache entries are intentionally ignored.
   useEffect(() => {
     if (
+      !snapshot ||
       initial.error ||
       (stored.confirmed?.revision ?? -1) >= snapshot.revision
     )
@@ -180,20 +193,27 @@ function ScopedConcurrencyControl({
       // The server snapshot remains usable if this best-effort cache fails.
     }
   }, [
-    snapshot.concurrency,
-    snapshot.revision,
+    snapshot?.concurrency,
+    snapshot?.revision,
     stored,
     storageKey,
     initial.error,
   ]);
 
   useEffect(() => {
-    if (dirty.current || stored.pending) return;
+    if (!confirmed || dirty.current || stored.pending) return;
     setDraft(confirmed.concurrency);
-  }, [confirmed.concurrency, confirmed.revision, stored.pending]);
+  }, [confirmed?.concurrency, confirmed?.revision, stored.pending]);
 
   const submit = async () => {
-    if (lock.current || initial.error || !workspaceId) return;
+    if (
+      !supported ||
+      !confirmed ||
+      lock.current ||
+      initial.error ||
+      !workspaceId
+    )
+      return;
     const validDraft = validConcurrency(draft);
     if (!stored.pending && (!validDraft || draft === confirmed.concurrency)) {
       if (!validDraft) setError("Enter a whole number from 0 to 512.");
@@ -228,6 +248,7 @@ function ScopedConcurrencyControl({
       });
       if (
         result.id !== lead.id ||
+        !stateOf(result) ||
         !validConcurrency(result.concurrency) ||
         !validRevision(result.agentModeRevision) ||
         result.agentModeRevision < request.expected_mode_revision
@@ -235,7 +256,7 @@ function ScopedConcurrencyControl({
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",
         );
-      const accepted = stateOf(result);
+      const accepted = stateOf(result)!;
       const disk = JSON.parse(
         localStorage.getItem(storageKey) || "{}",
       ) as Stored;
@@ -292,15 +313,27 @@ function ScopedConcurrencyControl({
     }
   };
 
-  if (!lead.agentModeSupported) return null;
-  const mode = confirmed.concurrency === 0 ? "single" : "multi";
+  const legacyMode =
+    lead.agentModeSupported &&
+    (lead.agentMode === "single" || lead.agentMode === "multi")
+      ? lead.agentMode
+      : undefined;
+  const mode = confirmed
+    ? confirmed.concurrency === 0
+      ? "single"
+      : "multi"
+    : legacyMode;
   const pending = stored.pending;
   return (
     <form
       className="agent-mode-control"
-      data-agent-mode={mode}
-      data-agent-mode-revision={confirmed.revision}
-      data-concurrency={confirmed.concurrency}
+      data-agent-mode={mode ?? "unknown"}
+      {...(confirmed
+        ? {
+            "data-agent-mode-revision": confirmed.revision,
+            "data-concurrency": confirmed.concurrency,
+          }
+        : {})}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -309,7 +342,11 @@ function ScopedConcurrencyControl({
       <label className="agent-mode-limit-label">
         <span>Subagent parallelism</span>
         <span className="agent-mode-limit-mode">
-          {mode === "single" ? "Single agent" : "Multi agent"}
+          {mode === "single"
+            ? "Single agent"
+            : mode === "multi"
+              ? "Multi agent"
+              : "Unavailable"}
         </span>
         <input
           type="number"
@@ -318,10 +355,16 @@ function ScopedConcurrencyControl({
           step={1}
           inputMode="numeric"
           aria-label="Subagent parallelism"
-          aria-describedby={`subagent-concurrency-help-${lead.id}`}
-          title={CONCURRENCY_HELP}
-          value={draft}
-          disabled={!workspaceId || saving || !!pending || !!initial.error}
+          aria-describedby={
+            supported
+              ? `subagent-concurrency-help-${lead.id}`
+              : `subagent-concurrency-help-${lead.id} subagent-concurrency-status-${lead.id}`
+          }
+          title={supported ? CONCURRENCY_HELP : UNSUPPORTED_HELP}
+          value={supported ? draft : ""}
+          disabled={
+            !supported || !workspaceId || saving || !!pending || !!initial.error
+          }
           onChange={(event) => {
             const value = event.currentTarget.valueAsNumber;
             dirty.current = true;
@@ -333,10 +376,21 @@ function ScopedConcurrencyControl({
       <span id={`subagent-concurrency-help-${lead.id}`} className="sr-only">
         {CONCURRENCY_HELP}
       </span>
+      <span
+        id={`subagent-concurrency-status-${lead.id}`}
+        className={supported ? "sr-only" : "agent-mode-note"}
+        role={supported ? undefined : "status"}
+      >
+        {supported
+          ? ""
+          : "Numeric subagent parallelism is unavailable because this backend does not provide the concurrency setting. Update the backend to enable it."}
+      </span>
       <button
         type="submit"
         className="agent-mode-apply"
-        disabled={!workspaceId || saving || !!pending || !!initial.error}
+        disabled={
+          !supported || !workspaceId || saving || !!pending || !!initial.error
+        }
       >
         Apply
       </button>
@@ -344,7 +398,7 @@ function ScopedConcurrencyControl({
         <span role="status" className="agent-mode-note">
           Applying…
         </span>
-      ) : pending ? (
+      ) : pending && supported ? (
         <button
           type="button"
           className="agent-mode-retry"
@@ -354,7 +408,11 @@ function ScopedConcurrencyControl({
             ? "Retry limit change"
             : "Retry mode change"}
         </button>
-      ) : confirmed.concurrency === 0 ? (
+      ) : pending ? (
+        <span className="agent-mode-note" role="status">
+          Saved change retained. Update the backend to retry it.
+        </span>
+      ) : confirmed?.concurrency === 0 ? (
         <span className="agent-mode-note">No new worker turns will start.</span>
       ) : null}
       {error && (
@@ -362,7 +420,7 @@ function ScopedConcurrencyControl({
           {error}
         </span>
       )}
-      {initial.error && (
+      {initial.error && supported && (
         <button
           type="button"
           className="agent-mode-retry"
@@ -372,7 +430,7 @@ function ScopedConcurrencyControl({
               setInitial({ value: {}, error: "" });
               setStored({});
               dirty.current = false;
-              setDraft(concurrencyOf(lead));
+              setDraft(snapshot?.concurrency ?? "");
               setError("");
             } catch (cause) {
               setError(errorText(cause));
