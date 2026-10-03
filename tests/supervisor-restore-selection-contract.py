@@ -141,7 +141,7 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
 
         self.assertEqual(decoded_history, [], 'Restore must not decode historical or unrelated payloads')
         with self.runtime.read_db() as db:
-            for table, index in (('tasks', 'runtime_task_status'), ('monitors', 'runtime_monitor_status')):
+            for table, index in (('tasks', 'runtime_task_status'),):
                 selections = [query for query in queries
                               if query.startswith(f'SELECT record FROM runtime_{table}')]
                 self.assertEqual(len(selections), 1)
@@ -149,7 +149,8 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
                 self.assertTrue(any('SEARCH' in step and index in step for step in plan), plan)
                 self.assertFalse(any(f'SCAN runtime_{table}' in step for step in plan), plan)
         self.assertEqual(self.stored('tasks', active_task['id'])['status'], 'running')
-        self.assertEqual(self.stored('monitors', active_monitor['id'])['status'], 'running')
+        self.assertFalse(any(query.startswith('SELECT record FROM runtime_monitors') for query in queries))
+        self.assertEqual(self.stored('monitors', active_monitor['id']), active_monitor)
         self.assertEqual(self.stored('agents', other['id']), other)
 
     def test_terminal_records_with_stale_receipts_cannot_become_active(self):
@@ -161,7 +162,7 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
             for record in records:
                 self.assertEqual(self.stored(table, record['id']), record)
 
-    def test_exact_receipts_restore_status_error_finished_and_cancel_only_provisional_notice(self):
+    def test_task_receipts_restore_and_monitor_unknown_notices_remain(self):
         records = []
         for table in ('tasks', 'monitors'):
             for status in ('running', 'starting', 'approval'):
@@ -191,6 +192,9 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
         self.assertEqual((restored_owner['agentMode'], restored_owner['agentModeRevision'],
                           restored_owner['agentModeSupported']), ('multi', 0, True))
         for table, record in records:
+            if table == 'monitors':
+                self.assertEqual(self.stored(table, record['id']), record)
+                continue
             expected = copy.deepcopy(record)
             receipt = expected.pop('reattachRecovery')
             expected.update(status=receipt['status'], error=receipt['error'])
@@ -201,7 +205,7 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
             self.assertEqual(self.stored(table, record['id']), expected)
         with self.runtime.read_db() as db:
             states = dict(db.execute('SELECT id,status FROM runtime_events'))
-        self.assertEqual(states, {'monitor:monitors-running': 'cancelled',
+        self.assertEqual(states, {'monitor:monitors-running': 'pending',
             'monitor:monitors-starting': 'delivered', 'monitor:monitors-approval': 'pending'})
 
     def test_owner_epoch_account_and_deleted_guards_leave_receipts_unchanged(self):

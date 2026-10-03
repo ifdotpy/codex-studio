@@ -234,6 +234,90 @@ class RulesTickLockContract(unittest.TestCase):
         self.assertEqual(self.record(rule)['checks'], 0)
         self.assertEqual(self.events(owner, 'rule'), [])
 
+    def restored_owner(self):
+        owner = self.lead()
+        owner = self.agent_update(owner, autoWake=True, status='running', inFlight=True,
+            threadId='restored-watch-thread-' + owner['id'], turnId='restored-watch-turn-' + owner['id'])
+        connection = self.runtime.connection_ids.get('default')
+        self.runtime.disconnected('default', connection)
+        receipt = self.runtime.agent(owner['id'])['disconnectRecovery']
+        self.runtime.supervisor_reattached('default', connection, True)
+        self.runtime.notification({'method': 'turn/completed', 'params': {
+            'threadId': owner['threadId'], 'turn': {'id': owner['turnId'], 'status': 'completed'}}},
+            'default', connection)
+        return self.runtime.agent(owner['id']), receipt
+
+    def test_recovered_disconnect_receipt_does_not_freeze_timer_or_file_wakes(self):
+        for kind in ('once', 'file'):
+            with self.subTest(kind=kind):
+                owner, receipt = self.restored_owner()
+                self.assertEqual((owner['status'], owner['autoWake'], owner['inFlight']),
+                                 ('completed', True, False))
+                self.assertEqual(owner['disconnectRecovery'], receipt)
+                if kind == 'file':
+                    rule, path = self.file_rule(owner, 'restored.txt')
+                    path.write_text('changed')
+                else:
+                    rule = self.runtime.rules({'agent': owner['id'], 'name': 'Restored timer',
+                                               'kind': 'once', 'intervalSeconds': 10})
+                    self.update_rule(rule, nextAt=time.time() - 1)
+                self.runtime.rules_tick()
+                fixture.eventually(lambda: self.record(rule)['wakes'] == 1)
+                self.runtime.rules_tick()
+                events = self.events(owner, 'rule')
+                self.assertEqual([(event['id'], event['status']) for event in events],
+                                 [('rule-wake:' + rule['id'] + ':1', 'pending')])
+                self.assertEqual(self.record(rule)['checks'], 1)
+                self.assertEqual(self.runtime.agent(owner['id'])['disconnectRecovery'], receipt)
+
+    def test_recovered_watch_does_not_resend_unknown_input(self):
+        owner, receipt = self.restored_owner()
+        event_id = 'fixture-unknown-input'
+        attempt = {'id': 'fixture-submitted-attempt', 'epoch': owner['epoch'],
+                   'accountKey': owner['accountKey'], 'submitted': True, 'events': [event_id]}
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                (event_id, owner['id'], 'user', 'Fixture input', 'uncertain', 1, owner['epoch'], None, None))
+        owner = self.agent_update(owner, startAttempt=attempt)
+        rule = self.runtime.rules({'agent': owner['id'], 'name': 'Unknown input timer',
+                                   'kind': 'once', 'intervalSeconds': 10})
+        self.update_rule(rule, nextAt=time.time() - 1)
+        self.runtime.rules_tick()
+        fixture.eventually(lambda: self.record(rule)['wakes'] == 1)
+        self.runtime.dispatch()
+        current = self.runtime.agent(owner['id'])
+        self.assertEqual(current['startAttempt'], attempt)
+        self.assertEqual(current['disconnectRecovery'], receipt)
+        self.assertFalse(current['inFlight'])
+        self.assertEqual([(event['id'], event['status']) for event in self.events(owner, 'rule')],
+                         [('rule-wake:' + rule['id'] + ':1', 'pending')])
+        self.assertEqual(next(event for event in self.events(owner) if event['id'] == event_id)['status'], 'uncertain')
+        self.assertFalse(self.runtime.server and any(method in {'turn/start', 'turn/steer'}
+                                                    for method, _params in self.runtime.server.calls))
+
+    def test_recovered_receipt_does_not_override_stop_or_native_failure_hold(self):
+        for state in ('stop', 'failure_hold'):
+            with self.subTest(state=state):
+                owner, receipt = self.restored_owner()
+                rule, _path = self.file_rule(owner, state + '.txt')
+                if state == 'stop':
+                    self.runtime.stop(owner['id'], descendants=False)
+                    expected = self.runtime.agent(owner['id'])
+                else:
+                    expected = self.agent_update(owner, nativeFailureHold=True)
+                with patch.object(self.runtime, 'file_fingerprint',
+                        side_effect=AssertionError('A blocked owner must not stat the watch')):
+                    self.runtime.rules_tick()
+                self.assertEqual(self.record(rule)['checks'], 0)
+                self.assertEqual(self.events(owner, 'rule'), [])
+                current = self.runtime.agent(owner['id'])
+                for field in ('epoch', 'autoWake', 'status', 'error', 'nativeFailureHold'):
+                    self.assertEqual(current.get(field), expected.get(field))
+                self.assertEqual(current['disconnectRecovery'], receipt)
+                if state == 'stop':
+                    self.assertEqual(self.record(rule)['status'], 'paused')
+                    self.assertGreater(current['epoch'], receipt['epoch'])
+
     def test_a_caller_cannot_hold_the_runtime_lock_around_the_tick(self):
         owner = self.lead()
         self.file_rule(owner, 'watched.txt')

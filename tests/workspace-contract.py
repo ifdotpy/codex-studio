@@ -152,9 +152,12 @@ class WorkspaceContract(unittest.TestCase):
         return current
 
     def start(self, agent, text="Start work", assets=None):
-        self.runtime.send(agent["id"], text, assets=assets)
+        sent = self.runtime.send(agent["id"], text, assets=assets)
         self.runtime.dispatch()
-        eventually(lambda: self.runtime.agent(agent["id"]).get("turnId"))
+        def accepted():
+            current = self.runtime.agent(agent["id"])
+            return current.get("turnId") and self.runtime.delivery_receipt(sent["id"])["status"] == "delivered"
+        eventually(accepted)
         return self.runtime.agent(agent["id"])
 
     def events(self, agent, kind=None):
@@ -639,6 +642,294 @@ class WorkspaceContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "accepted work"):
             self.action(lead, first, "update", title="Rewrite history")
 
+    def test_assigned_task_survives_completion_of_the_previous_turn_and_wakes_once(self):
+        lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+        worker = self.start(self.worker(lead), "I will create the next task")
+        server = self.runtime.server
+        previous_turn = worker["turnId"]
+        body = {"action": "create", "title": "Next profiling slice", "description": "Compare the frame measurements",
+                "owner": worker["id"], "dependencies": []}
+        task = self.runtime.work_action(lead["id"], body, "assigned-create", actor=lead["id"])
+        self.assertEqual(self.runtime.work_action(lead["id"], body, "assigned-create", actor=lead["id"]), task)
+        event = self.events(worker, "work_ready")
+        self.assertEqual([(row["id"], row["status"], row["epoch"]) for row in event],
+                         [("work-ready:" + task["id"] + ":assignment:1", "pending", worker["epoch"])])
+        self.assertEqual(json.loads(event[0]["text"]), {"task": task["id"], "title": body["title"],
+                                                       "description": body["description"]})
+        self.assertEqual(self.runtime.agent(worker["id"])["turnId"], previous_turn)
+        worker_starts = lambda: [params for method, params in server.calls
+                                if method == "turn/start" and params["threadId"] == worker["threadId"]]
+        self.assertEqual(len(worker_starts()), 1)
+        server.complete(worker["threadId"], previous_turn)
+        self.assertEqual(self.runtime.agent(worker["id"])["status"], "queued")
+        self.runtime.dispatch()
+        eventually(lambda: self.events(worker, "work_ready")[0]["status"] == "delivered")
+        self.assertEqual(len(worker_starts()), 2)
+        self.assertIn(task["id"], json.dumps(worker_starts()[-1]["input"]))
+        self.runtime.dispatch()
+        self.assertEqual(len(worker_starts()), 2)
+
+    def test_assignment_and_unblock_updates_emit_one_versioned_wake_each(self):
+        lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+        first, second = self.worker(lead, "First owner"), self.worker(lead, "Second owner")
+        dependency = self.work(lead, "Unaccepted dependency")
+        task = self.work(lead, "Unassigned")
+        task = self.action(lead, task, "update", owner=first["id"])
+        self.assertEqual([event["id"] for event in self.events(first, "work_ready")],
+                         ["work-ready:" + task["id"] + ":assignment:2"])
+        task = self.action(lead, task, "update", title="Same assignment", description="Metadata edit")
+        self.assertEqual(len(self.events(first, "work_ready")), 1)
+        self.assertEqual(self.events(first, "work_ready")[0]["status"], "pending")
+        task = self.action(first, task, "claim")
+        task = self.action(lead, task, "update", owner=second["id"])
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(self.events(first, "work_ready")[0]["status"], "stored_only")
+        task = self.action(lead, task, "update", dependencies=[dependency["id"]])
+        self.assertEqual(len(self.events(second, "work_ready")), 1)
+        task = self.action(lead, task, "update", description="Still blocked")
+        body = {"action": "update", "task_id": task["id"], "dependencies": []}
+        task = self.runtime.work_action(lead["id"], body, "unblocked-update", actor=lead["id"])
+        self.assertEqual(self.runtime.work_action(lead["id"], body, "unblocked-update", actor=lead["id"]), task)
+        task = self.action(lead, task, "update", status="blocked")
+        self.assertEqual(len(self.events(second, "work_ready")), 2)
+        task = self.action(lead, task, "update", status="ready")
+        self.assertEqual([(event["id"], event["status"]) for event in self.events(second, "work_ready")],
+            [("work-ready:" + task["id"] + ":assignment:" + str(version), status)
+             for version, status in ((5, "stored_only"), (8, "stored_only"), (10, "pending"))])
+        self.work(lead, "Lead metadata", owner=lead["id"])
+        self.assertEqual(self.events(lead, "work_ready"), [])
+
+    def test_task_handoff_retires_the_old_pending_wake_before_native_dispatch(self):
+        for claimed in (False, True):
+            with self.subTest(claimed=claimed):
+                lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+                first, second = self.worker(lead, "Old owner"), self.worker(lead, "New owner")
+                task = self.work(lead, "Transferred assignment", owner=first["id"])
+                previous = self.events(first, "work_ready")[0]
+                if claimed:
+                    task = self.action(first, task, "claim")
+                body = {"action": "update", "task_id": task["id"], "owner": second["id"]}
+                key = "handoff:" + str(claimed)
+                task = self.runtime.work_action(lead["id"], body, key, actor=lead["id"])
+                self.assertEqual(self.runtime.work_action(lead["id"], body, key, actor=lead["id"]), task)
+                retired = self.events(first, "work_ready")[0]
+                self.assertEqual(retired, {**previous, "status": "stored_only",
+                    "error": "The work assignment or readiness changed before delivery"})
+                current = self.events(second, "work_ready")[0]
+                self.assertEqual((current["id"], current["status"]),
+                                 ("work-ready:" + task["id"] + ":assignment:" + str(task["version"]), "pending"))
+                self.runtime.dispatch()
+                eventually(lambda: self.events(second, "work_ready")[0]["status"] == "delivered")
+                self.runtime.dispatch()
+                old_owner = self.runtime.agent(first["id"])
+                self.assertIsNone(old_owner.get("threadId"))
+                self.assertFalse(old_owner["inFlight"])
+                self.assertFalse(old_owner.get("startAttempt"))
+                calls = [params for method, params in self.runtime.server.calls if method == "turn/start"]
+                self.assertEqual([params["clientUserMessageId"] for params in calls
+                                  if params["clientUserMessageId"] in {previous["id"], current["id"]}], [current["id"]])
+
+    def test_task_block_and_unblock_replace_only_the_pending_readiness_wake(self):
+        for block in ("status", "dependencies"):
+            with self.subTest(block=block):
+                lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+                worker = self.worker(lead)
+                dependency = self.work(lead, "Unaccepted dependency")
+                task = self.work(lead, "Ready task", owner=worker["id"])
+                previous = self.events(worker, "work_ready")[0]
+                changes = {"status": "blocked"} if block == "status" else {"dependencies": [dependency["id"]]}
+                task = self.action(lead, task, "update", **changes)
+                retired = self.events(worker, "work_ready")[0]
+                self.assertEqual(retired, {**previous, "status": "stored_only",
+                    "error": "The work assignment or readiness changed before delivery"})
+                self.runtime.dispatch(worker["id"])
+                held = self.runtime.agent(worker["id"])
+                self.assertIsNone(held.get("threadId"))
+                self.assertFalse(held["inFlight"])
+                self.assertFalse(self.runtime.server and any(method in {"turn/start", "turn/steer", "command/exec"}
+                    for method, _params in self.runtime.server.calls))
+                task = self.action(lead, task, "update", title="Still blocked")
+                self.assertEqual(self.events(worker, "work_ready"), [retired])
+                changes = {"status": "ready"} if block == "status" else {"dependencies": []}
+                task = self.action(lead, task, "update", **changes)
+                current = self.events(worker, "work_ready")[1]
+                self.assertEqual((current["id"], current["status"]),
+                                 ("work-ready:" + task["id"] + ":assignment:4", "pending"))
+                self.action(lead, task, "update", description="Same valid assignment")
+                self.assertEqual(self.events(worker, "work_ready"), [retired, current])
+
+    def test_task_wake_retirement_preserves_submitted_receipts_and_other_event_scope(self):
+        for action in ("update_owner", "update_block", "cancel"):
+            for status in ("reserved", "dispatching", "uncertain", "delivered"):
+                with self.subTest(action=action, status=status):
+                    lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+                    first, second = self.worker(lead), self.worker(lead)
+                    task = self.work(lead, "Submitted assignment", owner=first["id"])
+                    event_id = self.events(first, "work_ready")[0]["id"]
+                    attempt = {"id": "submitted:" + task["id"], "epoch": first["epoch"], "submitted": True,
+                               "accountKey": first["accountKey"], "events": [event_id]}
+                    first = self.agent_update(first, startAttempt=attempt)
+                    with self.runtime.lock, self.runtime.db() as db:
+                        db.execute("UPDATE runtime_events SET status=?,turn_id=?,error=? WHERE id=?",
+                                   (status, "submitted-turn", "Fixture delivery evidence", event_id))
+                        for suffix, recipient, kind, text in (
+                            ("old-pending", first["id"], "work_ready", json.dumps({"task": task["id"]})),
+                            ("other-task", first["id"], "work_ready", json.dumps({"task": "other-task"})),
+                            ("other-kind", first["id"], "work_decision", json.dumps({"task": task["id"]})),
+                            ("other-owner", second["id"], "work_ready", json.dumps({"task": task["id"]})),
+                            ("invalid-json", first["id"], "work_ready", "Fixture legacy notice"),
+                        ):
+                            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                                (task["id"] + ":" + suffix, recipient, kind, text, "pending", time.time(),
+                                 first["epoch"], None, None))
+                    previous = {event["id"]: event for owner in (first, second) for event in self.events(owner)}
+                    if action == "cancel":
+                        self.action(lead, task, "cancel", reason="New assignment")
+                    else:
+                        self.action(lead, task, "update", **({"owner": second["id"]} if action == "update_owner"
+                                                            else {"status": "blocked"}))
+                    current = {event["id"]: event for owner in (first, second) for event in self.events(owner)}
+                    for identity, event in previous.items():
+                        if identity == task["id"] + ":old-pending":
+                            self.assertEqual(current[identity]["status"], "stored_only")
+                            self.assertTrue(current[identity]["error"])
+                        else:
+                            self.assertEqual(current[identity], event)
+                    self.assertEqual(self.runtime.agent(first["id"])["startAttempt"], attempt)
+                    self.assertFalse(self.runtime.server and any(method in {
+                        "thread/start", "thread/resume", "turn/start", "turn/steer", "command/exec"}
+                        for method, _params in self.runtime.server.calls))
+
+    def test_blocked_assignment_create_waits_for_eligibility(self):
+        lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+        worker = self.worker(lead)
+        dependency = self.work(lead, "Dependency")
+        task = self.work(lead, "Blocked by dependency", owner=worker["id"], dependencies=[dependency["id"]])
+        self.work(lead, "Explicitly blocked", owner=worker["id"], status="blocked")
+        self.assertEqual(self.events(worker, "work_ready"), [])
+        task = self.action(lead, task, "update", dependencies=[])
+        self.assertEqual([(event["id"], event["status"]) for event in self.events(worker, "work_ready")],
+                         [("work-ready:" + task["id"] + ":assignment:2", "pending")])
+
+    def test_assignment_wakes_keep_recovery_receipts_and_do_not_override_stop(self):
+        for recovery_kind in ("restartRecovery", "disconnectRecovery"):
+            for stop in (False, True):
+                with self.subTest(recovery_kind=recovery_kind, stop=stop):
+                    lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+                    worker = self.worker(lead)
+                    receipt = {"autoWake": True, "epoch": worker["epoch"], "accountKey": worker["accountKey"],
+                               "threadId": "assignment-thread-" + worker["id"], "turnId": "assignment-turn-" + worker["id"]}
+                    if recovery_kind == "restartRecovery":
+                        receipt["stage"] = "pending"
+                    worker = self.agent_update(worker, autoWake=False, status="interrupted", inFlight=False,
+                        threadId=receipt["threadId"], turnId=receipt["turnId"], **{recovery_kind: receipt})
+                    if stop:
+                        self.runtime.stop(worker["id"], descendants=False)
+                    before = self.runtime.agent(worker["id"])
+                    created = self.work(lead, "New assignment", owner=worker["id"])
+                    unassigned = self.work(lead, "Later assignment")
+                    assigned = self.action(lead, unassigned, "update", owner=worker["id"])
+                    self.assertEqual([(event["id"], event["status"], event["epoch"])
+                                      for event in self.events(worker, "work_ready")],
+                        [("work-ready:" + task["id"] + ":assignment:" + str(task["version"]),
+                          "cancelled" if stop else "pending", before["epoch"]) for task in (created, assigned)])
+                    current = self.runtime.agent(worker["id"])
+                    for field in ("epoch", "status", "autoWake", "error", recovery_kind):
+                        self.assertEqual(current.get(field), before.get(field))
+                    self.assertFalse(self.runtime.server and any(method in {"turn/start", "turn/steer"}
+                        for method, _params in self.runtime.server.calls))
+
+    def test_assignment_wakes_preserve_failure_hold_and_unknown_input(self):
+        for guard in ("nativeFailureHold", "unknown_input"):
+            with self.subTest(guard=guard):
+                lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+                worker = self.agent_update(self.worker(lead), status="completed", inFlight=False,
+                                           threadId="held-assignment-thread-" + guard, turnId=None)
+                changes = {"nativeFailureHold": True} if guard == "nativeFailureHold" else {}
+                event_id = "assignment-unknown-input"
+                if guard == "unknown_input":
+                    changes["startAttempt"] = {"id": "assignment-submitted-attempt", "epoch": worker["epoch"],
+                        "accountKey": worker["accountKey"], "submitted": True, "events": [event_id]}
+                    with self.runtime.lock, self.runtime.db() as db:
+                        db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", (event_id, worker["id"],
+                            "user", "Fixture input", "uncertain", time.time(), worker["epoch"], None, None))
+                worker = self.agent_update(worker, **changes)
+                self.work(lead, "Assigned while held", owner=worker["id"])
+                unassigned = self.work(lead, "Assigned later while held")
+                self.action(lead, unassigned, "update", owner=worker["id"])
+                self.assertEqual([event["status"] for event in self.events(worker, "work_ready")],
+                                 ["pending", "pending"])
+                self.runtime.dispatch()
+                current = self.runtime.agent(worker["id"])
+                self.assertEqual([event["status"] for event in self.events(worker, "work_ready")],
+                                 ["pending", "pending"])
+                self.assertEqual(current["epoch"], worker["epoch"])
+                self.assertFalse(current["inFlight"])
+                for field, value in changes.items():
+                    self.assertEqual(current[field], value)
+                if guard == "unknown_input":
+                    self.assertEqual(next(event for event in self.events(worker) if event["id"] == event_id)["status"],
+                                     "uncertain")
+                self.assertFalse(self.runtime.server and any(method in {"turn/start", "turn/steer"}
+                    for method, _params in self.runtime.server.calls))
+
+    def dependency_during_recovery(self, recovery_kind):
+        lead = self.agent_update(self.lead(), autoWake=True, status="idle")
+        worker = self.worker(lead)
+        first = self.work(lead, "Dependency", owner=lead["id"])
+        second = self.work(lead, "Dependent", dependencies=[first["id"]], owner=worker["id"])
+        first = self.action(lead, first, "submit", result="Done", checks="Fixture check", revision="fixture")
+        receipt = {"autoWake": True, "epoch": worker["epoch"],
+            "accountKey": worker.get("accountKey", "default"),
+            "threadId": "dependency-thread-" + recovery_kind, "turnId": "dependency-turn-" + recovery_kind}
+        if recovery_kind == "restartRecovery":
+            receipt["stage"] = "pending"
+        worker = self.agent_update(worker, autoWake=False, status="interrupted", inFlight=False,
+            threadId=receipt["threadId"], turnId=receipt["turnId"], **{recovery_kind: receipt})
+        return lead, worker, first, second, receipt
+
+    def test_dependency_ready_keeps_its_exact_wake_during_native_recovery(self):
+        for recovery_kind in ("restartRecovery", "disconnectRecovery"):
+            with self.subTest(recovery_kind=recovery_kind):
+                lead, worker, first, second, receipt = self.dependency_during_recovery(recovery_kind)
+                body = {"action": "accept", "task_id": first["id"], "result": "Verified"}
+                key = "dependency-accept:" + recovery_kind
+                accepted = self.runtime.work_action(lead["id"], body, key, actor=lead["id"])
+                self.assertEqual(accepted["status"], "accepted")
+                self.runtime.work_action(lead["id"], body, key, actor=lead["id"])
+                events = self.events(worker, "work_ready")
+                self.assertEqual(len(events), 1)
+                self.assertEqual((events[0]["id"], events[0]["status"], events[0]["epoch"]),
+                    ("work-ready:" + second["id"] + ":" + first["id"], "pending", worker["epoch"]))
+                owner = self.runtime.agent(worker["id"])
+                self.assertEqual(owner[recovery_kind], receipt)
+                self.assertEqual((owner["status"], owner["autoWake"]), ("interrupted", False))
+                connection = self.runtime.connection_ids.get("default")
+                self.runtime.supervisor_reattached("default", connection, True)
+                self.runtime.notification({"method": "turn/completed", "params": {
+                    "threadId": receipt["threadId"], "turn": {
+                        "id": receipt["turnId"], "status": "completed"}}}, "default", connection)
+                self.assertEqual(self.runtime.agent(worker["id"])["status"], "queued")
+                self.assertEqual(self.events(worker, "work_ready")[0]["status"], "pending")
+                self.assertEqual(self.action(worker, second, "claim")["status"], "running")
+
+    def test_dependency_ready_does_not_wake_an_explicitly_stopped_owner(self):
+        for recovery_kind in ("restartRecovery", "disconnectRecovery"):
+            with self.subTest(recovery_kind=recovery_kind):
+                lead, worker, first, second, receipt = self.dependency_during_recovery(recovery_kind)
+                self.runtime.stop(worker["id"], descendants=False)
+                stopped = self.runtime.agent(worker["id"])
+                self.action(lead, first, "accept", result="Verified")
+                event = self.events(worker, "work_ready")[0]
+                self.assertEqual((event["id"], event["status"], event["epoch"]),
+                    ("work-ready:" + second["id"] + ":" + first["id"], "cancelled", stopped["epoch"]))
+                self.assertGreater(stopped["epoch"], receipt["epoch"])
+                self.runtime.supervisor_reattached("default", self.runtime.connection_ids.get("default"), True)
+                owner = self.runtime.agent(worker["id"])
+                self.assertEqual((owner["status"], owner["autoWake"], owner["epoch"], owner["error"]),
+                    ("paused", False, stopped["epoch"], "Stopped by user"))
+                self.assertEqual(owner[recovery_kind], receipt)
+
     def test_cancel_unsubmitted_work_is_audited_idempotent_and_releases_owner(self):
         lead = self.lead()
         worker = self.worker(lead)
@@ -660,6 +951,8 @@ class WorkspaceContract(unittest.TestCase):
                                   {"action": "inspect", "agent_id": worker["id"]}, lead["epoch"])
         self.assertNotIn("assigned_work", {blocker["kind"] for blocker in inspection["blockers"]})
         self.assertIn("input_delivery", {blocker["kind"] for blocker in inspection["blockers"]})
+        self.assertEqual([(event["id"], event["status"]) for event in self.events(worker, "work_ready")],
+                         [("work-ready:" + task["id"] + ":assignment:1", "stored_only")])
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?",
                        ("work-decision:" + task["id"] + ":cancel",))
@@ -969,6 +1262,7 @@ class WorkspaceContract(unittest.TestCase):
             self.runtime.put(db, "rules", current)
         watched.write_text("new content")
         self.runtime.rules_tick()
+        eventually(lambda: not self.rule_record(rule["id"]).get("inFlight"))
         self.assertEqual(len(stalls()), 1)
         with self.runtime.lock, self.runtime.db() as db:
             current = self.rule_record(rule["id"])

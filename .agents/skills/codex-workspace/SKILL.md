@@ -165,6 +165,10 @@ Task events queue the owner when automatic continuation is enabled. Explicit sto
 and native failure holds remain in effect. Inspect the agent's state and receipt
 before an authorized recovery action.
 
+Creating ready work with an assigned worker queues `work_ready` with its task ID and scope.
+Changing the owner or releasing blocked work also notifies the assigned worker.
+Changes to the title or description alone do not wake it. Retries keep the same event identity.
+
 Use `orchestration_task action=list` to find work. It returns brief tasks and
 `nextCursor`. Use `action=get` for one task and `action=history` for earlier evidence.
 Acceptance belongs to the orchestrator's review decision. A worker's final answer

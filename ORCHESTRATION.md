@@ -525,6 +525,12 @@ Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
 The lead owns review and integration. The runtime never merges worker changes.
 The archive action can remove a clean worker worktree after it saves the HEAD.
 
+Creating ready work with an assigned worker queues one `work_ready` event.
+Changing the owner or releasing blocked work also notifies the assigned worker.
+Changes to the title or description alone do not start another turn.
+The event includes the task ID and scope. Retries retain the same event identity.
+Explicit stops and native failure holds remain in effect.
+
 An optional team token budget sums Codex's reported thread usage. This includes
 input tokens, including cached input. It is not a billing estimate or a strict
 pre-request cap. When a usage notification reaches the limit, the runtime stops

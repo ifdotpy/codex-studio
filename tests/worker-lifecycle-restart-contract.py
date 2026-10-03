@@ -321,6 +321,14 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
             key='archive-task-create')
         self.runtime.work_action(worker_id, {'action': 'claim', 'task_id': task['id']},
                                  key='archive-task-claim', actor=worker_id)
+        # Model receipt of this assignment before the fixture worker submits its result.
+        with self.runtime.lock, self.runtime.db() as db:
+            assignment_id = 'work-ready:' + task['id'] + ':assignment:1'
+            self.assertEqual(db.execute(
+                "SELECT kind FROM runtime_events WHERE id=? AND agent=?",
+                (assignment_id, worker_id)).fetchone()[0], 'work_ready')
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?",
+                       (assignment_id, worker_id))
         revision = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
         self.runtime.work_action(worker_id, {'action': 'submit', 'task_id': task['id'],
             'result': 'Done', 'checks': 'fixture passed', 'revision': revision},
@@ -334,6 +342,8 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         self.restart_runtime()
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
+            # ControlledRuntime omits dispatch; advance its archive scheduler explicitly.
+            self.runtime.accepted_archive_tick()
             with self.runtime.db() as db:
                 work = self.runtime.work_by_id(db, task['id'], self.lead['id'])
                 agent = self.runtime.agent(worker_id, db)

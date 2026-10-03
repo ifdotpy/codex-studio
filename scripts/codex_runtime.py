@@ -1255,6 +1255,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.offline = False
         self.changed = threading.Event()
         self.closed = False
+        self._fast_delivery_enabled = False
         self._wal_keeper = None
         self._shutdown_writers_drained = False
         self.server = None
@@ -1425,8 +1426,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     m["reattachRecovery"] = {"accountKey": (owner or {}).get("accountKey", "default"),
                         "epoch": (owner or {}).get("epoch"), "status": m.get("status"),
                         "error": m.get("error"), "finished": m.get("finished")}
+                    notice = db.execute("SELECT * FROM runtime_events WHERE id=?",
+                                        ("monitor:" + m["id"],)).fetchone()
+                    if owner and notice:
+                        try:
+                            previous = json.loads(notice["text"])
+                        except (ValueError, TypeError):
+                            previous = None
+                        if self._monitor_reattach_notice(owner, m, notice, previous, restart_loss=True):
+                            m["reattachRecovery"]["cancelledNoticeLostAt"] = time.time()
                     m.update(status="lost", error="Server restarted. Command outcome unknown; not rerun.")
                     self.put(db, "monitors", m)
+                    if owner:
+                        self._monitor_exit_event(db, owner, m)
             for r in self.records(db, "requests"):
                 if r["status"] == "answering":
                     r.update(status="uncertain", answerError="Server restarted before answer delivery completed")
@@ -1495,6 +1507,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._wal_keeper = _RuntimeWalKeeper(self.db_path)
             if server_factory is AppServer:
                 self.search_migration_start()
+            self._fast_delivery_enabled = True
             self.scheduler = threading.Thread(target=self.schedule, daemon=True)
             self.scheduler.start()
             startup_memory_mark("runtime-init-complete")
@@ -2435,37 +2448,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "accountKey": account_key, "at": now, "turnId": recovery["turnId"],
                         "threadId": recovery.get("threadId"), "epoch": recovery.get("epoch")}
                     self.put(db, "agents", agent)
-            for table in ("tasks", "monitors"):
-                # The status indexes exclude terminal history before payloads
-                # enter Python. A stale receipt cannot reopen completed work.
-                rows = db.execute(f"SELECT record FROM runtime_{table} WHERE "
-                    "json_extract(record,'$.status') IN ('lost','running','starting','approval') "
-                    "AND json_extract(record,'$.reattachRecovery.accountKey')=? "
-                    "AND json_extract(record,'$.reattachRecovery.status') "
-                    "IN ('running','starting','approval')", (account_key,)).fetchall()
-                for row in rows:
-                    record = json.loads(row[0])
-                    receipt = record.get("reattachRecovery") or {}
-                    if (receipt.get("accountKey") != account_key
-                            or receipt.get("status") not in {"running", "starting", "approval"}):
-                        continue
-                    owner = self.agent(record.get("agent"), db) if record.get("agent") else None
-                    if (not owner or owner.get("accountKey", "default") != account_key
-                            or owner.get("epoch") != receipt.get("epoch")
-                            or owner.get("deletedAt")):
-                        continue
-                    record.update(status=receipt["status"], error=receipt.get("error"))
-                    if receipt.get("finished") is None:
-                        record.pop("finished", None)
-                    else:
-                        record["finished"] = receipt["finished"]
-                    record.pop("reattachRecovery", None)
-                    self.put(db, table, record)
-                    if table == "monitors":
-                        db.execute("UPDATE runtime_events SET status='cancelled',error=? "
-                                   "WHERE id=? AND status='pending' AND json_extract(text,'$.status')='lost'",
-                                   ("Native command reattached; discard the provisional disconnect notice.",
-                                    "monitor:" + record["id"]))
+            # Task results arrive on the resumed native stream. Standalone
+            # monitor results require their original command RPC Future, which
+            # a new transport cannot reconstruct from the surviving child.
+            rows = db.execute("SELECT record FROM runtime_tasks WHERE "
+                "json_extract(record,'$.status') IN ('lost','running','starting','approval') "
+                "AND json_extract(record,'$.reattachRecovery.accountKey')=? "
+                "AND json_extract(record,'$.reattachRecovery.status') "
+                "IN ('running','starting','approval')", (account_key,)).fetchall()
+            for row in rows:
+                record = json.loads(row[0])
+                receipt = record.get("reattachRecovery") or {}
+                if (receipt.get("accountKey") != account_key
+                        or receipt.get("status") not in {"running", "starting", "approval"}):
+                    continue
+                owner = self.agent(record.get("agent"), db) if record.get("agent") else None
+                if (not owner or owner.get("accountKey", "default") != account_key
+                        or owner.get("epoch") != receipt.get("epoch")
+                        or owner.get("deletedAt")):
+                    continue
+                record.update(status=receipt["status"], error=receipt.get("error"))
+                if receipt.get("finished") is None:
+                    record.pop("finished", None)
+                else:
+                    record["finished"] = receipt["finished"]
+                record.pop("reattachRecovery", None)
+                self.put(db, "tasks", record)
             self.changed.set()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None):
@@ -4080,6 +4088,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_native_release import tick as native_release_tick
         native_release_tick(self)
         self.analytics_history_ensure_running()
+        self.accepted_archive_tick()
         self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()
@@ -7190,8 +7199,196 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for key, receipt in due:
                 self._persist_monitor_result(key, receipt)
             failures = [receipt for key, receipt in due if key in pending]
-            if failures:
-                raise OSError("Monitor result persistence pending: " + failures[0]["storageError"])
+        self.reconcile_monitor_reattach()
+        if failures:
+            raise OSError("Monitor result persistence pending: " + failures[0]["storageError"])
+
+    def _monitor_reattach_notice(self, a, m, event, previous, *, restart_loss=False):
+        """Prove the old restore path cancelled this exact unknown command notice."""
+        import math
+        operation = m.get("operation") or {}
+        epoch = m.get("epoch")
+        account = a.get("accountKey", "default")
+        if (not isinstance(operation, dict) or not isinstance(previous, dict)
+                or event["kind"] != "monitor_exit" or event["status"] != "cancelled"
+                or event["agent"] != a["id"] or event["epoch"] != epoch
+                or previous.get("id") != m["id"] or previous.get("status") != "lost"
+                or previous.get("exitCode") is not None or type(epoch) is not int
+                or operation.get("agent") != a["id"] or operation.get("epoch") != epoch
+                or operation.get("accountKey") != account
+                or not isinstance(operation.get("connectionId"), str) or not operation["connectionId"]):
+            return False
+        if event["error"] == "Native command reattached; discard the provisional disconnect notice.":
+            return True
+        if (event["error"] is not None or event["turn_id"] is not None
+                or previous.get("error") != "Server restarted. Command outcome unknown; not rerun."):
+            return False
+        created, started = event["created"], m.get("created")
+        if (type(created) not in (int, float) or not math.isfinite(created)
+                or type(started) not in (int, float) or not math.isfinite(started)
+                or started <= 0 or created < started):
+            return False
+        receipt = m.get("reattachRecovery") or {}
+        lost_at = receipt.get("cancelledNoticeLostAt") if isinstance(receipt, dict) else None
+        stamped = (isinstance(receipt, dict) and receipt.get("status") == "running"
+            and receipt.get("epoch") == epoch and receipt.get("accountKey", "default") == account
+            and type(lost_at) in (int, float) and math.isfinite(lost_at) and lost_at >= created)
+        if stamped or (restart_loss and m.get("status") == "running"):
+            return True
+        if m.get("status") == "lost":
+            return False
+
+        def scoped(receipt, at):
+            return (isinstance(receipt, dict) and receipt.get("epoch") == epoch
+                and receipt.get("accountKey", "default") == account
+                and receipt.get("threadId") == a.get("threadId") and bool(a.get("threadId"))
+                and isinstance(receipt.get("turnId"), str) and bool(receipt["turnId"])
+                and type(at) in (int, float) and math.isfinite(at) and at >= created)
+
+        restore = a.get("supervisorRestore") or {}
+        restart = a.get("restartRecovery") or {}
+        return ((restore.get("status") == "restored" and restore.get("reason") == "live_handle_resumed"
+                 and scoped(restore, restore.get("at")))
+                or (restart.get("stage") in {"reattached", "finished"} and restart.get("autoWake")
+                    and scoped(restart, restart.get("reattachedAt"))))
+
+    def reconcile_monitor_reattach(self):
+        """Recover only unknown monitor notices cancelled by the old reattach path."""
+        from codex_monitor_recovery import recover_monitor_results, acknowledge_monitor_result
+        reason = "Native command reattached; discard the provisional disconnect notice."
+        with self.lock:
+            if self.closed:
+                return []
+            connections = [(account, connection) for account, connection in self.connection_ids.items()
+                           if connection and account not in self.offline_accounts]
+        if not connections:
+            return []
+        # Select current and restored rows through the existing status index.
+        # Exact event identities exclude unrelated terminal monitor history.
+        values = ",".join("(?,?)" for _ in connections)
+        query = """WITH connections(account,connection) AS (VALUES """ + values + """)
+            SELECT m.id FROM runtime_monitors m INDEXED BY runtime_monitor_status
+            JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+            JOIN connections c ON c.account=CASE WHEN json_type(a.record,'$.accountKey') IS NULL
+                THEN 'default' ELSE json_extract(a.record,'$.accountKey') END
+            JOIN runtime_events e ON e.id='monitor:' || m.id
+            WHERE json_extract(m.record,'$.status') IN ('running','lost')
+                AND json_type(m.record,'$.operation')='object'
+                AND json_type(m.record,'$.operation.connectionId')='text'
+                AND json_extract(m.record,'$.operation.connectionId')<>''
+                AND json_extract(m.record,'$.operation.connectionId')<>c.connection
+                AND json_extract(m.record,'$.operation.accountKey')=c.account
+                AND json_extract(m.record,'$.operation.agent')=a.id
+                AND json_extract(m.record,'$.operation.epoch')=json_extract(a.record,'$.epoch')
+                AND json_extract(m.record,'$.epoch')=json_extract(a.record,'$.epoch')
+                AND json_extract(m.record,'$.exitCode') IS NULL
+                AND (json_extract(m.record,'$.status')='lost'
+                     OR json_extract(m.record,'$.finished') IS NULL)
+                AND json_extract(m.record,'$.ruleId') IS NULL
+                AND json_extract(a.record,'$.autoWake')=1
+                AND json_extract(a.record,'$.status')<>'paused'
+                AND NOT COALESCE(json_extract(a.record,'$.deletedAt'),0)
+                AND e.kind='monitor_exit' AND e.status='cancelled'
+                AND (e.error=? OR (e.error IS NULL AND e.turn_id IS NULL
+                    AND json_extract(e.text,'$.error')=?
+                    AND (json_extract(m.record,'$.status')='running'
+                        OR (json_extract(m.record,'$.reattachRecovery.status')='running'
+                            AND json_type(m.record,'$.reattachRecovery.cancelledNoticeLostAt') IN ('integer','real')
+                            AND json_extract(m.record,'$.reattachRecovery.cancelledNoticeLostAt')>=e.created
+                            AND json_extract(m.record,'$.reattachRecovery.epoch')=e.epoch
+                            AND CASE WHEN json_type(m.record,'$.reattachRecovery.accountKey') IS NULL THEN 'default'
+                                ELSE json_extract(m.record,'$.reattachRecovery.accountKey') END=c.account))
+                    AND e.created>=json_extract(m.record,'$.created')
+                    AND ((json_extract(m.record,'$.status')='lost'
+                        AND json_extract(m.record,'$.reattachRecovery.cancelledNoticeLostAt')>=e.created)
+                    OR (json_extract(a.record,'$.supervisorRestore.status')='restored'
+                        AND json_extract(a.record,'$.supervisorRestore.reason')='live_handle_resumed'
+                        AND json_extract(a.record,'$.supervisorRestore.epoch')=e.epoch
+                        AND CASE WHEN json_type(a.record,'$.supervisorRestore.accountKey') IS NULL THEN 'default'
+                            ELSE json_extract(a.record,'$.supervisorRestore.accountKey') END=c.account
+                        AND json_extract(a.record,'$.supervisorRestore.threadId')=json_extract(a.record,'$.threadId')
+                        AND json_type(a.record,'$.supervisorRestore.turnId')='text'
+                        AND json_extract(a.record,'$.supervisorRestore.turnId')<>''
+                        AND json_extract(a.record,'$.supervisorRestore.at')>=e.created)
+                    OR (json_extract(a.record,'$.restartRecovery.stage') IN ('reattached','finished')
+                        AND json_extract(a.record,'$.restartRecovery.autoWake')=1
+                        AND json_extract(a.record,'$.restartRecovery.epoch')=e.epoch
+                        AND CASE WHEN json_type(a.record,'$.restartRecovery.accountKey') IS NULL THEN 'default'
+                            ELSE json_extract(a.record,'$.restartRecovery.accountKey') END=c.account
+                        AND json_extract(a.record,'$.restartRecovery.threadId')=json_extract(a.record,'$.threadId')
+                        AND json_type(a.record,'$.restartRecovery.turnId')='text'
+                        AND json_extract(a.record,'$.restartRecovery.turnId')<>''
+                        AND json_extract(a.record,'$.restartRecovery.reattachedAt')>=e.created))))
+                AND e.agent=a.id AND e.epoch=json_extract(a.record,'$.epoch')
+                AND json_extract(e.text,'$.id')=m.id
+                AND json_extract(e.text,'$.status')='lost'
+                AND json_extract(e.text,'$.exitCode') IS NULL
+            ORDER BY json_extract(m.record,'$.created'),m.id LIMIT 16"""
+        with self.read_db() as db:
+            keys = [row[0] for row in db.execute(query,
+                (*[value for pair in connections for value in pair], reason,
+                 "Server restarted. Command outcome unknown; not rerun."))]
+        if not keys:
+            return []
+        repaired = []
+        recovery = {"acknowledge": [], "warnings": []}
+        with self.lock, self.db() as db:
+            if self.closed:
+                return []
+            for key in keys:
+                if key in getattr(self, "pending_monitor_results", {}):
+                    continue
+                row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                event = db.execute("SELECT * FROM runtime_events WHERE id=?", ("monitor:" + key,)).fetchone()
+                if not row or not event:
+                    continue
+                m = json.loads(row[0])
+                operation = m.get("operation") or {}
+                if not isinstance(operation, dict):
+                    continue
+                if (m.get("status") not in {"running", "lost"} or m.get("ruleId")
+                        or m.get("exitCode") is not None
+                        or (m.get("status") == "running" and m.get("finished") is not None)
+                        or event["kind"] != "monitor_exit" or event["status"] != "cancelled"):
+                    continue
+                previous = json.loads(event["text"])
+                if (not isinstance(previous, dict) or previous.get("id") != key
+                        or previous.get("status") != "lost" or previous.get("exitCode") is not None):
+                    continue
+                a = self.agent(m.get("agent"), db)
+                if not self._monitor_reattach_notice(a, m, event, previous):
+                    continue
+                account = a.get("accountKey", "default")
+                connection = self.connection_ids.get(account)
+                if (not connection or not self.connection_current(account, connection)
+                        or a.get("deletedAt") or not a.get("autoWake") or a.get("status") == "paused"
+                        or event["agent"] != a["id"] or event["epoch"] != a.get("epoch")
+                        or m.get("epoch") != a.get("epoch") or operation.get("epoch") != a.get("epoch")
+                        or operation.get("agent") != a["id"] or operation.get("accountKey") != account
+                        or not operation.get("connectionId") or operation["connectionId"] == connection):
+                    continue
+                # Reopen only this undelivered lost notice. Exact receipt recovery
+                # below replaces its payload in this same transaction before wake.
+                db.execute("UPDATE runtime_events SET status='pending',error=NULL WHERE id=?",
+                           (event["id"],))
+                m.update(status="lost", error=previous.get("error") or
+                         "Server restarted. Command outcome unknown; not rerun.")
+                m.pop("reattachRecovery", None)
+                self.put(db, "monitors", m)
+                self.enqueue_recovery_event(db, a, "monitor_exit", event["text"], event["id"])
+                repaired.append(key)
+            if repaired:
+                recovery = recover_monitor_results(self, db, keys=repaired)
+                self.changed.set()
+        # A result file remains durable until both its outcome and wake commit.
+        for key in recovery["acknowledge"]:
+            try:
+                acknowledge_monitor_result(self.root, key)
+            except OSError as error:
+                recovery["warnings"].append({"monitor": key, "error": str(error)})
+        if recovery["warnings"]:
+            self.monitor_recovery_warnings = recovery["warnings"][-16:]
+        return repaired
 
     def recover_monitor_receipts(self, db, *, wake=False, keys=None):
         """Restore terminal history without replaying commands or old work."""
@@ -7226,7 +7423,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                    (m["finished"], "monitor:" + m["id"]))
         return restored
 
-    def enqueue_recovery_event(self, db, a, kind, text, key):
+    def _recovery_event_pending(self, a):
         restart = a.get("restartRecovery") or {}
         disconnect = a.get("disconnectRecovery") or {}
         pending_recovery = (not a.get("autoWake") and a.get("status") != "paused"
@@ -7236,6 +7433,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             and not a.get("deletedAt") and disconnect.get("autoWake")
             and all(disconnect.get(source) == a.get(target) for source, target in
                     (("epoch", "epoch"), ("accountKey", "accountKey"), ("threadId", "threadId"))))
+        return pending_recovery
+
+    def enqueue_recovery_event(self, db, a, kind, text, key):
+        pending_recovery = self._recovery_event_pending(a)
         if not pending_recovery:
             return self.enqueue(db, a, kind, text, key)
         # Save the event now; only native reconciliation can reopen dispatch.
@@ -7250,7 +7451,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         text = json.dumps({k: m.get(k) for k in
             ("id", "command", "status", "exitCode", "error", "tail", "log", "bytes")})
         event_key = "monitor:" + m["id"]
-        existing = db.execute("SELECT text,status FROM runtime_events WHERE id=?", (event_key,)).fetchone()
+        existing = db.execute("SELECT * FROM runtime_events WHERE id=?", (event_key,)).fetchone()
         monitor_epoch = m.get("epoch")
         if monitor_epoch is None:
             monitor_epoch = (m.get("operation") or {}).get("epoch")
@@ -7268,6 +7469,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # replace the fallback payload under its original identity.
                 db.execute("UPDATE runtime_events SET text=? WHERE id=? AND status='pending'",
                            (text, event_key))
+                self.changed.set()
+                return False
+            if (m.get("status") in {"completed", "failed", "cancelled"}
+                    and self._monitor_reattach_notice(a, m, existing, previous)):
+                authorized = (can_wake and a.get("status") != "paused"
+                              and (a.get("autoWake") or self._recovery_event_pending(a)))
+                # The cancelled notice was never delivered. Replace only this
+                # known reattach cancellation, retaining its original identity.
+                db.execute("UPDATE runtime_events SET text=?,status=?,error=NULL WHERE id=?",
+                           (text, "pending" if authorized else "cancelled", event_key))
+                if authorized:
+                    self.enqueue_recovery_event(db, a, "monitor_exit", text, event_key)
                 self.changed.set()
                 return False
             correction_key = "monitor-correction:" + m["id"]
@@ -7301,7 +7514,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Save one visible hold for each check with no exact recovered receipt."""
         for rule in self.records(db, "rules"):
             marker = rule.get("restartCheck")
-            if not marker or rule.get("restartHoldNotified"):
+            if not marker or rule.get("restartHoldNotified") == marker:
                 continue
             actor = self.agent(rule["agent"], db)
             if (marker.get("epoch") != rule.get("epoch")
@@ -7315,12 +7528,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "monitorId": marker["monitorId"],
             })
             identity = rule["id"] + ":" + str(marker["epoch"]) + ":" + str(marker["checks"])
+            authorized = (not actor.get("deletedAt") and actor.get("epoch") == rule.get("epoch")
+                          and actor.get("status") != "paused"
+                          and (actor.get("autoWake") or self._recovery_event_pending(actor)))
             for recipient in [actor] + ([self.agent(actor["parentId"], db)] if actor.get("parentId") else []):
                 key = "rule-hold:" + identity + ":" + recipient["id"]
-                db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
-                    (key, recipient["id"], "rule_hold", payload, "pending", time.time(),
-                     recipient.get("epoch", 0), None, None))
-            rule["restartHoldNotified"] = True
+                if db.execute("SELECT 1 FROM runtime_events WHERE id=?", (key,)).fetchone():
+                    continue
+                if authorized:
+                    self.enqueue_recovery_event(db, recipient, "rule_hold", payload, key)
+                else:
+                    db.execute("INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                        (key, recipient["id"], "rule_hold", payload, "cancelled", time.time(),
+                         recipient.get("epoch", 0), None, None))
+            rule["restartHoldNotified"] = dict(marker)
             self.put(db, "rules", rule)
             self.changed.set()
 

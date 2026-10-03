@@ -35,6 +35,7 @@ def work_tools(tool, text):
         tool(
             "orchestration_task",
             "Manage team assignments and review decisions. list returns brief items with nextCursor; get reads one task; history pages earlier evidence. "
+            "create and update notify the assigned worker when an assignment becomes ready; title and description edits alone do not wake it. "
             "claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. "
             "Only the lead reviews results. accept records approval and releases dependent work. "
             "reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. "
@@ -145,65 +146,151 @@ class WorkMixin:
         return result
 
     def _queue_accepted_archive(self, task_id, intent_id):
+        reserved = None
+        try:
+            with self.lock, self.db() as db:
+                if self.closed:
+                    return
+                row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+                if not row:
+                    return
+                work = json.loads(row[0])
+                intent = work.get('archiveIntent') or {}
+                if intent.get('id') != intent_id or intent.get('status') != 'pending':
+                    return
+                running = self.__dict__.setdefault('_accepted_archive_running', set())
+                key = (task_id, intent_id)
+                if intent.get('schedulerVersion') != 2:
+                    # An active old frame checks this exact id before another attempt.
+                    # Its finally must retire the old key before the new job can run.
+                    if key in running:
+                        intent.update(id=intent_id + ':scheduler-v2', previousId=intent_id)
+                    intent['schedulerVersion'] = 2
+                    work['archiveIntent'] = intent
+                    self.put(db, 'work', work)
+                    intent_id = intent['id']
+                    key = (task_id, intent_id)
+                if (len(running) >= 4 or any(active[0] == task_id for active in running)
+                        or intent.get('nextAttemptAt', 0) > time.time()):
+                    return
+                running.add(key)
+                reserved = key
+            self.delivery_executor().submit(self._run_accepted_archive, task_id, intent_id)
+        except BaseException:
+            if reserved is not None:
+                with self.lock:
+                    running.discard(reserved)
+            raise
+
+    def accepted_archive_tick(self):
         with self.lock:
-            running = self.__dict__.setdefault('_accepted_archive_running', set())
-            key = (task_id, intent_id)
-            if key in running or self.closed:
+            now = time.monotonic()
+            previous = self.__dict__.get('_accepted_archive_tick_at')
+            if self.closed or (previous is not None and now - previous < 1):
                 return
-            running.add(key)
-        self.delivery_executor().submit(self._run_accepted_archive, task_id, intent_id)
+            self._accepted_archive_tick_at = now
+            pending = sorted({key[0] for key in self.__dict__.get('_accepted_archive_running', ())})
+            after = self.__dict__.get('_accepted_archive_scan_after', '')
+            active = [task_id for task_id in pending if task_id > after][:64] or pending[:64]
+            if active:
+                self._accepted_archive_scan_after = active[-1]
+        if not self.__dict__.get('_accepted_archive_index_ready'):
+            try:
+                # Build once without keeping the runtime lock through a writer wait.
+                with self.db(busy_timeout=50) as db:
+                    db.execute(
+                        "CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work("
+                        "COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id) "
+                        "WHERE json_extract(record,'$.archiveIntent.status')='pending'")
+            except sqlite3.OperationalError as error:
+                if getattr(error, 'sqlite_errorcode', 0) & 255 in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                    return
+                raise
+            self._accepted_archive_index_ready = True
+        with self.read_db() as db:
+            rows = db.execute(
+                "SELECT id,record FROM runtime_work "
+                "WHERE json_extract(record,'$.archiveIntent.status')='pending' "
+                "AND COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0)<=? "
+                "ORDER BY COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id LIMIT 16",
+                (time.time(),)).fetchall()
+            if active:
+                slots = ','.join('?' for _ in active)
+                rows += db.execute(
+                    "SELECT id,record FROM runtime_work WHERE id IN (" + slots + ") "
+                    "AND json_extract(record,'$.archiveIntent.status')='pending'", active).fetchall()
+        for row in {row['id']: row for row in rows}.values():
+            intent = json.loads(row['record']).get('archiveIntent') or {}
+            if intent.get('id'):
+                self._queue_accepted_archive(row['id'], intent['id'])
 
     def _run_accepted_archive(self, task_id, intent_id):
-        delay = 1
         key = (task_id, intent_id)
         try:
-            while not self.closed:
-                with self.lock, self.db() as db:
-                    row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
-                    if not row:
-                        return
-                    work = json.loads(row[0])
-                    intent = work.get('archiveIntent') or {}
-                    if intent.get('id') != intent_id or intent.get('status') != 'pending':
-                        return
-                    owner = self.agent(work['owner'], db) if work.get('owner') else None
-                    root = self.agent(work['rootId'], db)
-                    if work.get('status') != 'accepted' or not owner or owner.get('deletedAt'):
-                        intent.update(status='terminal', updated=time.time(),
-                                      outcome={'status': 'kept', 'reason': 'The accepted task owner changed'})
-                        work['archiveIntent'] = intent
-                        self.put(db, 'work', work)
-                        return
-                    snapshot = work
-                    actor_epoch = root['epoch']
+            with self.lock, self.db() as db:
+                if self.closed:
+                    return
+                row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+                if not row:
+                    return
+                work = json.loads(row[0])
+                intent = work.get('archiveIntent') or {}
+                running = self.__dict__.setdefault('_accepted_archive_running', set())
+                if (intent.get('id') != intent_id or intent.get('status') != 'pending'
+                        or intent.get('nextAttemptAt', 0) > time.time()
+                        or any(active[0] == task_id and active != key for active in running)):
+                    return
+                owner = self.agent(work['owner'], db) if work.get('owner') else None
+                root = self.agent(work['rootId'], db)
+                outcome = None
+                if work.get('status') != 'accepted' or not owner:
+                    outcome = {'status': 'kept', 'reason': 'The accepted task owner changed'}
+                elif owner.get('deletedAt') or owner.get('agentArchive'):
+                    archived = owner.get('agentArchive') or {}
+                    # Reconcile the old frame's committed management operation.
+                    # A deleted owner alone does not prove this archive succeeded.
+                    if (archived.get('by') == work['rootId']
+                            and archived.get('reason') == 'Accepted task result is on main'
+                            and archived.get('epoch') == owner.get('epoch')
+                            and archived.get('at') == owner.get('deletedAt')
+                            and archived.get('at', 0) >= intent.get('created', 0)
+                            and archived.get('cleanupPending') is False):
+                        cleaned = owner.get('cleanedWorktree') if not owner.get('worktreeReady') else None
+                        worktree = ({'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
+                                    if cleaned and cleaned.get('missing') else
+                                    {'state': 'removed', 'bytes': cleaned.get('bytes')}
+                                    if cleaned else
+                                    {'state': 'kept', 'reason': 'The archived worktree remains', 'bytes': 0}
+                                    if owner.get('worktreeReady') else {'state': 'none', 'bytes': 0})
+                        outcome = {'status': 'archived', 'worktree': worktree}
+                    else:
+                        outcome = {'status': 'kept', 'reason': 'The accepted archive outcome is unconfirmed'}
+                snapshot = work
+                actor_epoch = root['epoch']
+            if outcome is None:
                 try:
                     outcome = self._archive_accepted_owner(work['rootId'], snapshot, actor_epoch)
                 except Exception as error:
                     outcome = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
-                with self.lock, self.db() as db:
-                    row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
-                    if not row:
-                        return
-                    current = json.loads(row[0])
-                    intent = current.get('archiveIntent') or {}
-                    if intent.get('id') != intent_id or intent.get('status') != 'pending':
-                        return
-                    current['archive'] = outcome
-                    if outcome.get('retryable'):
-                        attempts = intent.get('attempts', 0) + 1
-                        delay = min(60, 2 ** min(attempts, 6))
-                        intent.update(attempts=attempts, nextAttemptAt=time.time() + delay,
-                                      lastOutcome=outcome, updated=time.time())
-                        current['archiveIntent'] = intent
-                    else:
-                        intent.update(status='complete' if outcome.get('status') == 'archived' else 'terminal',
-                                      updated=time.time(), outcome=outcome)
-                        current['archiveIntent'] = intent
-                    self.put(db, 'work', current)
-                if not outcome.get('retryable'):
+            with self.lock, self.db() as db:
+                row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
+                if not row:
                     return
-                self.changed.wait(delay)
-                self.changed.clear()
+                current = json.loads(row[0])
+                intent = current.get('archiveIntent') or {}
+                if intent.get('id') != intent_id or intent.get('status') != 'pending':
+                    return
+                current['archive'] = outcome
+                if outcome.get('retryable'):
+                    attempts = intent.get('attempts', 0) + 1
+                    delay = min(60, 2 ** min(attempts, 6))
+                    intent.update(attempts=attempts, nextAttemptAt=time.time() + delay,
+                                  lastOutcome=outcome, updated=time.time())
+                else:
+                    intent.update(status='complete' if outcome.get('status') == 'archived' else 'terminal',
+                                  updated=time.time(), outcome=outcome)
+                current['archiveIntent'] = intent
+                self.put(db, 'work', current)
         finally:
             with self.lock:
                 self.__dict__.setdefault('_accepted_archive_running', set()).discard(key)
@@ -359,11 +446,6 @@ class WorkMixin:
             db.execute("CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY)")
         if phase not in {"dropping", "complete"} and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone():
             self.setup_search_rows(db)
-        for row in db.execute(
-                "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.archiveIntent.status')='pending'"):
-            intent = json.loads(row['record']).get('archiveIntent') or {}
-            if intent.get('id'):
-                self._queue_accepted_archive(row['id'], intent['id'])
         for row in db.execute(
                 "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"):
             child = json.loads(row['record'])
@@ -729,6 +811,10 @@ class WorkMixin:
             if action in {"create", "update"}:
                 if not leader:
                     raise ValueError("Only the lead can change work assignments")
+                previous_owner = w.get("owner")
+                previous_ready = (action != "create" and w["status"] in {"ready", "running"}
+                    and not self.work_view(w, self.work_dependency_statuses(
+                        db, a["rootId"], w["dependencies"]))["blockedBy"])
                 if w["status"] == "accepted":
                     raise ValueError("Cannot edit accepted work. Create a follow-up task with this task ID and the new evidence")
                 if w["status"] == "review":
@@ -847,6 +933,7 @@ class WorkMixin:
                 if w["status"] == "accepted":
                     raise ValueError("Cannot cancel accepted work")
                 owner_id = w.get("owner")
+                previous_owner = owner_id
                 w["decisions"].append({
                     "decision": "cancel", "reason": reason,
                     "by": actor or a["id"], "owner": owner_id,
@@ -903,23 +990,41 @@ class WorkMixin:
                             db, a["rootId"], other["dependencies"])
                         statuses[w["id"]] = "accepted"
                         if not self.work_view(other, statuses)["blockedBy"]:
-                            self.enqueue(
+                            self.enqueue_recovery_event(
                                 db,
                                 self.agent(other["owner"], db),
                                 "work_ready",
-                                json.dumps({"task": other["id"], "title": other["title"]}),
+                                json.dumps({"task": other["id"], "title": other["title"],
+                                            "description": other.get("description", "")}, ensure_ascii=False),
                                 "work-ready:" + other["id"] + ":" + w["id"],
                             )
             else:
                 raise ValueError("Unknown work action")
             w.update(version=w["version"] + 1, updated=time.time())
             self.put(db, "work", w)
+            result = self.work_view(w, self.work_dependency_statuses(
+                db, a["rootId"], w["dependencies"]))
+            ready = w["status"] in {"ready", "running"} and not result["blockedBy"]
+            if (action in {"update", "cancel"} and previous_owner
+                    and (action == "cancel" or previous_owner != w.get("owner") or previous_ready != ready)):
+                db.execute("UPDATE runtime_events SET status='stored_only',error=? "
+                           "WHERE agent=? AND kind='work_ready' AND status='pending' "
+                           "AND CASE WHEN json_valid(text) THEN json_extract(text,'$.task') END=?",
+                           ("The task was cancelled before delivery" if action == "cancel" else
+                            "The work assignment or readiness changed before delivery", previous_owner, w["id"]))
+            if (action in {"create", "update"} and w.get("owner") and w["owner"] != a["rootId"]
+                    and ready
+                    and (action == "create" or w["owner"] != previous_owner or not previous_ready)):
+                self.enqueue_recovery_event(
+                    db, self.agent(w["owner"], db), "work_ready",
+                    json.dumps({"task": w["id"], "title": w["title"],
+                                "description": w["description"]}, ensure_ascii=False),
+                    "work-ready:" + w["id"] + ":assignment:" + str(w["version"]))
             return self.save_receipt(
                 db,
                 key,
                 signature,
-                self.work_view(w, self.work_dependency_statuses(
-                    db, a["rootId"], w["dependencies"])),
+                result,
             )
 
     def release_failed_work(self, db, agents, force=False):

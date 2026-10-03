@@ -97,13 +97,17 @@ def acknowledge_monitor_result(root, key):
         _sync_directory(target.parent)
 
 
-def recover_monitor_results(runtime, db):
+def recover_monitor_results(runtime, db, *, keys=None):
     """Restore exact native outcomes. Never repeat a command or infer an exit."""
     result = {'restored': [], 'acknowledge': [], 'warnings': []}
     directory = _directory(runtime.root)
     if not directory.exists():
         return result
-    for path in sorted(directory.glob('*.json')):
+    paths = (sorted(directory.glob('*.json')) if keys is None else
+             [_path(runtime.root, key) for key in dict.fromkeys(keys)])
+    for path in paths:
+        if keys is not None and not path.exists():
+            continue
         try:
             receipt = _validate(json.loads(path.read_text()))
             key = receipt['key']

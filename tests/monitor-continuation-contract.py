@@ -36,7 +36,7 @@ class MonitorContinuation(unittest.TestCase):
     def seed_terminal(self, status='cancelled', *, epoch=None, wake_on='exit'):
         m = self.runtime.monitor(self.agent['id'], {'command': 'never-run', 'wake_on': wake_on})
         with self.runtime.lock, self.runtime.db() as db:
-            m.update(status=status, exitCode=0 if status == 'completed' else 137,
+            m.update(status=status, exitCode=None if status == 'lost' else 0 if status == 'completed' else 137,
                      finished=time.time() - 3600, cancelRequested=status == 'cancelled')
             if epoch is not None:
                 m['epoch'] = epoch
@@ -104,13 +104,14 @@ class MonitorContinuation(unittest.TestCase):
         self.assertTrue(self.runtime.agent(self.agent['id'])['autoWake'])
         self.assertFalse(any(method == 'turn/start' for server in self.runtime.servers.values()
                              for method, _ in server.calls))
-        for m in (completed, cancelled, stale):
+        for m in (completed, cancelled, stale, quiet, lost):
             event = self.exits(m['id'])[0]
             self.assertEqual(event['status'], 'cancelled')
             self.assertEqual(event['epoch'], m['epoch'])
             self.assertEqual(event['created'], m['finished'])
-        self.assertEqual(self.exits(quiet['id']), [])
-        self.assertEqual(self.exits(lost['id']), [])
+        self.assertEqual(json.loads(self.exits(quiet['id'])[0]['text'])['status'], 'completed')
+        self.assertEqual(json.loads(self.exits(lost['id'])[0]['text'])['status'], 'lost')
+        self.assertIsNone(json.loads(self.exits(lost['id'])[0]['text'])['exitCode'])
         with self.runtime.lock, self.runtime.db() as db:
             self.assertEqual(self.runtime.recover_monitor_receipts(db), [])
 
@@ -129,15 +130,18 @@ class MonitorContinuation(unittest.TestCase):
         self.assertEqual(self.exits(stale['id'])[0]['status'], 'cancelled')
         self.assertEqual(len(self.starts()), before + 1)
 
-    def test_late_duplicate_terminal_result_repairs_receipt_without_wake(self):
+    def test_late_duplicate_terminal_result_repairs_missing_receipt_once(self):
         m = self.seed_terminal()
         before = len(self.starts())
         self.runtime.finish_monitor(m['id'], 0, None)
+        self.assert_delivered(m['id'], before)
         payload = json.loads(self.exits(m['id'])[0]['text'])
         self.assertEqual(payload['exitCode'], 137)
         self.assertEqual(payload['status'], 'cancelled')
-        self.assertEqual(self.exits(m['id'])[0]['status'], 'cancelled')
-        self.assertEqual(len(self.starts()), before)
+        self.runtime.finish_monitor(m['id'], 0, None)
+        self.assertEqual(self.exits(m['id'])[0]['status'], 'delivered')
+        self.assertEqual(len(self.starts()), before + 1)
+        self.assertEqual(self.server.commands, {})
 
     def test_scheduler_retries_native_exit_after_transient_full_disk(self):
         key = self.monitor()
@@ -225,6 +229,7 @@ class MonitorContinuation(unittest.TestCase):
         key = self.monitor()
         operation = self.record(key)['operation']
         original_agent = self.runtime.agent
+        before = len(self.starts())
         with self.runtime.lock:
             self.runtime.agent = lambda *args, **kwargs: (_ for _ in ()).throw(OSError('No space left'))
             try:
@@ -234,10 +239,19 @@ class MonitorContinuation(unittest.TestCase):
             self.runtime.disconnected('default', self.runtime.connection_ids['default'])
             self.runtime.pending_monitor_results[key]['retryAt'] = 0
             self.runtime.retry_monitor_results()
-        self.assertEqual(self.record(key)['status'], 'lost')
-        self.assertIsNone(self.record(key)['exitCode'])
-        self.assertEqual(self.exits(key), [])
-        self.assertNotIn(key, self.runtime.pending_monitor_results)
+            self.assertEqual(self.record(key)['status'], 'lost')
+            self.assertIsNone(self.record(key)['exitCode'])
+            event = self.exits(key)[0]
+            payload = json.loads(event['text'])
+            self.assertEqual((event['id'], event['status'], event['epoch']),
+                             ('monitor:' + key, 'pending', operation['epoch']))
+            self.assertEqual((payload['status'], payload['exitCode']), ('lost', None))
+            self.assertIn('outcome unknown; not rerun', payload['error'])
+            self.assertEqual(len(self.exits(key)), 1)
+            self.assertEqual(len(self.starts()), before)
+            self.assertFalse(self.runtime.connection_current('default', operation['connectionId']))
+            self.assertEqual(len(self.server.commands), 1)
+            self.assertNotIn(key, self.runtime.pending_monitor_results)
 
     def test_timeout_storage_failure_keeps_lease_and_registers_late_native_result(self):
         self.server.timeout_commands = True
@@ -267,10 +281,13 @@ class MonitorContinuation(unittest.TestCase):
                                                     'wake_on': 'failure', 'success_exit_codes': [1, 0]}, approved=True)
         self.assertTrue(self.server.command_wait_entered.wait(3))
         self.assertEqual(m['successExitCodes'], [0, 1])
+        before = len(self.starts())
         self.server.finish(m['id'], 1)
         f.fixture.eventually(lambda: self.record(m['id'])['status'] == 'completed')
         self.assertEqual(self.record(m['id'])['exitCode'], 1)
-        self.assertEqual(self.exits(m['id']), [])
+        self.assert_delivered(m['id'], before)
+        payload = json.loads(self.exits(m['id'])[0]['text'])
+        self.assertEqual((payload['status'], payload['exitCode'], payload['error']), ('completed', 1, None))
 
     def test_exit_code_outside_success_list_fails_and_wakes(self):
         m = self.runtime.monitor(self.agent['id'], {'command': 'diff a b', 'timeout_ms': 1000,

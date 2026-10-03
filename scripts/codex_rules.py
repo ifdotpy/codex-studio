@@ -277,7 +277,7 @@ class RulesMixin:
                     and r.get("fileGeneration", 0) > r.get("stallWakeGeneration", -1))
 
         owner_fields = ("epoch", "accountKey", "threadId", "autoWake", "deletedAt",
-                        "restartRecovery", "disconnectRecovery", "approvalPolicy",
+                        "restartRecovery", "disconnectRecovery", "nativeFailureHold", "approvalPolicy",
                         "sandbox", "profile", "role")
         snapshots = []
         with self.read_db() as db:
@@ -371,7 +371,10 @@ class RulesMixin:
                         for field in ("epoch", "accountKey", "threadId"))):
             return True
         disconnect = agent.get("disconnectRecovery") or {}
-        return bool(disconnect.get("autoWake")
+        # Keep the receipt as evidence after recovery. Its old permission must
+        # not freeze watches on an agent that can already continue.
+        return bool((not agent.get("autoWake") or agent.get("nativeFailureHold"))
+                    and disconnect.get("autoWake")
                     and disconnect.get("epoch") == epoch
                     and all(disconnect.get(source) == agent.get(target)
                             for source, target in (("epoch", "epoch"),
