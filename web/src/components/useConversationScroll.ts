@@ -39,6 +39,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   const available = useRef(ready);
   available.current = ready;
   const lastTop = useRef(0);
+  const lastHeight = useRef(0);
   const bottomDistance = useRef(0);
   const lastScrollInput = useRef(-Infinity);
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
@@ -51,6 +52,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     if (!root) return;
     lastTop.current = root.scrollTop;
+    lastHeight.current = root.scrollHeight;
     bottomDistance.current = Math.max(
       0,
       root.scrollHeight - root.clientHeight - root.scrollTop,
@@ -195,10 +197,14 @@ export function useConversationScroll(id: string, ready: boolean) {
       return;
     const atBottom =
       root.scrollHeight - root.scrollTop - root.clientHeight < 32;
-    // A layout change can clamp scrollTop. Only user input or Latest resumes following.
+    // A layout change can move scrollTop. A downward move over unchanged
+    // content comes from the user, including momentum and scrollbar drags.
     const value =
       atBottom &&
-      (following.current || performance.now() - lastScrollInput.current < 600);
+      (following.current ||
+        (root.scrollTop > lastTop.current &&
+          root.scrollHeight === lastHeight.current) ||
+        performance.now() - lastScrollInput.current < 600);
     updateFollow(value);
     remember();
     persist();

@@ -522,7 +522,7 @@ try {
       Math.abs(restoredCompletion.scrollTop - beforeSwitch) < 2,
       `completed chat retains chronological layout and reading position (${JSON.stringify({ beforeSwitch, restoredCompletion })})`,
     );
-    items = items.map(({ turnStatus, ...i }) => i);
+    items = items.map(({ turnStatus: _turnStatus, ...i }) => i);
     agent = {
       ...agent,
       status: "running",
@@ -558,9 +558,28 @@ try {
       ) < 2,
       "chat switch restores reading position",
     );
-    await page.locator(`${conversationSelector} #jump-latest`).click();
+    const latest = page.locator(`${conversationSelector} #jump-latest`);
+    const idle = await latest.boundingBox();
+    await page.mouse.move(idle.x + idle.width / 2, idle.y + idle.height / 2);
+    await page.mouse.down();
+    const pressed = await latest.boundingBox();
+    assert.ok(
+      Math.abs(pressed.x - idle.x) < 1,
+      `Latest stays in place while pressed (${idle.x} to ${pressed.x})`,
+    );
+    await page.mouse.up();
     await afterPaint(page, rootSelector);
     assert.ok((await gap()) < 2, "Latest resumes following");
+    // Momentum or a scrollbar drag reaches the bottom without recent input.
+    await page.locator(rootSelector).evaluate((root) => {
+      root.scrollTop = 0;
+    });
+    await latest.waitFor();
+    await page.waitForTimeout(700);
+    await page.locator(rootSelector).evaluate((root) => {
+      root.scrollTop = root.scrollHeight;
+    });
+    await latest.waitFor({ state: "detached" });
     items.push({
       id: `tail-${width}`,
       role: "assistant",

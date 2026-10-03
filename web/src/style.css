@@ -706,7 +706,8 @@ p {
   position: absolute;
   bottom: 12px;
   left: 50%;
-  transform: translateX(-50%);
+  /* Mantine sets transform on :active; translate keeps the button centered. */
+  translate: -50% 0;
   z-index: 2;
   font-size: 12px;
   box-shadow: 0 4px 20px #0003;
