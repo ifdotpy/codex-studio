@@ -14,12 +14,9 @@ Open **Main agent settings** to choose any available catalog model, its reasonin
 **Main agent** and **Subagents** use the same dropdown. Changes save immediately.
 While an agent runs, model changes apply to its next turn. The current response keeps its model.
 
-The chat header has a **Multi agent** / **Single agent** switch. It applies immediately,
-even during an active response, and remains saved after reload or restart.
-Single agent mode prevents new workers, worker assignments, and messages that start worker work.
-Already accepted worker input and active work continue. Workers can report results to the lead.
-The lead completes new work itself. Multi agent mode permits delegation again; it sends no task by itself.
-Only the user can change this setting. Studio keeps native Codex delegation disabled in both modes.
+The chat header's subagent control sets the chat's parallelism limit and agent
+mode together. See [subagent parallelism](#subagent-parallelism). Studio keeps
+native Codex delegation disabled in both modes.
 
 **Subagents** sets the account, model, reasoning level, and Fast default for future workers in this team.
 The default is `gpt-6-luna` with `high` reasoning for Codex and Claude leads.
@@ -635,6 +632,50 @@ limited to 24,000 characters, into a new managed lead. It does not take ownershi
 of another client's live session or copy its complete tool history.
 The original Codex conversation remains available.
 
+## Subagent parallelism
+
+Each chat owns one parallelism setting. Zero selects Single agent; a positive
+value selects Multi agent. There is no application default setting or per-chat
+override hierarchy. The numeric bounds and new-chat default belong to the
+[server's agent configuration](scripts/codex_agent_modes.py).
+
+All descendants of one lead share the limit, including reviewers and workers
+on another account or provider. The lead does not occupy a subagent slot.
+Starting a worker reserves a slot. An ongoing execution, including a native
+permission wait, retains it until its outcome is confirmed. A lost native
+response cannot free a slot while the submission remains uncertain. Idle
+workers and work waiting in the queue do not occupy execution slots.
+
+Excess executions wait in the existing queue. Raising the limit makes eligible
+queued work available to the scheduler. Lowering it does not interrupt current
+executions. At zero, current executions can finish and report, but no further
+worker executions start. Previously accepted queued work waits until the limit
+is positive again. Explicitly stopped workers remain stopped. Single agent
+also prevents new delegation and assignments to workers.
+
+Only the user changes the limit. The orchestrator receives it at turn startup,
+after context restoration, and through updated context when it changes. During
+an active response, the next tool interaction or turn delivers the update;
+server enforcement starts when the setting is saved. The orchestrator sizes
+delegation to useful work and available slots, leaves future assignments on the
+task board, and waits for completion events when no independent work remains.
+The limit is a maximum, not a target worker count. Team status reports the limit,
+occupied slots, and reasons queued workers cannot start.
+
+The server persists the limit. Saving uses an expected revision and a stable
+request identity. An exact retry after a lost reply does not apply the command
+again. A changed body with the same identity or a stale revision is rejected.
+The browser preserves an uncertain request across reloads before allowing
+another save. Old pending mode-switch requests retain their original identity
+and are reconciled against the same setting during the UI upgrade.
+
+Existing Single agent chats migrate to zero. Existing Multi agent chats retain
+their numeric concurrency value, now counting only subagents. This can permit
+one more active participant because the lead no longer uses that allowance.
+The setting is independent of token budgets, provider availability, and an
+explicit operator resource ceiling. Those constraints can reduce actual
+parallelism; the queue reports their blockers.
+
 ## Terminal control
 
 `codex-control` talks to the same canvas server. It does not create a second
@@ -649,8 +690,15 @@ scripts/codex-control send AGENT_ID 'Inspect the worker results and continue'
 scripts/codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
 scripts/codex-control transcript AGENT_ID
 scripts/codex-control stop LEAD_ID
-scripts/codex-control configure LEAD_ID --concurrency 12 --token-budget 2000000
+scripts/codex-control configure LEAD_ID --concurrency 12
+scripts/codex-control configure LEAD_ID --token-budget 2000000
 ```
+
+Change concurrency separately from the stored-team and token limits. The command
+reads the current setting revision and prints its request ID and expected
+revision before saving. After an uncertain response, repeat the same target
+value with those exact `--request-id` and `--expected-mode-revision` values;
+do not run a fresh save to discover whether the previous one applied.
 
 ## Verification
 

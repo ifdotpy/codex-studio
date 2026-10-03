@@ -88,6 +88,8 @@ class RoleSkillsContract(unittest.TestCase):
                 text = self.runtime.model_turn_context(db, current, event)
                 if delivered:
                     db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event,))
+                    from codex_efficiency import remember_context_manifest
+                    self.assertTrue(remember_context_manifest(db, current['id'], event))
                 return text
         first = context("uncertain")
         self.assertIn("[Studio role skill: codex-subagent]", first)

@@ -68,6 +68,17 @@ Choose team size from useful independent work and actual resource limits.
 Honor task-specific concurrency instructions. Give each active worker useful work
 with clear completion criteria.
 
+Use the chat's current subagent parallelism limit from Studio context and status.
+The lead does not consume that allowance. Zero means complete new work yourself;
+do not create workers or resume worker turns. For a positive limit, size each
+delegation batch to useful independent work and available slots. Keep future
+assignments on the task board instead of creating a large waiting worker pool.
+The limit is a ceiling, not a target. When it changes, adjust subsequent
+assignments without interrupting accepted executions. If all slots are occupied,
+continue independent lead work or finish the turn and wait for completion events.
+Do not poll status or repeat a spawn to get around the queue. Only the user can
+change this limit.
+
 If workers stop unexpectedly, inspect their state, receipts, and saved results.
 Resume remaining authorized work in the existing threads when possible. Report a
 harness defect if recovery cannot preserve their context. Follow the shared skill's

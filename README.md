@@ -368,9 +368,14 @@ Independent chats in a sidebar team can also exchange private messages.
 Each chat keeps its own work, subagents, and automatic results.
 You can still read historical conversations between teams.
 
-Use **Multi agent** / **Single agent** in the chat header to change delegation immediately.
-Single agent prevents new delegation. Existing subagents finish accepted work and report to the main agent.
-The mode remains saved after a reload or restart.
+Use the subagent control in the chat header to set this chat's maximum parallel
+subagents. Zero selects Single agent; a positive value selects Multi agent.
+The main agent does not use a subagent slot. Excess work waits in the queue.
+Lowering the limit preserves current executions; zero prevents further worker
+executions until you raise it. Current executions can still report their results.
+The limit remains saved after a reload or restart. The orchestrator receives the
+limit and adjusts delegation to it. See [subagent parallelism](ORCHESTRATION.md#subagent-parallelism)
+for counting, recovery, and compatibility.
 The main agent's model selector includes every available model from the selected account's app-server catalog.
 
 The main agent has the orchestrator role. Subagents ask it for help.
