@@ -300,3 +300,39 @@ await temporary(async (root) => {
     );
   }
 });
+
+await temporary(async (root) => {
+  const store = createSessionStore(root, { compactRecords: 1000 });
+  const session = makeSession();
+  await store.persist(session);
+  session.turns.push({ id: "turn-2", status: "inProgress", items: [] });
+  const originalAppend = fs.appendFile;
+  let entered, release;
+  const held = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  fs.appendFile = async (...args) => {
+    const result = await originalAppend(...args);
+    entered();
+    await gate;
+    return result;
+  };
+  try {
+    const saved = store.persist(session);
+    await held;
+    session.turns[1].error = { message: "interrupted" };
+    release();
+    await saved;
+  } finally {
+    fs.appendFile = originalAppend;
+  }
+  session.turns[1].status = "failed";
+  session.turns[1].error.message = "not submitted";
+  await store.persist(session);
+  const restored = await createSessionStore(root).get(id);
+  assert.equal(restored.turns[1].error.message, "not submitted");
+  assert.equal(restored.turns[1].status, "failed");
+});

@@ -198,8 +198,35 @@ class Controls(unittest.TestCase):
         self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
         self.assertNotIn('default', self.rt.servers)
 
-    def test_current_bridge_version_stays_and_checks_native_tasks(self):
+    def test_idle_supervised_upgrade_closes_exact_process_before_replacement(self):
+        from types import SimpleNamespace
         self.server.initialize_result = {'capabilities': {'claudeVersion': 14}}
+        self.server.provider_options = {}
+        self.server.pending = {}
+        self.server.callbacks = queue.Queue()
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(handle='account:default', pid=123, generation=2)
+        import sqlite3
+        with sqlite3.connect(self.rt.root / 'supervisor.sqlite3') as journal:
+            journal.execute('CREATE TABLE handles(id TEXT,pid INTEGER,generation INTEGER,signature TEXT,closed_at REAL)')
+            journal.execute('CREATE TABLE child_identities(handle TEXT,pid INTEGER,start_time TEXT)')
+            journal.execute("INSERT INTO handles VALUES('account:default',123,2,'exact',NULL)")
+            journal.execute("INSERT INTO child_identities VALUES('account:default',123,'verified')")
+        journal.close()
+        previous = self.rt.connection_ids['default']
+        def close_native(*args):
+            self.assertNotEqual(self.rt.connection_ids['default'], previous)
+            self.assertNotIn('default', self.rt.servers)
+            self.assertEqual(args, (self.rt.root, 'account:default', 123, 'verified', 'exact'))
+            return {'closed': True}
+        with patch('codex_process_supervisor.process_start_time', return_value='verified'), \
+                patch('codex_process_supervisor.admin_close_handle', side_effect=close_native) as close:
+            self.assertTrue(retire_idle_bridge(self.rt, 'default', {}, self.server))
+            close.assert_called_once()
+        self.assertNotIn('default', self.rt._native_tools_retiring)
+
+    def test_current_bridge_version_stays_and_checks_native_tasks(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 15}}
         self.server.provider_options = {}
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.server.state['tasks'] = [{'task_id': 'background'}]

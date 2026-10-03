@@ -979,6 +979,22 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('model/list'), 2)
         self.assertNotIn('turn/start', operations)
 
+    def test_new_confirmed_attempt_keeps_exact_input_and_gets_new_native_write(self):
+        server = self.server()
+        self.release.touch()
+        params = {'threadId': 'thread', 'clientUserMessageId': 'same-input'}
+        first_id = 'turn:agent:same-input:attempt:rejected-attempt'
+        second_id = 'turn:agent:same-input:attempt:accepted-attempt'
+        server.wait(server.submit('turn/start', params, operation_id=first_id), timeout=3)
+        duplicate = server.proc.call('write', operationId=first_id, nativeId=999,
+                                    message={'id': 999, 'method': 'turn/start', 'params': params})
+        self.assertTrue(duplicate['duplicate'])
+        server.wait(server.submit('turn/start', params, operation_id=second_id), timeout=3)
+        writes = [json.loads(line) for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        turns = [row for row in writes if row['method'] == 'turn/start']
+        self.assertEqual(len(turns), 2)
+        self.assertEqual([row['params'] for row in turns], [params, params])
+
     def test_closed_legacy_launch_without_recovery_proof_is_rejected(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):

@@ -85,6 +85,72 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.close()
         self.temp.cleanup()
 
+    def lose_start_receipt(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.key, db)
+            attempt = a['startAttempt']
+            for field in ('turnId', 'observedTurnId'):
+                attempt.pop(field, None)
+            attempt.update(executionOutcome='unknown', created=time.time() - 180)
+            a.update(status='starting', turnId=None, inFlight=True,
+                     error='turn/start response timed out; outcome unknown')
+            self.runtime.put(db, 'agents', a)
+            for key in attempt['events']:
+                db.execute("UPDATE runtime_events SET status='uncertain',turn_id=NULL,error=? WHERE id=?",
+                           (a['error'], key))
+            self.server.native['turns'][0]['clientUserMessageId'] = attempt['events'][0]
+        return a
+
+    def test_unknown_start_receipt_recovers_completion_without_resubmission(self):
+        a = self.lose_start_receipt()
+        before = sum(method == 'turn/start' for method, _ in self.server.calls)
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'reconciled')
+        current = self.runtime.agent(self.key)
+        self.assertEqual(current['status'], 'completed')
+        self.assertIsNone(current['error'])
+        self.assertFalse(current['inFlight'])
+        self.assertEqual(current['lastAnswer'], 'Full final answer')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[:], ('delivered', self.turn))
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+
+    def test_unknown_start_preparing_receipt_does_not_confirm_delivery(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'][0]['startOutcome'] = 'preparing'
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key)['startAttempt'], a['startAttempt'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+
+    def test_scheduler_checks_unknown_start_with_no_turn_identity(self):
+        self.lose_start_receipt()
+        with self.runtime.db() as db:
+            agents = self.runtime.scheduler_agents(db)
+        self.runtime.queue_turn_recovery(agents, force_id=self.key)
+        fixture.eventually(lambda: self.runtime.agent(self.key)['status'] == 'completed')
+
+    def test_unknown_start_absent_from_history_preserves_original_reservation(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key)['startAttempt'], a['startAttempt'])
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'starting')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+
+    def test_unknown_start_read_cannot_restore_an_agent_stopped_during_the_probe(self):
+        self.lose_start_receipt()
+        self.server.before_apply = lambda: self.runtime.stop(self.key, descendants=False)
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'superseded')
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+
     def test_lost_completion_repairs_partial_text_and_is_idempotent(self):
         self.server.notify({'method': 'item/agentMessage/delta', 'params': {
             'threadId': self.a['threadId'], 'turnId': self.turn, 'itemId': 'answer', 'delta': 'par'}})

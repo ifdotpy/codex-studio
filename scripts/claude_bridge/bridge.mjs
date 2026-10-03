@@ -76,6 +76,37 @@ if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
 const queries = new Map(),
   pending = new Map();
+const pendingTurnReceipts = new Set();
+const PREPARATION_TIMEOUT_MS = 20_000;
+
+async function boundedPreparation(read, deadline, onTimeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(read),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => {
+            const error = Object.assign(
+              new Error(
+                "Claude preparation timed out before input was submitted",
+              ),
+              {
+                preparationTimedOut: true,
+                data: { turnStartOutcome: "not_applied" },
+              },
+            );
+            reject(error);
+            onTimeout();
+          },
+          Math.max(0, deadline - Date.now()),
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const sessionStore = createSessionStore(root, {
   isPinned: (id) => queries.has(id),
 });
@@ -188,8 +219,14 @@ async function probe(cwd, read) {
     },
   });
   try {
-    checkAccount(await q.accountInfo());
-    return await read(q);
+    return await boundedPreparation(
+      async () => {
+        checkAccount(await q.accountInfo());
+        return read(q);
+      },
+      Date.now() + PREPARATION_TIMEOUT_MS,
+      () => controller.abort(),
+    );
   } finally {
     clearTimeout(timer);
     release();
@@ -619,7 +656,14 @@ async function startSession(s, active, p) {
       },
     });
     active.q = q;
-    checkAccount(await q.accountInfo());
+    active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
+    checkAccount(
+      await boundedPreparation(
+        () => q.accountInfo(),
+        Date.now() + PREPARATION_TIMEOUT_MS,
+        () => q.close(),
+      ),
+    );
     allowed = true;
     admit();
     active.readyResolve();
@@ -1101,7 +1145,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 14 },
+      capabilities: { claudeVersion: 15 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1246,13 +1290,14 @@ async function handle(method, p) {
     const s = await session(p.threadId);
     let values;
     if (method === "thread/turns/list")
-      values =
-        p.sortDirection === "asc" ? [...s.turns] : [...s.turns].reverse();
+      values = s.turns.filter((turn) => !pendingTurnReceipts.has(turn.id));
     else {
       const t = s.turns.find((t) => t.id === p.turnId);
       if (!t) throw new Error("Unknown Claude turn");
       values = t.items;
     }
+    if (method === "thread/turns/list" && p.sortDirection !== "asc")
+      values.reverse();
     const offset = p.cursor ? Number(p.cursor) : 0,
       limit = Math.max(1, Math.min(100, p.limit || 20));
     if (!Number.isSafeInteger(offset) || offset < 0)
@@ -1366,14 +1411,24 @@ async function handle(method, p) {
   }
   if (method === "turn/start") {
     const s = await session(p.threadId);
-    const prior = s.turns.find(
+    const matches = s.turns.filter(
       (turn) =>
         turn.clientUserMessageId &&
         turn.clientUserMessageId === p.clientUserMessageId,
     );
+    if (
+      matches.some(
+        (turn) =>
+          JSON.stringify(turn.items[0].content) !== JSON.stringify(p.input),
+      )
+    )
+      throw new Error("This message identity has different content");
+    const prior = matches.find((turn) => turn.startOutcome !== "not_applied");
     if (prior) {
-      if (JSON.stringify(prior.items[0].content) !== JSON.stringify(p.input))
-        throw new Error("This message identity has different content");
+      if (prior.startOutcome === "preparing")
+        throw Object.assign(new Error("Claude input receipt outcome unknown"), {
+          data: { turnStartOutcome: "unknown" },
+        });
       return { turn: { id: prior.id, status: prior.status } };
     }
     const running = queries.get(s.id)?.turn;
@@ -1402,6 +1457,7 @@ async function handle(method, p) {
     const turn = {
       id: turnId,
       clientUserMessageId: p.clientUserMessageId,
+      startOutcome: "preparing",
       status: "inProgress",
       items: [
         {
@@ -1413,15 +1469,26 @@ async function handle(method, p) {
       ],
     };
     let active = queries.get(s.id);
-    const toolsChanged =
-      Array.isArray(p.dynamicTools) &&
-      JSON.stringify(p.dynamicTools) !== JSON.stringify(s.dynamicTools || []);
-    if (toolsChanged) s.dynamicTools = p.dynamicTools;
+    const deadline = Date.now() + PREPARATION_TIMEOUT_MS;
+    const control = (read) =>
+      boundedPreparation(read, deadline, () => {
+        if (
+          active &&
+          queries.get(s.id) === active &&
+          !active.turn &&
+          !active.tasks.size
+        )
+          discardQuery(s, active);
+      });
+    const requestedTools = p.dynamicTools || s.dynamicTools || [];
+    const toolsIdentity = JSON.stringify(requestedTools);
+    const toolsChanged = active && active.toolsIdentity !== toolsIdentity;
+    s.dynamicTools = requestedTools;
     if (active && !active.turn && !active.tasks.size) {
       // A persistent query can die between turns (its Claude process ends).
       // Nothing is running in it, so start this turn in a fresh query.
       try {
-        await active.ready;
+        await control(() => active.ready);
       } catch (error) {
         if (!deadQuery(error)) throw error;
         discardQuery(s, active);
@@ -1429,26 +1496,24 @@ async function handle(method, p) {
       }
     }
     if (active) {
-      await active.ready;
+      await control(() => active.ready);
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
-        try {
-          // The SDK keeps an already registered in-process server even when its
-          // tools change. Remove it first so the new schema replaces it.
-          await active.q.setMcpServers({});
-          await active.q.setMcpServers({
+        // The SDK keeps an already registered in-process server even when its
+        // tools change. Remove it first so the new schema replaces it.
+        await control(() => active.q.setMcpServers({}));
+        await control(() =>
+          active.q.setMcpServers({
             studio: studioTools(s, () => active.turn),
-          });
-        } catch (error) {
-          process.stderr.write(
-            `Studio tools were not updated for ${s.id}: ${error?.message || error}\n`,
-          );
-        }
+          }),
+        );
+        active.toolsIdentity = toolsIdentity;
       }
       try {
-        await active.q.setModel(p.model || s.model);
-        await active.q.setPermissionMode(permissionMode(s, p));
-        await active.q.applyFlagSettings(await flags(s, p, true));
+        await control(() => active.q.setModel(p.model || s.model));
+        await control(() => active.q.setPermissionMode(permissionMode(s, p)));
+        const flagSettings = await control(() => flags(s, p, true));
+        await control(() => active.q.applyFlagSettings(flagSettings));
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
         discardQuery(s, active);
@@ -1468,6 +1533,7 @@ async function handle(method, p) {
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
+    pendingTurnReceipts.add(turn.id);
     s.turns.push(turn);
     s.preview =
       p.input?.find((item) => item.type === "text")?.text?.slice(0, 160) || "";
@@ -1479,12 +1545,22 @@ async function handle(method, p) {
         active.reservingInput = false;
       }
       s.turns = s.turns.filter((t) => t !== turn);
+      pendingTurnReceipts.delete(turn.id);
       throw error;
     }
     if (active) {
       active.reservingInput = false;
-      if (active.turn !== turn || active.input.closed)
-        throw new Error("Claude stopped before accepting the new turn");
+      if (active.turn !== turn || active.input.closed) {
+        const error = new Error("Claude stopped before accepting the new turn");
+        turn.status = "failed";
+        turn.startOutcome = "not_applied";
+        turn.error = { message: error.message };
+        pendingTurnReceipts.delete(turn.id);
+        await persist(s);
+        throw Object.assign(error, {
+          data: { turnStartOutcome: "not_applied" },
+        });
+      }
       active.lastUsage = null;
     } else {
       active = newActive(turn);
@@ -1498,6 +1574,20 @@ async function handle(method, p) {
     active.input.push(
       userMessage(s, turn, blocks, p.clientUserMessageId || turn.id),
     );
+    turn.startOutcome = "accepted";
+    try {
+      await persist(s);
+    } catch (error) {
+      throw Object.assign(
+        new Error(
+          "Claude accepted input; receipt persistence failed; outcome unknown",
+          { cause: error },
+        ),
+        { data: { turnStartOutcome: "unknown" } },
+      );
+    } finally {
+      pendingTurnReceipts.delete(turn.id);
+    }
     return { turn: { id: turn.id, status: turn.status } };
   }
   if (method === "turn/steer") {
@@ -1627,6 +1717,7 @@ lines.on("line", (line) => {
   const key = params.threadId;
   const ordered =
     key &&
+    !(message.method === "thread/read" && params.includeTurns !== true) &&
     [
       "turn/start",
       "turn/steer",

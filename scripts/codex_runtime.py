@@ -4663,7 +4663,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["cyberAccessProgram"] = program
                 if a.get("nativeEffort", a.get("effort")) is not None:
                     params["effort"] = a.get("nativeEffort", a.get("effort"))
-                native_operation_id = "turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id)
+                # The saved attempt keeps retries of this submission identical.
+                # A confirmed rejection permits a new attempt for the same input.
+                native_operation_id = "turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id) + ":attempt:" + attempt_id
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(nativeOperationId=native_operation_id, accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])

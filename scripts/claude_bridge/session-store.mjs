@@ -359,10 +359,12 @@ export function createSessionStore(root, options = {}) {
     const changes = [];
     const deltaBytes = diff(entry.shadow, session, [], changes);
     if (!changes.length) return;
+    // The live session can change while the append waits. Apply the same values written to disk.
+    const frozenChanges = copy(changes);
     const sequence = entry.sequence + 1;
-    const record = JSON.stringify({ sequence, changes }) + "\n";
+    const record = JSON.stringify({ sequence, changes: frozenChanges }) + "\n";
     await fs.appendFile(logFor(id), record, { mode: 0o600 });
-    entry.shadow = apply(entry.shadow, copy(changes));
+    entry.shadow = apply(entry.shadow, frozenChanges);
     entry.sequence = sequence;
     entry.records++;
     entry.journalBytes += Buffer.byteLength(record);
