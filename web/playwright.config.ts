@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 import { browserExecutablePath } from "../tests/client/playwright.mjs";
 
 const workerLimit = 2;
@@ -28,7 +29,11 @@ const specialProjects =
 
 export default defineConfig({
   testDir: "..",
-  testMatch: ["tests/client/**/*.spec.mjs", "web/src/**/*.spec.mjs"],
+  testMatch: [
+    fileURLToPath(new URL("../tests/client/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./src/**/*.spec.mjs", import.meta.url)),
+  ],
+  testIgnore: [fileURLToPath(new URL("../.worktrees/**", import.meta.url))],
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
   workers: workerLimit,
