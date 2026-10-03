@@ -108,9 +108,19 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(server.resolvedUrls.local[0]);
+  // Notes stay in the tooltip; the footer shows only the estimate and a marker.
   await page
-    .getByText("Earlier Claude totals may be incomplete", { exact: false })
+    .locator(".session-cost-summary")
+    .filter({ hasText: "*" })
     .waitFor();
+  assert.match(
+    await page.locator(".session-cost-summary").getAttribute("title"),
+    /Earlier Claude totals may be incomplete/,
+  );
+  assert.doesNotMatch(
+    await page.locator(".session-cost-summary").innerText(),
+    /incomplete|Unpriced/,
+  );
   const _toggle = page.getByRole("button", {
     name: "Account limits",
     exact: true,

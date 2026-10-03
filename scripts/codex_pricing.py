@@ -180,7 +180,16 @@ def lookup(catalog, provider, model):
         return None
     providers = catalog.get("providers", {})
     models = providers.get(provider, {}).get("models", {})
+    model = model.removesuffix("[1m]")
     record = models.get(model)
+    if record is None and provider == "anthropic" and re.fullmatch(r"[a-z]+", model):
+        # Claude Code aliases such as "sonnet" or "opus" mean the newest model
+        # of that family. Context tiers still apply through context_tokens.
+        family = [(str((value or {}).get("release_date") or ""), name)
+                  for name, value in models.items()
+                  if re.fullmatch(rf"claude-{model}-[0-9][0-9.-]*", name)]
+        if family:
+            record = models.get(max(family)[1])
     if record is None:
         dated = re.fullmatch(r"(.+)-\d{8}", model)
         if dated:

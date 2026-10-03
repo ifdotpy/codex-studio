@@ -437,6 +437,9 @@ export default function Usage({
           sessionCost.unknownModels.length
             ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
             : []),
+          ...(sessionCost?.claudeHistoryIncomplete
+            ? ["Earlier Claude totals may be incomplete."]
+            : []),
           typeof sessionCost?.cacheAgeSeconds === "number"
             ? `Updated ${Math.round(sessionCost.cacheAgeSeconds)} seconds ago`
             : "",
@@ -448,11 +451,13 @@ export default function Usage({
         {sessionCost?.pricingState === "loading"
           ? ""
           : sessionCost
-            ? `Session estimate${sessionCost.claudeHistoryIncomplete ? " · Earlier Claude totals may be incomplete" : ""}: ${dollars(sessionCost.totalUSD)}`
+            ? `Session estimate: ${dollars(sessionCost.totalUSD)}${
+                sessionCost.claudeHistoryIncomplete ||
+                sessionCost.unknownModels?.length
+                  ? "*"
+                  : ""
+              }`
             : ""}
-        {Array.isArray(sessionCost?.unknownModels) &&
-          sessionCost.unknownModels.length > 0 &&
-          ` · Unpriced: ${sessionCost.unknownModels.join(", ")}`}
       </div>
       <TokenRate agent={agent} />
       <Popover

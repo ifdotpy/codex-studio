@@ -18,7 +18,7 @@ from codex_pricing import price_usage
 def provider_for(model):
     if not isinstance(model, str):
         return None
-    if model.startswith("claude-"):
+    if model.startswith("claude-") or model.removesuffix("[1m]") in {"opus", "sonnet", "haiku", "fable"}:
         return "anthropic"
     if model.startswith(("gpt-", "o1", "o3", "o4")):
         return "openai"
@@ -670,6 +670,9 @@ class SessionCostReader:
                     raise
                 groups = ()
             for model, account_key, input_tokens, cached_tokens, write_tokens, output_tokens, input_uncached, count in groups:
+                if model == "<synthetic>":
+                    # Claude Code records local notices under this name with zero usage.
+                    continue
                 provider = provider_for(model) or provider_by_account.get(account_key)
                 if provider is None:
                     unpriced.add(str(model or "Unknown model"))
@@ -694,6 +697,8 @@ class SessionCostReader:
                 tier_used |= tier
             for record in claude_messages.values():
                 model = record["model"]
+                if model == "<synthetic>":
+                    continue
                 context_tokens = record["usage"].get("inputTokens", 0)
                 if record.get("inputTokensAreUncached"):
                     context_tokens += record["usage"].get("cachedInputTokens", 0) + record["usage"].get("cacheWriteInputTokens", 0)

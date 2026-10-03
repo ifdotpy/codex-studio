@@ -86,16 +86,18 @@ class PricingSessionCostContract(unittest.TestCase):
                    "cache_read_input_tokens": 20, "output_tokens": 10}}}
         old = {**row, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 86400)),
                "message": {**row["message"], "id": "msg-old"}}
-        unknown = {**row, "message": {**row["message"], "id": "msg-unknown", "model": "opus[1m]"}}
+        unknown = {**row, "message": {**row["message"], "id": "msg-unknown", "model": "claude-mystery-9"}}
+        alias = {**row, "message": {**row["message"], "id": "msg-alias", "model": "opus[1m]"}}
         synthetic = {**row, "message": {**row["message"], "id": "synthetic", "model": "<synthetic>"}}
-        (projects / "one.jsonl").write_text("\n".join(json.dumps(item) for item in (row, row, old, unknown, synthetic)))
+        (projects / "one.jsonl").write_text("\n".join(json.dumps(item) for item in (row, row, old, unknown, alias, synthetic)))
         reader = ClaudeCostReader(self.root / "cache", self.root / "claude", FixedPricing())
         reader._refresh()
         result = reader.snapshot()
         self.assertEqual(result["data"]["coverage"], "partial")
-        self.assertEqual(result["data"]["unknownModels"], ["opus[1m]"])
-        self.assertAlmostEqual(result["data"]["todayUSD"], .00028)
-        self.assertAlmostEqual(result["data"]["last30DaysUSD"], .00056)
+        # A Claude Code alias prices as its family model; an unknown model stays unpriced.
+        self.assertEqual(result["data"]["unknownModels"], ["claude-mystery-9"])
+        self.assertAlmostEqual(result["data"]["todayUSD"], .00056)
+        self.assertAlmostEqual(result["data"]["last30DaysUSD"], .00084)
         with patch("codex_costs.os.replace") as replace:
             reader._refresh()
             replace.assert_not_called()
@@ -667,6 +669,22 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertNotIn("context_over_200k", model["cost"])
         self.assertEqual(model["cost"]["tiers"][0]["tier"]["size"], 272000)
 
+
+
+class ClaudeAliasPricing(unittest.TestCase):
+    def test_claude_code_aliases_resolve_to_newest_family_model(self):
+        from codex_pricing import lookup
+        from codex_session_costs import provider_for
+        catalog = {"providers": {"anthropic": {"models": {
+            "claude-sonnet-4-5": {"release_date": "2025-09-29", "cost": {"input": 3, "output": 15}},
+            "claude-sonnet-5-5": {"release_date": "2026-06-01", "cost": {"input": 2, "output": 10}},
+            "claude-opus-5-5": {"release_date": "2026-06-01", "cost": {"input": 4, "output": 20}},
+        }}}}
+        self.assertEqual(lookup(catalog, "anthropic", "sonnet")["input"], 2)
+        self.assertEqual(lookup(catalog, "anthropic", "opus[1m]")["output"], 20)
+        self.assertIsNone(lookup(catalog, "anthropic", "haiku"))
+        self.assertEqual(provider_for("opus[1m]"), "anthropic")
+        self.assertIsNone(provider_for("<synthetic>"))
 
 if __name__ == "__main__":
     unittest.main()
