@@ -14,7 +14,7 @@ import type { Terminal } from "@xterm/xterm";
 import { api, syncApi, errorText, save, saved } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
-import { copyText } from "../clipboard";
+import { copyText } from "../clipboard/clipboard";
 
 type Shell = {
   id: string;

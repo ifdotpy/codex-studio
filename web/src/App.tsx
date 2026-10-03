@@ -4,7 +4,7 @@ import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
-import { accountLimits } from "./accountUsage";
+import { accountLimits } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
@@ -92,7 +92,7 @@ import {
   backgroundActivities,
   chatActivities,
   hasCompletedResult,
-} from "./components/chatStatusModel";
+} from "./components/chat-status/chatStatusModel";
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";

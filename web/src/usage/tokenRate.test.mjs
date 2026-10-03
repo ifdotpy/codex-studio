@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { it as test } from "vitest";
 import {
   formatTokenRate,
   getTokenRate,
@@ -13,7 +13,7 @@ import {
   watchTeamTokenRates,
   receiveWorkspaceTokenRates,
   clearWorkspaceTokenRates,
-} from "../web/src/tokenRate.ts";
+} from "./tokenRate.ts";
 
 test("rate tween has a bounded duration and no overshoot", () => {
   assert.equal(tweenTokenRate(20, 80, 0), 20);

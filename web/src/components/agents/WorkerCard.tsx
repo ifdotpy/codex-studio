@@ -9,12 +9,11 @@ import {
   nativeReleaseLabel,
   statusLabel,
   type Agent,
-  type Json,
 } from "../../types";
 import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
 import TokenRate from "../TokenRate";
-import type { ChatIndicator } from "../chatStatusModel";
+import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import { WorkerDiskLabel } from "../WorktreeDisk";
 
 function WorkerExcerpt({

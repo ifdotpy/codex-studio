@@ -1,19 +1,8 @@
 import assert from "node:assert/strict";
-import { registerHooks } from "node:module";
-const hooks = registerHooks({
-  resolve(specifier, context, next) {
-    if (
-      specifier === "./fileLinks" &&
-      context.parentURL?.endsWith("conversationResultModel.ts")
-    )
-      specifier += ".ts";
-    return next(specifier, context);
-  },
-});
-const { conversationResults } = await import(
-  "../web/src/components/conversationResultModel.ts"
-);
-hooks.deregister();
+import { conversationResults } from "./conversationResultModel.ts";
+
+import { it } from "vitest";
+
 const assistant = (text, extra = {}) => ({
   id: "answer",
   role: "assistant",
@@ -26,11 +15,8 @@ const output = (payload, extra = {}) => ({
   text: JSON.stringify(payload),
   ...extra,
 });
-let count = 0;
 function check(name, run) {
-  run();
-  count++;
-  console.log(`PASS ${name}`);
+  it(name, run);
 }
 
 check("linked paths preserve labels, line numbers and local images", () => {
@@ -166,4 +152,3 @@ check(
     assert.equal(results[2].messageId, "answer-3");
   },
 );
-console.log(`${count} conversation result contracts passed`);

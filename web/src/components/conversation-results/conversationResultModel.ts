@@ -1,6 +1,6 @@
 import { marked } from "marked";
-import type { Message } from "../types";
-import { localFileLink } from "./fileLinks";
+import type { Message } from "../../types";
+import { localFileLink } from "../fileLinks";
 
 interface ResultBase {
   id: string;

@@ -1,4 +1,4 @@
-import type { Json } from "./types";
+import type { Json } from "../types";
 
 const DAY = 86400;
 const WEEK_MINUTES = 10080;

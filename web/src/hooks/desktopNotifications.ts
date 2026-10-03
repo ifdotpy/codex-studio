@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { desktopAlerts } from "../desktopAlerts";
+import { desktopAlerts } from "../desktop/desktopAlerts";
 import type { Snapshot } from "../types";
 
 export function useDesktopNotifications(

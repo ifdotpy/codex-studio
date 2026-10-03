@@ -1,14 +1,24 @@
 import { useEffect, useRef } from "react";
 import { saved, save } from "../api";
-import { limitRecovered } from "../limitRecovery";
+import { limitRecovered } from "../usage/limitRecovery";
 import type { Agent, Json } from "../types";
 
-export function useRecoveredLimit(agent: Agent, limits: Json | null, now: number) {
+export function useRecoveredLimit(
+  agent: Agent,
+  limits: Json | null,
+  now: number,
+) {
   const storageKey = `studio-recovered-limit:${JSON.stringify([
-    agent.id, agent.accountKey, agent.threadId,
+    agent.id,
+    agent.accountKey,
+    agent.threadId,
   ])}`;
   const episode = JSON.stringify([
-    agent.nativeLimitErrorAt ?? [agent.lastCompletedTurn, agent.turnId, agent.lastEvent],
+    agent.nativeLimitErrorAt ?? [
+      agent.lastCompletedTurn,
+      agent.turnId,
+      agent.lastEvent,
+    ],
     agent.error,
   ]);
   const fresh = limitRecovered(agent, limits, now);

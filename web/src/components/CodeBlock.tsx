@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
 import "./rich-preview.css";
-import { copyText } from "../clipboard";
+import { copyText } from "../clipboard/clipboard";
 
 export default function CodeBlock({
   source,

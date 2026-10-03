@@ -1,4 +1,4 @@
-import type { Json } from "../types";
+import type { Json } from "../../types";
 
 export interface ToolImage {
   kind: "path" | "inline";

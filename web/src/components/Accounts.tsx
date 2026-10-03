@@ -4,7 +4,7 @@ import ClaudeProfile from "./ClaudeProfile";
 import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
-import { accountLimits } from "../accountUsage";
+import { accountLimits } from "../usage/accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
   Check,

@@ -1,4 +1,4 @@
-import type { Agent, Snapshot } from "../types";
+import type { Agent, Snapshot } from "../../types";
 
 export type ChatIndicatorKind =
   | "working"

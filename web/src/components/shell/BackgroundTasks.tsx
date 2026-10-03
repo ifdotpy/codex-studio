@@ -32,7 +32,7 @@ import { api, apiDownload, errorText } from "../../api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
-import { copyText } from "../../clipboard";
+import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
 
 export { activeTask, backgroundTasks } from "../backgroundTaskModel";

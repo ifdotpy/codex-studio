@@ -1,4 +1,4 @@
-import type { Snapshot } from "./types";
+import type { Snapshot } from "../types";
 
 export type DesktopAlert = {
   id: string;

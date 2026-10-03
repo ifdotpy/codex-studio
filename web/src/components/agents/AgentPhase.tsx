@@ -14,7 +14,10 @@ import { currentCapacityRetry } from "../../capacityRetry";
 import { nativeThreadError } from "../../nativeErrors";
 import { displayError, errorDetails } from "../../errorPresentation";
 import ErrorDescription from "../ErrorDescription";
-import { endedWaitLabel, type ChatWaitState } from "../chatStatusModel";
+import {
+  endedWaitLabel,
+  type ChatWaitState,
+} from "../chat-status/chatStatusModel";
 import "./provider-activity.css";
 export default function AgentPhase({
   agent,

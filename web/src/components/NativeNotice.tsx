@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { displayError, errorDetails } from "../errorPresentation";
 import { currentCapacityRetry } from "../capacityRetry";
-import { limitRecovery } from "../limitRecovery";
+import { limitRecovery } from "../usage/limitRecovery";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import CapacityRetry from "./CapacityRetry";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";

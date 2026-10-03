@@ -32,7 +32,7 @@ import {
   type HistoryGroup,
 } from "../../turnHistoryModel";
 import "./turn-history.css";
-import { messageRenderKey } from "../../messageDelivery";
+import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 
 type CommandVisibility = boolean | ReadonlyMap<string, boolean>;

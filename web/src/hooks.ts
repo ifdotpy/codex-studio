@@ -1,4 +1,4 @@
-import { retainTranscriptItems } from "./transcriptIdentity";
+import { retainTranscriptItems } from "./conversation/transcriptIdentity";
 import {
   boundTranscriptItems,
   trimTranscriptPageCache,

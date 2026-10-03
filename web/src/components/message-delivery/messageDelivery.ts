@@ -1,5 +1,5 @@
-import type { Message } from "../types";
-import type { OutgoingMessage } from "../sync/send";
+import type { Message } from "../../types";
+import type { OutgoingMessage } from "../../sync/send";
 
 export function explicitQueue(item: Record<string, unknown>) {
   if (item.localDelivery && item.deliveryStatus === "queued") return false;

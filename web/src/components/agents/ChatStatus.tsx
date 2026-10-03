@@ -1,5 +1,5 @@
 import { CircleAlert } from "lucide-react";
-import type { ChatIndicator } from "../chatStatusModel";
+import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./chat-status.css";
 import "./provider-activity.css";
 

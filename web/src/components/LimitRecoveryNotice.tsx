@@ -1,8 +1,8 @@
 import { localDateTime } from "../local-time";
 import { useState } from "react";
 import { Button } from "@mantine/core";
-import type { LimitRecovery } from "../limitRecovery";
-import { copyText } from "../clipboard";
+import type { LimitRecovery } from "../usage/limitRecovery";
+import { copyText } from "../clipboard/clipboard";
 import { api, errorText } from "../api";
 import type { Json } from "../types";
 

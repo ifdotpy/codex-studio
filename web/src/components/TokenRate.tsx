@@ -7,8 +7,8 @@ import {
   subscribeTokenRate,
   tweenTokenRate,
   workerRateKey,
-} from "../tokenRate";
-import type { TokenRate as Rate } from "../tokenRate";
+} from "../usage/tokenRate";
+import type { TokenRate as Rate } from "../usage/tokenRate";
 
 import "./TokenRate.css";
 

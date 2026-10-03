@@ -11,11 +11,11 @@ import type { Message } from "../../../types";
 import FilePreview from "../../FilePreview";
 import RichPreview from "../../RichPreview";
 import FileDiff from "../../FileDiff";
-import { fileChanges, unifiedDiff } from "../../fileChangeModel";
+import { fileChanges, unifiedDiff } from "../../file-change/fileChangeModel";
 import {
   conversationResults,
   type ConversationResult,
-} from "../../conversationResultModel";
+} from "../../conversation-results/conversationResultModel";
 import "./conversation-results.css";
 
 export default memo(function ConversationResults({

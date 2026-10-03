@@ -16,7 +16,10 @@ import type { Json, Message } from "../../../types";
 import "./read-activity.css";
 import { toolLimitNotice } from "../../toolLimitNotice";
 import MarkdownImage from "../../MarkdownImage";
-import { toolImages, toolImageDisplayPayload } from "../../toolImages";
+import {
+  toolImages,
+  toolImageDisplayPayload,
+} from "../../tool-images/toolImages";
 import FileChangeCard from "../../FileChangeCard";
 
 const names: Record<string, string> = {

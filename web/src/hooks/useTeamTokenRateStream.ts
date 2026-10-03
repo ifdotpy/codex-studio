@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { watchTeamTokenRates } from "../tokenRate";
+import { watchTeamTokenRates } from "../usage/tokenRate";
 
 // The existing workspace transport supplies rates to the visible Team panel.
 export function useTeamTokenRateStream(

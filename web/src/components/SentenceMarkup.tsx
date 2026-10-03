@@ -1,7 +1,7 @@
 import { createElement, memo, useMemo, useState, type ReactNode } from "react";
 import CodeBlock from "./CodeBlock";
 import MarkdownImage from "./MarkdownImage";
-import { sentences } from "./sentenceStream";
+import { sentences } from "./sentence-stream/sentenceStream";
 
 // The caller sanitizes HTML. React retains old nodes when a paragraph grows.
 export default memo(function SentenceMarkup({

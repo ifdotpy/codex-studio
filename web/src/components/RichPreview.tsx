@@ -2,7 +2,7 @@ import { Button, Loader } from "@mantine/core";
 import { Check, Code, Copy, Download, Eye } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import "./rich-preview.css";
-import { copyText } from "../clipboard";
+import { copyText } from "../clipboard/clipboard";
 
 // A sandbox without permissions has an opaque origin. Remove navigation elements
 // as well: sandbox alone still permits a link to navigate its own frame.

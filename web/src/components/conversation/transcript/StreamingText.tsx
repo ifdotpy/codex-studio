@@ -10,7 +10,7 @@ import {
   relativeFileLocation,
 } from "../../fileLinks";
 
-import { sentencePrefix } from "../../sentenceStream";
+import { sentencePrefix } from "../../sentence-stream/sentenceStream";
 import SentenceMarkup from "../../SentenceMarkup";
 import { relativeToDocument } from "../../filePreviewFormats";
 import { CompletedMarkdownCache } from "../../completedMarkdownCache";

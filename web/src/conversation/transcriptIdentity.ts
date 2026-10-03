@@ -1,4 +1,4 @@
-import type { Message } from "./types";
+import type { Message } from "../types";
 
 // Compare JSON values, including fields removed by the server. Deep or unusual
 // values simply keep their new identity; this never discards incoming data.

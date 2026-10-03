@@ -4,13 +4,12 @@ import {
   unifiedDiff,
   diffTotals,
   changeLabel,
-} from "../web/src/components/fileChangeModel.ts";
+} from "./fileChangeModel.ts";
 
-let checks = 0;
+import { it } from "vitest";
+
 function check(name, run) {
-  run();
-  checks++;
-  console.log(`PASS ${name}`);
+  it(name, run);
 }
 function native(diff, type = "update", extra = {}) {
   return fileChanges([{ path: "src/a.ts", kind: { type, ...extra }, diff }])[0];
@@ -278,4 +277,3 @@ check("a Claude Edit diff is rebuilt from its multi-line input", () => {
   );
   assert.deepEqual([file.added, file.removed], [4, 2]);
 });
-console.log(`PASS ${checks} file change model contracts`);

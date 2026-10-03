@@ -44,7 +44,10 @@ import {
   usePeerTeamMove,
 } from "./shell/messages/PeerTeams";
 import ChatStatus from "./agents/ChatStatus";
-import { hasCompletedResult, type ChatIndicator } from "./chatStatusModel";
+import {
+  hasCompletedResult,
+  type ChatIndicator,
+} from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 type Props = {
   data: Snapshot;

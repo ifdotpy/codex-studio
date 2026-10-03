@@ -1,5 +1,5 @@
-import type { Agent, Json } from "./types";
-import { nativeErrorKind } from "./nativeErrors";
+import type { Agent, Json } from "../types";
+import { nativeErrorKind } from "../nativeErrors";
 
 export type LimitRecovery = {
   title: string;
@@ -11,23 +11,58 @@ export type LimitRecovery = {
 const finite = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
-export function limitRecovered(agent: Agent, limits: Json | null, now: number): boolean {
-  if (!["usageLimitExceeded", "rateLimitExceeded"].includes(nativeErrorKind(agent.error))) return false;
+export function limitRecovered(
+  agent: Agent,
+  limits: Json | null,
+  now: number,
+): boolean {
+  if (
+    !["usageLimitExceeded", "rateLimitExceeded"].includes(
+      nativeErrorKind(agent.error),
+    )
+  )
+    return false;
   const errorAt = finite(agent.nativeLimitErrorAt)
     ? agent.nativeLimitErrorAt
     : Date.parse(agent.lastEvent || "") / 1000;
-  if (!limits || limits.error || limits.stale || limits.loading ||
-      (limits.accountKey || "default") !== (agent.accountKey || "default") ||
-      !finite(limits.at) || now - limits.at > 300 || limits.at > now + 5 ||
-      (finite(errorAt) && limits.at <= errorAt) ||
-      limits.data?.ordinaryUsageAllowed !== true) return false;
-  const buckets = [limits.data.rateLimits, ...Object.values(limits.data.rateLimitsByLimitId || {})] as Json[];
-  return !!limits.data.rateLimits && buckets.every((bucket) => bucket &&
-    bucket.rateLimitReachedType == null && !bucket.spendControlReached &&
-    !(finite(bucket.individualLimit?.remainingPercent) && bucket.individualLimit.remainingPercent <= 0) &&
-    [bucket.primary, bucket.secondary].every((window) => !window ||
-      (finite(window.usedPercent) && window.usedPercent >= 0 && window.usedPercent < 100 &&
-       (!finite(window.resetsAt) || window.resetsAt > now))));
+  if (
+    !limits ||
+    limits.error ||
+    limits.stale ||
+    limits.loading ||
+    (limits.accountKey || "default") !== (agent.accountKey || "default") ||
+    !finite(limits.at) ||
+    now - limits.at > 300 ||
+    limits.at > now + 5 ||
+    (finite(errorAt) && limits.at <= errorAt) ||
+    limits.data?.ordinaryUsageAllowed !== true
+  )
+    return false;
+  const buckets = [
+    limits.data.rateLimits,
+    ...Object.values(limits.data.rateLimitsByLimitId || {}),
+  ] as Json[];
+  return (
+    !!limits.data.rateLimits &&
+    buckets.every(
+      (bucket) =>
+        bucket &&
+        bucket.rateLimitReachedType == null &&
+        !bucket.spendControlReached &&
+        !(
+          finite(bucket.individualLimit?.remainingPercent) &&
+          bucket.individualLimit.remainingPercent <= 0
+        ) &&
+        [bucket.primary, bucket.secondary].every(
+          (window) =>
+            !window ||
+            (finite(window.usedPercent) &&
+              window.usedPercent >= 0 &&
+              window.usedPercent < 100 &&
+              (!finite(window.resetsAt) || window.resetsAt > now)),
+        ),
+    )
+  );
 }
 
 export function limitRecovery(

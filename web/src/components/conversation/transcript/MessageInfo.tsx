@@ -3,7 +3,7 @@ import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
 import { api } from "../../../api";
 import { localDateTime } from "../../../local-time";
-import { peekSessionCost } from "../../../sessionCostCache";
+import { peekSessionCost } from "../../../usage/sessionCostCache";
 import type { Message } from "../../../types";
 import type { UsageAccount } from "../../Usage";
 import "./message-info.css";

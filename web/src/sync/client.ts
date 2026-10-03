@@ -11,8 +11,8 @@ import { onResume } from "./resume";
 import {
   clearWorkspaceTokenRates,
   receiveWorkspaceTokenRates,
-} from "../tokenRate";
-import type { TokenRate } from "../tokenRate";
+} from "../usage/tokenRate";
+import type { TokenRate } from "../usage/tokenRate";
 import {
   cacheTranscript,
   cacheTranscriptValue,

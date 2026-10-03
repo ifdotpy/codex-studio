@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { weeklyRunway } from "../web/src/weeklyRunway.ts";
+import { it as test } from "vitest";
+import { weeklyRunway } from "./weeklyRunway.ts";
 
 const now = 1800000000;
 const day = 86400;

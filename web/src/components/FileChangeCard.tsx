@@ -7,7 +7,11 @@ import {
 } from "lucide-react";
 import type { Json, Message } from "../types";
 import FileDiff, { DiffCounts } from "./FileDiff";
-import { changeLabel, fileChanges, unifiedDiff } from "./fileChangeModel";
+import {
+  changeLabel,
+  fileChanges,
+  unifiedDiff,
+} from "./file-change/fileChangeModel";
 
 export default memo(function FileChangeCard({
   item,

@@ -4,7 +4,7 @@ import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, save, saved } from "../api";
 import type { Account, useAccounts } from "./Accounts";
-import { copyText } from "../clipboard";
+import { copyText } from "../clipboard/clipboard";
 
 export interface LoginReceipt {
   requestId: string;

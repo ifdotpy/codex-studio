@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { diffTotals, type FileDiff as RecordedDiff } from "./fileChangeModel";
+import {
+  diffTotals,
+  type FileDiff as RecordedDiff,
+} from "./file-change/fileChangeModel";
 import "./file-diff.css";
 
 export function DiffCounts({ files }: { files: RecordedDiff[] }) {

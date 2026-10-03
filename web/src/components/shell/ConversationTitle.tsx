@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Agent } from "../../types";
 import ChatStatus from "../agents/ChatStatus";
-import type { ChatIndicator } from "../chatStatusModel";
+import type { ChatIndicator } from "../chat-status/chatStatusModel";
 
 export type ConversationTitleProps = {
   title: string;

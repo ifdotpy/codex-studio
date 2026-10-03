@@ -1,4 +1,4 @@
-import { chatWaitState } from "./chatStatusModel";
+import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
@@ -50,7 +50,7 @@ import {
   explicitQueue,
   dispatchedMessage,
   mergeQueueOrder,
-} from "./messageDelivery";
+} from "./message-delivery/messageDelivery";
 import { useRemovedMessages } from "./removedMessages";
 import {
   isSendingMessage,
@@ -101,7 +101,7 @@ import ComposerAttachments, {
   type Attachment,
 } from "./ComposerAttachments";
 import "./chat-controls.css";
-import { copyText } from "../clipboard";
+import { copyText } from "../clipboard/clipboard";
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {

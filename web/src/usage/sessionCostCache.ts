@@ -10,14 +10,16 @@ export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
 function valid(value: any, scope: string): value is Entry {
-  return value?.scope === scope &&
+  return (
+    value?.scope === scope &&
     Number.isFinite(value?.storedAt) &&
     value?.value?.pricingState === "ready" &&
     value?.value?.estimated === true &&
     (value.value.totalUSD === null || Number.isFinite(value.value.totalUSD)) &&
     Array.isArray(value.value.unknownModels) &&
     value.value.breakdown !== null &&
-    typeof value.value.breakdown === "object";
+    typeof value.value.breakdown === "object"
+  );
 }
 
 function remember(entry: Entry) {
@@ -96,7 +98,9 @@ export function storeSessionCost(
       records.push({ key: candidate, bytes: raw.length * 2, at });
     }
     records.sort((a, b) => a.at - b.at);
-    let bytes = serialized.length * 2 + records.reduce((sum, item) => sum + item.bytes, 0);
+    let bytes =
+      serialized.length * 2 +
+      records.reduce((sum, item) => sum + item.bytes, 0);
     while (records.length >= maxEntries || bytes > maxStoredBytes) {
       const oldest = records.shift();
       if (!oldest) break;
