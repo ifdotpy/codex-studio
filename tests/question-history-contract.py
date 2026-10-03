@@ -57,6 +57,15 @@ class QuestionHistoryContract(unittest.TestCase):
         self.runtime.answer(request["id"], {"answers": {"q": {"answers": ["native.rs"]}}})
         self.assertTrue(self.entity_deleted(request["id"]))
 
+    def test_native_answer_keeps_multiple_strings_without_new_protocol_fields(self):
+        request = self.question(options=[{"label": "One", "description": "First"},
+                                         {"label": "Two", "description": "Second"}])
+        self.assertNotIn("multiSelect", request["params"]["questions"][0])
+        body = {"answers": {"q": {"answers": ["One", "Two"]}}}
+        self.runtime.answer(request["id"], body)
+        self.assertEqual(self.runtime.server.responses[-1]["result"], body)
+        self.assertEqual(self.history()[0]["answerHistory"][0]["answer"], ["One", "Two"])
+
     def test_restart_retires_closed_request_entities(self):
         from codex_sync_entities import put, retire_closed_requests
         with self.runtime.lock, self.runtime.db() as db:
@@ -180,6 +189,17 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertNotIn("another-secret", json.dumps(self.history()))
         self.assertEqual(self.history()[0]["answerHistory"][0]["answer"], "[redacted]")
 
+    def test_mcp_enum_array_reaches_native_and_history(self):
+        self.runtime.request({"id": 105, "method": "mcpServer/elicitation/request", "params": {
+            "threadId": self.lead["threadId"], "mode": "form", "requestedSchema": {"properties": {
+                "features": {"type": "array", "items": {"type": "string", "enum": ["Search", "Export"]}}}}}})
+        request = self.runtime.snapshot()["requests"][-1]
+        body = {"decision": "accept", "content": {"features": ["Search", "Export"]}}
+        self.runtime.answer(request["id"], body)
+        self.assertEqual(self.runtime.server.responses[-1]["result"],
+                         {"action": "accept", "content": body["content"]})
+        self.assertEqual(self.history()[0]["answerHistory"][0]["answer"], ["Search", "Export"])
+
     def test_async_answer_creates_only_one_durable_user_event(self):
         self.runtime.notification({"method": "item/completed", "params": {"threadId": self.lead["threadId"],
             "item": {"id": "async-choice", "type": "agentMessage", "text": "Choose", "questions": [{"title": "Scope?", "options": ["One", "All"]}]}}})
@@ -192,6 +212,7 @@ class QuestionHistoryContract(unittest.TestCase):
             count = db.execute("SELECT count(*) FROM runtime_events WHERE id=?", (request["id"] + ":answer",)).fetchone()[0]
         self.assertEqual(count, 1)
         self.assertFalse(self.history()[0]["deferred"])
+
 
 
 if __name__ == "__main__":

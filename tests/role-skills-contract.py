@@ -149,7 +149,7 @@ class RoleSkillsContract(unittest.TestCase):
         worker = self.start(self.worker(lead))
         message = {"method": "item/completed", "params": {"threadId": worker["threadId"], "turnId": worker["turnId"],
             "item": {"id": "structured-question", "type": "agentMessage", "text": "I need the scope.",
-                     "questions": [{"title": "Which scope? " + "Full context " * 1200, "options": ["One", "Last complete option"]}]}}}
+                     "questions": [{"title": "Which scope? " + "Full context " * 1200, "options": ["One", "Last complete option"], "multiSelect": True}]}}}
         self.runtime.notification(message)
         self.runtime.notification(message)
         self.assertFalse(self.runtime.snapshot()["requests"])
@@ -161,6 +161,7 @@ class RoleSkillsContract(unittest.TestCase):
         self.assertGreater(len(detail["text"]), 12000)
         questions = json.loads(detail["text"].split("\n", 1)[1])
         self.assertEqual(questions[0]["options"][-1]["label"], "Last complete option")
+        self.assertTrue(questions[0]["multiSelect"])
         self.assertEqual(len(self.events(lead, "complaint")), 1)
         message["params"]["threadId"] = lead["threadId"]
         message["params"]["turnId"] = lead["turnId"]
@@ -168,6 +169,7 @@ class RoleSkillsContract(unittest.TestCase):
         request = self.runtime.snapshot()["requests"][-1]
         self.assertEqual(request["agent"], lead["id"])
         self.assertEqual(request["method"], "agent/asyncQuestion")
+        self.assertTrue(request["params"]["questions"][0]["multiSelect"])
 
     def test_legacy_worker_question_cannot_send_a_new_answer(self):
         worker = self.worker(self.lead())

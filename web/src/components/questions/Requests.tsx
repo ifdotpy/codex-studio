@@ -8,7 +8,12 @@ import { writeLocalDraft } from "../../sync/localDraft";
 import type { Json, Agent } from "../../types";
 import "./request-questions.css";
 import { nativeThreadError } from "../../nativeErrors";
-import AnswerFields, { type AnswerQuestion } from "./AnswerFields";
+import AnswerFields, {
+  answerList,
+  type AnswerQuestion,
+  type AnswerValue,
+  type AnswerValues,
+} from "./AnswerFields";
 
 type Props = {
   showDates?: boolean;
@@ -26,7 +31,13 @@ function requestQuestions(request: Json): AnswerQuestion[] {
       ([id, p]) => ({
         id,
         question: (p as Json).title || id,
-        options: (p as Json).enum?.map((label: string) => ({ label })),
+        options: ((p as Json).type === "array"
+          ? (p as Json).items?.enum
+          : (p as Json).enum
+        )?.map((label: string) => ({ label })),
+        multiSelect:
+          (p as Json).type === "array" &&
+          Array.isArray((p as Json).items?.enum),
         isSecret:
           (p as Json).isSecret ||
           (p as Json).writeOnly ||
@@ -35,7 +46,6 @@ function requestQuestions(request: Json): AnswerQuestion[] {
     )) as AnswerQuestion[];
 }
 
-type AnswerValues = Record<string, string>;
 // Secret answers remain in memory. Other answers survive a reload.
 const answerDrafts = new Map<string, AnswerValues>();
 // Show a command as the shell line the user would type, not as JSON.
@@ -61,12 +71,15 @@ const answerKey = (scope: string, request: Json) =>
     request.agent,
     request.id,
     request.method,
-    requestQuestions(request).map(({ id, question, isSecret, options }) => ({
-      id,
-      question,
-      isSecret,
-      options,
-    })),
+    requestQuestions(request).map(
+      ({ id, question, isSecret, multiSelect, options }) => ({
+        id,
+        question,
+        isSecret,
+        multiSelect,
+        options,
+      }),
+    ),
   ]);
 
 function AnswerForm({
@@ -90,8 +103,11 @@ function AnswerForm({
       saved(`studio-answer-draft:${draftKey}`, {}),
   );
   const questions = requestQuestions(request);
-  const asynchronous = request.method === "agent/asyncQuestion";
-  const setValue = (id: string, value: string) => {
+  const elicitation = request.method === "mcpServer/elicitation/request";
+  const required = new Set<string>(
+    elicitation ? request.params?.requestedSchema?.required || [] : [],
+  );
+  const setValue = (id: string, value: AnswerValue) => {
     const next = { ...values, [id]: value };
     answerDrafts.set(draftKey, next);
     setValues(next);
@@ -105,8 +121,12 @@ function AnswerForm({
     if (error) notify(error);
   };
   const ready =
-    !asynchronous ||
-    (questions.length > 0 && questions.every((q) => values[q.id]?.trim()));
+    (elicitation || questions.length > 0) &&
+    questions
+      .filter((q) => !elicitation || required.has(q.id))
+      .every((q) =>
+        answerList(q, values[q.id]).some((answer) => answer.trim()),
+      );
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (sending || !ready) return;
@@ -119,7 +139,10 @@ function AnswerForm({
       ) {
         body = {
           answers: Object.fromEntries(
-            questions.map((q) => [q.id, { answers: [values[q.id] || ""] }]),
+            questions.map((q) => [
+              q.id,
+              { answers: answerList(q, values[q.id]) },
+            ]),
           ),
         };
       } else {
@@ -128,15 +151,22 @@ function AnswerForm({
           request.params.requestedSchema.properties,
         )) {
           const type = (p as Json).type,
-            v = values[key] || "";
+            v = answerList(
+              questions.find((q) => q.id === key)!,
+              values[key],
+            );
+          if (!required.has(key) && !v.some((answer) => answer.trim()))
+            continue;
           content[key] =
             type === "boolean"
-              ? v === "true"
+              ? v[0] === "true"
               : ["integer", "number"].includes(type)
-                ? Number(v)
-                : ["object", "array"].includes(type)
-                  ? JSON.parse(v)
-                  : v;
+                ? Number(v[0])
+                : type === "array" && Array.isArray((p as Json).items?.enum)
+                  ? v
+                  : ["object", "array"].includes(type)
+                    ? JSON.parse(v[0])
+                    : v[0];
         }
         body = { decision: "accept", content };
       }

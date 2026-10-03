@@ -5344,7 +5344,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         request_id = a["id"] + ":question:" + item["id"]
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
                             questions = [{"id": str(i), "question": q["title"],
-                                          "options": [{"label": o} for o in q.get("options") or []], "isSecret": bool(q.get("isSecret"))}
+                                          "options": [{"label": o} if isinstance(o, str) else o for o in q.get("options") or []],
+                                          "multiSelect": bool(q.get("multiSelect", q.get("multi_select", False))),
+                                          "isSecret": bool(q.get("isSecret"))}
                                          for i, q in enumerate(item["questions"])]
                             if a.get("isLead"):
                                 self.put(db, "requests", {"id": request_id, "method": "agent/asyncQuestion",

@@ -18,7 +18,11 @@ const proc = spawn(
   ["-B", join(project, "tests/simple-ui-fixture.py"), root],
   {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
+    env: {
+      ...process.env,
+      CODEX_BOARD_STATE_DIR: join(root, "board"),
+      QUESTIONS_UX_UI_FIXTURE: "1",
+    },
   },
 );
 let log = "",
@@ -41,13 +45,6 @@ try {
     proc.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await (await fetch(origin + "/api/state")).json();
-  const lead = initial.runtime.agents.find(
-    (agent) => agent.name === "Release lead",
-  );
-  const other = initial.runtime.agents.find(
-    (agent) => agent.name === "Other project",
-  );
   const description = "Review the selected file and report its test result.";
   browser = await chromium.launch({
     headless: true,
@@ -59,114 +56,11 @@ try {
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  let extraRequests = true;
-  const questionState = (state) => {
-    state.runtime.requests = state.runtime.requests.map((request) =>
-      request.id !== "async-question"
-        ? request
-        : {
-            ...request,
-            params: {
-              questions: [
-                {
-                  id: "0",
-                  question: "Which scope?",
-                  options: [
-                    { label: "One file", description },
-                    { label: "All files" },
-                  ],
-                },
-                {
-                  id: "evidence",
-                  question: "Which evidence must the report include?",
-                  options: [],
-                },
-              ],
-            },
-          },
-    );
-    state.runtime.requests.push({
-      id: "other-question",
-      agent: other.id,
-      method: "agent/asyncQuestion",
-      params: {
-        questions: [
-          {
-            id: "0",
-            question: "Other project question?",
-            options: [{ label: "Continue" }],
-          },
-        ],
-      },
-    });
-    if (extraRequests)
-      state.runtime.requests.push(
-        {
-          id: "blocking-question",
-          agent: lead.id,
-          method: "item/tool/requestUserInput",
-          params: {
-            questions: [
-              {
-                id: "blocking",
-                question: "Blocking tool question?",
-                options: [{ label: "Yes" }],
-              },
-            ],
-          },
-        },
-        {
-          id: "permission-question",
-          agent: lead.id,
-          method: "item/permissions/requestApproval",
-          params: {
-            reason: "Access to the fixture folder",
-            permissions: { read: "folder/".repeat(150) },
-          },
-        },
-      );
-    return state;
-  };
-  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-    const response = await route.fetch();
-    await route.fulfill({
-      response,
-      json: questionState(await response.json()),
-    });
-  });
-  // HTTP and replicated snapshots must expose the same question fixture.
-  const identity = await (await fetch(origin + "/api/sync/identity")).json();
-  let statePayload = "",
-    stateSequence = 0;
-  await page.route("**/api/sync/pull?*", async (route) => {
-    const url = new URL(route.request().url());
-    const scope = url.searchParams.get("scope");
-    if (!["state", "state:chat"].includes(scope)) return route.fallback();
-    const state = questionState(
-      await (await fetch(origin + "/api/state")).json(),
-    );
-    delete state.token;
-    const payload = JSON.stringify(state);
-    if (payload !== statePayload) {
-      statePayload = payload;
-      stateSequence++;
-    }
-    const after = Number(url.searchParams.get("after") || 0);
-    await route.fulfill({
-      json: {
-        ...identity,
-        documents:
-          after < stateSequence
-            ? [{ id: scope, seq: stateSequence, payload, _deleted: false }]
-            : [],
-        checkpoint: { seq: Math.max(after, stateSequence) },
-      },
-    });
-  });
   await page.goto(origin);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   const card = page.locator('[data-request="async-question"]');
   await card.getByText("Which scope?", { exact: true }).waitFor();
+  await card.getByText("2 questions", { exact: true }).waitFor();
   assert.equal(await card.getByText("2 questions", { exact: true }).count(), 1);
   assert.equal(
     await card.getByText("Agent can continue", { exact: true }).count(),
@@ -203,7 +97,28 @@ try {
   );
   await page.keyboard.press("Escape");
   await modal.waitFor({ state: "hidden" });
-  extraRequests = false;
+  const mcpCard = page.locator('[data-request="mcp-optional"]');
+  await mcpCard.locator("[data-answer]").click();
+  const mcpForm = mcpCard.getByRole("form", { name: "Reply to the agent" });
+  const mcpSend = mcpForm.getByRole("button", { name: "Send answer" });
+  assert.equal(await mcpSend.isDisabled(), true);
+  assert.equal(await mcpForm.getByRole("checkbox").count(), 2);
+  await mcpForm.getByRole("textbox", { name: "Required scope" }).fill("One");
+  await poll(() => mcpSend.isEnabled(), "optional fields do not block Send");
+  let mcpAnswer;
+  const captureMcp = async (route) => {
+    mcpAnswer = route.request().postDataJSON();
+    await route.fulfill({ json: { status: "answered" } });
+  };
+  await page.route("**/api/answer", captureMcp);
+  await mcpSend.click();
+  await poll(() => Boolean(mcpAnswer), "MCP answer was sent");
+  assert.deepEqual(mcpAnswer, {
+    id: "mcp-optional",
+    decision: "accept",
+    content: { scope: "One" },
+  });
+  await page.unroute("**/api/answer", captureMcp);
   await page.reload();
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await card.locator("[data-answer]").click();
@@ -241,6 +156,12 @@ try {
   await form
     .getByRole("textbox", { name: "Which evidence must the report include?" })
     .fill("Tests and the complete diff");
+  await form.getByRole("checkbox", { name: "Tests" }).check();
+  await form.getByRole("checkbox", { name: "Screenshots" }).check();
+  assert.equal(
+    await form.getByRole("checkbox", { name: "Tests" }).isChecked(),
+    true,
+  );
   assert.equal(await send.isEnabled(), true);
   await form
     .getByRole("textbox", { name: "Which scope?" })
@@ -297,12 +218,14 @@ try {
     "Only the request controls",
     "Reload restores the non-secret answer draft",
   );
-  for (const [width, height] of [
-    [1440, 960],
-    [320, 640],
-    [1920, 1080],
+  for (const [width, height, theme] of [
+    [1440, 960, "light"],
+    [390, 844, "light"],
+    [1440, 960, "dark"],
+    [390, 844, "dark"],
   ]) {
     await page.setViewportSize({ width, height });
+    await page.emulateMedia({ colorScheme: theme });
     await send.click({ trial: true });
     await page.mouse.move(0, 0);
     assert.equal(await page.evaluate(() => document.body.scrollWidth), width);
@@ -328,8 +251,15 @@ try {
       true,
       "Send remains accessible inside the request scroll area",
     );
-    await page.screenshot({ path: join(root, `question-${width}.png`) });
+    await form
+      .locator(".request-question-label")
+      .first()
+      .scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(root, `question-${width}-${theme}.png`),
+    });
   }
+  await page.setViewportSize({ width: 1440, height: 960 });
   const answers = [];
   let fail = true,
     answerCommitted = false;
@@ -365,7 +295,9 @@ try {
     id: "async-question",
     answers: {
       0: { answers: ["Only the request controls"] },
-      evidence: { answers: ["Tests and the complete diff"] },
+      evidence: {
+        answers: ["Tests", "Screenshots", "Tests and the complete diff"],
+      },
     },
   });
   await page
