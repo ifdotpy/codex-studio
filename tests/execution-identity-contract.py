@@ -335,7 +335,9 @@ class ExecutionIdentityContract(unittest.TestCase):
         from codex_canvas import Canvas, make_server
         from codex_execution import _save_run, prune, RETENTION_SECONDS, PRUNE_LIMIT
         a = self.lead()
-        active = self.records(a)[0]['id']
+        active_run = self.records(a)[0]
+        active = active_run['id']
+        input_id = active_run['inputEventIds'][0]
         now = time.time()
         with self.runtime.db() as db:
             for index in range(PRUNE_LIMIT + 1):
@@ -367,7 +369,7 @@ class ExecutionIdentityContract(unittest.TestCase):
                     self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_execution_' + table + " WHERE run LIKE 'expired-%'").fetchone()[0], 0)
                 self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_execution_runs WHERE id=?', (active,)).fetchone())
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id IN ('old-running','old-unknown')").fetchone()[0], 2)
-                self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (self.records(a)[0]['inputEventIds'][0],)).fetchone())
+                self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (input_id,)).fetchone())
         finally:
             server.server_close()
 
