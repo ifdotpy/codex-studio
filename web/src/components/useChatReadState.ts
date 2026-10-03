@@ -358,7 +358,7 @@ export function useVisibleChatResult(
         root.querySelector<HTMLElement>(
           finalId
             ? `[data-message="${CSS.escape(finalId)}"]:not([data-lazy-message])`
-            : `[data-turn="${CSS.escape(proof.turnId)}"][data-outcome="completed"]`,
+            : `[data-turn="${CSS.escape(proof.turnId)}"][data-outcome="completed"], [data-turns~="${CSS.escape(proof.turnId)}"][data-outcome="completed"]`,
         ) || undefined;
       if (target !== next) {
         observer.disconnect();

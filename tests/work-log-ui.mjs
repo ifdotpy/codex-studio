@@ -665,6 +665,18 @@ try {
         status: "inProgress",
       }),
     },
+    {
+      ...shared(),
+      id: "cross-command-b",
+      role: "output",
+      toolStatus: "running",
+      turnId: "cross-b",
+      text: JSON.stringify({
+        type: "commandExecution",
+        command: "check current turn",
+        status: "inProgress",
+      }),
+    },
   ];
   await emit();
   const crossTurnWork = page.locator('[data-turns~="cross-b"] .turn-work');
@@ -678,8 +690,20 @@ try {
   );
   assert.equal(
     await crossTurnWork.locator(".tool-card").count(),
-    1,
-    "a historical completed command stays hidden while the active turn's command remains visible",
+    2,
+    "the historical completed command stays hidden while current-turn tool and command activity remain visible",
+  );
+  assert.equal(
+    await page.locator('.tool-card[data-message="cross-command-a"]').count(),
+    0,
+    "a joined historical command remains hidden",
+  );
+  assert.equal(
+    await page
+      .locator('.tool-card[data-message="cross-command-b"]')
+      .getAttribute("data-tool-status"),
+    "running",
+    "the current-turn command begins visible while running",
   );
   assert.match(
     await crossTurnWork.locator(":scope > summary").innerText(),
@@ -708,11 +732,44 @@ try {
         }
       : item,
   );
+  items = items.map((item) =>
+    item.id === "cross-command-b"
+      ? {
+          ...item,
+          toolStatus: "completed",
+          turnStatus: "completed",
+          text: JSON.stringify({
+            type: "commandExecution",
+            command: "check current turn",
+            status: "completed",
+            exitCode: 0,
+          }),
+        }
+      : item,
+  );
   turnDone = true;
   await emit();
   await crossTurnWork
     .locator('.tool-card[data-message="cross-tool-b"]')
     .waitFor();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('.tool-card[data-message="cross-command-b"]')
+        ?.getAttribute("data-tool-status") === "completed",
+  );
+  assert.equal(
+    await page
+      .locator('.tool-card[data-message="cross-command-b"]')
+      .isVisible(),
+    true,
+    "the current-turn command stays visible after it completes",
+  );
+  assert.equal(
+    await page.locator('.tool-card[data-message="cross-command-a"]').count(),
+    0,
+    "terminal updates do not reveal historical commands",
+  );
   assert.equal(
     await page
       .locator('[data-message="cross-tool-b"]')
