@@ -107,7 +107,7 @@ import ClaudeSignIn from "./components/ClaudeSignIn";
 import AccountSignInNotice from "./components/AccountSignInNotice";
 import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
-import AgentModeSwitch from "./components/agents/AgentModeSwitch";
+import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import RadioChat from "./components/RadioChat";
@@ -1545,7 +1545,7 @@ export default function App() {
             }
             modeControl={
               lead?.source === "managed" && !mobileClient ? (
-                <AgentModeSwitch
+                <SubagentConcurrencyControl
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
@@ -2376,8 +2376,8 @@ export default function App() {
             <h2>Conversation</h2>
             {mobileClient && lead?.source === "managed" && (
               <div className="settings-field">
-                <span className="settings-label">Agent mode</span>
-                <AgentModeSwitch
+                <span className="settings-label">Subagent parallelism</span>
+                <SubagentConcurrencyControl
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
