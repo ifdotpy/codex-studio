@@ -669,6 +669,13 @@ The browser preserves an uncertain request across reloads before allowing
 another save. Old pending mode-switch requests retain their original identity
 and are reconciled against the same setting during the UI upgrade.
 
+The UI requires the backend's numeric concurrency capability and a valid
+projected value before enabling the control. With an older backend, it shows
+the existing mode and an update explanation, keeps the numeric input disabled,
+and preserves pending requests. Building the frontend does not reload the
+running backend. Activate backend changes through a verified [live update](docs/live-updates.md)
+or a restart when no active work will be interrupted.
+
 Existing Single agent chats migrate to zero. Existing Multi agent chats retain
 their numeric concurrency value, now counting only subagents. This can permit
 one more active participant because the lead no longer uses that allowance.
