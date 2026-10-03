@@ -40,7 +40,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         self.assertEqual(run['accountKey'], a['accountKey'])
         self.assertEqual(run['epoch'], a['epoch'])
         self.assertEqual(len(run['inputEventIds']), 1)
-        operation = 'turn:' + a['id'] + ':' + run['inputEventIds'][0]
+        operation = 'turn:' + a['id'] + ':' + run['inputEventIds'][0] + ':attempt:' + run['attempts'][0]['id']
         self.assertEqual(run['attempts'][0]['nativeOperationId'], operation)
         self.assertIn(operation, run['requestIds'])
         self.runtime.server.complete(a['threadId'], a['turnId'], 'Exact result')
@@ -151,7 +151,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         self.assertEqual(run['id'], first['id'])
         self.assertEqual({v['submission'] for v in run['attempts']}, {'accepted', 'rejected'})
         self.assertEqual(len({v['id'] for v in run['attempts']}), 2)
-        self.assertEqual(len({v['nativeOperationId'] for v in run['attempts']}), 1)
+        self.assertEqual(len({v['nativeOperationId'] for v in run['attempts']}), 2)
         self.assertEqual(run['inputEventIds'], first['inputEventIds'])
         accepted = next(attempt for attempt in run['attempts'] if attempt['submission'] == 'accepted')
         self.assertEqual(message_identity(self.runtime, a['id'], run['threadId'], run['turnId'])['attemptId'], accepted['id'])

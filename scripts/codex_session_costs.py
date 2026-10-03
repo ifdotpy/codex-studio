@@ -451,6 +451,98 @@ class SessionCostReader:
                 self.file_cache.popitem(last=False)
         return rows
 
+    def _cost_usage_groups(self, db, root):
+        # The compact temporary table keeps repeated model and response checks
+        # away from the full history records. It stays on this read connection.
+        db.execute("""
+          CREATE TEMP TABLE session_cost_usage AS
+            SELECT seq,agent,thread,turn,at,
+                   json_extract(record,'$.agentId') AS record_agent,
+                   json_extract(record,'$.threadId') AS record_thread,
+                   json_extract(record,'$.turnId') AS record_turn,
+                   CASE WHEN json_type(record,'$.responseId') IS NULL
+                       OR json_type(record,'$.responseId') IN ('null','false')
+                       OR (json_type(record,'$.responseId') IN ('integer','real') AND json_extract(record,'$.responseId')=0)
+                       OR (json_type(record,'$.responseId')='text' AND json_extract(record,'$.responseId')='')
+                       OR (json_type(record,'$.responseId')='array' AND json_array_length(record,'$.responseId')=0)
+                       OR (json_type(record,'$.responseId')='object' AND NOT EXISTS
+                           (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
+                      THEN 0 ELSE 1 END AS has_response,
+                   CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
+                   COALESCE(json_extract(record,'$.accountKey'),'default') AS account_key,
+                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
+                        THEN CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.inputTokens') END
+                        WHEN json_type(record,'$.last.inputTokens') IN ('integer','real') THEN json_extract(record,'$.last.inputTokens') END AS input_tokens,
+                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
+                        THEN CASE WHEN json_type(record,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cachedInputTokens') END
+                        WHEN json_type(record,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cachedInputTokens') END AS cached_tokens,
+                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
+                        THEN CASE WHEN json_type(record,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cacheWriteInputTokens') END
+                        WHEN json_type(record,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cacheWriteInputTokens') END AS write_tokens,
+                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
+                        THEN CASE WHEN json_type(record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.outputTokens') END
+                        WHEN json_type(record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(record,'$.last.outputTokens') END AS output_tokens,
+                   CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
+              FROM analytics_usage
+             WHERE root=? AND NOT EXISTS
+                   (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
+        """, (root,))
+        status = db.execute("SELECT MAX(model IS NULL),MAX(NOT has_response) FROM session_cost_usage").fetchone()
+        missing_models, missing_responses = (bool(value) for value in status)
+        if missing_responses:
+            db.execute("""
+              CREATE TEMP TABLE session_cost_responded_turns AS
+                SELECT agent,thread,turn FROM session_cost_usage WHERE has_response
+                 GROUP BY agent,thread,turn
+            """)
+            db.execute("CREATE INDEX session_cost_responded_turns_key ON session_cost_responded_turns(agent,thread,turn)")
+        if missing_models:
+            dedupe = """AND (has_response OR NOT EXISTS
+                (SELECT 1 FROM session_cost_responded_turns rt WHERE rt.agent=session_cost_usage.agent
+                  AND rt.thread IS session_cost_usage.thread AND rt.turn IS session_cost_usage.turn))""" if missing_responses else ""
+            db.execute(f"""
+              CREATE TEMP TABLE session_cost_model_source AS
+                SELECT seq,at,record_agent,record_turn,record_thread,model
+                  FROM session_cost_usage WHERE model IS NOT NULL {dedupe}
+            """)
+            db.execute("""
+              CREATE TEMP TABLE session_cost_turn_models AS
+                SELECT record_agent,record_turn,model FROM (
+                  SELECT record_agent,record_turn,model,
+                         ROW_NUMBER() OVER (PARTITION BY record_agent,record_turn ORDER BY at DESC,seq DESC) AS rank
+                    FROM session_cost_model_source)
+                 WHERE rank=1
+            """)
+            db.execute("CREATE INDEX session_cost_turn_models_key ON session_cost_turn_models(record_agent,record_turn)")
+            db.execute("""
+              CREATE TEMP TABLE session_cost_thread_models AS
+                SELECT record_agent,record_thread,model FROM (
+                  SELECT record_agent,record_thread,model,
+                         ROW_NUMBER() OVER (PARTITION BY record_agent,record_thread ORDER BY at DESC,seq DESC) AS rank
+                    FROM session_cost_model_source)
+                 WHERE rank=1
+            """)
+            db.execute("CREATE INDEX session_cost_thread_models_key ON session_cost_thread_models(record_agent,record_thread)")
+        model_joins = ("LEFT JOIN session_cost_turn_models tm ON tm.record_agent IS u.record_agent AND tm.record_turn IS u.record_turn "
+                       "LEFT JOIN session_cost_thread_models hm ON hm.record_agent IS u.record_agent AND hm.record_thread IS u.record_thread") if missing_models else ""
+        model = "COALESCE(u.model,NULLIF(tm.model,''),hm.model)" if missing_models else "u.model"
+        response_join = ("LEFT JOIN session_cost_responded_turns rt ON rt.agent=u.agent AND rt.thread IS u.thread AND rt.turn IS u.turn"
+                         if missing_responses else "")
+        response_filter = "(u.has_response OR rt.agent IS NULL)" if missing_responses else "1"
+        return db.execute(f"""
+          WITH priced AS MATERIALIZED (
+            SELECT {model} AS model,u.account_key,u.input_tokens,u.cached_tokens,u.write_tokens,u.output_tokens,u.input_uncached
+              FROM session_cost_usage u {model_joins} {response_join}
+             WHERE {response_filter}
+          )
+          SELECT model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,COUNT(*)
+            FROM priced GROUP BY model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached
+        """)
+
     def _compute(self, agent_id, root):
         db = self._connect()
         try:
@@ -520,151 +612,7 @@ class SessionCostReader:
                 if "no such table: analytics_usage" not in str(error):
                     raise
             try:
-                status = db.execute("""
-                  SELECT MAX(CASE WHEN json_type(record,'$.model') IS NOT 'text' THEN 1 ELSE 0 END),
-                         MAX(CASE WHEN json_type(record,'$.responseId') IS NULL
-                                   OR json_type(record,'$.responseId') IN ('null','false')
-                                   OR (json_type(record,'$.responseId') IN ('integer','real') AND json_extract(record,'$.responseId')=0)
-                                   OR (json_type(record,'$.responseId')='text' AND json_extract(record,'$.responseId')='')
-                                   OR (json_type(record,'$.responseId')='array' AND json_array_length(record,'$.responseId')=0)
-                                   OR (json_type(record,'$.responseId')='object' AND NOT EXISTS
-                                       (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
-                                  THEN 1 ELSE 0 END)
-                    FROM analytics_usage
-                   WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
-                """, (root,)).fetchone()
-                missing_models, missing_responses = (bool(value) for value in status)
-                if not missing_models and not missing_responses:
-                    groups = db.execute("""
-                      WITH parsed AS MATERIALIZED (
-                        SELECT CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
-                               COALESCE(json_extract(record,'$.accountKey'),'default') AS account_key,
-                               (json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')) AS delta_valid,
-                               CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.inputTokens') END
-                                    WHEN json_type(record,'$.last.inputTokens') IN ('integer','real') THEN json_extract(record,'$.last.inputTokens') END AS input_tokens,
-                               CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(record,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cachedInputTokens') END
-                                    WHEN json_type(record,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cachedInputTokens') END AS cached_tokens,
-                               CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(record,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cacheWriteInputTokens') END
-                                    WHEN json_type(record,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cacheWriteInputTokens') END AS write_tokens,
-                               CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.outputTokens') END
-                                    WHEN json_type(record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(record,'$.last.outputTokens') END AS output_tokens,
-                               CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
-                          FROM analytics_usage
-                         WHERE root=? AND NOT EXISTS
-                               (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
-                      )
-                      SELECT model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,COUNT(*)
-                        FROM parsed GROUP BY model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached
-                    """, (root,))
-                else:
-                    if missing_responses:
-                        db.execute("""
-                          CREATE TEMP TABLE session_cost_responded_turns AS
-                            SELECT agent,thread,turn FROM analytics_usage
-                             WHERE root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
-                               AND json_type(record,'$.responseId') NOT IN ('null','false')
-                               AND json_type(record,'$.responseId') IS NOT NULL
-                               AND (json_type(record,'$.responseId') NOT IN ('integer','real') OR json_extract(record,'$.responseId')<>0)
-                               AND (json_type(record,'$.responseId')<>'text' OR json_extract(record,'$.responseId')<>'')
-                               AND (json_type(record,'$.responseId')<>'array' OR json_array_length(record,'$.responseId')>0)
-                               AND (json_type(record,'$.responseId')<>'object' OR EXISTS
-                                   (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
-                             GROUP BY agent,thread,turn
-                        """, (root,))
-                        db.execute("CREATE INDEX session_cost_responded_turns_key ON session_cost_responded_turns(agent,thread,turn)")
-                    if missing_models:
-                        model_dedupe = """AND (json_type(record,'$.responseId') NOT IN ('null','false')
-                          AND json_type(record,'$.responseId') IS NOT NULL
-                          AND (json_type(record,'$.responseId') NOT IN ('integer','real') OR json_extract(record,'$.responseId')<>0)
-                          AND (json_type(record,'$.responseId')<>'text' OR json_extract(record,'$.responseId')<>'')
-                          AND (json_type(record,'$.responseId')<>'array' OR json_array_length(record,'$.responseId')>0)
-                          AND (json_type(record,'$.responseId')<>'object' OR EXISTS
-                              (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
-                          OR NOT EXISTS (SELECT 1 FROM session_cost_responded_turns rt
-                           WHERE rt.agent=analytics_usage.agent AND rt.thread IS analytics_usage.thread AND rt.turn IS analytics_usage.turn))""" if missing_responses else ""
-                        db.execute(f"""
-                          CREATE TEMP TABLE session_cost_model_source AS
-                            SELECT seq,at,json_extract(record,'$.agentId') AS record_agent,
-                                   json_extract(record,'$.turnId') AS record_turn,
-                                   json_extract(record,'$.threadId') AS record_thread,
-                                   json_extract(record,'$.model') AS model
-                              FROM analytics_usage
-                             WHERE root=? AND json_type(record,'$.model')='text'
-                               AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
-                               {model_dedupe}
-                        """, (root,))
-                        db.execute("""
-                          CREATE TEMP TABLE session_cost_turn_models AS
-                            SELECT record_agent,record_turn,model FROM (
-                              SELECT record_agent,record_turn,model,
-                                     ROW_NUMBER() OVER (PARTITION BY record_agent,record_turn ORDER BY at DESC,seq DESC) AS rank
-                                FROM session_cost_model_source)
-                           WHERE rank=1
-                        """)
-                        db.execute("CREATE INDEX session_cost_turn_models_key ON session_cost_turn_models(record_agent,record_turn)")
-                        db.execute("""
-                          CREATE TEMP TABLE session_cost_thread_models AS
-                            SELECT record_agent,record_thread,model FROM (
-                              SELECT record_agent,record_thread,model,
-                                     ROW_NUMBER() OVER (PARTITION BY record_agent,record_thread ORDER BY at DESC,seq DESC) AS rank
-                                FROM session_cost_model_source)
-                           WHERE rank=1
-                        """)
-                        db.execute("CREATE INDEX session_cost_thread_models_key ON session_cost_thread_models(record_agent,record_thread)")
-                    model_joins = ("LEFT JOIN session_cost_turn_models tm ON tm.record_agent IS json_extract(u.record,'$.agentId') AND tm.record_turn IS json_extract(u.record,'$.turnId') "
-                                   "LEFT JOIN session_cost_thread_models hm ON hm.record_agent IS json_extract(u.record,'$.agentId') AND hm.record_thread IS json_extract(u.record,'$.threadId')") if missing_models else ""
-                    turn_model = "tm.model" if missing_models else "NULL"
-                    thread_model = "hm.model" if missing_models else "NULL"
-                    response_join = ("LEFT JOIN session_cost_responded_turns rt ON rt.agent=u.agent AND rt.thread IS u.thread AND rt.turn IS u.turn"
-                                     if missing_responses else "")
-                    response_filter = """((json_type(u.record,'$.responseId') NOT IN ('null','false')
-                                          AND json_type(u.record,'$.responseId') IS NOT NULL
-                                          AND (json_type(u.record,'$.responseId') NOT IN ('integer','real') OR json_extract(u.record,'$.responseId')<>0)
-                                          AND (json_type(u.record,'$.responseId')<>'text' OR json_extract(u.record,'$.responseId')<>'')
-                                          AND (json_type(u.record,'$.responseId')<>'array' OR json_array_length(u.record,'$.responseId')>0)
-                                          AND (json_type(u.record,'$.responseId')<>'object' OR EXISTS
-                                              (SELECT 1 FROM json_each(u.record,'$.responseId'))))
-                                         OR rt.agent IS NULL)""" if missing_responses else "1"
-                    groups = db.execute(f"""
-                      WITH priced AS MATERIALIZED (
-                        SELECT CASE WHEN json_type(u.record,'$.model')='text' THEN json_extract(u.record,'$.model')
-                                    ELSE COALESCE(NULLIF({turn_model},''),{thread_model}) END AS model,
-                               COALESCE(json_extract(u.record,'$.accountKey'),'default') AS account_key,
-                               (json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')) AS delta_valid,
-                               CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(u.record,'$.delta.inputTokens') END
-                                    WHEN json_type(u.record,'$.last.inputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.inputTokens') END AS input_tokens,
-                               CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(u.record,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(u.record,'$.delta.cachedInputTokens') END
-                                    WHEN json_type(u.record,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.cachedInputTokens') END AS cached_tokens,
-                               CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(u.record,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(u.record,'$.delta.cacheWriteInputTokens') END
-                                    WHEN json_type(u.record,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.cacheWriteInputTokens') END AS write_tokens,
-                               CASE WHEN json_type(u.record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                                      AND json_type(u.record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                                    THEN CASE WHEN json_type(u.record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(u.record,'$.delta.outputTokens') END
-                                    WHEN json_type(u.record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(u.record,'$.last.outputTokens') END AS output_tokens,
-                               CASE WHEN json_extract(u.record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
-                          FROM analytics_usage u {model_joins} {response_join}
-                         WHERE u.root=? AND NOT EXISTS (SELECT 1 FROM session_cost_excluded x WHERE x.seq=u.seq)
-                           AND {response_filter}
-                      )
-                      SELECT model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,COUNT(*)
-                        FROM priced GROUP BY model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached
-                    """, (root,))
+                groups = self._cost_usage_groups(db, root)
             except sqlite3.OperationalError as error:
                 if "no such table: analytics_usage" not in str(error):
                     raise

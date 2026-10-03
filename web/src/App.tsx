@@ -370,7 +370,22 @@ export default function App() {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     ),
-    [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({});
+    [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({}),
+    [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    setLimitsByAccount(saved(`codex-limits:${data.stateDir}`, {}));
+    setLimitsCacheScope(data.stateDir);
+  }, [data?.stateDir]);
+  useEffect(() => {
+    if (!limitsCacheScope || limitsCacheScope !== data?.stateDir) return;
+    const good = Object.fromEntries(
+      Object.entries(limitsByAccount).filter(
+        ([, value]) => value?.data && value?.at,
+      ),
+    );
+    save(`codex-limits:${limitsCacheScope}`, good);
+  }, [limitsByAccount, limitsCacheScope, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
@@ -740,6 +755,24 @@ export default function App() {
     () => reloadLimits(true),
     [reloadLimits],
   );
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    for (const account of accounts.data.accounts) {
+      if (account.disconnected) continue;
+      const key = account.id;
+      void api(`/api/limits?account_key=${encodeURIComponent(key)}&cached=1`)
+        .then((result) => {
+          if (!accountLimits(result, key, account.accountId) || !result.data)
+            return;
+          setLimitsByAccount((old) => {
+            const previous = accountLimits(old[key], key, account.accountId);
+            if (previous && (previous.at || 0) >= (result.at || 0)) return old;
+            return { ...old, [key]: result };
+          });
+        })
+        .catch(() => {});
+    }
+  }, [data?.stateDir, accounts.data.accounts]);
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
@@ -787,8 +820,7 @@ export default function App() {
           email: account?.email,
           provider: account?.provider,
           accountId: account?.accountId,
-          signedOut:
-            !!account && (account.disconnected || account.status !== "ready"),
+          signedOut: !!account?.disconnected,
           limits,
           loading: !!limitsLoading[key],
           reload: (force = false) => reloadLimitsFor(key, force),

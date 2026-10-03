@@ -38,6 +38,22 @@ def orphan_busy(agent):
                 and agent.get('threadId') and not agent.get('deletedAt'))
 
 
+def unconfirmed_start(agent):
+    """A submitted start needs its exact input receipt before another dispatch."""
+    attempt = agent.get('startAttempt') or {}
+    return bool(agent.get('inFlight') and agent.get('autoWake') and not agent.get('turnId')
+                and agent.get('threadId') and not agent.get('deletedAt')
+                and not agent.get('nativeFailureHold') and not agent.get('accountTransferId')
+                and not agent.get('workspaceOperation') and not attempt.get('action')
+                and attempt.get('id') and attempt.get('submitted') is True
+                and attempt.get('executionOutcome') == 'unknown'
+                and attempt.get('epoch') == agent.get('epoch')
+                and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+                and attempt.get('threadId') == agent.get('threadId')
+                and attempt.get('events') and not attempt.get('turnId')
+                and not attempt.get('observedTurnId'))
+
+
 class TurnRecoveryMixin:
     def queue_turn_recovery(self, agents, *, force_id=None):
         """At most one native probe occupies the existing recovery executor."""
@@ -49,7 +65,7 @@ class TurnRecoveryMixin:
             self._turn_recovery_checked = checked
             candidates = []
             for a in agents:
-                if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a))
+                if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a) or unconfirmed_start(a))
                         or not a.get('threadId') or a.get('deletedAt')):
                     continue
                 account = a.get('accountKey', 'default')
@@ -60,6 +76,8 @@ class TurnRecoveryMixin:
                     activity = max(activity, datetime.fromisoformat((a.get('lastEvent') or '').replace('Z', '+00:00')).timestamp())
                 except (ValueError, TypeError):
                     pass
+                if unconfirmed_start(a):
+                    activity = (a.get('startAttempt') or {}).get('created') or activity
                 if a['id'] != force_id and (now - activity < 120 or now - checked.get(a['id'], 0) < 60):
                     continue
                 candidates.append(a)
@@ -92,13 +110,15 @@ class TurnRecoveryMixin:
             a = self.agent(key, db)
             account = a.get('accountKey', 'default')
             connection = self.connection_ids.get(account)
-            if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a)) or a.get('deletedAt')
+            if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a) or unconfirmed_start(a)) or a.get('deletedAt')
                     or not self.connection_current(account, connection)):
                 return {'status': 'skipped'}
             server = self.servers.get(account)
             if server is None:
                 return {'status': 'skipped'}
             expected = {k: a.get(k) for k in ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'startAttempt')}
+        if unconfirmed_start(a):
+            return self.reconcile_start_receipt(server, a, expected, connection)
         if not a.get('turnId'):
             return self.reconcile_orphan_busy(server, a, expected, connection)
         try:
@@ -127,6 +147,72 @@ class TurnRecoveryMixin:
             return result.result(timeout=10)
         except Exception as error:
             # A failed read is not a failed turn. Retain the recorded state and receipt.
+            return {'status': 'unconfirmed', 'error': str(error)}
+
+    def reconcile_start_receipt(self, server, a, expected, connection):
+        """Read an exact start receipt without replay or an idle-state inference."""
+        attempt = a['startAttempt']
+        if attempt.get('connectionId') != connection:
+            return {'status': 'unconfirmed'}
+        message = attempt['events'][0]
+        cursor, seen = None, set()
+        deadline = time.monotonic() + 20
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Native start receipt read timed out')
+                params = {'threadId': a['threadId'], 'limit': 10,
+                          'sortDirection': 'desc', 'itemsView': 'full'}
+                if cursor is not None:
+                    params['cursor'] = cursor
+                page = server.call('thread/turns/list', params, timeout=min(5, remaining))
+                matches = [turn for turn in page.get('data', [])
+                           if turn.get('startOutcome') not in {'preparing', 'not_applied'} and (
+                               turn.get('clientUserMessageId') == message or any(
+                               item.get('type') == 'userMessage' and item.get('clientId') == message
+                               and item.get('deliveryStatus') not in {'preparing', 'not_applied'}
+                               for item in turn.get('items', [])))]
+                if len(matches) > 1:
+                    raise ValueError('Native history has conflicting start receipts')
+                if matches:
+                    turn = matches[0]
+                    if not isinstance(turn.get('id'), str) or not turn['id']:
+                        raise ValueError('The native start receipt has no turn identity')
+                    break
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    # An absent input cannot cancel an original request that is still pending.
+                    return {'status': 'unconfirmed'}
+                if cursor in seen:
+                    raise ValueError('Native start history repeated its page cursor')
+                seen.add(cursor)
+            result = Future()
+            def apply():
+                try:
+                    with self.lock:
+                        current = self.agent(a['id'])
+                        if (not self.connection_current(a.get('accountKey', 'default'), connection)
+                                or self.closed or not unconfirmed_start(current)
+                                or any(current.get(k) != value for k, value in expected.items())):
+                            result.set_result({'status': 'superseded'})
+                            return
+                        self.start_accepted(a['id'], attempt, {'turn': turn})
+                        current = self.agent(a['id'])
+                        if (current.get('inFlight') and current.get('turnId') == turn['id']
+                                and turn.get('status') in {'completed', 'failed', 'interrupted'}):
+                            terminal_source = {k: current.get(k) for k in expected}
+                            # An exact terminal turn remains terminal while other native work runs.
+                            value = self.apply_turn_recovery(terminal_source, connection, 'active', turn)
+                        else:
+                            value = {'status': 'reconciled', 'turnId': turn['id'],
+                                     'outcome': turn.get('status')}
+                    result.set_result(value)
+                except Exception as error:
+                    result.set_exception(error)
+            server.after_events(apply)
+            return result.result(timeout=10)
+        except Exception as error:
             return {'status': 'unconfirmed', 'error': str(error)}
 
     def reconcile_orphan_busy(self, server, a, expected, connection):

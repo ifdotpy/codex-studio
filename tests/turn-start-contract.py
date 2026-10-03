@@ -308,10 +308,14 @@ class RpcWaitContract(unittest.TestCase):
         server.notification = lambda _: None
         server.request = lambda _: None
         server.transport_error = None
+        server.supervisor_mode = False
+        from codex_provider_transcript import TranscriptCapture
+        server.transcript_capture = TranscriptCapture('codex')
         server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
         server.callback_lock = threading.RLock()
         server.dispatch_stopped = False
         server.reader_done = threading.Event()
+        server.dispatcher_done = threading.Event()
         server.dispatcher = threading.Thread(target=server.dispatch, daemon=True)
         server.dispatcher.start()
         server.clock_replies = queue.Queue(maxsize=AppServer.CLOCK_QUEUE_LIMIT)
@@ -357,7 +361,7 @@ class RpcWaitContract(unittest.TestCase):
         server = self.server()
         server.sequence = 0
         written = []
-        def partial_write(message):
+        def partial_write(message, operation_id=None):
             written.append(message)
             raise OSError("flush failed after request write")
         server.write = partial_write

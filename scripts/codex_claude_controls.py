@@ -202,7 +202,7 @@ def action(rt, body):
 def retire_idle_bridge(rt, key, account, server):
     """Retire only an idle native process; Runtime.connect holds start_lock."""
     version = getattr(server, 'initialize_result', {}).get('capabilities', {}).get('claudeVersion')
-    if version == 14 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
+    if version == 15 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
         return False
 
     def eligible(db):
@@ -244,6 +244,25 @@ def retire_idle_bridge(rt, key, account, server):
                         return False
         except Exception:
             return False
+    native = None
+    if getattr(server, 'supervisor_mode', False):
+        import sqlite3
+        from codex_process_supervisor import process_start_time
+        transport = server.proc.call('status')
+        path = rt.root / 'supervisor.sqlite3'
+        journal = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=5)
+        try:
+            row = journal.execute('SELECT h.pid,h.generation,h.signature,c.pid,c.start_time '
+                                  'FROM handles h JOIN child_identities c ON c.handle=h.id '
+                                  'WHERE h.id=? AND h.closed_at IS NULL', (server.proc.handle,)).fetchone()
+        finally:
+            journal.close()
+        if (not row or row[0] != transport.get('pid') or row[1] != server.proc.generation
+                or transport.get('returnCode') is not None
+                or row[3] != row[0] or not row[2] or not row[4]
+                or process_start_time(row[0]) != row[4]):
+            raise ValueError('The idle Claude process identity is unknown')
+        native = {'pid': row[0], 'signature': row[2], 'startTime': row[4]}
     with rt.lock, rt.db() as db:
         if eligible(db) is False:
             return False
@@ -253,5 +272,15 @@ def retire_idle_bridge(rt, key, account, server):
             rt.loaded.discard(agent['id'])
         if key == 'default':
             rt.server = None
+    if native is not None:
+        from codex_process_supervisor import admin_close_handle
+        retiring = rt.__dict__.setdefault('_native_tools_retiring', {})
+        retiring[key] = {'server': server}
+        result = admin_close_handle(rt.root, server.proc.handle, native['pid'],
+                                    native['startTime'], native['signature'])
+        if result.get('closed') is not True:
+            raise ValueError('The idle Claude process close outcome is unknown')
+        # A supervised close otherwise detaches the backend and keeps the old bridge alive.
+        retiring.pop(key, None)
     server.close()
     return True

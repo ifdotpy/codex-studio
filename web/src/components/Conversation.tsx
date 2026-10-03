@@ -3,6 +3,8 @@ import { serviceTimeText } from "../local-time";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
+import { useMessageReceipts } from "./useMessageReceipts";
+import { receiptOutgoing, receiptTranscript } from "../sync/messageReceipts";
 import { useVisibleChatResult, type ChatReadProof } from "./useChatReadState";
 import { displayError } from "../errorPresentation";
 import {
@@ -330,13 +332,51 @@ export default function Conversation(p: {
     p.data.stateDir,
     p.syncWorkspaceId,
   );
+  const outgoing = (p.outgoing || []).filter(
+    (entry) => entry.body.room === p.id,
+  );
+  const receiptIds = [
+    ...new Set([
+      ...outgoing
+        .filter(
+          (entry) =>
+            ["accepted", "uncertain"].includes(entry.status) &&
+            entry.receipt?.status !== "delivered",
+        )
+        .map((entry) => entry.id),
+      ...history
+        .filter(
+          (item) =>
+            item.role === "user" &&
+            (item.pending ||
+              ["pending", "reserved", "dispatching", "uncertain"].includes(
+                item.deliveryStatus || "",
+              )),
+        )
+        .map(
+          (item) =>
+            item.clientMessageId ||
+            (item.id.startsWith(p.id + ":")
+              ? item.id.slice(p.id!.length + 1)
+              : item.id),
+        ),
+    ]),
+  ].sort();
+  const receipts = useMessageReceipts(
+    p.agent?.source === "managed" ? p.id : null,
+    `${p.data.stateDir}:${p.syncWorkspaceId}:${p.id}`,
+    p.syncWorkspaceId,
+    receiptIds,
+  );
   const delivery = useMemo(
     () =>
       outgoingTranscript(
-        history,
-        (p.outgoing || []).filter((entry) => entry.body.room === p.id),
+        receiptTranscript(history, p.id || "", receipts),
+        (p.outgoing || [])
+          .filter((entry) => entry.body.room === p.id)
+          .map((entry) => receiptOutgoing(entry, receipts.get(entry.id))),
       ),
-    [history, p.outgoing, p.id],
+    [history, p.outgoing, p.id, receipts],
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
   const items = useMemo(

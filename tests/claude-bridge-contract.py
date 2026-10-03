@@ -28,6 +28,30 @@ fsp.readFile=async(file,...args)=>{
  }
  return originalRead(file,...args);
 };
+
+const appendOriginal=fsp.appendFile.bind(fsp);
+fsp.appendFile=async(file,data,...args)=>{
+ const root=process.argv[2],marker=root+'/held-persist';
+ if(fs.existsSync(root+'/fail-accepted')&&String(data).includes('accepted')){
+  fs.unlinkSync(root+'/fail-accepted');throw new Error('Accepted receipt disk failure');
+ }
+ const value=await appendOriginal(file,data,...args);
+ if(String(file).endsWith('.jsonl')&&String(data).includes('race-input')&&!fs.existsSync(marker)){
+  fs.writeFileSync(marker,'yes');
+  if(fs.existsSync(root+'/crash-mode'))await new Promise(()=>{});
+  while(!fs.existsSync(root+'/release-persist'))await new Promise(r=>setTimeout(r,5));
+ }return value;
+};
+
+const renameOriginal=fsp.rename.bind(fsp);
+fsp.rename=async(from,to)=>{
+ const value=await renameOriginal(from,to),root=process.argv[2];
+ if(String(to).endsWith('.meta.json')&&fs.existsSync(root+'/gate-persist')&&!fs.existsSync(root+'/held-persist')){
+  fs.writeFileSync(root+'/held-persist','yes');
+  while(!fs.existsSync(root+'/release-persist'))await new Promise(r=>setTimeout(r,5));
+ }return value;
+};
+
 export const tool=(name,description,schema,call)=>({name,call});
 export const createSdkMcpServer=value=>value;
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
@@ -44,10 +68,10 @@ export function query({prompt,options}){
    {value:'opus[1m]',resolvedModel:'claude-opus-5-5'},
    {value:'sonnet',resolvedModel:'claude-sonnet-5'},
   ],
-  accountInfo:async()=>({email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
+  accountInfo:async()=>{if(fs.existsSync(options.cwd+'/.hang-account'))return new Promise(()=>{});return {email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'};},
   initializationResult:async()=>({commands:[{name:'compact',description:'Compact history'}]}),
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>({rate_limits_available:true,subscription_type:'max',rate_limits:{five_hour:{utilization:11,resets_at:'2026-09-22T08:00:00Z'},seven_day:{utilization:4},model_scoped:[{display_name:'Fable',utilization:7}]}}),
-  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
+  setModel:async model=>{if(model==='reject-model')throw new Error('Native model rejected');if(fs.existsSync(options.cwd+'/.dead-query'))throw new Error('Claude Code process aborted by user');if(fs.existsSync(options.cwd+'/.hang-preparation')){fs.writeFileSync(options.cwd+'/.preparation-entered','yes');await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));}},setPermissionMode:async()=>{},setMcpServers:async servers=>{fs.appendFileSync(options.cwd+'/.mcp-sets',JSON.stringify(Object.keys(servers).map(name=>[name,servers[name].tools.map(t=>t.name)]))+'\n');if(!Object.keys(servers).length&&fs.existsSync(options.cwd+'/.hang-mcp'))return new Promise(()=>{});return {added:[],removed:[],errors:{}};},applyFlagSettings:async settings=>{fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'live',settings})+'\n');},stopTask:async()=>{},
   close(){if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.query-closes','closed\n');abort.abort();},interrupt:async()=>abort.abort(),
   async *[Symbol.asyncIterator](){
    while(!abort.signal.aborted){
@@ -165,14 +189,20 @@ export function query({prompt,options}){
 
 
 class Bridge(unittest.TestCase):
+    preparation_timeout_ms = 20_000
     def setUp(self):
+        if self._testMethodName.startswith('test_preparation_'):
+            self.preparation_timeout_ms = 1000
         self.temp = tempfile.TemporaryDirectory(prefix='claude-bridge-test-')
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.root = root
         source = (ROOT / 'scripts/claude_bridge/bridge.mjs').read_text()
         for helper in (ROOT / 'scripts/claude_bridge').glob('*.mjs'):
-            (root / helper.name).write_text(helper.read_text().replace("@anthropic-ai/claude-agent-sdk", "./fake.mjs"))
+            source = helper.read_text().replace("@anthropic-ai/claude-agent-sdk", "./fake.mjs")
+            source = source.replace('const PREPARATION_TIMEOUT_MS = 20_000;',
+                                    'const PREPARATION_TIMEOUT_MS = ' + str(self.preparation_timeout_ms) + ';')
+            (root / helper.name).write_text(source)
         (root / 'fake.mjs').write_text(SDK)
         dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
         if dependency_modules.exists():
@@ -668,7 +698,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 14)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 15)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'replacement'}]}
@@ -730,6 +760,147 @@ class Bridge(unittest.TestCase):
         self.assertEqual(self.completed()['status'],'completed')
         history=self.call('thread/read',{'threadId':self.thread,'includeTurns':True})['thread']['turns']
         self.assertIn('A visible plan',json.dumps(history))
+
+    def test_preparation_stall_keeps_metadata_read_available_and_rejects_before_input(self):
+        self.turn('hello', 'first')
+        self.completed()
+        (self.root / '.hang-preparation').write_text('yes')
+        self.sequence += 1
+        pending = self.sequence
+        self.write({'id': pending, 'method': 'turn/start', 'params': {
+            'threadId': self.thread, 'clientUserMessageId': 'stalled-input',
+            'input': [{'type': 'text', 'text': 'second'}]}})
+        deadline = time.monotonic() + 3
+        while not (self.root / '.preparation-entered').exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue((self.root / '.preparation-entered').exists())
+        start = time.monotonic()
+        metadata = self.call('thread/read', {'threadId': self.thread, 'includeTurns': False})
+        self.assertEqual(metadata['thread']['status']['type'], 'idle')
+        self.assertLess(time.monotonic() - start, .5)
+        while True:
+            row = self.read()
+            if row.get('id') == pending:
+                break
+            self.notifications.append(row)
+        self.assertIn('before input was submitted', row['error']['message'])
+        self.assertEqual(row['error']['data']['turnStartOutcome'], 'not_applied')
+        turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
+        self.assertEqual([t['clientUserMessageId'] for t in turns], ['first'])
+        (self.root / '.hang-preparation').unlink()
+        self.turn('second', 'retry-after-rejection')
+        self.assertEqual(self.completed()['status'], 'completed')
+
+    def test_preparation_timeout_preserves_background_tasks(self):
+        self.turn('background-hold', 'first')
+        self.completed()
+        (self.root / '.hang-preparation').write_text('yes')
+        with self.assertRaisesRegex(ValueError, 'before input was submitted'):
+            self.turn('second', 'stalled-input')
+        state = self.call('claude/diagnostics', {})
+        self.assertEqual(state['backgroundQueries'], 1)
+        turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
+        self.assertEqual([t['clientUserMessageId'] for t in turns], ['first'])
+        (self.root / '.release-background').write_text('done')
+
+    def test_preparation_probe_timeout_does_not_depend_on_sdk_abort(self):
+        (self.root / '.hang-account').write_text('yes')
+        start = time.monotonic()
+        with self.assertRaisesRegex(ValueError, 'timed out'):
+            self.call('account/rateLimits/read', {'cwd': str(self.root)})
+        self.assertLess(time.monotonic() - start, 3)
+        (self.root / '.hang-account').unlink()
+        self.assertEqual(self.call('account/rateLimits/read', {'cwd': str(self.root)})
+                         ['rateLimits']['primary']['usedPercent'], 11)
+
+
+    def pending_persist(self, mode):
+        (self.root / 'state' / mode).touch()
+        self.sequence += 1
+        pending = self.sequence
+        self.write({'id': pending, 'method': 'turn/start', 'params': {
+            'threadId': self.thread, 'clientUserMessageId': 'race-input',
+            'input': [{'type': 'text', 'text': 'never submitted'}]}})
+        deadline = time.monotonic() + 3
+        while not (self.root / 'state' / 'held-persist').exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue((self.root / 'state' / 'held-persist').exists())
+        return pending
+
+    def persist_reply(self, pending):
+        while True:
+            row = self.read()
+            if row.get('id') == pending:
+                return row
+            self.notifications.append(row)
+
+    def restart_bridge(self):
+        self.proc.kill()
+        self.proc.wait(timeout=5)
+        self.proc.stdin.close()
+        self.proc.stdout.close()
+        self.proc.stderr.close()
+        self.proc = subprocess.Popen([shutil.which('node'), str(self.root / 'bridge.mjs'), str(self.root / 'state')],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT': 'test@example.test'})
+        self.rows = queue.Queue()
+        threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
+
+    def test_crash_before_input_keeps_durable_receipt_unknown(self):
+        self.pending_persist('crash-mode')
+        self.assertFalse((self.root / '.queries').exists())
+        self.restart_bridge()
+        turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
+        self.assertEqual(turns[0]['startOutcome'], 'preparing')
+        with self.assertRaisesRegex(ValueError, 'outcome unknown'):
+            self.turn('never submitted', 'race-input')
+        self.assertFalse((self.root / '.queries').exists())
+
+    def test_interrupt_before_input_permits_fresh_exact_retry_and_history_reload(self):
+        self.turn('first', 'first')
+        self.completed()
+        pending = self.pending_persist('gate-persist')
+        self.call('turn/interrupt', {'threadId': self.thread})
+        (self.root / 'state' / 'release-persist').touch()
+        reply = self.persist_reply(pending)
+        self.assertEqual(reply['error']['data']['turnStartOutcome'], 'not_applied')
+        rejected = self.call('thread/turns/list', {'threadId': self.thread})['data'][0]
+        self.assertEqual(rejected['startOutcome'], 'not_applied')
+        self.restart_bridge()
+        self.assertEqual(self.call('thread/turns/list', {'threadId': self.thread})['data'][0]['id'], rejected['id'])
+        accepted = self.turn('never submitted', 'race-input')['turn']['id']
+        self.assertNotEqual(accepted, rejected['id'])
+        self.assertEqual(self.completed()['status'], 'completed')
+
+    def test_post_input_receipt_failure_preserves_unknown_and_visible_exact_turn(self):
+        (self.root / 'state' / 'fail-accepted').touch()
+        with self.assertRaisesRegex(ValueError, 'outcome unknown'):
+            self.turn('first', 'post-input')
+        self.completed()
+        turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]['startOutcome'], 'accepted')
+        self.assertEqual(turns[0]['clientUserMessageId'], 'post-input')
+        self.assertEqual(turns[0]['status'], 'completed')
+        self.assertEqual(self.turn('first', 'post-input')['turn']['id'], turns[0]['id'])
+
+    def test_preparation_tool_timeout_repairs_retained_query_before_retry(self):
+        self.turn('background-hold', 'first')
+        self.completed()
+        (self.root / '.hang-mcp').touch()
+        params = {'threadId': self.thread, 'clientUserMessageId': 'second',
+            'input': [{'type': 'text', 'text': 'second'}],
+            'dynamicTools': [{'name': 'new_tool', 'description': 'New tool',
+                'inputSchema': {'type': 'object', 'properties': {}}}]}
+        with self.assertRaisesRegex(ValueError, 'before input was submitted'):
+            self.call('turn/start', params)
+        self.assertEqual(self.call('claude/diagnostics', {})['backgroundQueries'], 1)
+        (self.root / '.hang-mcp').unlink()
+        (self.root / '.release-background').touch()
+        self.call('turn/start', params)
+        self.completed()
+        updates = [json.loads(line) for line in (self.root / '.mcp-sets').read_text().splitlines()]
+        self.assertEqual(updates[-1], [['studio', ['new_tool']]])
 
 
 if __name__ == '__main__': unittest.main()

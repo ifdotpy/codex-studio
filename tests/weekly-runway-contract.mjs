@@ -58,16 +58,44 @@ test("unknown observations and signed-out accounts stay gray", () => {
   assert.equal(weeklyRunway(snapshot(20), now, true).color, "gray");
   const stale = snapshot(20);
   stale.data.rateLimits.secondary.resetsAt = now - 1;
-  assert.equal(weeklyRunway(stale, now).color, "gray");
+  assert.equal(weeklyRunway(stale, now).color, "green");
+  assert.equal(weeklyRunway(stale, now).windows[0].remaining, 100);
+  stale.data.rateLimits.secondary.usedPercent = null;
+  assert.equal(weeklyRunway(stale, now).color, "green");
   const missingTime = snapshot(20);
   delete missingTime.at;
-  assert.equal(weeklyRunway(missingTime, now).color, "gray");
+  assert.equal(weeklyRunway(missingTime, now).color, "red");
+  const zeroWithoutTime = snapshot(0);
+  delete zeroWithoutTime.at;
+  assert.equal(weeklyRunway(zeroWithoutTime, now).color, "green");
   const missingWeekly = snapshot(20);
   delete missingWeekly.data.rateLimits.secondary;
-  assert.equal(weeklyRunway(missingWeekly, now).color, "gray");
+  assert.equal(weeklyRunway(missingWeekly, now).color, "green");
   const exhausted = snapshot(100);
   delete exhausted.data.rateLimits.secondary.resetsAt;
   assert.equal(weeklyRunway(exhausted, now).color, "red");
+});
+
+test("a cached Claude reset restores the full weekly allowance", () => {
+  const limits = {
+    accountKey: "claude-other",
+    at: now - day,
+    data: {
+      rateLimitsByLimitId: {
+        claude: {
+          limitId: "claude",
+          secondary: {
+            usedPercent: 89,
+            windowDurationMins: 10080,
+            resetsAt: now - 10,
+          },
+        },
+      },
+    },
+  };
+  const result = weeklyRunway(limits, now);
+  assert.equal(result.color, "green");
+  assert.equal(result.windows[0].remaining, 100);
 });
 
 test("the least sustainable weekly pool controls a Claude account", () => {
