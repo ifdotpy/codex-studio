@@ -61,7 +61,9 @@ class AgentReviewContract(unittest.TestCase):
         self.runtime.dynamic(self.message('review-2'))
         result = self.runtime.server.responses[-1]['result']
         self.assertTrue(result['success'], result)
-        self.assertEqual(result, receipt['result'])
+        canonical_items = receipt['result']['contentItems']
+        self.assertEqual(result['contentItems'][:len(canonical_items)], canonical_items)
+        self.assertIn('subagent concurrency', result['contentItems'][-1]['text'])
         self.assertEqual(len(self.children()), 1)
         self.runtime.dynamic(self.message('review-3', {'type': 'baseBranch', 'branch': 'main'}))
         self.assertFalse(self.runtime.server.responses[-1]['result']['success'])
