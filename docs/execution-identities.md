@@ -102,23 +102,20 @@ python3 -B tests/execution-write-cost.py
 ## Notification replay measurement
 
 The October 3, 2026 replay uses `tests/notification-load-contract.py` on
-`origin/main` revision `a4c2691` and the execution branch. Three trials alternate
+`origin/main` revision `0185781` and the execution branch. Three trials alternate
 between the two checkouts. Each trial uses temporary state, 320 input frames,
 288 callbacks after transport coalescence, and one dispatcher connection.
 
 | Metric, milliseconds  | Before median | After median |       Before range |        After range |
 | --------------------- | ------------: | -----------: | -----------------: | -----------------: |
-| Queue delay p95       |       521.111 |      741.068 | 460.172 to 730.337 | 575.444 to 773.008 |
-| Callback duration p95 |         5.487 |        7.766 |     4.482 to 6.946 |     6.586 to 9.530 |
-| Total lock wait       |       404.061 |      527.042 | 324.109 to 579.726 | 438.859 to 538.608 |
-| Total lock hold       |       512.023 |      741.107 | 450.025 to 722.759 | 577.693 to 770.003 |
+| Queue delay p95       |       625.457 |      510.711 | 532.764 to 657.924 | 433.517 to 608.410 |
+| Callback duration p95 |         6.660 |        5.690 |     5.851 to 7.114 |     5.677 to 6.921 |
+| Total lock wait       |       420.688 |      384.576 | 404.827 to 487.100 | 364.276 to 443.618 |
+| Total lock hold       |       618.903 |      508.236 | 529.085 to 657.007 | 431.126 to 606.337 |
 
-The after trials are slower. These elapsed times include host load and concurrent
-fixture activity. They do not isolate the cost of the new SQL statements. A
-separate trace measured 308 agent record calls and 24 receipt record calls,
-including setup, in 9.493 ms total. The agent calls executed 120 SQL statements,
-all during setup. The receipt calls executed 96 SQL statements. This trace does
-not measure SQLite commit cost or establish live performance.
+The after trials have lower median times. Host load varies between trials.
+These elapsed times do not establish a speed change or live performance.
+The SQL statement counts above measure the additional record hook separately.
 
 Run this command in each checkout. Compare its `after` object; the command's
 `before` object is the older checked-in baseline.
