@@ -106,7 +106,8 @@ class SessionCostRefreshContract(unittest.TestCase):
         self.write_rows(self.usage("first", tokens=200), self.usage("second"))
         actual = self.reader._log_rows(self.log)
         self.assertEqual(actual, parse_claude_usage(self.log))
-        self.assertEqual(actual[0]["usage"]["inputTokens"], 250)
+        self.assertEqual(actual[0]["usage"]["inputTokens"], 200)
+        self.assertTrue(actual[0]["inputTokensAreUncached"])
 
     def test_truncate_and_replace_cannot_reuse_old_rows(self):
         self.write_rows(self.usage("first"), self.usage("second"))
