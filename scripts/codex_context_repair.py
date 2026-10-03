@@ -196,10 +196,20 @@ def recover_unconfirmed_inputs(rt, agent_id):
         return {'status': 'waiting', 'reason': 'Native history read failed: ' + str(error),
                 'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
     found = {}
+    preparing = set()
+    rejected = set()
     supported_identity = False
     unidentified_input = False
     for turn in turns:
         message_id = turn.get('clientUserMessageId')
+        outcome = turn.get('startOutcome')
+        if outcome in {'preparing', 'not_applied'}:
+            identities = {message_id} if isinstance(message_id, str) else set()
+            identities.update(item['clientId'] for item in turn.get('items') or []
+                              if item.get('type') == 'userMessage' and isinstance(item.get('clientId'), str))
+            supported_identity |= bool(identities)
+            (preparing if outcome == 'preparing' else rejected).update(identities)
+            continue
         if isinstance(message_id, str):
             supported_identity = True
             found[message_id] = turn.get('id')
@@ -214,11 +224,17 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 unidentified_input = True
     decisions = []
     for row in events:
+        owners = [owner for owner in (current_attempt, marker_attempt_snapshot)
+                  if isinstance(owner, dict) and row['id'] in owner.get('events', [])]
+        known_unsent = bool(owners) and all(owner.get('submitted') is False for owner in owners)
         if row['id'] in found and found[row['id']]:
             decisions.append({'id': row['id'], 'decision': 'delivered', 'turnId': found[row['id']]})
-        elif row['id'] in found:
-            decisions.append({'id': row['id'], 'decision': 'waiting', 'reason': 'The matching native turn has no ID'})
-        elif supported_identity and not unidentified_input and state in {'idle', 'notLoaded'}:
+        elif row['id'] in found or row['id'] in preparing:
+            reason = ('The native input preparation has no acceptance receipt' if row['id'] in preparing
+                      else 'The matching native turn has no ID')
+            decisions.append({'id': row['id'], 'decision': 'waiting', 'reason': reason})
+        elif (supported_identity and not unidentified_input and state in {'idle', 'notLoaded'}
+                and (known_unsent or row['id'] in rejected)):
             decisions.append({'id': row['id'], 'decision': 'not_delivered'})
         else:
             decisions.append({'id': row['id'], 'decision': 'waiting'})
@@ -230,6 +246,7 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 or current_wait.get('error') != error
                 or current_wait.get('source') != wait_source
                 or current_wait.get('events') != wait_events
+                or current.get('startAttempt') != current_attempt
                 or (restart_wait and (not _held_restart_marker(current)
                     or (current.get('restartRecovery') or {}).get('startAttempt') != marker_attempt_snapshot
                     or current.get('startAttempt') != current_attempt))

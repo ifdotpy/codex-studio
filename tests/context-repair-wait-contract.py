@@ -381,6 +381,59 @@ class ContextWait(f.NativeActionRepair):
             row = db.execute('SELECT status FROM runtime_events WHERE id=?',('recover-absent',)).fetchone()
         self.assertEqual(row[0], 'pending')
 
+    def test_preparing_input_is_not_an_acceptance_receipt(self):
+        self.uncertain_input('preparing-input', [{'id':'preparing-turn',
+            'startOutcome':'preparing', 'clientUserMessageId':'preparing-input'}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'][0]['decision'], 'waiting')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('preparing-input',)).fetchone()[0], 'uncertain')
+
+    def test_submitted_absent_input_stays_uncertain_on_an_idle_connection(self):
+        self.uncertain_input('submitted-input', [{'id':'other-turn',
+            'clientUserMessageId':'another-input'}])
+        a = self.runtime.agent(self.a['id'])
+        attempt = {**a['startAttempt'], 'submitted':True, 'executionOutcome':'unknown'}
+        wait = {**a['contextRepairWait'], 'source':repair._identity({**a, 'startAttempt':attempt})}
+        self.agent_update(a, startAttempt=attempt, contextRepairWait=wait)
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'submitted-input','decision':'waiting'}])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('submitted-input',)).fetchone()[0], 'uncertain')
+
+    def test_exact_native_rejection_can_requeue_a_submitted_input(self):
+        self.uncertain_input('rejected-input', [{'id':'rejected-turn',
+            'startOutcome':'not_applied', 'clientUserMessageId':'rejected-input'}])
+        a = self.runtime.agent(self.a['id'])
+        attempt = {**a['startAttempt'], 'submitted':True}
+        wait = {**a['contextRepairWait'], 'source':repair._identity({**a, 'startAttempt':attempt})}
+        self.agent_update(a, startAttempt=attempt, contextRepairWait=wait)
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'rejected-input','decision':'not_delivered'}])
+
+    def test_newer_unsent_attempt_does_not_allow_replay_of_held_submitted_input(self):
+        self.uncertain_input('old-submitted', [{'id':'other-turn','clientUserMessageId':'another-input'}])
+        a = self.runtime.agent(self.a['id'])
+        held = {**a['startAttempt'], 'submitted':True}
+        newer = {**a['startAttempt'], 'id':'newer-attempt', 'events':['newer-input'], 'submitted':False}
+        recovery = {'epoch':a['epoch'], 'accountKey':'default', 'threadId':self.tid,
+                    'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':held}
+        self.agent_update(a, startAttempt=newer, restartRecovery=recovery)
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'old-submitted','decision':'waiting'}])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                ('old-submitted',)).fetchone()[0], 'uncertain')
+
+    def test_accepted_retry_receipt_takes_precedence_over_preparation(self):
+        self.uncertain_input('accepted-retry', [
+            {'id':'accepted-turn','startOutcome':'accepted','clientUserMessageId':'accepted-retry'},
+            {'id':'old-turn','startOutcome':'preparing','clientUserMessageId':'accepted-retry'}])
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['inputs'], [{'id':'accepted-retry','decision':'delivered','turnId':'accepted-turn'}])
+
     def test_unreadable_history_keeps_input_uncertain_and_waiting(self):
         self.uncertain_input('recover-offline', unreadable=True)
         result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
