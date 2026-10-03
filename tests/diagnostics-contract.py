@@ -59,6 +59,8 @@ class DiagnosticsContract(unittest.TestCase):
         codex.callbacks.put(1)
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)
+        from codex_execution import ensure_tables
+        ensure_tables(db)
         db.execute("CREATE TABLE runtime_events (status TEXT)")
         db.execute("INSERT INTO runtime_events VALUES ('pending')")
         lock = MeasuredRLock()
@@ -87,6 +89,7 @@ class DiagnosticsContract(unittest.TestCase):
         self.assertEqual(result["studioLoadedThreads"], 1)
         self.assertEqual(result["queues"]["durableInputPending"], 1)
         self.assertEqual(result["hostResources"]["cpuCount"], 8)
+        self.assertEqual(result["executions"]["runs"], [])
         self.assertTrue(any(row["operation"] == "nativeStatus" for row in result["resourceAttribution"]))
         self.assertEqual(len(result["runtimeLockSamples"]), 5)
         self.assertTrue(result["runtimeLockOperations"])

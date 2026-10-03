@@ -1202,7 +1202,7 @@ class RuntimeContract(unittest.TestCase):
             status = {r[0]: json.loads(r[1]).get('turnStatus') for r in db.execute(
                 "SELECT id, record FROM runtime_items WHERE id IN (?,?)",
                 (lead['id'] + ':current', lead['id'] + ':old-copy'))}
-            update = next(q for q in queries if "json_set(record,'$.turnStatus'" in q)
+            update = next(q for q in queries if q.startswith("UPDATE runtime_items ") and "json_set(record,'$.turnStatus'" in q)
             plan = ' '.join(r[3] for r in db.execute('EXPLAIN QUERY PLAN ' + update))
         self.assertEqual(status, {lead['id'] + ':current': 'completed', lead['id'] + ':old-copy': None})
         self.assertIn('created>?', plan)

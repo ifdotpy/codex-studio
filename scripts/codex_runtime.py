@@ -1378,6 +1378,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   created REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
+            from codex_execution import ensure_tables as ensure_execution_tables
+            db.execute("BEGIN")
+            ensure_execution_tables(db)
             startup_memory_mark("runtime-core-schema-indexes")
             from codex_federation import FederationService
             FederationService.ensure_tables(db)
@@ -2202,6 +2205,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             previous = json.loads(previous_row[0]) if previous_row else None
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
+        if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
+            from codex_execution import needs_record, reconcile_effect, safe_record
+            if needs_record(table, record, previous):
+                safe_record(db, reconcile_effect, self, db, table, record, previous)
         from codex_sync_entities import put as sync_entity_put
         collection = {
             "agents": "agent", "tasks": "task", "monitors": "monitor",
@@ -4640,8 +4647,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["cyberAccessProgram"] = program
                 if a.get("nativeEffort", a.get("effort")) is not None:
                     params["effort"] = a.get("nativeEffort", a.get("effort"))
+                native_operation_id = "turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id)
                 current["startAttempt"]["submitted"] = True
-                current["startAttempt"].update(accountKey=a.get("accountKey", "default"),
+                current["startAttempt"].update(nativeOperationId=native_operation_id, accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
@@ -4651,7 +4659,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # is lost, recovery inspects native history; it never sends this batch again.
             timing["nativeSubmitBeganAt"] = time.monotonic_ns()
             submitted = self.submit_reserved(server, "turn/start", params,
-                operation_id="turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id))
+                operation_id=native_operation_id)
             timing["submittedAt"] = time.monotonic_ns()
             try:
                 with self.db() as db:
@@ -4836,6 +4844,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # Native definitively rejected this busy input. It is safe to
                 # return the exact batch to the outbox, but another busy attempt
                 # would repeat the rejection until this native turn ends.
+                from codex_execution import reject_attempt, safe_record
+                safe_record(db, reject_attempt, db, attempt, error)
                 a["steerRejectedTurnId"] = a.get("turnId") or ""
                 a.update(status="running" if a.get("inFlight") else "queued", error=None)
                 a.pop("startAttempt", None)
@@ -4872,6 +4882,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if current_epoch and a["autoWake"]:
                     a.update(status="running" if attempt.get("activeAtReservation") else "failed",
                              error=str(error))
+            attempt["executionOutcome"] = "unknown" if unknown else "unsent" if not attempt.get("submitted") else "rejected"
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
@@ -5158,6 +5169,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid LIMIT 1",
                              (tid, account_key)).fetchone()
             if row is None:
+                if p.get("parentThreadId"):
+                    from codex_execution import observe_child_thread, safe_record
+                    safe_record(db, observe_child_thread, db, account_key, method, p)
                 return
             a = json.loads(row[0])
             if a.get("deletedAt"):
@@ -5193,6 +5207,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and (p.get('status') or {}).get('type') == 'notLoaded'):
                     stream.flush_locked(db, account=account_key, thread_id=tid, close=True, force=True)
                 a = self.agent(a['id'], db)
+            if method in {"turn/started", "turn/completed"}:
+                from codex_execution import observe_native, safe_record
+                safe_record(db, observe_native, db, a, method, p)
             attempt = a.get("startAttempt") or {}
             if (a.get("nativeReview") and attempt.get("action") == "review"
                     and attempt.get("submitted") and method in {"item/started", "item/completed"}
@@ -5832,6 +5849,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for spec, child in zip(planned, children):
                 if child["id"] not in existing:
                     self.put(db, "agents", child)
+                    from codex_execution import record_spawn, safe_record
+                    safe_record(db, record_spawn, db, current, child, key)
                     text = child["prompt"]
                     if child.get("workerBaseCommit"):
                         text += ("\n\n[Studio worker worktree base] Commit " + child["workerBaseCommit"]
@@ -6828,6 +6847,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Supply a command with 1 to 12000 characters")
         if not isinstance(timeout, int) or not 1000 <= timeout <= 86400000:
             raise ValueError("Command timeout must be 1 second to 24 hours")
+        request_key = key
         key = str(uuid.uuid5(uuid.NAMESPACE_URL, key)) if key else uid()
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
@@ -6865,6 +6885,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "agent": a["id"],
                 "epoch": a["epoch"],
                 "turnId": a.get("turnId"),
+                "requestId": request_key,
                 "command": command,
                 "cwd": a["cwd"],
                 "timeout_ms": timeout,

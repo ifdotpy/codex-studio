@@ -219,6 +219,9 @@ def snapshot(runtime, root_pid=None, ps_output=None):
                     native_accounts[alias] = {"error": type(error).__name__}
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+    from codex_execution import chain
+    with runtime.db() as db:
+        executions = chain(db)
     sampled = lock_samples(runtime)
     attribution.append({"component": "runtime", "operation": "lockSample",
                         "count": len(sampled), "durationMs": round(sum(x["waitMs"] for x in sampled), 2)})
@@ -228,6 +231,7 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "nativeAccounts": dict(sorted(native_accounts.items())),
             "studioLoadedThreads": studio_loaded, "queues": queues,
             "runtimeLockSamples": sampled,
+            "executions": executions,
             "sqliteContention": sqlite_diagnostics(),
             "analyticsCapture": getattr(runtime, "analytics_capture_status", lambda: {"available": False})(),
             "migrations": migration_status(runtime),
