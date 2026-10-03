@@ -1,0 +1,38 @@
+{
+  "source": "hand-authored protocol frame based on tests/analytics-contract.py",
+  "events": [
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "responseId": "replay-response",
+        "tokenUsage": {
+          "total": { "totalTokens": 42 },
+          "last": {
+            "inputTokens": 20,
+            "outputTokens": 10,
+            "reasoningTokens": 12
+          }
+        },
+        "rawTokenUsageRecord": {
+          "response_id": "replay-response",
+          "usage": {
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "reasoning_tokens": 12
+          }
+        }
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    }
+  ],
+  "expectedStatus": "completed",
+  "assert": { "eventKinds": ["user"], "usage": ["reasoning_tokens", "12"] }
+}
