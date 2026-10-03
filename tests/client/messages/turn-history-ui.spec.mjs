@@ -4,30 +4,14 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
+import assert from "node:assert/strict";
+import { test, spawnFixture as spawn } from "../playwright.mjs";
 
 test("Turn History Ui", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

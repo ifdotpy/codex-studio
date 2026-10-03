@@ -10,6 +10,10 @@ test("Desktop Notifications Ui", async ({
   context: _testContext,
   page: testPage,
 }) => {
+  // Keep the formerly unbounded standalone check bounded. Snapshot refresh
+  // falls back to a five-second poll, exercised at repeated checkpoints here.
+  test.setTimeout(90000);
+
   const assert = {
     equal: (actual, expected, message) =>
       expect(actual, message).toBe(expected),
@@ -317,7 +321,10 @@ test("Desktop Notifications Ui", async ({
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ passed: true, evidence }));
   } catch (error) {
-    await page?.screenshot({ path: join(evidence, "failure.png") });
+    console.error("Desktop notifications failure:", error);
+    await page
+      ?.screenshot({ path: join(evidence, "failure.png") })
+      .catch(() => {});
     console.error(evidence, log);
     throw error;
   } finally {

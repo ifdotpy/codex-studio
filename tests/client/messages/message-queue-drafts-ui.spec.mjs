@@ -63,7 +63,10 @@ createRoot(document.getElementById("root")!).render(<App />);
       root,
       logLevel: "error",
       resolve: {
-        alias: { "react/jsx-runtime": require.resolve("react/jsx-runtime") },
+        alias: {
+          "react/jsx-runtime": require.resolve("react/jsx-runtime"),
+          "react/jsx-dev-runtime": require.resolve("react/jsx-dev-runtime"),
+        },
       },
       define: { "process.env.NODE_ENV": JSON.stringify("test") },
       build: {

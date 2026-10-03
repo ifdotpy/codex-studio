@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
+test.use({ hasTouch: true });
+
 test("Selection Quote Ui", async ({
   browser: _testBrowser,
   context: _testContext,

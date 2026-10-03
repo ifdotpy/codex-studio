@@ -103,6 +103,17 @@ test("Progress Cache Ui", async ({
       files.set(agent.id, response.path);
       await mkdir(dirname(response.path), { recursive: true });
     }
+    // The fixture has 40 workers under Release lead. Other project must be a
+    // nearest switch target to exercise the documented prefetch window.
+    const pinTarget = await fetch(origin + "/api/organization", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": initial.token,
+      },
+      body: JSON.stringify({ id: other.id, pinned: true }),
+    });
+    assert.equal(pinTarget.ok, true, await pinTarget.text());
     const texts = {
       lead: "Lead cached progress.",
       other: "Other prefetched progress.",
@@ -494,6 +505,5 @@ test("Progress Cache Ui", async ({
     throw error;
   } finally {
     await context?.close();
-    await page?.unrouteAll({ behavior: "ignoreErrors" });
   }
 });

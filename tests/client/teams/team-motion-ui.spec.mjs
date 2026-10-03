@@ -101,6 +101,10 @@ test("Team Motion Ui", async ({
                 ),
               result: "",
             };
+          } else if (a.name === "Worker 01") {
+            // Keep the waiting summary row present in both phases so this
+            // checks count changes without changing the summary's row set.
+            a.status = "queued";
           }
         }
       await route.fulfill({ response, json: data });
@@ -170,7 +174,7 @@ test("Team Motion Ui", async ({
     );
     assert.ok(
       Math.abs(result.before.searchY - result.after.searchY) <= 1,
-      "Team counts do not shift the worker search",
+      `Team counts do not shift the worker search: ${JSON.stringify(result)}`,
     );
     // The other worker has no saved disclosure preference.
     const other = page
