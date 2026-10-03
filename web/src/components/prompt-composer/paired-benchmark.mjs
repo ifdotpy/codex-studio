@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -17,6 +18,25 @@ const repo = dirname(
   dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
 );
 const tests = join(repo, "tests");
+const web = join(repo, "web");
+const playwrightCli = join(web, "node_modules/@playwright/test/cli.js");
+const playwrightConfig = join(web, "playwright.config.ts");
+const requiredPaths = [
+  join(web, "dist/index.html"),
+  playwrightCli,
+  playwrightConfig,
+  join(tests, "client/playwright.mjs"),
+  join(web, "src/components/prompt-composer/renderProbe.ts"),
+  join(tests, "simple-ui-fixture.py"),
+  join(tests, "runtime-contract.py"),
+  join(tests, "client/performance/draft-render-performance-browser.spec.mjs"),
+  join(tests, "client/performance/ui-responsiveness-browser.spec.mjs"),
+];
+const missingPaths = requiredPaths.filter((path) => !existsSync(path));
+if (missingPaths.length)
+  throw new Error(
+    `Paired prompt composer benchmark is missing: ${missingPaths.join(", ")}`,
+  );
 const temporaryRoot = await mkdtemp(
   join(tmpdir(), "studio-prompt-composer-pair-"),
 );
@@ -72,8 +92,10 @@ async function prepareBaseline() {
       "set",
       "--no-cone",
       "/web/**",
-      "/tests/draft-render-performance-browser.mjs",
-      "/tests/ui-responsiveness-browser.mjs",
+      "/web/playwright.config.ts",
+      "/tests/client/performance/draft-render-performance-browser.spec.mjs",
+      "/tests/client/performance/ui-responsiveness-browser.spec.mjs",
+      "/tests/client/playwright.mjs",
       "/tests/simple-ui-fixture.py",
       "/tests/runtime-contract.py",
       "/scripts/claude_bridge/**",
@@ -98,12 +120,6 @@ async function prepareBaseline() {
     join(repo, "web/src/components/prompt-composer/renderProbe.ts"),
     join(probeDir, "renderProbe.ts"),
   );
-  for (const name of [
-    "draft-render-performance-browser.mjs",
-    "ui-responsiveness-browser.mjs",
-  ])
-    await copyFile(join(tests, name), join(baseline, "tests", name));
-
   await insertOnce(
     join(baselineWeb, "src/App.tsx"),
     'import { useSyncedDrafts } from "./sync/drafts";',
@@ -137,22 +153,67 @@ async function prepareBaseline() {
     '  reportPromptComposerRender("conversation");',
   );
   command("npm", ["run", "build"], baselineWeb);
+
+  const baselinePerformanceTests = join(baseline, "tests/client/performance");
+  await mkdir(baselinePerformanceTests, { recursive: true });
+  for (const name of [
+    "draft-render-performance-browser.spec.mjs",
+    "ui-responsiveness-browser.spec.mjs",
+  ])
+    await copyFile(
+      join(tests, "client/performance", name),
+      join(baselinePerformanceTests, name),
+    );
+  await copyFile(
+    join(tests, "client/playwright.mjs"),
+    join(baseline, "tests/client/playwright.mjs"),
+  );
+  await copyFile(
+    join(web, "playwright.config.ts"),
+    join(baselineWeb, "playwright.config.ts"),
+  );
+}
+
+function runCurrentSpec(spec) {
+  command(
+    process.execPath,
+    [
+      playwrightCli,
+      "test",
+      "--config",
+      playwrightConfig,
+      "--project=performance",
+      join(tests, "client/performance", spec),
+    ],
+    web,
+    { PLAYWRIGHT_INCLUDE_SPECIAL: "1" },
+  );
+}
+
+function runBaselineSpec(spec) {
+  command(
+    process.execPath,
+    [
+      join(baselineWeb, "node_modules/@playwright/test/cli.js"),
+      "test",
+      "--config",
+      join(baselineWeb, "playwright.config.ts"),
+      "--project=performance",
+      join(baseline, "tests/client/performance", spec),
+    ],
+    baselineWeb,
+    {
+      PLAYWRIGHT_INCLUDE_SPECIAL: "1",
+      RENDER_ISOLATION: "baseline",
+    },
+  );
 }
 
 async function runPair(round) {
   process.stdout.write(`\nBaseline draft fixture, round ${round}\n`);
-  command(
-    process.execPath,
-    [join(baseline, "tests/draft-render-performance-browser.mjs")],
-    baseline,
-    { RENDER_ISOLATION: "baseline" },
-  );
+  runBaselineSpec("draft-render-performance-browser.spec.mjs");
   process.stdout.write(`Current draft fixture, round ${round}\n`);
-  command(
-    process.execPath,
-    [join(tests, "draft-render-performance-browser.mjs")],
-    repo,
-  );
+  runCurrentSpec("draft-render-performance-browser.spec.mjs");
 }
 
 try {
@@ -160,18 +221,9 @@ try {
   await runPair(1);
   await runPair(2);
   process.stdout.write("\nBaseline production UI fixture\n");
-  command(
-    process.execPath,
-    [join(baseline, "tests/ui-responsiveness-browser.mjs")],
-    baseline,
-    { RENDER_ISOLATION: "baseline" },
-  );
+  runBaselineSpec("ui-responsiveness-browser.spec.mjs");
   process.stdout.write("Current production UI fixture\n");
-  command(
-    process.execPath,
-    [join(tests, "ui-responsiveness-browser.mjs")],
-    repo,
-  );
+  runCurrentSpec("ui-responsiveness-browser.spec.mjs");
 } finally {
   if (baselineWorktreeAdded)
     command("git", ["worktree", "remove", "--force", baseline], repo);
