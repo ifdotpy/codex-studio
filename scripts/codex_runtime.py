@@ -41,6 +41,7 @@ from codex_turn_recovery import TurnRecoveryMixin
 from codex_capacity_retry import CapacityRetryMixin
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
+from codex_lock_metrics import runtime_lock
 from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
@@ -1242,7 +1243,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "canvas.sqlite3"
         self.analytics_db_path = self.root / "analytics.sqlite3"
-        self.lock = threading.RLock()
+        self.lock = runtime_lock()
         self.ui_condition = threading.Condition(self.lock)
         self.ui_revisions = {}
         self._agent_records_cache_lock = threading.RLock()

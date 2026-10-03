@@ -4,7 +4,6 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import argparse
-from collections import defaultdict
 import io
 import json
 from pathlib import Path
@@ -18,6 +17,7 @@ import uuid
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import AppServer, Runtime
+from codex_lock_metrics import MeasuredRLock
 
 
 class QuietRuntime(Runtime):
@@ -25,50 +25,6 @@ class QuietRuntime(Runtime):
         while not self.closed:
             self.changed.wait(0.05)
             self.changed.clear()
-
-
-class TracedLock:
-    """Count only outer acquisitions; report the caller that holds Runtime.lock."""
-    def __init__(self, lock):
-        self.lock = lock
-        self.local = threading.local()
-        self.events = defaultdict(lambda: [0, 0.0, 0.0])
-        self.guard = threading.Lock()
-
-    def acquire(self, *args, **kwargs):
-        caller = sys._getframe(1)
-        if caller.f_code.co_name == "__enter__":
-            caller = caller.f_back
-        path = caller.f_code.co_filename.rsplit("/", 1)[-1]
-        label = path + ":" + caller.f_code.co_name
-        started = time.perf_counter()
-        acquired = self.lock.acquire(*args, **kwargs)
-        entered = time.perf_counter()
-        if acquired:
-            depth = getattr(self.local, "depth", 0)
-            self.local.depth = depth + 1
-            if depth == 0:
-                self.local.label, self.local.entered = label, entered
-                with self.guard:
-                    row = self.events[label]
-                    row[0] += 1
-                    row[1] += entered - started
-        return acquired
-
-    def release(self):
-        depth = self.local.depth - 1
-        self.local.depth = depth
-        if depth == 0:
-            with self.guard:
-                self.events[self.local.label][2] += time.perf_counter() - self.local.entered
-        self.lock.release()
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, *_):
-        self.release()
 
 
 def percentile(values, fraction):
@@ -89,7 +45,7 @@ def measure(count=320, agents=24):
                              "threadId": f"fixture-thread-{index}", "turnId": f"fixture-turn-{index}",
                              "inFlight": True, "status": "running"}
                     runtime.put(db, "agents", agent)
-            traced = TracedLock(runtime.lock)
+            traced = MeasuredRLock(runtime.lock)
             runtime.lock = traced
             server = AppServer.__new__(AppServer)
             server.supervisor_mode = False
@@ -179,16 +135,16 @@ def measure(count=320, agents=24):
             assert not dispatch.is_alive()
             assert len(delays) > 0
             assert len(connections) == 1, connections
-            holders = sorted(traced.events.items(), key=lambda pair: pair[1][2], reverse=True)
+            metrics = traced.runtime_lock_metrics()
+            by_wait = sorted(metrics, key=lambda row: row["totalWaitMs"], reverse=True)
             return {"input": count, "callbacks": len(delays), "queuedBeforeRelease": queued,
                     "dispatcherConnections": len(connections),
                     "queueDelayMs": {"p50": percentile(delays, .5), "p95": percentile(delays, .95),
                                      "max": percentile(delays, 1)},
                     "callbackDurationMs": {"p50": percentile(durations, .5), "p95": percentile(durations, .95)},
-                    "lockWaitTotalMs": round(sum(row[1] for row in traced.events.values()) * 1000, 3),
-                    "lockHoldTotalMs": round(sum(row[2] for row in traced.events.values()) * 1000, 3),
-                    "lock": [{"path": name, "count": row[0], "waitMs": round(row[1] * 1000, 3),
-                              "holdMs": round(row[2] * 1000, 3)} for name, row in holders[:10]]}
+                    "lockWaitTotalMs": round(sum(row["totalWaitMs"] for row in metrics), 3),
+                    "lockHoldTotalMs": round(sum(row["totalHoldMs"] for row in metrics), 3),
+                    "lock": by_wait[:20]}
         finally:
             runtime.servers.clear()
             runtime.server = None
