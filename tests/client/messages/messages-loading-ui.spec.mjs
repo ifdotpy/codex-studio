@@ -148,7 +148,9 @@ test("Messages loading", async () => {
       workspaceReads = 0,
       detailReads = 0,
       roomReads = 0,
-      roomFails = true;
+      roomFails = true,
+      holdNextComplaintDetail = false,
+      releaseComplaintDetail;
     browser = await engine.launch({
       headless: true,
       ...(engine === chromium
@@ -186,7 +188,14 @@ test("Messages loading", async () => {
       });
       await next.route("**/api/complaint?*", async (route) => {
         detailReads++;
-        await pause(3500);
+        if (holdNextComplaintDetail) {
+          holdNextComplaintDetail = false;
+          await new Promise((resolve) => {
+            releaseComplaintDetail = resolve;
+          });
+        } else {
+          await pause(3500);
+        }
         await route.fulfill({ json: detail });
       });
       await next.route("**/api/agent-chat?*", (route) => {
@@ -274,6 +283,8 @@ test("Messages loading", async () => {
       .getByRole("textbox", { name: "Reply", exact: true })
       .waitFor();
     await drawer.locator(`[data-room="${direct.id}"]`).click();
+    holdNextComplaintDetail = true;
+    const readsBeforeRefresh = stateReads;
     await drawer.locator(`[data-room="you"]`).click();
     await drawer
       .getByText("Loading message…", { exact: true })
@@ -283,11 +294,28 @@ test("Messages loading", async () => {
       2,
       "returning to For you requests one fresh detail after remount",
     );
+    const refreshedName = `${lead.name} refreshed`;
+    lead.name = refreshedName;
+    for (const row of state.threads)
+      if (row.id === lead.id) row.name = refreshedName;
+    for (const row of state.runtime.agents)
+      if (row.id === lead.id) row.name = refreshedName;
+    await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    await page
+      .locator("#conversation-title")
+      .filter({ hasText: refreshedName })
+      .waitFor({ timeout: 6000 });
+    assert.ok(
+      stateReads > readsBeforeRefresh,
+      "the supported resume refresh reads the updated state while complaint detail is held",
+    );
     assert.equal(
       await drawer.getByText("Loading message…", { exact: true }).count(),
       1,
-      "the message shows its loading state while the refreshed detail is pending",
+      "state refresh does not wait for or replace the held complaint detail",
     );
+    assert.equal(typeof releaseComplaintDetail, "function");
+    releaseComplaintDetail();
     await drawer.getByText(detail.text, { exact: true }).waitFor();
     const roomDetail = drawer.locator(".team-room-detail");
     await drawer.locator(`[data-room="${broadcast.id}"]`).click();
