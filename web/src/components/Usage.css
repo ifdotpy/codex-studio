@@ -46,30 +46,40 @@
 .account-limits-warning {
   color: light-dark(#8a4700, #ffbd78);
 }
+.account-limits-group {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-left: auto;
+}
 .account-limits-dots {
   display: flex;
-  flex: 0 0 100%;
-  min-width: 0;
-  height: 16px;
-  overflow-x: auto;
-  justify-content: safe flex-end;
-  margin-top: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 26px;
+  margin-right: 2px;
+}
+.usage-footer .account-limits-group .account-limits-toggle {
+  margin-left: 0;
 }
 .account-limits-dot-target {
   display: grid;
   place-items: center;
-  flex: 0 0 16px;
-  width: 16px;
-  height: 16px;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 26px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
   cursor: pointer;
 }
 .account-limits-dot-target:focus-visible {
+  outline: none;
+}
+.account-limits-dot-target:focus-visible .account-limits-dot {
   outline: 2px solid var(--muted);
-  outline-offset: -1px;
+  outline-offset: 2px;
 }
 .account-limits-dot {
   width: 6px;
@@ -88,7 +98,7 @@
 }
 .account-limits-dot[data-current] {
   outline: 1px solid var(--muted);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 .account-limits-dot-tooltip {
   white-space: pre-line;

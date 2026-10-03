@@ -511,501 +511,510 @@ export default function Usage({
           />
         </Suspense>
       )}
-      <Popover
-        opened={limitsOpened}
-        onChange={changeOpened}
-        position="top-end"
-        width="min(370px, calc(100vw - 24px))"
-        withArrow
-        shadow="lg"
-        trapFocus
-        returnFocus
-      >
-        <Popover.Target>
-          <Button
-            className="limits-toggle account-limits-toggle"
-            variant="subtle"
-            size="compact-xs"
-            aria-label="Account limits"
-            title={
-              lowAccount
-                ? `Low allowance: ${lowAccount.email || lowAccount.label}`
-                : undefined
-            }
-            onClick={() => changeOpened(!limitsOpened)}
-            leftSection={<Gauge size={13} />}
-            rightSection={<ChevronUp size={12} />}
-          >
-            <span className="account-limits-summary">
-              <span className="account-limits-label">Limits</span>
-              {lowAccount && (
-                <span className="account-limits-warning">Low allowance</span>
-              )}
-            </span>
-          </Button>
-        </Popover.Target>
-        <Popover.Dropdown className="account-limits-popover">
-          <section
-            className="account-limits-panel"
-            aria-label="Account limits details"
-          >
-            <header className="account-limits-heading">
-              <div>
-                <h3>Account limits</h3>
-                <p>
-                  {activeAccount?.email ||
-                    activeAccount?.label ||
-                    accountLabel ||
-                    "Allowance left"}
-                </p>
-              </div>
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                loading={refreshing || loadingLimits}
-                onClick={() =>
-                  void (activeAccount?.reload(true) ?? refreshLimits())
+      <div className="account-limits-group">
+        <div
+          className="account-limits-dots"
+          role="group"
+          aria-label="Account weekly allowance"
+        >
+          {usageAccounts.map((item) => {
+            const projection = weeklyRunway(
+              accountLimits(item.limits, item.key, item.accountId),
+              now,
+              item.signedOut,
+            );
+            const current = item.key === fallbackKey;
+            const provider =
+              item.provider === "claude"
+                ? "Claude"
+                : item.provider &&
+                    item.provider !== "codex" &&
+                    item.provider !== "openai"
+                  ? item.provider
+                  : "Codex";
+            const label = [item.label, item.email].filter(Boolean).join(" · ");
+            const details = [
+              `${label} (${provider})${current ? ", current chat account" : ""}`,
+              ...(item.signedOut
+                ? ["Signed out. Weekly allowance unavailable."]
+                : []),
+              ...projection.windows.map(
+                (window) =>
+                  `${window.name} weekly: ${window.remaining === null ? "remaining allowance unavailable" : `${formatPercent(window.remaining)} left`}. ${window.reset === null ? "Reset time unavailable." : window.reset <= now ? "Cached reset passed." : `Resets ${localDateTime(new Date(window.reset * 1000), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}.`}${window.days !== null && Number.isFinite(window.days) ? ` About ${window.days.toFixed(1)} days left at the current rate.` : ""}${window.resetFirst ? " Resets before this allowance runs out." : ""}`,
+              ),
+              projection.days === null
+                ? "Projected days unavailable."
+                : !Number.isFinite(projection.days)
+                  ? "At least 7 days left at the current rate. No weekly consumption recorded."
+                  : projection.windows.every((window) => window.resetFirst)
+                    ? "At least 7 days left at the current rate after reset."
+                    : projection.windows.length > 1
+                      ? `About ${projection.days.toFixed(1)} days left across weekly limits.`
+                      : "",
+              "Rate uses consumption in the elapsed part of the weekly window.",
+            ]
+              .filter(Boolean)
+              .join("\n");
+            return (
+              <Tooltip
+                key={item.key}
+                label={
+                  <span className="account-limits-dot-tooltip">{details}</span>
                 }
-                leftSection={<RefreshCw size={13} />}
+                multiline
+                w={300}
+                withArrow
+                events={{ hover: true, focus: true, touch: true }}
               >
-                Refresh
-              </Button>
-            </header>
-            {usageAccounts.length > 1 && (
-              <Tabs
-                value={selectedAccountKey}
-                onChange={(value) => {
-                  if (value) setActiveAccountKey(value);
-                }}
-                keepMounted={false}
-                className="account-limits-tabs"
-              >
-                <Tabs.List aria-label="Accounts with limits">
-                  {usageAccounts.map((item, index) => (
-                    <Tabs.Tab
-                      key={item.key}
-                      value={item.key}
-                      id={`usage-account-tab-${index}`}
-                      aria-controls="usage-account-panel"
-                      aria-label={`${item.email || item.label}${item.provider ? `, ${item.provider}` : ""} account limits`}
-                    >
-                      <span>{item.email || item.label}</span>
-                      {item.provider && <small>{item.provider}</small>}
-                    </Tabs.Tab>
-                  ))}
-                </Tabs.List>
-              </Tabs>
-            )}
-            {recovery && (
-              <LimitRecoveryNotice
-                key={JSON.stringify(recovery)}
-                recovery={recovery}
-              />
-            )}
-            <div
-              className="account-limits-groups"
-              {...(usageAccounts.length > 1
-                ? {
-                    role: "tabpanel" as const,
-                    id: "usage-account-panel",
-                    "aria-labelledby": `usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`,
-                    "aria-label": `${activeAccount?.email || activeAccount?.label || "Account"} limits`,
+                <button
+                  type="button"
+                  className="account-limits-dot-target"
+                  data-account-key={item.key}
+                  aria-label={`Open ${item.email || item.label} weekly allowance (${provider}). ${details}`}
+                  aria-current={current ? "true" : undefined}
+                  aria-haspopup="dialog"
+                  aria-expanded={
+                    limitsOpened && selectedAccountKey === item.key
                   }
-                : {})}
+                  onClick={() => {
+                    setActiveAccountKey(item.key);
+                    changeOpened(true);
+                  }}
+                >
+                  <span
+                    className="account-limits-dot"
+                    data-color={projection.color}
+                    data-current={current || undefined}
+                    aria-hidden="true"
+                  />
+                </button>
+              </Tooltip>
+            );
+          })}
+        </div>
+        <Popover
+          opened={limitsOpened}
+          onChange={changeOpened}
+          position="top-end"
+          width="min(370px, calc(100vw - 24px))"
+          withArrow
+          shadow="lg"
+          trapFocus
+          returnFocus
+        >
+          <Popover.Target>
+            <Button
+              className="limits-toggle account-limits-toggle"
+              variant="subtle"
+              size="compact-xs"
+              aria-label="Account limits"
+              title={
+                lowAccount
+                  ? `Low allowance: ${lowAccount.email || lowAccount.label}`
+                  : undefined
+              }
+              onClick={() => changeOpened(!limitsOpened)}
+              leftSection={<Gauge size={13} />}
+              rightSection={<ChevronUp size={12} />}
             >
-              {buckets.map((bucket) => (
+              <span className="account-limits-summary">
+                <span className="account-limits-label">Limits</span>
+                {lowAccount && (
+                  <span className="account-limits-warning">Low allowance</span>
+                )}
+              </span>
+            </Button>
+          </Popover.Target>
+          <Popover.Dropdown className="account-limits-popover">
+            <section
+              className="account-limits-panel"
+              aria-label="Account limits details"
+            >
+              <header className="account-limits-heading">
+                <div>
+                  <h3>Account limits</h3>
+                  <p>
+                    {activeAccount?.email ||
+                      activeAccount?.label ||
+                      accountLabel ||
+                      "Allowance left"}
+                  </p>
+                </div>
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  loading={refreshing || loadingLimits}
+                  onClick={() =>
+                    void (activeAccount?.reload(true) ?? refreshLimits())
+                  }
+                  leftSection={<RefreshCw size={13} />}
+                >
+                  Refresh
+                </Button>
+              </header>
+              {usageAccounts.length > 1 && (
+                <Tabs
+                  value={selectedAccountKey}
+                  onChange={(value) => {
+                    if (value) setActiveAccountKey(value);
+                  }}
+                  keepMounted={false}
+                  className="account-limits-tabs"
+                >
+                  <Tabs.List aria-label="Accounts with limits">
+                    {usageAccounts.map((item, index) => (
+                      <Tabs.Tab
+                        key={item.key}
+                        value={item.key}
+                        id={`usage-account-tab-${index}`}
+                        aria-controls="usage-account-panel"
+                        aria-label={`${item.email || item.label}${item.provider ? `, ${item.provider}` : ""} account limits`}
+                      >
+                        <span>{item.email || item.label}</span>
+                        {item.provider && <small>{item.provider}</small>}
+                      </Tabs.Tab>
+                    ))}
+                  </Tabs.List>
+                </Tabs>
+              )}
+              {recovery && (
+                <LimitRecoveryNotice
+                  key={JSON.stringify(recovery)}
+                  recovery={recovery}
+                />
+              )}
+              <div
+                className="account-limits-groups"
+                {...(usageAccounts.length > 1
+                  ? {
+                      role: "tabpanel" as const,
+                      id: "usage-account-panel",
+                      "aria-labelledby": `usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`,
+                      "aria-label": `${activeAccount?.email || activeAccount?.label || "Account"} limits`,
+                    }
+                  : {})}
+              >
+                {buckets.map((bucket) => (
+                  <section
+                    className="account-limit-group"
+                    key={bucket.id}
+                    aria-label={`${bucket.name} limits`}
+                  >
+                    <header>
+                      <strong>{bucket.name}</strong>
+                      {bucket.data.planType && (
+                        <span>{bucket.data.planType}</span>
+                      )}
+                    </header>
+                    <div className="account-limit-windows">
+                      {bucket.windows.map((window, index) => (
+                        <div
+                          className="account-limit-window"
+                          key={`${window.label}-${index}`}
+                        >
+                          <div className="account-limit-value">
+                            <span>{window.label}</span>
+                            <strong
+                              className={
+                                window.remaining !== null &&
+                                window.remaining <= 15 &&
+                                !window.expired
+                                  ? "account-limits-warning"
+                                  : ""
+                              }
+                            >
+                              {window.expired ? (
+                                "Awaiting update"
+                              ) : window.remaining === null ? (
+                                "Unavailable"
+                              ) : (
+                                <>
+                                  {formatPercent(window.remaining)}
+                                  <small> left</small>
+                                </>
+                              )}
+                            </strong>
+                          </div>
+                          {window.remaining !== null && !window.expired && (
+                            <Progress
+                              value={window.remaining}
+                              size={5}
+                              radius="xl"
+                              color={window.remaining <= 15 ? "orange" : "teal"}
+                              aria-label={`${bucket.name} ${window.label} remaining`}
+                            />
+                          )}
+                          <div className="account-limit-reset">
+                            {window.reset ? (
+                              <>
+                                <span>
+                                  {window.expired
+                                    ? "Reset passed"
+                                    : `Resets ${resetIn(window.reset, now)}`}
+                                </span>
+                                <time
+                                  dateTime={new Date(
+                                    window.reset * 1000,
+                                  ).toISOString()}
+                                  title={new Date(
+                                    window.reset * 1000,
+                                  ).toString()}
+                                >
+                                  {localDateTime(
+                                    new Date(window.reset * 1000),
+                                    {
+                                      month: "short",
+                                      day: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    },
+                                  )}
+                                </time>
+                              </>
+                            ) : (
+                              <span>Reset time unavailable</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {!bucket.windows.length && (
+                      <p className="account-limits-empty">
+                        No limit windows reported.
+                      </p>
+                    )}
+                    {bucket.data.credits && (
+                      <div className="account-limit-credits">
+                        <span>Credits</span>
+                        <strong>
+                          {bucket.data.credits.unlimited
+                            ? "Unlimited"
+                            : bucket.data.credits.balance != null
+                              ? String(bucket.data.credits.balance)
+                              : bucket.data.credits.hasCredits === true
+                                ? "Available"
+                                : bucket.data.credits.hasCredits === false
+                                  ? "None"
+                                  : "Unavailable"}
+                        </strong>
+                      </div>
+                    )}
+                  </section>
+                ))}
+                {!buckets.length && (
+                  <p className="account-limits-empty">
+                    {loadingLimits
+                      ? "Loading account limits…"
+                      : "Codex has not supplied account limits."}
+                  </p>
+                )}
+              </div>
+              {activeAccount?.provider === "claude" && (
                 <section
-                  className="account-limit-group"
-                  key={bucket.id}
-                  aria-label={`${bucket.name} limits`}
+                  className="account-reset-credits"
+                  aria-label="Claude free limit resets"
                 >
                   <header>
-                    <strong>{bucket.name}</strong>
-                    {bucket.data.planType && (
-                      <span>{bucket.data.planType}</span>
-                    )}
+                    <strong>Free limit resets</strong>
+                    <span>Check on Claude</span>
                   </header>
-                  <div className="account-limit-windows">
-                    {bucket.windows.map((window, index) => (
-                      <div
-                        className="account-limit-window"
-                        key={`${window.label}-${index}`}
-                      >
-                        <div className="account-limit-value">
-                          <span>{window.label}</span>
-                          <strong
-                            className={
-                              window.remaining !== null &&
-                              window.remaining <= 15 &&
-                              !window.expired
-                                ? "account-limits-warning"
-                                : ""
-                            }
-                          >
-                            {window.expired ? (
-                              "Awaiting update"
-                            ) : window.remaining === null ? (
-                              "Unavailable"
-                            ) : (
-                              <>
-                                {formatPercent(window.remaining)}
-                                <small> left</small>
-                              </>
-                            )}
-                          </strong>
-                        </div>
-                        {window.remaining !== null && !window.expired && (
-                          <Progress
-                            value={window.remaining}
-                            size={5}
-                            radius="xl"
-                            color={window.remaining <= 15 ? "orange" : "teal"}
-                            aria-label={`${bucket.name} ${window.label} remaining`}
-                          />
-                        )}
-                        <div className="account-limit-reset">
-                          {window.reset ? (
-                            <>
-                              <span>
-                                {window.expired
-                                  ? "Reset passed"
-                                  : `Resets ${resetIn(window.reset, now)}`}
-                              </span>
-                              <time
-                                dateTime={new Date(
-                                  window.reset * 1000,
-                                ).toISOString()}
-                                title={new Date(window.reset * 1000).toString()}
-                              >
-                                {localDateTime(new Date(window.reset * 1000), {
-                                  month: "short",
-                                  day: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </time>
-                            </>
-                          ) : (
-                            <span>Reset time unavailable</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                  <p>
+                    Opens Claude. Use the same account, then confirm “Reset for
+                    free”.
+                  </p>
+                  <div className="account-reset-credit-row">
+                    <Button
+                      component="a"
+                      href="https://claude.ai/settings/usage"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      size="compact-xs"
+                      variant="default"
+                      rightSection={<ExternalLink size={13} />}
+                    >
+                      Open free resets
+                    </Button>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      loading={refreshing || loadingLimits}
+                      onClick={() => void refreshLimits()}
+                    >
+                      Refresh after reset
+                    </Button>
                   </div>
-                  {!bucket.windows.length && (
-                    <p className="account-limits-empty">
-                      No limit windows reported.
+                </section>
+              )}
+              {resetCredits && (
+                <section
+                  className="account-reset-credits"
+                  aria-label="Limit reset credits"
+                >
+                  <header>
+                    <strong>Limit resets</strong>
+                    <span>
+                      {resetCount === null
+                        ? "Count unavailable"
+                        : `${resetCount} available`}
+                    </span>
+                  </header>
+                  {availableResets.map((credit) => (
+                    <div className="account-reset-credit" key={credit.id}>
+                      <div className="account-reset-credit-row">
+                        <div>
+                          <strong title={credit.description || undefined}>
+                            {credit.title || "Reset credit"}
+                          </strong>
+                          <span>
+                            {number(credit.expiresAt) ? (
+                              <>
+                                Expires {resetIn(credit.expiresAt, now)} ·{" "}
+                                <time
+                                  dateTime={new Date(
+                                    credit.expiresAt * 1000,
+                                  ).toISOString()}
+                                >
+                                  {localDateTime(
+                                    new Date(credit.expiresAt * 1000),
+                                    {
+                                      month: "short",
+                                      day: "numeric",
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    },
+                                  )}
+                                </time>
+                              </>
+                            ) : (
+                              "Expiration unavailable"
+                            )}
+                          </span>
+                        </div>
+                        <Button
+                          size="compact-xs"
+                          variant="light"
+                          disabled={
+                            resetPending ||
+                            resetApplied.includes(resetAppliedKey(credit.id)) ||
+                            credit.resetType !== "codexRateLimits" ||
+                            !limits?.data?.accountId
+                          }
+                          onClick={() => {
+                            setConfirmReset(credit.id);
+                            setResetError("");
+                          }}
+                        >
+                          {resetApplied.includes(resetAppliedKey(credit.id))
+                            ? "Applied"
+                            : "Apply reset"}
+                        </Button>
+                      </div>
+                      {confirmReset === credit.id && (
+                        <div
+                          className="account-reset-confirm"
+                          role="group"
+                          aria-label={`Confirm ${credit.title || "limit reset"}`}
+                        >
+                          <p>
+                            Use this reset credit now? This spends one credit.
+                          </p>
+                          <div>
+                            <Button
+                              size="compact-xs"
+                              variant="default"
+                              disabled={resetPending}
+                              onClick={() => {
+                                setConfirmReset(null);
+                                setResetError("");
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="compact-xs"
+                              loading={resetPending}
+                              disabled={resetPending}
+                              onClick={() => void applyReset(credit.id)}
+                            >
+                              Use one reset credit
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {!availableResets.length && (
+                    <p>
+                      {resetCount === 0
+                        ? "No reset credits available."
+                        : "Reset credit details unavailable. Refresh to check."}
                     </p>
                   )}
-                  {bucket.data.credits && (
-                    <div className="account-limit-credits">
-                      <span>Credits</span>
-                      <strong>
-                        {bucket.data.credits.unlimited
-                          ? "Unlimited"
-                          : bucket.data.credits.balance != null
-                            ? String(bucket.data.credits.balance)
-                            : bucket.data.credits.hasCredits === true
-                              ? "Available"
-                              : bucket.data.credits.hasCredits === false
-                                ? "None"
-                                : "Unavailable"}
+                  {resetError && (
+                    <p className="account-limits-warning" role="alert">
+                      {resetError}
+                    </p>
+                  )}
+                  {resetNotice && <p role="status">{resetNotice}</p>}
+                </section>
+              )}
+              <section
+                className="account-costs"
+                aria-label="Local cost estimates"
+              >
+                <header>
+                  <strong>API cost estimate</strong>
+                  <span>USD</span>
+                </header>
+                <div className="account-cost-values">
+                  {(
+                    [
+                      ["Today", costs?.data?.todayUSD],
+                      ["Last 30 days", costs?.data?.last30DaysUSD],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label}>
+                      <span>{label}</span>
+                      <strong
+                        className={
+                          number(value) ? undefined : "account-cost-missing"
+                        }
+                      >
+                        {dollars(value)}
                       </strong>
                     </div>
-                  )}
-                </section>
-              ))}
-              {!buckets.length && (
-                <p className="account-limits-empty">
-                  {loadingLimits
-                    ? "Loading account limits…"
-                    : "Codex has not supplied account limits."}
-                </p>
-              )}
-            </div>
-            {activeAccount?.provider === "claude" && (
-              <section
-                className="account-reset-credits"
-                aria-label="Claude free limit resets"
-              >
-                <header>
-                  <strong>Free limit resets</strong>
-                  <span>Check on Claude</span>
-                </header>
-                <p>
-                  Opens Claude. Use the same account, then confirm “Reset for
-                  free”.
-                </p>
-                <div className="account-reset-credit-row">
-                  <Button
-                    component="a"
-                    href="https://claude.ai/settings/usage"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    size="compact-xs"
-                    variant="default"
-                    rightSection={<ExternalLink size={13} />}
-                  >
-                    Open free resets
-                  </Button>
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    loading={refreshing || loadingLimits}
-                    onClick={() => void refreshLimits()}
-                  >
-                    Refresh after reset
-                  </Button>
+                  ))}
                 </div>
-              </section>
-            )}
-            {resetCredits && (
-              <section
-                className="account-reset-credits"
-                aria-label="Limit reset credits"
-              >
-                <header>
-                  <strong>Limit resets</strong>
-                  <span>
-                    {resetCount === null
-                      ? "Count unavailable"
-                      : `${resetCount} available`}
-                  </span>
-                </header>
-                {availableResets.map((credit) => (
-                  <div className="account-reset-credit" key={credit.id}>
-                    <div className="account-reset-credit-row">
-                      <div>
-                        <strong title={credit.description || undefined}>
-                          {credit.title || "Reset credit"}
-                        </strong>
-                        <span>
-                          {number(credit.expiresAt) ? (
-                            <>
-                              Expires {resetIn(credit.expiresAt, now)} ·{" "}
-                              <time
-                                dateTime={new Date(
-                                  credit.expiresAt * 1000,
-                                ).toISOString()}
-                              >
-                                {localDateTime(
-                                  new Date(credit.expiresAt * 1000),
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  },
-                                )}
-                              </time>
-                            </>
-                          ) : (
-                            "Expiration unavailable"
-                          )}
-                        </span>
-                      </div>
-                      <Button
-                        size="compact-xs"
-                        variant="light"
-                        disabled={
-                          resetPending ||
-                          resetApplied.includes(resetAppliedKey(credit.id)) ||
-                          credit.resetType !== "codexRateLimits" ||
-                          !limits?.data?.accountId
-                        }
-                        onClick={() => {
-                          setConfirmReset(credit.id);
-                          setResetError("");
-                        }}
-                      >
-                        {resetApplied.includes(resetAppliedKey(credit.id))
-                          ? "Applied"
-                          : "Apply reset"}
-                      </Button>
-                    </div>
-                    {confirmReset === credit.id && (
-                      <div
-                        className="account-reset-confirm"
-                        role="group"
-                        aria-label={`Confirm ${credit.title || "limit reset"}`}
-                      >
-                        <p>
-                          Use this reset credit now? This spends one credit.
-                        </p>
-                        <div>
-                          <Button
-                            size="compact-xs"
-                            variant="default"
-                            disabled={resetPending}
-                            onClick={() => {
-                              setConfirmReset(null);
-                              setResetError("");
-                            }}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            size="compact-xs"
-                            loading={resetPending}
-                            disabled={resetPending}
-                            onClick={() => void applyReset(credit.id)}
-                          >
-                            Use one reset credit
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {!availableResets.length && (
-                  <p>
-                    {resetCount === 0
-                      ? "No reset credits available."
-                      : "Reset credit details unavailable. Refresh to check."}
+                {(costs?.data?.coverage === "partial" ||
+                  costs?.stale ||
+                  costs?.error) && (
+                  <p className="account-cost-caption">
+                    {costs?.error || costs?.stale
+                      ? number(costs?.data?.todayUSD) ||
+                        number(costs?.data?.last30DaysUSD)
+                        ? "Saved estimate"
+                        : "Estimate unavailable"
+                      : "Partial estimate"}
                   </p>
                 )}
-                {resetError && (
-                  <p className="account-limits-warning" role="alert">
-                    {resetError}
-                  </p>
+                {typeof costs?.data?.note === "string" && (
+                  <p className="account-cost-caption">{costs.data.note}</p>
                 )}
-                {resetNotice && <p role="status">{resetNotice}</p>}
               </section>
-            )}
-            <section
-              className="account-costs"
-              aria-label="Local cost estimates"
-            >
-              <header>
-                <strong>API cost estimate</strong>
-                <span>USD</span>
-              </header>
-              <div className="account-cost-values">
-                {(
-                  [
-                    ["Today", costs?.data?.todayUSD],
-                    ["Last 30 days", costs?.data?.last30DaysUSD],
-                  ] as const
-                ).map(([label, value]) => (
-                  <div key={label}>
-                    <span>{label}</span>
-                    <strong
-                      className={
-                        number(value) ? undefined : "account-cost-missing"
-                      }
-                    >
-                      {dollars(value)}
-                    </strong>
-                  </div>
-                ))}
-              </div>
-              {(costs?.data?.coverage === "partial" ||
-                costs?.stale ||
-                costs?.error) && (
-                <p className="account-cost-caption">
-                  {costs?.error || costs?.stale
-                    ? number(costs?.data?.todayUSD) ||
-                      number(costs?.data?.last30DaysUSD)
-                      ? "Saved estimate"
-                      : "Estimate unavailable"
-                    : "Partial estimate"}
-                </p>
-              )}
-              {typeof costs?.data?.note === "string" && (
-                <p className="account-cost-caption">{costs.data.note}</p>
-              )}
+              <footer className="account-limits-updated" role="status">
+                {limits?.error
+                  ? limits?.data
+                    ? "Saved limits"
+                    : "Limits temporarily unavailable"
+                  : number(limits?.at)
+                    ? "Updated"
+                    : ""}
+                {number(limits?.at) &&
+                  ` · ${localTime(new Date(limits!.at * 1000), { hour: "2-digit", minute: "2-digit" })}`}
+              </footer>
             </section>
-            <footer className="account-limits-updated" role="status">
-              {limits?.error
-                ? limits?.data
-                  ? "Saved limits"
-                  : "Limits temporarily unavailable"
-                : number(limits?.at)
-                  ? "Updated"
-                  : ""}
-              {number(limits?.at) &&
-                ` · ${localTime(new Date(limits!.at * 1000), { hour: "2-digit", minute: "2-digit" })}`}
-            </footer>
-          </section>
-        </Popover.Dropdown>
-      </Popover>
-      <div
-        className="account-limits-dots"
-        role="group"
-        aria-label="Account weekly allowance"
-      >
-        {usageAccounts.map((item) => {
-          const projection = weeklyRunway(
-            accountLimits(item.limits, item.key, item.accountId),
-            now,
-            item.signedOut,
-          );
-          const current = item.key === fallbackKey;
-          const provider =
-            item.provider === "claude"
-              ? "Claude"
-              : item.provider &&
-                  item.provider !== "codex" &&
-                  item.provider !== "openai"
-                ? item.provider
-                : "Codex";
-          const label = [item.label, item.email].filter(Boolean).join(" · ");
-          const details = [
-            `${label} (${provider})${current ? ", current chat account" : ""}`,
-            ...(item.signedOut
-              ? ["Signed out. Weekly allowance unavailable."]
-              : []),
-            ...projection.windows.map(
-              (window) =>
-                `${window.name} weekly: ${window.remaining === null ? "remaining allowance unavailable" : `${formatPercent(window.remaining)} left`}. ${window.reset === null ? "Reset time unavailable." : window.reset <= now ? "Cached reset passed." : `Resets ${localDateTime(new Date(window.reset * 1000), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}.`}${window.days !== null && Number.isFinite(window.days) ? ` About ${window.days.toFixed(1)} days left at the current rate.` : ""}${window.resetFirst ? " Resets before this allowance runs out." : ""}`,
-            ),
-            projection.days === null
-              ? "Projected days unavailable."
-              : !Number.isFinite(projection.days)
-                ? "At least 7 days left at the current rate. No weekly consumption recorded."
-                : projection.windows.every((window) => window.resetFirst)
-                  ? "At least 7 days left at the current rate after reset."
-                  : projection.windows.length > 1
-                    ? `About ${projection.days.toFixed(1)} days left across weekly limits.`
-                    : "",
-            "Rate uses consumption in the elapsed part of the weekly window.",
-          ]
-            .filter(Boolean)
-            .join("\n");
-          return (
-            <Tooltip
-              key={item.key}
-              label={
-                <span className="account-limits-dot-tooltip">{details}</span>
-              }
-              multiline
-              w={300}
-              withArrow
-              events={{ hover: true, focus: true, touch: true }}
-            >
-              <button
-                type="button"
-                className="account-limits-dot-target"
-                data-account-key={item.key}
-                aria-label={`Open ${item.email || item.label} weekly allowance (${provider}). ${details}`}
-                aria-current={current ? "true" : undefined}
-                aria-haspopup="dialog"
-                aria-expanded={limitsOpened && selectedAccountKey === item.key}
-                onClick={() => {
-                  setActiveAccountKey(item.key);
-                  changeOpened(true);
-                }}
-              >
-                <span
-                  className="account-limits-dot"
-                  data-color={projection.color}
-                  data-current={current || undefined}
-                  aria-hidden="true"
-                />
-              </button>
-            </Tooltip>
-          );
-        })}
+          </Popover.Dropdown>
+        </Popover>
       </div>
     </div>
   );

@@ -245,8 +245,8 @@ try {
         color,
       );
       const box = await target.boundingBox();
-      assert.equal(box.width, 16);
-      assert.equal(box.height, 16);
+      assert.equal(box.width, 12);
+      assert.equal(box.height, 26);
       assert.ok(
         box.x >= 0 && box.x + box.width <= (mobile ? 390 : 1440),
         "the touch area fits the viewport",
@@ -290,12 +290,39 @@ try {
         ),
     );
     assert.ok(reads.every((read) => read.key === "default" || read.cached));
-    assert.equal(
-      await page
-        .locator(".account-limits-dots")
-        .evaluate((element) => element.getBoundingClientRect().height),
-      16,
+    // The dots share the footer row with Limits; the footer stays one row.
+    const row = await page.evaluate(() => {
+      const box = (selector) =>
+        document.querySelector(selector).getBoundingClientRect();
+      const dots = box(".account-limits-dots");
+      const toggle = box(".account-limits-toggle");
+      return {
+        dots: dots.top + dots.height / 2,
+        toggle: toggle.top + toggle.height / 2,
+        footer: box("#usage-footer").height,
+      };
+    });
+    // The dots may add at most 10 px to the footer height.
+    const withoutDots = await page.evaluate(() => {
+      const dots = document.querySelector(".account-limits-dots");
+      dots.style.display = "none";
+      const height = document
+        .querySelector("#usage-footer")
+        .getBoundingClientRect().height;
+      dots.style.display = "";
+      return height;
+    });
+    assert.ok(
+      Math.abs(row.dots - row.toggle) <= 1,
+      JSON.stringify({ mobile, ...row }),
     );
+    assert.ok(
+      row.footer - withoutDots <= 10,
+      JSON.stringify({ withoutDots, ...row }),
+    );
+    await page.locator("#usage-footer").screenshot({
+      path: join(root, `footer-${mobile ? 390 : 1440}-${scheme}.png`),
+    });
     const prefix = `dots-${mobile ? 390 : 1440}-${scheme}`;
     const calmPath = join(root, `${prefix}.png`);
     await page.screenshot({ path: calmPath, animations: "disabled" });
@@ -351,6 +378,12 @@ try {
           )?.id,
       ),
       order,
+    );
+    // Escape belongs to the dropdown after its focus trap takes focus.
+    await page.waitForFunction(() =>
+      document
+        .querySelector(".account-limits-popover")
+        ?.contains(document.activeElement),
     );
     await page.keyboard.press("Escape");
     await page
