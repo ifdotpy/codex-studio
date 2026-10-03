@@ -10,7 +10,6 @@ const config = {
     "src/usage/tokenRate.ts",
     "src/usage/weeklyRunway.ts",
     "src/usage/accountUsage.ts",
-    "src/usage/sessionCostCache.ts",
     "src/usage/limitRecovery.ts",
     "src/conversation/transcriptIdentity.ts",
     "src/sync/entityProjection.ts",
