@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -25,6 +26,9 @@ spec.loader.exec_module(fixture)
 class CapacityContract(unittest.TestCase):
     def test_temporary_slot_wait_reschedules_retry(self):
         retry = self.fail()
+        slot_ceiling = patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': '1'})
+        slot_ceiling.start()
+        self.addCleanup(slot_ceiling.stop)
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
             agent['concurrency'] = 1
@@ -458,8 +462,9 @@ class CapacityContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             child.update(status='running', inFlight=True)
             self.runtime.put(db, 'agents', child)
-        with self.assertRaisesRegex(ValueError, 'slot'):
-            self.retry(retry)
+        with patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': '1'}):
+            with self.assertRaisesRegex(ValueError, 'slot'):
+                self.retry(retry)
         self.assertEqual(len(self.starts()), 1)
 
     def test_new_message_releases_unsent_retry_claim_before_enqueue(self):

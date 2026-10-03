@@ -6,6 +6,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from codex_agent_modes import DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
@@ -25,8 +26,9 @@ c.add_argument('--cwd', default=os.getcwd())
 c.add_argument('--name', default='Lead')
 c.add_argument('--model')
 c.add_argument('--effort')
-c.add_argument('--concurrency', type=int, default=32)
-c.add_argument('--max-agents', type=int, default=64)
+c.add_argument('--concurrency', type=int, default=DEFAULT_SUBAGENT_CONCURRENCY,
+                help=f'Simultaneous subagent turns (0..{MAX_SUBAGENT_CONCURRENCY}; default {DEFAULT_SUBAGENT_CONCURRENCY})')
+c.add_argument('--max-agents', type=int)
 c.add_argument('--token-budget', type=int)
 c = s.add_parser('send')
 c.add_argument('agent')
@@ -40,9 +42,12 @@ c.add_argument('shell_command')
 c.add_argument('--timeout-minutes', type=int, default=60)
 c = s.add_parser('configure')
 c.add_argument('agent')
-c.add_argument('--concurrency', type=int)
+c.add_argument('--concurrency', type=int,
+                help=f'Simultaneous subagent turns (0..{MAX_SUBAGENT_CONCURRENCY})')
 c.add_argument('--max-agents', type=int)
 c.add_argument('--token-budget', type=int)
+c.add_argument('--request-id', help='Reuse with --expected-mode-revision after an uncertain response')
+c.add_argument('--expected-mode-revision', type=int, help='Reuse with --request-id after an uncertain response')
 c = s.add_parser('transcript')
 c.add_argument('agent')
 c = s.add_parser('requests', help='Recover saved tool results without repeating their actions')
@@ -92,7 +97,9 @@ try:
         result = request('/api/' + a.command + '?account_key=' + quote(account))
     elif a.command == 'create':
         body = dict(id=str(uuid.uuid4()), name=a.name, cwd=a.cwd, prompt=a.task,
-            concurrency=a.concurrency, maxAgents=a.max_agents, tokenBudget=a.token_budget)
+            concurrency=a.concurrency, tokenBudget=a.token_budget)
+        if a.max_agents is not None:
+            body['maxAgents'] = a.max_agents
         for key, value in (('account_key', a.account), ('model', a.model), ('effort', a.effort)):
             if value is not None:
                 body[key] = value
@@ -106,10 +113,29 @@ try:
                                              timeout_ms=a.timeout_minutes * 60000), token)
     elif a.command == 'configure':
         data = {'id': a.agent}
-        for source, target in [('concurrency', 'concurrency'), ('max_agents', 'maxAgents'), ('token_budget', 'tokenBudget')]:
+        for source, target in [('max_agents', 'maxAgents'), ('token_budget', 'tokenBudget')]:
             value = getattr(a, source)
             if value is not None: data[target] = value
-        result = request('/api/configure', data, token)
+        if a.concurrency is not None:
+            if data.keys() != {'id'}:
+                raise ValueError('Set subagent concurrency separately from team storage and token limits')
+            if bool(a.request_id) != (a.expected_mode_revision is not None):
+                raise ValueError('Use --request-id and --expected-mode-revision together')
+            lead = next((t for t in state['threads'] if t['id'] == a.agent), None)
+            if not lead or not lead.get('isLead'):
+                raise ValueError('Configure subagent concurrency on a lead chat')
+            request_id = a.request_id or str(uuid.uuid4())
+            revision = (a.expected_mode_revision if a.expected_mode_revision is not None
+                        else lead.get('agentModeRevision', 0))
+            print(f"codex-control: retry with --request-id {request_id} --expected-mode-revision {revision} if the response is uncertain",
+                  file=sys.stderr)
+            result = request('/api/conversation', {
+                'id': a.agent, 'subagent_concurrency': a.concurrency,
+                'expected_mode_revision': revision, 'request_id': request_id}, token)
+        else:
+            if a.request_id or a.expected_mode_revision is not None:
+                raise ValueError('--request-id and --expected-mode-revision require --concurrency')
+            result = request('/api/configure', data, token)
     else:
         result = request('/api/transcript?id=' + quote(a.agent))
     print(json.dumps(result, ensure_ascii=False, indent=2))

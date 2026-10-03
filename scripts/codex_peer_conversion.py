@@ -183,12 +183,15 @@ def convert(runtime, data):
         runtime.put(db, 'projects', project)
         for agent in moving:
             agent.update(rootId=target_id, updated=at)
-            for field in ('concurrency', 'maxAgents', 'tokenBudget'):
+            agent.pop('concurrency', None)
+            for field in ('maxAgents', 'tokenBudget'):
                 if field in target:
                     agent[field] = target[field]
             if agent['id'] == source_id:
                 agent.update(isLead=False, parentId=target_id, role='implementer', status='paused', autoWake=False,
                              epoch=agent.get('epoch', 0) + 1, worktree=False)
+                for field in ('subagentConcurrencyVersion', 'maxAgentsExplicit'):
+                    agent.pop(field, None)
                 agent['convertedFromLead'] = {'requestId': request_id, 'by': 'user', 'at': at,
                                               'oldRootId': source_id, 'rootId': target_id}
                 # Existing account, native thread, model and execution settings stay intact.

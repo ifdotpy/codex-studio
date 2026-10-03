@@ -23,6 +23,13 @@ class AgentReviewContract(unittest.TestCase):
     agent_update = fixture.WorkspaceContract.agent_update
     events = fixture.WorkspaceContract.events
 
+    def set_concurrency(self, value):
+        actor = self.runtime.agent(self.actor['id'])
+        return self.runtime.conversation_settings(actor['id'], {
+            'subagent_concurrency': value,
+            'expected_mode_revision': actor['agentModeRevision'],
+            'request_id': str(uuid.uuid4())})
+
     def setUp(self):
         fixture.WorkspaceContract.setUp(self)
         # Native review reads git history; the reviewer folder must be a repository.
@@ -212,10 +219,11 @@ class AgentReviewContract(unittest.TestCase):
             request(self.runtime, child, {}, self.key + ':nested')
 
     def test_single_mode_and_capacity_reject_without_child(self):
-        self.actor = self.agent_update(self.actor, agentMode='single')
+        self.set_concurrency(0)
         with self.assertRaisesRegex(ValueError, 'Single agent mode'):
             self.make()
-        self.actor = self.agent_update(self.actor, agentMode='multi', maxAgents=1)
+        self.set_concurrency(32)
+        self.actor = self.agent_update(self.actor, maxAgents=1)
         with self.assertRaisesRegex(ValueError, 'limit'):
             self.make()
         self.assertEqual(self.children(), [])

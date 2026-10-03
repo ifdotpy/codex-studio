@@ -341,14 +341,11 @@ class ReviewRuntimeContract(unittest.TestCase):
         child = self.rt.agent(value['agentId'])
         self.assertTrue(child['status']=='completed' or child.get('agentArchive'))
 
-    def test_team_concurrency_blocks_review_until_parent_yields(self):
+    def test_team_limit_counts_descendants_and_excludes_the_lead(self):
         self.update(self.parent['id'], concurrency=1)
         value = self.request()
-        self.rt.dispatch()
-        self.assertEqual(self.rt.agent(value['agentId'])['status'], 'queued')
-        self.assertFalse(self.server.reviews)
-        self.update(self.parent['id'], inFlight=False, status='waiting', turnId=None)
         self.dispatch_review(value)
+        self.assertIn(self.rt.agent(value['agentId'])['status'], {'starting', 'running'})
         self.assertEqual(len(self.server.reviews), 1)
 
     def test_findings_before_rpc_response_without_started_event_reach_parent_once(self):
