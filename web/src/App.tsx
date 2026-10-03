@@ -755,24 +755,6 @@ export default function App() {
     () => reloadLimits(true),
     [reloadLimits],
   );
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    for (const account of accounts.data.accounts) {
-      if (account.disconnected) continue;
-      const key = account.id;
-      void api(`/api/limits?account_key=${encodeURIComponent(key)}&cached=1`)
-        .then((result) => {
-          if (!accountLimits(result, key, account.accountId) || !result.data)
-            return;
-          setLimitsByAccount((old) => {
-            const previous = accountLimits(old[key], key, account.accountId);
-            if (previous && (previous.at || 0) >= (result.at || 0)) return old;
-            return { ...old, [key]: result };
-          });
-        })
-        .catch(() => {});
-    }
-  }, [data?.stateDir, accounts.data.accounts]);
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
@@ -784,9 +766,6 @@ export default function App() {
       teamAgents.map((item) => item.accountKey || "default"),
     );
     keys.add(agent.accountKey || "default");
-    for (const account of accounts.data.accounts) {
-      if (!account.disconnected) keys.add(account.id);
-    }
     const labelFor = (key: string) => {
       const account = accounts.data.accounts.find((item) => item.id === key);
       return account?.email || account?.label || key;
@@ -836,6 +815,26 @@ export default function App() {
     limitsLoading,
     reloadLimitsFor,
   ]);
+  // Only accounts that take part in this chat team get a dot and a cache read.
+  const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
+  useEffect(() => {
+    if (!data?.stateDir || !usageAccountKeys) return;
+    for (const key of usageAccountKeys.split("\n")) {
+      const account = accounts.data.accounts.find((item) => item.id === key);
+      if (account?.disconnected) continue;
+      void api(`/api/limits?account_key=${encodeURIComponent(key)}&cached=1`)
+        .then((result) => {
+          if (!accountLimits(result, key, account?.accountId) || !result.data)
+            return;
+          setLimitsByAccount((old) => {
+            const previous = accountLimits(old[key], key, account?.accountId);
+            if (previous && (previous.at || 0) >= (result.at || 0)) return old;
+            return { ...old, [key]: result };
+          });
+        })
+        .catch(() => {});
+    }
+  }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
   useEffect(() => {
     if (!data?.stateDir) return;
     void reloadLimits();

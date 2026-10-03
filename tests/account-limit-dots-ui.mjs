@@ -30,6 +30,28 @@ try {
   );
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const now = Math.floor(Date.now() / 1000);
+  // Each account except "outside" serves a member of this chat team.
+  const teamKeys = [
+    "yellow",
+    "red",
+    "unknown",
+    "reset",
+    "signedout",
+    "no-weekly",
+  ];
+  const teamAccount = (agent) => {
+    if (agent.id === lead.id) return "default";
+    if (agent.rootId !== lead.id) return agent.accountKey;
+    const workers = initial.threads.filter((item) => item.rootId === lead.id);
+    return teamKeys[
+      workers.findIndex((item) => item.id === agent.id) % teamKeys.length
+    ];
+  };
+  const withTeamAccounts = (agents) =>
+    agents?.forEach((agent) => {
+      const key = teamAccount(agent);
+      if (key) agent.accountKey = key;
+    });
   const accounts = [
     {
       id: "default",
@@ -78,6 +100,13 @@ try {
       label: "No weekly data",
       email: "weekly@example.test",
       provider: "claude",
+      status: "ready",
+    },
+    {
+      id: "outside",
+      label: "Other team account",
+      email: "outside@example.test",
+      provider: "codex",
       status: "ready",
     },
     {
@@ -175,19 +204,33 @@ try {
       const state = await response.json();
       state.runtime.rateLimits = snapshots.default;
       state.runtime.rateLimitsByAccount = snapshots;
+      withTeamAccounts(state.threads);
+      withTeamAccounts(state.runtime.agents);
       await route.fulfill({ response, json: state });
     });
-    await page.route("**/api/sync/pull?scope=state&*", async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
+    await page.route("**/api/sync/pull?*", async (route) => {
+      // A closing page can dispose a pending long poll; nothing to patch then.
+      let response, data;
+      try {
+        response = await route.fetch();
+        data = await response.json();
+      } catch {
+        return;
+      }
       for (const document of data.documents || []) {
+        if (document.id.startsWith("entity:agent:")) {
+          const record = JSON.parse(document.payload);
+          if (record.value) withTeamAccounts([record.value]);
+          document.payload = JSON.stringify(record);
+          continue;
+        }
         if (document.id !== "entity:workspace:current") continue;
         const record = JSON.parse(document.payload);
         record.value.rateLimits = snapshots.default;
         record.value.rateLimitsByAccount = snapshots;
         document.payload = JSON.stringify(record);
       }
-      await route.fulfill({ response, json: data });
+      await route.fulfill({ response, json: data }).catch(() => {});
     });
     await page.route(/\/api\/limits(?:\?.*)?$/, (route) => {
       const query = new URL(route.request().url()).searchParams;
@@ -219,10 +262,17 @@ try {
     if (mobile) await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${lead.id}"]`).click();
     const dots = page.locator(".account-limits-dot-target");
-    await page.waitForFunction(
-      () =>
-        document.querySelectorAll(".account-limits-dot-target").length === 7,
-    );
+    await page
+      .waitForFunction(
+        () =>
+          document.querySelectorAll(".account-limits-dot-target").length === 7,
+      )
+      .catch(async (error) => {
+        const keys = await dots.evaluateAll((elements) =>
+          elements.map((element) => element.dataset.accountKey),
+        );
+        throw Error(`Dots ${JSON.stringify(keys)}: ${error.message}`);
+      });
     await page
       .locator(
         '.account-limits-dot-target[data-account-key="yellow"] [data-color="yellow"]',
@@ -231,7 +281,7 @@ try {
     assert.equal(
       await dots.count(),
       7,
-      "all connected accounts appear, including accounts outside this chat team",
+      "only accounts of this chat team appear",
     );
     const order = await dots.evaluateAll((elements) =>
       elements.map((element) => element.dataset.accountKey),
@@ -282,9 +332,11 @@ try {
         .getAttribute("aria-label"),
       /Cached reset passed/,
     );
+    assert.equal(await page.locator('[data-account-key="outside"]').count(), 0);
+    assert.ok(!reads.some((read) => read.key === "outside" && read.cached));
     assert.ok(
       accounts
-        .filter((account) => !account.disconnected)
+        .filter((account) => !account.disconnected && account.id !== "outside")
         .every((account) =>
           reads.some((read) => read.key === account.id && read.cached),
         ),
@@ -437,7 +489,10 @@ try {
       before,
       "panel selection preserves the footer geometry",
     );
-    assert.ok(reads.every((read) => read.key === "default" || read.cached));
+    assert.ok(
+      reads.every((read) => read.key === "default" || read.cached),
+      JSON.stringify(reads),
+    );
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,
