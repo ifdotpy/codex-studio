@@ -48,39 +48,74 @@ These are the requirements after the design discussion. Each item records a deci
 
 ## Decision
 
-| OS      | Mechanism                                                                   | Status                           |
-| ------- | --------------------------------------------------------------------------- | -------------------------------- |
-| macOS   | Read-only ASIF disk image as the base, one shadow file per agent            | Measured. Meets all requirements |
-| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent | Measured. Meets all requirements |
-| Windows | Differencing VHDX or ProjFS                                                 | Not measured                     |
+| OS      | Mechanism                                                                                                                  | Status                                                         |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Measured. Meets the requirements only after a base exists      |
+| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Measured. Meets the requirements on btrfs, after a base exists |
+| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                   |
+
+**This design does not meet requirement 3 for the first agent of a repository.** The base build is
+O(files): about 16.5 min for chromium on macOS. Starts after that are about 1 s. So the decision
+needs one of these:
+
+- the user accepts a one-time base build per repository (or per large change of it), or
+- Studio builds the base in the background when a repository is first added, before any agent asks.
+
+Without one of them, no measured option meets requirement 3 on macOS for large repositories.
+
+The process sandbox (requirement 2) is a separate and required part. The image isolates the
+workspace, not the process. See "Limits and risks".
 
 Common model for all platforms:
 
 - **Base.** A read-only copy (macOS) or snapshot (Linux) of the repository at one point in time. It
   is a cache. It can be deleted and built again. One base serves all agents of that repository.
-- **Agent layer.** The agent writes only to its own layer: a shadow file (macOS) or an upper folder
-  (Linux). One agent equals one file or one folder, so its disk cost is visible.
+- **Agent layer.** The agent writes only to its own layer: a shadow file or a cloned image file
+  (macOS), or an upper folder (Linux). One agent equals one file or one folder.
 - **Fresh user edits.** At agent start, Studio copies the files that changed since the base was built
-  into the agent layer. FSEvents gives this list in O(changes).
+  into the agent layer. FSEvents usually gives this list in O(changes). See "Limits and risks", item 3.
 - **Result.** The agent commits to a git branch. Studio fetches the branch into the user's repository.
 - **Removal.** Detach and delete one file (macOS), or unmount and delete one folder (Linux).
 
+## Merging agent work
+
+Merge uses git, as with today's worktree branches (`codex-agent/<agent-id>`, see ORCHESTRATION.md).
+The image type does not matter.
+
+1. The agent commits inside its image on `codex-agent/<id>`. New objects go to the agent's `.git`.
+   Old objects come from the user's repository through alternates.
+2. Studio, outside the agent sandbox, runs `git fetch <agent mount> codex-agent/<id>:codex-agent/<id>`
+   in the user's repository. Git copies only the agent's new objects.
+3. The lead or the user merges, rebases or cherry-picks the branch. Conflicts are normal git conflicts.
+4. After the fetch the agent image can be removed.
+
+Two rules:
+
+- **Separate the user's edits from the agent's work.** The fresh user edits copied in at start are
+  uncommitted. Right after the copy, Studio makes one snapshot commit in the agent repository. The
+  agent commits on top of it. At merge time Studio takes only the commits after the snapshot:
+  `git rebase --onto <user HEAD> <snapshot> codex-agent/<id>`.
+- **Checkpoint commit at the end of each turn**, so uncommitted agent work survives removal or a crash.
+
+Nested repositories (149 in chromium) need one fetch for each nested repository that the agent changed.
+
 ## Options and verdicts
 
-| Option                                      | Start for chromium                         | Speed                    | Verdict                                                  |
-| ------------------------------------------- | ------------------------------------------ | ------------------------ | -------------------------------------------------------- |
-| git worktree (today)                        | full checkout, minutes                     | native                   | No isolation of `.git`, no warm build, disk spreads      |
-| APFS clone of the tree (`cp -c -R`)         | 241 s                                      | native                   | Too slow to start. Delete takes 106 to 339 s             |
-| APFS `clonefile()` of the directory         | 30 s                                       | native                   | Too slow to start for large repositories                 |
-| Pool of prepared clones                     | 0 s                                        | native                   | Rejected: the agent must be universal                    |
-| Clone in parallel with the first model turn | up to 30 s wait                            | native                   | Rejected: the workspace must be ready at once            |
-| Local NFS overlay server                    | 0.06 s                                     | `git status` over 20 min | Rejected: too slow on large trees                        |
-| FSKit overlay module                        | O(1)                                       | XPC call per cache miss  | Rejected: slow and buggy by Apple's own account          |
-| Linux VM with overlayfs on macOS            | O(1)                                       | native Linux             | Rejected: no macOS builds                                |
-| macOS VM per agent                          | APFS clone of VM disk                      | native                   | Not chosen: at most 2 macOS VMs at once, GBs of RAM each |
-| OSTree                                      | O(1) hardlink checkout                     | native                   | Linux only. Opaque object store                          |
-| **ASIF image + shadow (macOS)**             | **about 1 s**                              | **native**               | **Chosen**                                               |
-| **overlayfs + btrfs snapshot (Linux)**      | **0.00 s mount, 0.49 s snapshot per base** | **native for 1 agent**   | **Chosen**                                               |
+| Option                                      | Start for chromium                          | Speed                    | Verdict                                                  |
+| ------------------------------------------- | ------------------------------------------- | ------------------------ | -------------------------------------------------------- |
+| git worktree (today)                        | full checkout, minutes                      | native                   | No isolation of `.git`, no warm build, disk spreads      |
+| APFS clone of the tree (`cp -c -R`)         | 241 s                                       | native                   | Too slow to start. Delete takes 106 to 339 s             |
+| APFS `clonefile()` of the directory         | 30 s                                        | native                   | Too slow to start for large repositories                 |
+| Pool of prepared clones                     | 0 s                                         | native                   | Rejected: the agent must be universal                    |
+| Clone in parallel with the first model turn | up to 30 s wait                             | native                   | Rejected: the workspace must be ready at once            |
+| Local NFS overlay server                    | 0.06 s                                      | `git status` over 20 min | Rejected: too slow on large trees                        |
+| FSKit overlay module                        | O(1)                                        | XPC call per cache miss  | Rejected: slow and buggy by Apple's own account          |
+| Linux VM with overlayfs on macOS            | O(1)                                        | native Linux             | Rejected: no macOS builds                                |
+| macOS VM per agent                          | APFS clone of VM disk                       | native                   | Not chosen: at most 2 macOS VMs at once, GBs of RAM each |
+| OSTree                                      | O(1) hardlink checkout                      | native                   | Linux only. Opaque object store                          |
+| ASIF image + shadow (macOS)                 | about 1 s after a 16.5 min base             | native                   | Fallback: needs the base file for the agent's life       |
+| **APFS clone of the ASIF file (macOS)**     | **0.03 s clone + 1.3 s attach, after base** | **native**               | **Chosen for macOS**                                     |
+| **overlayfs + btrfs snapshot (Linux)**      | **0.00 s mount, 0.49 s snapshot per base**  | **native for 1 agent**   | **Chosen**                                               |
 
 ## Prior art
 
@@ -91,10 +126,10 @@ Common model for all platforms:
 | [Claude Code sandbox](https://code.claude.com/docs/en/sandboxing), [Bazel](https://bazel.build/docs/sandboxing) | Seatbelt (`sandbox-exec`) on macOS, bubblewrap or namespaces on Linux                                                                                   | Limits where a process can write. No private copy of the workspace. We need this in addition to the image                                                   |
 | [Bazel sandboxfs](https://blog.bazel.build/2018/04/13/preliminary-sandboxfs-support.html)                       | FUSE file system with a custom view of files                                                                                                            | FUSE on macOS needs a kernel extension or the slow FSKit backend                                                                                            |
 | Meta EdenFS                                                                                                     | Virtual file system for source control. NFSv3 on macOS, FUSE on Linux, ProjFS on Windows                                                                | Needs its own source control (Sapling) for fast status                                                                                                      |
-| Apple DTS advice (forum thread 828533, see the FSKit report)                                                    | For build sandboxes: clone the tree, or use disk images plus EndpointSecurity, not a projection file system                                             | Points to disk images, but no product does it                                                                                                               |
+| [Apple DTS advice](https://developer.apple.com/forums/thread/828533) (Kevin Elliott, June 2026)                 | For build sandboxes: "you could 'clone' the entire hierarchy by simply cloning the disk image while it's unmounted", plus EndpointSecurity for access   | This is the clone variant. No product does it publicly                                                                                                      |
 
-No public project uses a disk image with a shadow file for agent workspaces, as far as the search on
-2026-10-03 shows. `hdiutil -shadow` itself is old and well known for changing read-only images.
+No public project uses a disk image with a shadow file, or a clone of an image file, for agent
+workspaces, as far as the search on 2026-10-03 shows. `hdiutil -shadow` itself is old and well known for changing read-only images.
 
 ## Test environment
 
@@ -280,22 +315,74 @@ into it. Free space in a sparse image costs no disk.
 The tool is in the appendix. FSEvents keeps its history in a log on the volume, so the query should
 also work after a restart of Studio. That was not tested.
 
+### Shadow file against a clone of the image file (macOS)
+
+Same bases as above (`chromium.asif` 44 GB, `trading-bot` ASIF). Clone variant: `cp -c base.asif
+agent.asif` while the base is detached, then `diskutil image attach` read-write without a shadow. A
+clone is a new file with no cached pages, so its first numbers are true cold. Apple DTS describes this
+variant in [forum thread 828533](https://developer.apple.com/forums/thread/828533).
+
+| Operation                                   | Shadow file          | Clone of the image file                           | Native                         |
+| ------------------------------------------- | -------------------- | ------------------------------------------------- | ------------------------------ |
+| create the agent layer                      | new shadow at attach | `cp -c` of 44 GB: 0.03 s                          | none                           |
+| attach                                      | 1.0 to 1.7 s         | 1.28 s (read-write)                               | none                           |
+| chromium `git status`, true cold            | 6.9 s                | 6.2 s                                             | 9.3 s                          |
+| chromium `rg` over all files, true cold     | 54.7 s               | 40.5 s                                            | 63.9 s                         |
+| 10 agents: create and attach                | 6.5 s                | 0.06 s + 9.6 s                                    | none                           |
+| 10 agents: parallel `git status`, true cold | 40.2 s               | 36.7 s                                            | 31.7 s (one shared checkout)   |
+| 10 agents: parallel `rg`                    | 425.8 s              | 417.9 s                                           | 511.7 s (one shared checkout)  |
+| 1 cargo build (trading-bot)                 | 44.6 s, 50.2 s       | 48.9 s, 50.2 s                                    | 46.4 s                         |
+| 10 cargo builds in parallel                 | 399.7 s              | 356.1 s, 10 of 10 built                           | 343.5 s                        |
+| disk after 1 build                          | 3.2 GB (shadow size) | 3.19 GB (free space change)                       | 3.3 GB                         |
+| disk after 10 builds                        | 33 GB                | 32.5 GB                                           | about 33 GB                    |
+| isolation (other agent, base)               | isolated             | isolated                                          | none                           |
+| checkpoint                                  | not tested           | detach 0.51 s + `cp -c` 0.03 s + attach 0.74 s    | none                           |
+| restore                                     | not tested           | 1.39 s (detach, swap file, attach), file restored | none                           |
+| remove one agent / 10 agents                | 0.3 to 1 s / 9.0 s   | 0.3 to 0.6 s / 7.0 to 8.6 s                       | 106 to 339 s per chromium tree |
+
+Three build and clean cycles in one agent (aging test, trading-bot):
+
+| Cycle | Shadow: build / space after build / after `cargo clean` | Clone: build / space after build / after `cargo clean` |
+| ----- | ------------------------------------------------------- | ------------------------------------------------------ |
+| 1     | 50.2 s / 3.2 GB / 0.65 GB                               | 50.2 s / 3.24 GB / 0.65 GB                             |
+| 2     | 53.8 s / 3.7 GB / 1.2 GB                                | 51.2 s / 3.73 GB / 1.25 GB                             |
+| 3     | 49.4 s / 4.3 GB / 1.6 GB                                | 49.7 s / 4.33 GB / 1.60 GB                             |
+
+Both variants return most freed space to the host (TRIM passes through the image), and both keep
+about 0.5 GB per cycle. Build time does not degrade over three cycles. Days of work were not tested.
+
+Differences that decide the choice:
+
+| Property                                               | Shadow file                                | Clone of the image file                    |
+| ------------------------------------------------------ | ------------------------------------------ | ------------------------------------------ |
+| agent survives loss or replacement of the base file    | no, base and shadow are a pair             | yes, the clone owns its blocks             |
+| a new base version while old agents run                | old base must stay until they end          | old base can be deleted at once            |
+| open the agent's data without Studio                   | `diskutil image attach base --shadow file` | `diskutil image attach agent.asif`         |
+| exact disk cost per agent                              | file size of the shadow                    | `ATTR_CMNEXT_PRIVATESIZE` of the clone     |
+| agent layer on another volume (for example a RAM disk) | possible                                   | no, a clone must stay on the base's volume |
+| checkpoint and restore                                 | clone of the shadow file (not tested)      | clone of the agent file (tested)           |
+
+**Result: use a clone of the image file on macOS.** It is as fast or faster than the shadow file,
+10 parallel builds were 11 percent faster (356 s against 400 s, native 344 s), and the agent image is
+independent of the base. Keep the shadow file as a fallback when the agent layer must live on another
+volume.
+
 ### Linux overlayfs (OrbStack machine, blink and trading-bot)
 
-| Operation                        | Native                      | overlayfs               |
-| -------------------------------- | --------------------------- | ----------------------- |
-| mount                            | none                        | 0.00 s                  |
-| walk with `stat`, cold / warm    | 0.73 s / 0.38 s             | 1.19 s / 0.49 s         |
-| `git status`, cold / warm        | 0.33 s / 0.14 s             | 0.47 s / 0.17 s         |
-| `rg` over all files, cold / warm | 0.36 s / 0.25 s             | 0.40 s / 0.26 s         |
-| write 2,000 small files          | 0.03 s                      | 0.03 s                  |
-| unmount and delete upper         | none                        | 0.22 s                  |
-| 10 mounts                        | none                        | 0.03 s                  |
-| 10 parallel `git status`, cold   | 0.58 s (one shared tree)    | 3.43 s                  |
-| 10 parallel `rg`, cold           | 0.80 s (one shared tree)    | 3.37 s                  |
-| 1 cargo build (trading-bot)      | 36.6 s                      | 35.4 s, upper 3.5 GB    |
-| 10 cargo builds in parallel      | not finished at commit time | 380.0 s, 10 of 10 built |
-| delete 10 agents after builds    | not finished at commit time | 14.6 s                  |
+| Operation                        | Native                    | overlayfs               |
+| -------------------------------- | ------------------------- | ----------------------- |
+| mount                            | none                      | 0.00 s                  |
+| walk with `stat`, cold / warm    | 0.73 s / 0.38 s           | 1.19 s / 0.49 s         |
+| `git status`, cold / warm        | 0.33 s / 0.14 s           | 0.47 s / 0.17 s         |
+| `rg` over all files, cold / warm | 0.36 s / 0.25 s           | 0.40 s / 0.26 s         |
+| write 2,000 small files          | 0.03 s                    | 0.03 s                  |
+| unmount and delete upper         | none                      | 0.22 s                  |
+| 10 mounts                        | none                      | 0.03 s                  |
+| 10 parallel `git status`, cold   | 0.58 s (one shared tree)  | 3.43 s                  |
+| 10 parallel `rg`, cold           | 0.80 s (one shared tree)  | 3.37 s                  |
+| 1 cargo build (trading-bot)      | 36.6 s                    | 35.4 s, upper 3.5 GB    |
+| 10 cargo builds in parallel      | 401.0 s, 10 of 10 built   | 380.0 s, 10 of 10 built |
+| delete 10 agents after builds    | 2.6 s (10 reflink copies) | 14.6 s                  |
 
 Other Linux facts:
 
@@ -322,28 +409,58 @@ Other Linux facts:
 5. **Do not rely on untracked cache or fsmonitor for the cold start.** They do not help.
 6. **Linux: never mount a live lower.** Use a read-only btrfs snapshot (or another frozen copy) as the
    lower.
-7. **The agent layer only grows.** A deleted `target/` stays in the shadow until the agent is removed.
-   Budget disk per agent and remove finished agents.
+7. **Deleted files return most of their space, not all.** After `cargo clean`, both the shadow file
+   and the cloned image gave back about 2.6 GB of 3.2 GB, but about 0.5 GB stayed per build and clean
+   cycle. Budget disk per agent and remove finished agents.
 8. **The image does not stop writes outside the workspace.** A process sandbox (Seatbelt on macOS,
-   namespaces or Landlock on Linux) must allow writes only to the agent mount, shared caches and
-   temporary folders.
+   namespaces or Landlock on Linux) must allow writes only to the agent mount and the agent's own
+   temporary and cache folders. See "Limits and risks", item 2.
 9. **Build the base in parallel.** 16 `tar` streams are 4 times faster than one on macOS.
+10. **Measure a cloned image with `ATTR_CMNEXT_PRIVATESIZE`.** `ls` and `du` show the full size of a
+    clone. `getattrlist` with `ATTR_CMNEXT_PRIVATESIZE` (option `FSOPT_ATTR_CMN_EXTENDED`) returns the
+    bytes that only this clone owns: 2.00 GB after 2 GB of writes in the test.
 
-## What this does not solve
+## Limits and risks
 
-- Writes outside the workspace: needs the process sandbox (rule 8).
-- Mistakes through the network: `git push --force`, cloud command line tools, production APIs. Do not
-  give the agent such credentials by default.
-- The first agent in a new large repository waits for the base: about 16.5 min for chromium on macOS,
-  seconds for small repositories. On Linux with btrfs the base is a reflink copy plus a snapshot.
+1. **The first start is not instant.** The base build is O(files): about 16.5 min for chromium on
+   macOS, seconds for small repositories. If requirement 3 is strict for a new repository, this design
+   does not meet it. On Linux the base is a reflink copy (3.16 s for 211k files) plus a snapshot, and
+   it needs btrfs or XFS. On ext4 the copy is a full copy.
+2. **The Mac is not protected yet.** The image isolates the workspace, not the process. Today YOLO mode
+   maps to `{"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}`
+   (`scripts/codex_runtime.py:3682-3683`), so an agent can still delete files outside its mount. Every
+   path that runs commands or writes files needs a mandatory process sandbox (Seatbelt on macOS)
+   that allows writes only to the agent mount and the agent's own temporary and cache folders. Shared
+   writable caches let one agent damage the cache of another agent: give each agent its own writable
+   cache, or make shared caches read-only.
+3. **FSEvents is not always cheap and is not a snapshot.** When events are lost, FSEvents sets
+   `kFSEventStreamEventFlagMustScanSubDirs` and the client must scan those folders again
+   ([Apple FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html)).
+   A list of events also does not give a consistent snapshot of files that the user keeps changing
+   during the copy. The delta step needs a rescan fallback and a final check (for example, compare
+   size and mtime after the copy, and repeat for changed paths).
+4. **git alternates make the base depend on the user's repository.** If the user's repository prunes
+   objects (`git gc` after a rebase or a branch delete), the base or the agent repository can lose
+   objects it needs ([git clone, `--shared`](https://git-scm.com/docs/git-clone)). Studio must keep
+   those objects alive, for example with a ref per base commit in the user's repository
+   (`refs/studio/base/<id>`), or copy the needed packs into the base.
+5. **Build output reuse is not shown.** The bases in these tests had no build output. Rust was tested;
+   Xcode and Swift were not. Ten Rust builds made 33 GB of agent layers. A warm `target/` in the base
+   is expected to save time, but this was not measured.
+6. **Linux under parallel load.** Ten overlay mounts were 4 to 6 times slower than one shared native
+   tree for parallel `git status` and `rg` (3.4 s against 0.6 to 0.8 s). The native runs shared one
+   tree and one cache, so this is a lower bound for native, but the gap is large.
+7. **Mistakes through the network** (`git push --force`, cloud command line tools, production APIs)
+   are outside this design. Do not give the agent such credentials by default.
 
 ## Not measured
 
-- Agents that live for days: shadow growth and fragmentation.
+- Agents that live for days. Three build and clean cycles are the only proxy.
 - Update of a base to a new version. Plan: `cp -c` of the base file (O(1)), attach read-write, apply
   the FSEvents delta, detach. Expected O(changes).
-- Checkpoint and restore of an agent: `cp -c` of the shadow file while detached or frozen.
+- Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
+- Xcode and Swift builds, and reuse of build output stored in the base.
 - Windows (differencing VHDX, ProjFS).
 - Linux on bare metal and on ext4 or XFS.
 - The process sandbox together with the image.
@@ -364,7 +481,12 @@ diskutil image attach --nobrowse --mountPoint /path/to/build base.asif
 git -C /path/to/build status --porcelain   # index refresh
 diskutil eject <device of /path/to/build>
 
-# agent: attach with its own shadow; remove = eject + delete the shadow file
+# agent (chosen): clone the detached base file, attach read-write; remove = eject + delete the file
+cp -c base.asif agent.asif
+diskutil image attach --nobrowse --mountPoint /path/to/agent agent.asif
+# checkpoint: eject, cp -c agent.asif agent.ckpt.asif, attach again
+
+# agent (fallback): attach the base with its own shadow; remove = eject + delete the shadow file
 diskutil image attach --nobrowse --mountPoint /path/to/agent base.asif --shadow agent.shadow
 ```
 
