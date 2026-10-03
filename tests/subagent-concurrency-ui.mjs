@@ -59,9 +59,14 @@ try {
   const snapshot = async () =>
     (await fetch(origin + "/api/state?view=chat")).json();
   const initial = await snapshot();
+  const syncWorkspaceId = (
+    await (await fetch(origin + "/api/sync/identity")).json()
+  ).workspaceId;
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const other = initial.threads.find((agent) => agent.name === "Other project");
   assert(lead.agentModeSupported);
+  assert(Number.isSafeInteger(lead.subagentConcurrencyVersion));
+  assert(lead.subagentConcurrencyVersion >= 2);
   const activeWorkers = initial.threads.filter(
     (agent) => agent.rootId === lead.id && agent.status === "running",
   );
@@ -365,6 +370,232 @@ try {
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await waitConcurrency(9);
   console.log("PASS settings are isolated per chat");
+
+  // Older projections may expose the legacy mode without numeric concurrency.
+  // The UI must preserve durable request data byte-for-byte until upgraded.
+  const setBackendConcurrency = async (concurrency, requestId) => {
+    const canonical = await currentLead();
+    const response = await fetch(origin + "/api/conversation", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": initial.token,
+        ...(initial.workspaceId
+          ? { "X-Canvas-Workspace": initial.workspaceId }
+          : {}),
+      },
+      body: JSON.stringify({
+        id: lead.id,
+        subagent_concurrency: concurrency,
+        expected_mode_revision: canonical.agentModeRevision,
+        request_id: requestId,
+      }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const assertRollingUpgrade = async ({ mode, baseline, pending, target }) => {
+    const canonical = await setBackendConcurrency(
+      baseline,
+      `rolling-upgrade-baseline-${mode}`,
+    );
+    const operation = {
+      id: lead.id,
+      ...pending,
+      expected_mode_revision: canonical.agentModeRevision,
+      request_id: `rolling-upgrade-pending-${mode}`,
+    };
+    const saved = JSON.stringify({
+      confirmed: { mode, revision: canonical.agentModeRevision },
+      pending: operation,
+    });
+    const rollingPage = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+      serviceWorkers: "block",
+    });
+    let oldProjectionResponses = 0;
+    let oldLeadProjectionResponses = 0;
+    const projectionRequests = [];
+    const rollingWrites = [];
+    rollingPage.on("request", (request) => {
+      if (request.url().includes("/api/sync/pull"))
+        projectionRequests.push(request.url());
+    });
+    await rollingPage.addInitScript(
+      ({ stateDir, workspaceId, leadId, saved }) => {
+        const scope = JSON.stringify([stateDir, workspaceId, leadId]);
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(leadId),
+        );
+        localStorage.setItem(`studio-agent-mode:${scope}`, saved);
+      },
+      {
+        stateDir: initial.stateDir,
+        workspaceId: syncWorkspaceId,
+        leadId: lead.id,
+        saved,
+      },
+    );
+    await rollingPage.route("**/api/sync/pull*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.continue();
+      const response = await route.fetch();
+      const projection = await response.json();
+      oldProjectionResponses += 1;
+      for (const document of projection.documents) {
+        if (document.id !== `entity:agent:${lead.id}` || document._deleted)
+          continue;
+        oldLeadProjectionResponses += 1;
+        const projectedLead = JSON.parse(document.payload);
+        assert.equal(projectedLead.collection, "agent");
+        assert.equal(projectedLead.id, lead.id);
+        delete projectedLead.value.subagentConcurrencyVersion;
+        delete projectedLead.value.concurrency;
+        projectedLead.value.agentModeSupported = true;
+        projectedLead.value.agentMode = mode;
+        document.payload = JSON.stringify(projectedLead);
+      }
+      await route.fulfill({ response, json: projection });
+    });
+    await rollingPage.route("**/api/conversation", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.subagent_concurrency !== undefined || body.agent_mode)
+        rollingWrites.push(body);
+      await route.continue();
+    });
+    await rollingPage.goto(origin);
+    const oldInput = rollingPage.getByRole("spinbutton", {
+      name: "Subagent parallelism",
+    });
+    await oldInput.waitFor();
+    assert(
+      oldProjectionResponses > 0,
+      `old projection fixture must be applied; pulls: ${projectionRequests.join(", ")}`,
+    );
+    assert(
+      oldLeadProjectionResponses > 0,
+      "old lead projection must be applied",
+    );
+    assert.equal(await oldInput.inputValue(), "");
+    assert.equal(await oldInput.isDisabled(), true);
+    assert.equal(
+      await rollingPage
+        .locator(".agent-mode-control")
+        .getByRole("button", { name: "Apply", exact: true })
+        .isDisabled(),
+      true,
+    );
+    assert.equal(
+      await rollingPage
+        .getByRole("button", { name: /Retry .* change/ })
+        .count(),
+      0,
+    );
+    assert.equal(
+      await rollingPage
+        .locator(".agent-mode-control .agent-mode-limit-mode")
+        .textContent(),
+      mode === "single" ? "Single agent" : "Multi agent",
+    );
+    await rollingPage
+      .getByText(/does not provide the concurrency setting/, { exact: false })
+      .waitFor();
+    await rollingPage
+      .getByText("Saved change retained. Update the backend to retry it.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(rollingWrites.length, 0);
+    assert.equal(
+      await rollingPage.evaluate((leadId) => {
+        const key = Object.keys(localStorage).find(
+          (entry) =>
+            entry.startsWith("studio-agent-mode:") &&
+            JSON.parse(entry.slice("studio-agent-mode:".length))[2] === leadId,
+        );
+        return localStorage.getItem(key);
+      }, lead.id),
+      saved,
+    );
+
+    await rollingPage.unrouteAll({ behavior: "ignoreErrors" });
+    await rollingPage.close();
+    const upgradedPage = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+      serviceWorkers: "block",
+    });
+    await upgradedPage.addInitScript(
+      ({ stateDir, workspaceId, leadId, saved }) => {
+        const scope = JSON.stringify([stateDir, workspaceId, leadId]);
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(leadId),
+        );
+        localStorage.setItem(`studio-agent-mode:${scope}`, saved);
+      },
+      {
+        stateDir: initial.stateDir,
+        workspaceId: syncWorkspaceId,
+        leadId: lead.id,
+        saved,
+      },
+    );
+    const upgradedWrites = [];
+    let resolveUpgradeResponse;
+    const upgradeResponse = new Promise((resolve) => {
+      resolveUpgradeResponse = resolve;
+    });
+    await upgradedPage.route("**/api/conversation", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.subagent_concurrency !== undefined || body.agent_mode) {
+        upgradedWrites.push(body);
+        const response = await route.fetch();
+        const result = {
+          status: response.status(),
+          body: await response.json(),
+        };
+        resolveUpgradeResponse(result);
+        await route.fulfill({ response });
+        return;
+      }
+      await route.continue();
+    });
+    await upgradedPage.goto(origin);
+    const retryName =
+      "subagent_concurrency" in operation
+        ? "Retry limit change"
+        : "Retry mode change";
+    await upgradedPage.getByRole("button", { name: retryName }).click();
+    const response = await upgradeResponse;
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    await upgradedPage
+      .getByRole("button", { name: retryName })
+      .waitFor({ state: "detached" });
+    assert.deepEqual(upgradedWrites, [operation]);
+    assert.equal(
+      (await currentLead()).concurrency,
+      target,
+      JSON.stringify(response.body),
+    );
+    await upgradedPage.close();
+  };
+  await assertRollingUpgrade({
+    mode: "single",
+    baseline: 0,
+    pending: { agent_mode: "multi" },
+    target: 32,
+  });
+  await assertRollingUpgrade({
+    mode: "multi",
+    baseline: 64,
+    pending: { subagent_concurrency: 0 },
+    target: 0,
+  });
+  console.log(
+    "PASS old-backend projections preserve both legacy modes and pending requests through upgrade",
+  );
 
   // An unreadable browser record stays visible and can be discarded without a command.
   await page.evaluate((id) => {
