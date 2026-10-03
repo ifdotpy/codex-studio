@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
 test("native error ui", async ({ page: runnerPage }) => {
-  test.setTimeout(60_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
