@@ -1512,6 +1512,9 @@ export default function Conversation(p: {
           {before && (
             <Button
               id="earlier-messages"
+              className="transcript-page-link"
+              variant="subtle"
+              size="compact-sm"
               loading={pageLoading}
               onClick={() => {
                 setFollow(false);
@@ -1546,6 +1549,9 @@ export default function Conversation(p: {
           {after && (
             <Button
               id="newer-messages"
+              className="transcript-page-link"
+              variant="subtle"
+              size="compact-sm"
               loading={pageLoading}
               onClick={() =>
                 void newer().catch((error) => p.notify(errorText(error)))

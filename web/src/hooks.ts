@@ -494,14 +494,17 @@ export function useMessages(
             return size;
           },
           page.focused ? "oldest" : "newest",
-          page.anchorId,
+          // A live page always keeps the newest messages; only a focused
+          // history page may trim them around its scroll anchor.
+          page.focused ? page.anchorId : undefined,
         );
         page.items = bounded.items;
         page.size = bounded.bytes;
         if (bounded.droppedOldest)
           page.before = bounded.items[0]?.id || page.before;
-        if (bounded.droppedNewest)
+        if (bounded.droppedNewest && page.focused)
           page.after = page.items.at(-1)?.id || page.after;
+        if (!page.focused) page.after = null;
       }
       if (!page && !d.unavailable && managed && kind === "agent") {
         // Retain the loaded range from the first snapshot. Otherwise each live

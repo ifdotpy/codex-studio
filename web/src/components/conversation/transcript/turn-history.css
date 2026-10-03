@@ -111,3 +111,11 @@
     transition: none;
   }
 }
+
+/* Earlier and Later messages: quiet, centered links between transcript pages. */
+.transcript-page-link {
+  display: flex;
+  margin: 8px auto;
+  color: var(--muted);
+  font-weight: 500;
+}
