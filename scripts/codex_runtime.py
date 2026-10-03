@@ -3575,6 +3575,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             event = db.execute("SELECT status,error FROM runtime_events WHERE id=?", (message_id,)).fetchone()
             return {"id": message_id, "status": event["status"], "error": event["error"]} if event else None
 
+    def user_delivery_receipts(self, agent_id, message_ids):
+        if (not isinstance(message_ids, list) or len(message_ids) > 100
+                or any(not isinstance(value, str) or not value or len(value) > 200 for value in message_ids)):
+            raise ValueError("Supply at most 100 message IDs of 1 to 200 characters")
+        identities = list(dict.fromkeys(message_ids))
+        with self.db() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            self.checked_actor(db, agent_id)
+            rows = db.execute(
+                "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' "
+                "AND id IN (" + ",".join("?" for _ in identities) + ")",
+                (agent_id, *identities),
+            ).fetchall() if identities else []
+            return {"agent": agent_id, "items": [dict(row) for row in rows]}
+
     def retire_legacy_steer(self, db, a):
         """Keep old submitted steer receipts uncertain during the delivery upgrade."""
         attempt = a.pop("liveSteerAttempt", None)

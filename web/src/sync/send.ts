@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { syncApi, ApiError, errorText, refreshSession } from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
+import { receiptOutgoing, type MessageReceipt } from "./messageReceipts";
 
 type Intention = {
   body: Record<string, any>;
@@ -246,6 +247,26 @@ export async function acknowledgeOutbox(ids: string[]) {
   for (const id of ids) {
     const doc = await db.outbox.findOne(id).exec();
     if (doc) await updateIntention(doc, { displayPending: false });
+  }
+}
+export async function reconcileOutboxReceipts(
+  room: string,
+  receipts: MessageReceipt[],
+  workspaceId?: string,
+) {
+  const current = await syncDatabase();
+  if (workspaceId && current.workspaceId !== workspaceId) return;
+  for (const receipt of receipts) {
+    const doc = await current.db.outbox.findOne(receipt.id).exec();
+    if (!doc) continue;
+    await doc.incrementalModify((record: any) => {
+      const value = JSON.parse(record.payload);
+      if (value.body.room !== room || value.displayPending === false)
+        return record;
+      const next = receiptOutgoing(value, receipt);
+      const payload = JSON.stringify(next);
+      return payload === record.payload ? record : { ...record, payload };
+    });
   }
 }
 export async function editOutboxDisplay(id: string, text: string) {

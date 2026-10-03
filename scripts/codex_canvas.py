@@ -1282,6 +1282,8 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         return self.send(runtime.work_action(agent, {"action": "list"}))
                     if path.path == "/api/queue":
                         return self.send(runtime.queue_action(agent))
+                    if path.path == "/api/messages/receipts":
+                        return self.send(runtime.user_delivery_receipts(agent, json.loads(q.get("ids", "[]"))))
                     if path.path == "/api/changes":
                         return self.send(runtime.changes(agent, scope=q.get("scope")), etag=True)
                     if path.path == "/api/plan":
