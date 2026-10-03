@@ -2,6 +2,10 @@ scripts/claude_bridge/node_modules/
 node_modules/
 dist/
 coverage/
+test-results/
+playwright-report/
+reports/mutation/
+.stryker-tmp/
 __pycache__/
 *.py[cod]
 .DS_Store
