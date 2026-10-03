@@ -7,6 +7,20 @@ import { fileURLToPath } from "node:url";
 
 import { spawnFixture as spawn, test } from "../playwright.mjs";
 
+const browserContextsByTest = new WeakMap();
+test.beforeEach(async ({ browser }, testInfo) => {
+  browserContextsByTest.set(testInfo, new Set(browser.contexts()));
+});
+test.afterEach(async ({ browser }, testInfo) => {
+  const initialContexts = browserContextsByTest.get(testInfo) ?? new Set();
+  await Promise.all(
+    browser
+      .contexts()
+      .filter((context) => !initialContexts.has(context))
+      .map((context) => context.close()),
+  );
+});
+
 test("draft idle poll browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const root = dirname(
@@ -74,6 +88,6 @@ test("draft idle poll browser", async ({ browser: _browser }) => {
       }),
     );
   } finally {
-    fixture.stdin.end();
+    fixture.stdin?.end();
   }
 });

@@ -8,6 +8,20 @@ import { modelOptions, selectModel } from "../../model-picker.mjs";
 
 import { spawnFixture as spawn, test } from "../playwright.mjs";
 
+const browserContextsByTest = new WeakMap();
+test.beforeEach(async ({ browser }, testInfo) => {
+  browserContextsByTest.set(testInfo, new Set(browser.contexts()));
+});
+test.afterEach(async ({ browser }, testInfo) => {
+  const initialContexts = browserContextsByTest.get(testInfo) ?? new Set();
+  await Promise.all(
+    browser
+      .contexts()
+      .filter((context) => !initialContexts.has(context))
+      .map((context) => context.close()),
+  );
+});
+
 test("product ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const skill = dirname(
@@ -443,7 +457,6 @@ test("product ui", async ({ browser: _browser }) => {
     console.error("Failure evidence:", root);
     throw error;
   } finally {
-    proc.kill("SIGTERM");
     // Preserve screenshots and the isolated database for inspection.
   }
 });
