@@ -62,14 +62,14 @@
   flex-shrink: 1;
   margin-top: 0;
 }
-.conversation-meta .agent-mode-switch {
+.conversation-meta .agent-mode-apply {
   min-height: 20px;
   margin-block: -4px;
   padding: 2px 4px;
   border: 0;
   color: var(--muted);
 }
-.conversation-meta .agent-mode-switch:hover:not(:disabled) {
+.conversation-meta .agent-mode-apply:hover:not(:disabled) {
   color: var(--text);
   background: var(--hover);
 }
@@ -190,7 +190,7 @@
   .simple-workspace-header .conversation-heading {
     flex: 1 1 0;
   }
-  .conversation-meta .agent-mode-switch {
+  .conversation-meta .agent-mode-apply {
     min-height: 32px;
     margin-block: -8px;
   }
@@ -353,7 +353,7 @@
   .chat-settings-panel .agent-mode-control {
     margin: 0;
   }
-  .chat-settings-panel .agent-mode-switch {
+  .chat-settings-panel .agent-mode-apply {
     font-size: 13px;
     padding-inline: 10px;
   }

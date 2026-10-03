@@ -19,6 +19,9 @@ export interface Agent extends Json, AgentEntityDto {
   error?: unknown;
   cwd?: string;
   model: string;
+  concurrency?: number;
+  occupied?: number;
+  queued?: number;
   agentMode?: "multi" | "single";
   agentModeRevision?: number;
   agentModeSupported?: boolean;

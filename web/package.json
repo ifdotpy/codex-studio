@@ -12,6 +12,7 @@
     "format:check": "prettier --check src index.html vite.config.ts tsconfig.json ../tests/*ui.mjs",
     "test:token-rate": "npm run build && python3 -B ../tests/token-rate-contract.py && python3 -B ../tests/claude-bridge-contract.py Bridge.test_rate_uses_assistant_output_and_subtracts_persistent_query_total && node --experimental-strip-types ../tests/token-rate-contract.mjs && node ../tests/token-rate-ui.mjs && node ../tests/team-token-rate-ui.mjs",
     "test:chat-settings": "npm run build && node ../tests/chat-settings-autosave-ui.mjs",
+    "test:subagent-concurrency": "npm run build && node ../tests/subagent-concurrency-ui.mjs",
     "test:chat-status": "npm run build && node --experimental-strip-types ../tests/chat-status-contract.mjs && node ../tests/agent-phase-browser.mjs && node ../tests/session-activity-browser.mjs && node ../tests/chat-status-ui.mjs",
     "test:reliability": "node ../tests/draft-recovery-browser.mjs && node ../tests/sync-recovery-browser.mjs && node ../tests/message-retry-http-browser.mjs",
     "test:ux": "npm run build && node ../tests/questions-ux-ui.mjs && node ../tests/dialog-drafts-ui.mjs && node ../tests/realtime-voice-ux-ui.mjs && python3 ../tests/voice-validation-contract.py && node ../tests/outbox-controls-ui.mjs && node ../tests/ux-navigation-ui.mjs",

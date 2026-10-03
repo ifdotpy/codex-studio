@@ -8,7 +8,7 @@
   font-size: 11px;
   -webkit-app-region: no-drag;
 }
-.agent-mode-switch,
+.agent-mode-apply,
 .agent-mode-retry {
   display: inline-flex;
   align-items: center;
@@ -22,34 +22,39 @@
   font: inherit;
   cursor: pointer;
 }
-.agent-mode-switch:disabled {
+.agent-mode-apply:disabled,
+.agent-mode-retry:disabled {
   cursor: default;
   opacity: 0.65;
 }
-.agent-mode-switch:focus-visible,
+.agent-mode-apply:focus-visible,
 .agent-mode-retry:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.agent-mode-track {
-  width: 24px;
-  height: 14px;
-  border-radius: 7px;
-  background: var(--muted);
-  padding: 2px;
+.agent-mode-limit-label {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
 }
-.agent-mode-track > span {
-  display: block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+.agent-mode-limit-mode {
+  color: var(--muted);
+}
+.agent-mode-limit-label input {
+  width: 6em;
+  min-height: 30px;
+  padding: 2px 6px;
+  color: var(--text);
   background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
 }
-.agent-mode-switch[aria-checked="true"] .agent-mode-track {
-  background: var(--accent);
-}
-.agent-mode-switch[aria-checked="true"] .agent-mode-track > span {
-  transform: translateX(10px);
+.agent-mode-limit-label input:focus-visible,
+.agent-mode-apply:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .agent-mode-note {
   color: var(--muted);
@@ -60,8 +65,12 @@
   overflow-wrap: anywhere;
 }
 @media (max-width: 760px) {
-  .agent-mode-switch,
+  .agent-mode-apply,
   .agent-mode-retry {
     min-height: 36px;
+  }
+  .agent-mode-limit-label input {
+    min-height: 36px;
+    font-size: 16px;
   }
 }
