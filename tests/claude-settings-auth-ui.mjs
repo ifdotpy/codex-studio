@@ -117,7 +117,7 @@ try {
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/check`);
   await page
     .getByRole("alert")
-    .filter({ hasText: "Sign in with claude auth login first" })
+    .filter({ hasText: "Sign in to Claude to load these settings." })
     .waitFor();
   assert.equal(await page.getByLabel("Permission mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Extended thinking").isDisabled(), true);

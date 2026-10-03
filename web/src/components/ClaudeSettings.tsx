@@ -97,7 +97,15 @@ export function ClaudeSettings({
         setWindow(next.autoCompactWindow ? String(next.autoCompactWindow) : "");
         setStateLoaded(true);
       })
-      .catch((failure) => active && setError(errorText(failure)))
+      .catch((failure) => {
+        if (!active) return;
+        const message = errorText(failure);
+        setError(
+          message === "Sign in with claude auth login first"
+            ? "Sign in to Claude to load these settings."
+            : message,
+        );
+      })
       .finally(() => active && setStateLoading(false));
     return () => {
       active = false;
