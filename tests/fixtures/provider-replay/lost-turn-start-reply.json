@@ -1,0 +1,15 @@
+{
+  "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.fail_start",
+  "lostStartReply": true,
+  "events": [
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    }
+  ],
+  "expectedStatus": "completed",
+  "assert": { "eventKinds": ["user"], "eventStatuses": ["dispatching"] }
+}

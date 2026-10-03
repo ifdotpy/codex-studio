@@ -1,0 +1,49 @@
+{
+  "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.complete and command output",
+  "events": [
+    {
+      "method": "item/started",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "item": {
+          "id": "late-command",
+          "type": "commandExecution",
+          "command": "fixture",
+          "processId": "fixture-process"
+        }
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    },
+    {
+      "method": "item/commandExecution/outputDelta",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "itemId": "late-command",
+        "delta": "late output"
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "item": {
+          "id": "late-command",
+          "type": "commandExecution",
+          "command": "fixture",
+          "exitCode": 0
+        }
+      }
+    }
+  ],
+  "expectedStatus": "completed",
+  "assert": { "eventKinds": ["user"], "taskStatuses": ["completed"] }
+}

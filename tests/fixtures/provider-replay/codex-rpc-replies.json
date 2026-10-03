@@ -1,0 +1,126 @@
+{
+  "initialize": {
+    "direction": "in",
+    "responseFor": "initialize",
+    "timestamp": 0,
+    "message": { "result": {} }
+  },
+  "config/read": {
+    "direction": "in",
+    "responseFor": "config/read",
+    "timestamp": 0,
+    "message": {
+      "result": { "config": { "features": { "shell_snapshot": false } } }
+    }
+  },
+  "skills/extraRoots/set": {
+    "direction": "in",
+    "responseFor": "skills/extraRoots/set",
+    "timestamp": 0,
+    "message": { "result": {} }
+  },
+  "thread/start": {
+    "direction": "in",
+    "responseFor": "thread/start",
+    "timestamp": 0,
+    "message": {
+      "result": { "thread": { "id": "$threadId" }, "model": "$model" }
+    }
+  },
+  "thread/resume": {
+    "direction": "in",
+    "responseFor": "thread/resume",
+    "timestamp": 0,
+    "message": {
+      "result": { "thread": { "id": "$threadId" }, "model": "$model" }
+    }
+  },
+  "turn/start": {
+    "direction": "in",
+    "responseFor": "turn/start",
+    "timestamp": 0,
+    "message": {
+      "result": { "turn": { "id": "$turnId", "status": "inProgress" } }
+    }
+  },
+  "model/list": {
+    "direction": "in",
+    "responseFor": "model/list",
+    "timestamp": 0,
+    "message": {
+      "result": {
+        "data": [
+          {
+            "model": "fixture-model",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-6-astra",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-6-luna",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-6-sol",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-5.6-sol",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-5.6-luna",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          },
+          {
+            "model": "gpt-5.6-terra",
+            "defaultReasoningEffort": "medium",
+            "supportedReasoningEfforts": [
+              { "reasoningEffort": "low" },
+              { "reasoningEffort": "medium" },
+              { "reasoningEffort": "high" }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "account/rateLimits/read": {
+    "direction": "in",
+    "responseFor": "account/rateLimits/read",
+    "timestamp": 0,
+    "message": { "result": { "rateLimits": {} } }
+  }
+}

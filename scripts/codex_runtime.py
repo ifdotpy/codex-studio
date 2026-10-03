@@ -351,6 +351,8 @@ class AppServer:
                 "AppServers were not started; restart through the supervisor recovery service."
             )
         self.notification, self.request, self.died = notification, request, died
+        from codex_provider_transcript import TranscriptCapture
+        self.transcript_capture = TranscriptCapture(provider)
         self.supervisor_commit = supervisor_commit
         self.supervisor_event_applied = supervisor_event_applied
         self.supervisor_reattach_future = None
@@ -450,7 +452,9 @@ class AppServer:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
             if self.supervisor_mode:
-                return self.proc.send_write(value, operation_id=operation_id)
+                result = self.proc.send_write(value, operation_id=operation_id)
+                self.transcript_capture.record("out", value)
+                return result
             text = json.dumps(value) + "\n"
             try:
                 fd = self.proc.stdin.fileno()
@@ -458,6 +462,7 @@ class AppServer:
                 # In-memory protocol fixtures have no operating-system pipe.
                 self.proc.stdin.write(text)
                 self.proc.stdin.flush()
+                self.transcript_capture.record("out", value)
                 return
             os.set_blocking(fd, False)
             remaining = memoryview(text.encode("utf-8"))
@@ -473,6 +478,7 @@ class AppServer:
                     if written <= 0:
                         raise BrokenPipeError("Native input pipe closed")
                     remaining = remaining[written:]
+                self.transcript_capture.record("out", value)
             except (OSError, TimeoutError) as cause:
                 # A partial JSON frame cannot share this stream with another call.
                 error = ResponseTimeout(f"Codex input write failed; outcome unknown: {cause}")
@@ -1110,6 +1116,7 @@ class AppServer:
             for line in self.proc.stdout:
                 try:
                     message = json.loads(line)
+                    self.transcript_capture.record("in", message)
                     sequence = getattr(self.proc.stdout, "current_sequence", None)
                     if sequence is not None:
                         message["_studioSupervisorSequence"] = sequence
