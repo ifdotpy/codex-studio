@@ -258,6 +258,53 @@ test("Token rate ui", async ({
         },
         { id: other.id, turnId: actor.turnId, rate },
       );
+    const waitForMobileFooterLayout = async () => {
+      await page.waitForFunction(() => {
+        const composer = document.querySelector("#composer");
+        const root = document.documentElement;
+        const style = composer && getComputedStyle(composer);
+        return (
+          window.matchMedia("(max-width: 760px)").matches &&
+          root.dataset.mobileKeyboard === "false" &&
+          Boolean(root.style.getPropertyValue("--mobile-viewport-height")) &&
+          style?.paddingTop === "8px" &&
+          style.paddingBottom === "8px"
+        );
+      });
+      await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            let previous = "";
+            let stableFrames = 0;
+            const sample = () => {
+              const footer = document.querySelector(".usage-footer");
+              const meter = document.querySelector("#conversation .token-rate");
+              const composer = document.querySelector("#composer");
+              if (!footer || !meter || !composer) {
+                requestAnimationFrame(sample);
+                return;
+              }
+              const rect = (element) => {
+                const { x, y, width, height } = element.getBoundingClientRect();
+                return [x, y, width, height];
+              };
+              const current = JSON.stringify({
+                viewport: [window.innerWidth, window.innerHeight],
+                footer: rect(footer),
+                meter: rect(meter),
+                composer: rect(composer),
+                scroll: [window.scrollX, window.scrollY],
+              });
+              if (current === previous) stableFrames += 1;
+              else stableFrames = 0;
+              previous = current;
+              if (stableFrames >= 2) resolve();
+              else requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }),
+      );
+    };
     await page.emulateMedia({ reducedMotion: "reduce" });
     await inject(20);
     await page.waitForFunction(
@@ -315,11 +362,13 @@ test("Token rate ui", async ({
     );
     assert.equal(await meter.getAttribute("data-reduced-motion"), "true");
     await page.setViewportSize({ width: 390, height: 844 });
+    await waitForMobileFooterLayout();
     const before = await meter.boundingBox();
     await inject(123456);
     await page.waitForFunction(
       () => document.querySelector(".token-rate")?.dataset.rate === "123456",
     );
+    await waitForMobileFooterLayout();
     const after = await meter.boundingBox();
     assert.equal(after.width, before.width);
     assert.equal(after.y, before.y);
