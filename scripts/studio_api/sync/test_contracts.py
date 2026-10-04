@@ -104,6 +104,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 "observedTurnId": "turn-a", "nativeOperationId": "native-a",
                 "prepareError": "prepare details", "responseError": "response details",
             },
+            "overview": {"task": "task", "result": "result", "resultFile": "/tmp/result.md"},
             "workerDefaults": {
                 "model": "gpt-6-luna", "effort": "high", "fastMode": False,
                 "daybreakEnabled": False, "accountKey": "default",
@@ -127,13 +128,15 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIsNone(snapshot.runtime.work)
         active = snapshot.runtime.agents[0]
         if (active.activity is None or active.activity.tools is None or not active.activity.tools
-                or active.nativeRelease is None or active.startAttempt is None or active.workerDefaults is None):
+                or active.nativeRelease is None or active.startAttempt is None or active.workerDefaults is None
+                or active.overview is None):
             self.fail("active producer nested values were omitted")
         self.assertEqual(active.activity.at, 1.5)
         self.assertEqual(active.activity.tools[0].name, "exec")
         self.assertEqual(active.nativeRelease.connectionId, "conn-a")
         self.assertEqual(active.startAttempt.events, ["event-a"])
         self.assertEqual(active.workerDefaults.model, "gpt-6-luna")
+        self.assertEqual(active.overview.resultFile, "/tmp/result.md")
         with self.assertRaises(ValidationError):
             SnapshotAgentDto.model_validate({**active_agent, "activity": {"unknown": True}})
         runtime["work"] = []

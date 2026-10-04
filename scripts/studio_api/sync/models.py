@@ -76,8 +76,16 @@ class AgentStartAttempt(ContractModel):
     responseError: str | None = None
 
 
+class NativeReleasePhase(ContractStrEnum):
+    CHECKING = "checking"
+    UNSUBSCRIBING = "unsubscribing"
+    RELEASED = "released"
+    UNKNOWN = "unknown"
+    BLOCKED = "blocked"
+
+
 class AgentNativeRelease(ContractModel):
-    phase: str | None = None
+    phase: NativeReleasePhase | None = None
     resetPending: bool | None = None
 
 
@@ -158,6 +166,7 @@ class AgentOverview(ContractModel):
     result: str | None = None
     resultTruncated: bool | None = None
     resultTurnId: str | None = None
+    resultFile: str | None = None
 
 
 class AgentEntityDto(ContractModel):
