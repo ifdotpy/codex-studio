@@ -593,6 +593,12 @@ class AgentEntityDto(ContractModel):
     cwd: str | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None
+    imageWorkspace: bool | None = None
+    imageWorkspaceReady: bool | None = None
+    imageWorkspacePhase: str | None = None
+    imageWorkspaceError: str | None = None
+    imageWorkspaceRepo: str | None = None
+    imageWorkspaceBaseRepo: str | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None

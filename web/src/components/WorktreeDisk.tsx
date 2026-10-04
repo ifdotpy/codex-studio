@@ -19,7 +19,7 @@ export function WorkerDiskLabel({
   agent: Agent;
   disk?: WorktreeDiskSnapshot["workers"][string];
 }) {
-  if (!agent.worktree) return null;
+  if (!agent.worktree && !agent.imageWorkspace) return null;
   const label =
     disk?.state === "ready" && disk.bytes != null
       ? formatDiskBytes(disk.bytes)
@@ -46,7 +46,9 @@ export function TeamDiskTotal({
   disk?: WorktreeDiskSnapshot;
 }) {
   if (!disk) return null;
-  const worktrees = workers.filter((agent) => agent.worktree);
+  const worktrees = workers.filter(
+    (agent) => agent.worktree || agent.imageWorkspace,
+  );
   if (!worktrees.length) return null;
   const measured = worktrees.map((agent) => disk.workers[agent.id]);
   const bytes = measured.reduce(
@@ -71,13 +73,17 @@ export function TeamDiskTotal({
       title={measure || "Disk size is not measured yet."}
     >
       <span>
-        Worktrees: {formatDiskBytes(bytes)}
+        Workspaces: {formatDiskBytes(bytes)}
         {unknown ? `, ${unknown} not measured` : ""}
       </span>
+      {disk.baseBytes !== undefined && disk.baseBytes > 0 && (
+        <span>Bases: {formatDiskBytes(disk.baseBytes)}</span>
+      )}
       {disk.error && <span>Disk measure unavailable.</span>}
       {disk.warning && (
         <strong>
-          Disk limit reached: {formatDiskBytes(disk.totalBytes)} /{" "}
+          Disk limit reached:{" "}
+          {formatDiskBytes(disk.storageBytes ?? disk.totalBytes)} /{" "}
           {formatDiskBytes(disk.limitBytes)} across all workers.
         </strong>
       )}

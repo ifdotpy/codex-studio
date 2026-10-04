@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -129,7 +130,7 @@ TOOLS = [
          {"agent_id": TEXT}, ["agent_id"]),
     tool("orchestration_spawn", "Delegate a batch to managed agents. Returns immediately. "
          "Each child completion wakes you, even after your final answer. Use these agents "
-         "instead of native subagents. Implementers receive isolated Git worktrees at the selected base commit. "
+         "instead of native subagents. Implementers receive an image workspace when supported and a Git worktree otherwise. "
          "reviewers share your directory read-only. Never poll for their completion. "
          "Default: gpt-6-luna with high reasoning, unless the user sets team defaults. "
          "Choose model and effort for each task. Codex and Claude can delegate to each other. "
@@ -202,8 +203,9 @@ for definition in TOOLS:
         ] = TEXT
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["cwd"] = TEXT
         definition["description"] += (" cwd sets the worker's folder (absolute, or relative to your folder); default is your folder."
-                                      " An implementer gets a git worktree of the repository that contains cwd."
-                                      " Outside a git repository it works directly in cwd and the result carries a warning.")
+                                      " An implementer gets an image workspace when the platform supports it; Studio starts its repository base when Multi agent mode turns on."
+                                      " Until that base is ready, the implementer starts in cwd with read-only permissions. Studio then switches it to the writable workspace and sends a notice."
+                                      " Unsupported platforms use a Git worktree. Outside a Git repository, the implementer works directly in cwd and the result carries a warning.")
         definition["description"] += (" Optional per-agent base_ref selects a branch, tag, or commit for an implementer."
                                       " Otherwise Studio uses the closest project's worker base ref, then the repository HEAD."
                                       " Studio records the resolved commit and reports when it is behind main.")
@@ -239,8 +241,8 @@ Choose the tool:
 Scope and authority:
 - The project directory is a working directory, not an access boundary. Use files and skills outside it when the task needs them.
   Native sandbox and approval settings still apply.
-- An implementer gets a worktree at the selected base commit of the repository that contains its cwd.
-  Outside git it works directly in cwd; give such workers separate folders or files.
+- An implementer gets an image workspace when the platform supports it, and a Git worktree otherwise.
+  Until the image base is ready, it works read-only in the selected folder. Outside Git it works directly in cwd.
 - Only the orchestrator contacts the user. Subagents send requests to the orchestrator.
   Only the user answers or closes a user message. The answer notifies you automatically. Do not create tasks for the user.
 - The user can group lead chats of one project into a peer team. Peers exchange private messages
@@ -256,10 +258,10 @@ Output:
 """
 
 
-def git_toplevel(directory):
+def git_toplevel(directory, prefix=()):
     """Return the git repository root that contains directory, or None."""
     try:
-        result = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+        result = subprocess.run([*prefix, "git", "-C", str(directory), "rev-parse", "--show-toplevel"],
                                 capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -269,6 +271,21 @@ def git_toplevel(directory):
 def no_worktree_warning(directory):
     return (f"{directory} is not in a git repository. This agent works directly in the folder, "
             "without an isolated worktree. Other agents in this folder can change the same files.")
+
+
+def provider_process_command(command):
+    """Enter the shared Linux mount namespace when it is available."""
+    if not sys.platform.startswith("linux"):
+        return command
+    try:
+        from codex_workspace_images import exec_prefix
+        prefix = exec_prefix()
+        if prefix and shutil.which(prefix[0]) is None:
+            return command
+        return [*prefix, *command]
+    except (OSError, RuntimeError, TimeoutError):
+        # Unsupported Linux hosts still run providers for Git worktree workers.
+        return command
 
 
 def spawn_directory(parent_cwd, requested):
@@ -387,6 +404,7 @@ class AppServer:
         if provider == "claude":
             from codex_claude import transport
             command, env = transport(root, provider_options) if provider_options else transport(root)
+        command = provider_process_command(command)
         if self.supervisor_mode:
             if not supervisor_handle:
                 raise RuntimeError("Supervisor mode requires a stable native-process handle")
@@ -1356,6 +1374,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.limit_refresh_locks = {}
         self.rate_limits = {"accountKey": "default", "data": None, "at": None, "error": None}
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=16)
+        self._image_base_callback_agents = set()
         self.tool_pool = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="studio-tool")
         self.coordination_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="studio-coordinate")
         self.recovery_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-recover")
@@ -3333,6 +3352,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "tail": "",
                 "worktree": bool(p and role == "implementer") and data.get("_worktree", True),
                 "worktreeReady": False,
+                "imageWorkspace": bool(p and role == "implementer") and data.get("_imageWorkspace", False),
+                "imageWorkspaceReady": False,
+                "imageWorkspacePhase": "read_only" if data.get("_imageWorkspace") else None,
+                "imageWorkspaceRepo": data.get("_imageWorkspaceRepo"),
+                "imageWorkspaceRelative": data.get("_imageWorkspaceRelative"),
+                "imageWorkspaceStartCommit": data.get("_imageWorkspaceStartCommit"),
+                "imageWorkspaceError": data.get("_imageWorkspaceError"),
                 "worktreeWarning": (None if not (p and role == "implementer") or data.get("_worktree", True)
                                     else no_worktree_warning(cwd)),
                 "workerBaseRef": data.get("_workerBaseRef"),
@@ -3898,6 +3924,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 
     def turn_permissions(self, a):
+        if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
+            return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
         if a.get("yoloMode") is False:
@@ -3908,6 +3936,154 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sandbox = {"type": "workspaceWrite", "writableRoots": roots, "networkAccess": False}
             return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
         return {}
+
+    @staticmethod
+    def image_workspace_support(repo_root):
+        try:
+            from codex_workspace_images import supported
+            return supported(repo_root)
+        except (ImportError, OSError, RuntimeError) as error:
+            return False, str(error)
+
+    def start_image_base(self, repo_root, agent_id=None):
+        from codex_workspace_images import start_base_build
+        callback = None
+        if agent_id:
+            with self.lock:
+                if agent_id in self._image_base_callback_agents:
+                    return None
+                self._image_base_callback_agents.add(agent_id)
+            callback = lambda status: self.pool.submit(
+                self.image_base_completed, agent_id, status)
+        try:
+            return start_base_build(repo_root, on_done=callback) if callback else start_base_build(repo_root)
+        except Exception:
+            if agent_id:
+                with self.lock:
+                    self._image_base_callback_agents.discard(agent_id)
+            raise
+
+    def worker_spawn_repository(self, actor, directory):
+        prefix = ()
+        if actor.get("imageWorkspaceReady"):
+            from codex_workspace_images import ensure_mounted, exec_prefix
+            mounted = ensure_mounted(actor["id"])
+            prefix = exec_prefix()
+            detected_repo = git_toplevel(directory, prefix=prefix)
+            if detected_repo:
+                try:
+                    relative = Path(directory).resolve().relative_to(
+                        Path(mounted["repoPath"]).resolve())
+                except ValueError:
+                    pass
+                else:
+                    repo = actor.get("imageWorkspaceRepo")
+                    if repo:
+                        return repo, str(Path(repo) / relative), prefix
+                return detected_repo, directory, prefix
+            return None, directory, prefix
+        return git_toplevel(directory), directory, prefix
+
+    def image_base_completed(self, agent_id, status):
+        workspace = None
+        workspace_attempted = False
+        try:
+            with self.lock, self.db() as db:
+                agent = self.agent(agent_id, db)
+                if (agent.get("deletedAt") or not agent.get("imageWorkspace")
+                        or agent.get("imageWorkspaceReady")
+                        or agent.get("imageWorkspacePhase") != "read_only"):
+                    return
+                repo = agent.get("imageWorkspaceRepo")
+                if not repo:
+                    raise ValueError("Image workspace repository is missing")
+                if status.get("state") != "ready":
+                    message = status.get("error") or "Image workspace base build failed"
+                    agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                                 imageWorkspaceError=str(message)[:1200], worktree=True,
+                                 worktreeWarning=None, error=None)
+                    self.loaded.discard(agent_id)
+                    self.put(db, "agents", agent)
+                    notice_text = ("[Studio workspace fallback] The image workspace could not start: "
+                                   + str(message)[:800] + ". Studio will create a Git worktree. "
+                                   "This work remains read-only until the next turn starts.")
+                    self.pool.submit(self._send_image_workspace_notice, agent_id, notice_text,
+                                     "image-workspace-fallback:" + agent_id)
+                    return
+                relative = agent.get("imageWorkspaceRelative", ".")
+                start_commit = agent.get("imageWorkspaceStartCommit")
+            from codex_workspace_images import create_workspace, exec_prefix
+            workspace_attempted = True
+            workspace = create_workspace(repo, agent_id, start_commit=start_commit)
+            cwd = Path(workspace["repoPath"]) / relative
+            exists = subprocess.run([*exec_prefix(), "test", "-d", str(cwd)],
+                                    capture_output=True, timeout=10)
+            if exists.returncode:
+                raise ValueError("Image workspace does not contain the worker project folder")
+            with self.lock, self.db() as db:
+                current = self.agent(agent_id, db)
+                if current.get("imageWorkspaceReady"):
+                    return
+                if (current.get("deletedAt") or not current.get("imageWorkspace")
+                        or current.get("imageWorkspacePhase") != "read_only"):
+                    from codex_workspace_images import remove_workspace
+                    remove_workspace(agent_id)
+                    return
+                current.update(cwd=str(cwd), branch=workspace["branch"],
+                               imageWorkspaceReady=True, imageWorkspacePhase="ready",
+                               imageWorkspaceMount=workspace["mount"],
+                               imageWorkspaceStartCommit=workspace.get("startCommit"),
+                               imageWorkspaceSnapshotCommit=workspace.get("snapshotCommit"))
+                self.loaded.discard(agent_id)
+                self.put(db, "agents", current)
+                self.changed.set()
+            commit = workspace.get("snapshotCommit") or "none (clean user tree)"
+            notice_text = ("[Studio image workspace ready] Path: " + str(cwd)
+                           + ". Write access is enabled. Snapshot commit: " + commit + ".")
+            self._send_image_workspace_notice(agent_id, notice_text,
+                                              "image-workspace-ready:" + agent_id)
+        except Exception as error:
+            if workspace_attempted:
+                try:
+                    from codex_workspace_images import remove_workspace
+                    remove_workspace(agent_id, force=True)
+                except Exception as cleanup_error:
+                    error = RuntimeError(f"{error}; image workspace cleanup failed: {cleanup_error}")
+            with self.lock, self.db() as db:
+                agent = self.agent(agent_id, db)
+                if not agent.get("deletedAt") and agent.get("imageWorkspace"):
+                    agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                                 imageWorkspaceError=str(error)[:1200], worktree=True,
+                                 worktreeWarning=None, error=None)
+                    self.loaded.discard(agent_id)
+                    self.put(db, "agents", agent)
+                    self.changed.set()
+            self.pool.submit(self._send_image_workspace_notice, agent_id,
+                             "[Studio workspace fallback] Image workspace setup failed. "
+                             "Studio will use a Git worktree.",
+                             "image-workspace-fallback:" + agent_id)
+
+    def _send_image_workspace_notice(self, agent_id, text, message_id):
+        try:
+            with self.lock, self.db() as db:
+                agent = self.agent(agent_id, db)
+                if agent.get("imageWorkspaceNoticeSent") == message_id:
+                    return
+                if not agent.get("imageWorkspaceNoticeText"):
+                    agent["imageWorkspaceNoticeText"] = text
+                    self.put(db, "agents", agent)
+                text = agent["imageWorkspaceNoticeText"]
+            self.send(agent_id, text, message_id, manual=False, delivery="after_turn")
+            with self.lock, self.db() as db:
+                agent = self.agent(agent_id, db)
+                agent["imageWorkspaceNoticeSent"] = message_id
+                self.put(db, "agents", agent)
+                self.changed.set()
+        except Exception as error:
+            with self.lock, self.db() as db:
+                agent = self.agent(agent_id, db)
+                agent["imageWorkspaceNoticeError"] = str(error)[:500]
+                self.put(db, "agents", agent)
 
     @staticmethod
     def monitor_auto_approved(a):
@@ -3968,7 +4144,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             ] += "\nBefore the first task, call orchestration_title with a short task title.\n"
         if a.get("model"):
             params["model"] = a["model"]
-        if a.get("yoloMode") is True:
+        if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
+            # Never wait for an approver during the read-only phase. Claude uses
+            # plan mode because never otherwise maps to bypass permissions.
+            params.update(approvalPolicy="never", sandbox="read-only")
+            if a.get("provider") == "claude":
+                params["claude"] = {**a.get("claudeOptions", {}), "permissionMode": "plan"}
+        elif a.get("yoloMode") is True:
             params.update(approvalPolicy="never", sandbox="danger-full-access")
         elif a.get("yoloMode") is False:
             params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
@@ -3983,7 +4165,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "Use Bash for other commands. Studio voice is unavailable. "
                 "Do not tell the user that an MCP server or connector needs authentication "
                 "unless the user asks for work that needs it.\n")
-            params["claude"] = a.get("claudeOptions", {})
+            params["claude"] = {**a.get("claudeOptions", {}), **params.get("claude", {})}
         params["dynamicTools"] = self.tool_definitions(a)
         if a.get("portableHistory"):
             from codex_portable_history import history_context
@@ -4151,8 +4333,38 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             previous = None
         if previous and not previous["future"].done():
             return previous["future"]
+        if a.get("imageWorkspaceReady"):
+            from codex_workspace_images import ensure_mounted
+            mounted = ensure_mounted(a["id"])
+            repo_path = Path(mounted["repoPath"])
+            relative = a.get("imageWorkspaceRelative", ".")
+            project = repo_path / relative
+            with self.lock, self.db() as db:
+                latest = self.agent(a["id"], db)
+                latest.update(cwd=str(project), imageWorkspaceMount=mounted["mount"])
+                self.put(db, "agents", latest)
+                a = latest
+            if not a.get("imageWorkspaceNoticeSent"):
+                commit = a.get("imageWorkspaceSnapshotCommit") or "none (clean user tree)"
+                self.pool.submit(self._send_image_workspace_notice, a["id"],
+                                 "[Studio image workspace ready] Path: " + a["cwd"]
+                                 + ". Write access is enabled. Snapshot commit: " + commit + ".",
+                                 "image-workspace-ready:" + a["id"])
+        elif a.get("imageWorkspace") and a.get("imageWorkspacePhase") == "read_only":
+            try:
+                self.start_image_base(a["imageWorkspaceRepo"], a["id"])
+            except Exception as error:
+                self.image_base_completed(a["id"], {"state": "failed", "error": str(error)})
+        elif a.get("imageWorkspacePhase") == "fallback" and not a.get("imageWorkspaceNoticeSent"):
+            self.pool.submit(self._send_image_workspace_notice, a["id"],
+                             "[Studio workspace fallback] Studio will use a Git worktree.",
+                             "image-workspace-fallback:" + a["id"])
         if a["worktree"] and not a["worktreeReady"]:
-            repo = git_toplevel(a["cwd"])
+            prefix = ()
+            if a.get("imageWorkspaceReady"):
+                from codex_workspace_images import exec_prefix
+                prefix = exec_prefix()
+            repo = git_toplevel(a["cwd"], prefix=prefix)
             if repo is None:
                 # The folder left git after spawn. Work in place and say so; do not fail the agent.
                 with self.lock, self.db() as db:
@@ -4160,7 +4372,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     latest.update(worktree=False, worktreeWarning=no_worktree_warning(latest["cwd"]))
                     self.put(db, "agents", latest)
                     a = latest
-        if a["worktree"] and not a["worktreeReady"]:
+        if a["worktree"] and not a["worktreeReady"] and not a.get("imageWorkspace"):
             common_git_dir = subprocess.check_output(
                 ["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
                 timeout=30).decode().strip()
@@ -4933,6 +5145,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 params = {
                     "threadId": a["threadId"],
                     "model": a["model"],
+                    "cwd": a["cwd"],
                     "clientUserMessageId": rows[0]["id"],
                     "input": self.message_inputs(
                         a["id"], append_message_clocks(text, clocks), asset_ids
@@ -5950,7 +6163,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["status"] = "queued"
                 from codex_agent_management import parked_after_turn
                 parked_after_turn(a)
-                if (a.get("worktreeReady")
+                if ((a.get("worktreeReady") or a.get("imageWorkspaceReady"))
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     self.queue_checkpoint_after_turn(db, a, turn.get("id"))
                 self.changed.set()
@@ -6145,21 +6358,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         base_cache = {}
         for spec in specs:
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
-            repo = git_toplevel(directory) if spec.get("role", "implementer") == "implementer" else None
+            if spec.get("role", "implementer") == "implementer":
+                repo, directory, _prefix = self.worker_spawn_repository(actor, directory)
+            else:
+                repo = None
             base = None
+            use_image = False
+            image_error = None
+            selected_base_ref = None
             if "base_ref" in spec and repo is None:
                 raise ValueError("base_ref requires an implementer in a Git repository")
             if repo is not None:
-                base_ref = spec.get("base_ref")
-                if base_ref is None:
+                use_image, support_reason = self.image_workspace_support(repo)
+                if use_image:
+                    try:
+                        self.start_image_base(repo)
+                    except Exception as error:
+                        use_image = False
+                        image_error = "Image workspace base build failed: " + str(error)[:700]
+                selected_base_ref = spec.get("base_ref")
+                if selected_base_ref is None:
                     with self.lock, self.db() as db:
-                        base_ref = self.project_worker_base(directory, db=db)
-                cache_key = (repo, base_ref)
+                        selected_base_ref = self.project_worker_base(directory, db=db)
+                cache_key = (repo, selected_base_ref)
                 if cache_key not in base_cache:
                     from codex_worker_base import resolve_worker_base
-                    base_cache[cache_key] = resolve_worker_base(repo, base_ref)
+                    base_cache[cache_key] = resolve_worker_base(repo, selected_base_ref)
                 base = base_cache[cache_key]
             resolved.append({**spec, "cwd": directory, "_worktree": repo is not None,
+                             "_imageWorkspace": use_image,
+                             "_imageWorkspaceRepo": repo if use_image else None,
+                             "_imageWorkspaceRelative": (str(Path(directory).relative_to(repo)) or ".") if use_image else None,
+                             "_imageWorkspaceStartCommit": (base["baseCommit"]
+                                                            if use_image and selected_base_ref is not None
+                                                            else None),
+                             "_imageWorkspaceError": image_error,
                              "_workerBase": base})
         specs = resolved
         assigned = [spec["task_id"] for spec in specs if "task_id" in spec]
@@ -6189,7 +6422,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if active + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
                 raise ValueError(f"This batch exceeds the active agent limit; {finished} finished agents. Use archive_finished to free stored records. No workers were created")
             children = [self.create({k: v for k, v in spec.items()
-                                     if k not in {"task_id", "base_ref", "_workerBase"}} | {
+                                     if k not in {"task_id", "base_ref", "_workerBase",
+                                                  "_imageWorkspaceStartCommit"}} | {
+                                         "_imageWorkspace": spec.get("_imageWorkspace", False),
+                                         "_imageWorkspaceRepo": spec.get("_imageWorkspaceRepo"),
+                                         "_imageWorkspaceRelative": spec.get("_imageWorkspaceRelative"),
+                                         "_imageWorkspaceStartCommit": spec.get("_imageWorkspaceStartCommit"),
+                                         "_imageWorkspaceError": spec.get("_imageWorkspaceError"),
                                          "_workerBaseRef": spec["_workerBase"]["baseRef"] if spec.get("_workerBase") else None,
                                          "_workerBaseCommit": spec["_workerBase"]["baseCommit"] if spec.get("_workerBase") else None,
                                          "_workerBaseBehindMain": spec["_workerBase"]["behindMain"] if spec.get("_workerBase") else None,
@@ -6211,8 +6450,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_execution import record_spawn, safe_record
                     safe_record(db, record_spawn, db, current, child, key)
                     text = child["prompt"]
+                    if child.get("imageWorkspace"):
+                        text += ("\n\n[Studio image workspace] Studio is building the base. "
+                                 "This turn is read-only until Studio sends a workspace-ready notice.")
+                        self.start_image_base(child["imageWorkspaceRepo"], child["id"])
+                    elif child.get("imageWorkspaceError"):
+                        text += ("\n\n[Studio workspace fallback] "
+                                 + child["imageWorkspaceError"] + " Studio will use a Git worktree.")
                     if child.get("workerBaseCommit"):
-                        text += ("\n\n[Studio worker worktree base] Commit " + child["workerBaseCommit"]
+                        text += ("\n\n[Studio worker base] Commit " + child["workerBaseCommit"]
                                  + " from ref " + str(child.get("workerBaseRef") or "HEAD") + ".")
                         behind = child.get("workerBaseBehindMain")
                         if behind:
@@ -6227,6 +6473,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
             value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider", "cwd", "worktree")},
+                                                  "workspace": ("image" if c.get("imageWorkspace") else "worktree" if c.get("worktree") else "shared"),
                                                   **({"baseRef": c["workerBaseRef"], "baseCommit": c["workerBaseCommit"]}
                                                      if c.get("workerBaseCommit") else {}),
                                                   **({"taskId": s["task_id"]} if "task_id" in s else {}),
