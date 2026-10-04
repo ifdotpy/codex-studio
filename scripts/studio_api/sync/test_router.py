@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import TypeAdapter
+from unittest.mock import patch
 
+from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
 from studio_api.sync.router import create_router
@@ -27,6 +29,7 @@ class StoreStub:
         self.stream_cursors: list[int] = []
         self.stream_batches: list[dict[str, object]] = []
         self.runtime: RuntimeStub | None = None
+        self.invalid_push_response = False
 
     def identity(self) -> dict[str, object]:
         return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
@@ -50,6 +53,8 @@ class StoreStub:
 
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
         self.push_calls.append(rows)
+        if self.invalid_push_response:
+            return [{"id": "x", "payload": "{}", "seq": True, "_deleted": False}]
         return []
 
     def stream_batch(self, _scope: str, cursor: int) -> dict[str, object]:
@@ -119,7 +124,7 @@ class ContextStub:
 
 def make_client(context: ContextStub) -> TestClient:
     app = FastAPI()
-    app.include_router(create_router(context))
+    app.include_router(create_router(cast(ApiContext, context)))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, error: RequestValidationError) -> JSONResponse:
@@ -130,7 +135,7 @@ def make_client(context: ContextStub) -> TestClient:
 
 class SyncRouterTests(unittest.TestCase):
     def read_stream(self, context: ContextStub, path: str) -> str:
-        router = create_router(context)
+        router = create_router(cast(ApiContext, context))
         route = cast(
             APIRoute,
             next(route for route in router.routes if getattr(route, "path", None) == path.split("?", 1)[0]),
@@ -195,6 +200,45 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"], "The server workspace changed. Reload before sending.")
         self.assertEqual(context.store.push_calls, [])
+
+    def test_real_api_context_sender_validates_after_write_without_retry_hint(self) -> None:
+        context = ApiContext.for_schema()
+        store = StoreStub()
+        store.invalid_push_response = True
+        app = FastAPI()
+        app.include_router(create_router(context))
+        payload = json.dumps({"device": "device", "session": "lead", "text": "draft"})
+        request = {
+            "rows": [{"newDocumentState": {
+                "id": "device:lead", "payload": payload, "_deleted": False,
+            }}],
+        }
+        with patch.object(context, "sync", return_value=store):
+            with TestClient(app, raise_server_exceptions=False) as client:
+                response = client.post(
+                    "/api/sync/drafts", json=request,
+                    headers={"X-Canvas-Workspace": "workspace-a"},
+                )
+        self.assertEqual(len(store.push_calls), 1)
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("outcome", response.json())
+        self.assertEqual(response.json()["error"], "The server could not validate its response")
+
+    def test_real_api_context_sender_accepts_typed_sync_success_responses(self) -> None:
+        context = ApiContext.for_schema()
+        store = StoreStub()
+        app = FastAPI()
+        app.include_router(create_router(context))
+        with patch.object(context, "sync", return_value=store):
+            with TestClient(app, raise_server_exceptions=False) as client:
+                identity = client.get("/api/sync/identity")
+                pull = client.get("/api/sync/pull?scope=state&after=0")
+        self.assertEqual(identity.status_code, 200)
+        self.assertEqual(identity.json(), {
+            "workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True,
+        })
+        self.assertEqual(pull.status_code, 200)
+        self.assertEqual(pull.json()["generation"], 3)
 
     def test_protocol_one_stream_has_wire_headers_and_invalid_cursor_is_preflight(self) -> None:
         context = ContextStub()

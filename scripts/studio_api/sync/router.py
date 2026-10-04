@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -52,8 +52,38 @@ class SyncStreamBatch(TypedDict):
     reason: NotRequired[str]
 
 
+class SyncPullProjection(TypedDict):
+    workspaceId: str
+    documents: NotRequired[list[dict[str, object]]]
+    checkpoint: NotRequired[dict[str, object]]
+    reset: NotRequired[bool]
+    floor: NotRequired[int]
+    maxSeq: NotRequired[int]
+    initialHigh: NotRequired[int]
+
+
+class SyncStoreContract(Protocol):
+    def identity(self) -> dict[str, object]: ...
+    def pull(
+        self, scope: str, after: int = 0, limit: int = 100, fresh: bool = False,
+        initial_high: int = 0, reset_support: bool = False, priority_id: str | None = None,
+    ) -> SyncPullProjection: ...
+    def generation(self) -> int: ...
+    def generation_state(self) -> dict[str, object]: ...
+    def stream_batch(self, scope: str, after: int, limit: int = 100) -> SyncStreamBatch: ...
+    def entity_sequence(self) -> int: ...
+    def draft_sequence(self) -> int: ...
+    def transcript_revision(self, agent: str) -> int | None: ...
+    def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]: ...
+
+
 class TokenRateReader(TypedDict):
     workspace_snapshot: Callable[[], dict[str, object]]
+
+
+def _sync_store(context: ApiContext) -> SyncStoreContract:
+    # SyncStore remains a legacy untyped service; keep that boundary explicit.
+    return cast(SyncStoreContract, context.sync())
 
 
 def _first(request: Request, key: str, default: str | None = None) -> str | None:
@@ -85,7 +115,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/sync/identity", response_model=SyncIdentityResponse, responses=ERROR_RESPONSES)
     def identity(request: Request) -> object:
-        return context.send(request, context.sync().identity())
+        return context.send(request, _sync_store(context).identity())
 
     @router.get("/api/sync/protocol", response_model=SyncProtocolResponse, responses=ERROR_RESPONSES)
     def protocol(request: Request) -> object:
@@ -117,25 +147,28 @@ def create_router(context: ApiContext) -> APIRouter:
         fresh = _first(request, "fresh") == "1"
         reset = _first(request, "reset") == "1"
         priority_id = _first(request, "priorityId")
-        store = context.sync()
+        store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh, initial_high, reset, priority_id)
         for document in projection.get("documents", []):
             if scope == "state:entities:v1" and not document.get("_deleted"):
                 from codex_sync_entities import validate_entity_payload
 
+                payload = document.get("payload")
+                if not isinstance(payload, str):
+                    return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
                 try:
-                    validate_entity_payload(document["payload"])
+                    validate_entity_payload(payload)
                 except ValidationError:
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
         return context.send(request, {**projection, "generation": store.generation()})
 
     @router.get("/api/sync/generations", response_model=SyncGenerationState, responses=ERROR_RESPONSES)
     def generations(request: Request) -> object:
-        return context.send(request, context.sync().generation_state())
+        return context.send(request, _sync_store(context).generation_state())
 
     @router.get("/api/sync/stream", responses=ERROR_RESPONSES)
     async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:
-        store = context.sync()
+        store = _sync_store(context)
         protocol_value = _first(request, "protocol")
         header_version = request.headers.get("X-Codex-Sync-Protocol")
         if protocol_value not in (None, "1", "2") or header_version not in (None, "1", "2"):
@@ -325,10 +358,11 @@ def create_router(context: ApiContext) -> APIRouter:
     def push_drafts(request: Request, body: DraftPushRequest) -> object:
         # The complete nested request is validated by DraftPushRequest before service access.
         workspace = request.headers.get("X-Canvas-Workspace")
-        identity = context.sync().identity()
+        store = _sync_store(context)
+        identity = store.identity()
         if workspace != identity["workspaceId"]:
             return context.send(request, {"error": "The server workspace changed. Reload before sending."}, status=409)
         body_rows = body.model_dump(mode="json", by_alias=True, exclude_unset=True)["rows"]
-        return context.send(request, context.sync().push_drafts(body_rows))
+        return context.send(request, store.push_drafts(body_rows))
 
     return router
