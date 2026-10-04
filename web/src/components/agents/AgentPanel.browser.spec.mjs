@@ -545,6 +545,10 @@ test("an active AgentPanel follows native progress changes without polling", asy
       { previousCount: eventsBeforeResume, agentId: lead.id },
     );
     await expect.poll(() => panelGets.length).toBe(beforeResume + 1);
+    console.log(
+      "AgentPanel resume panel GETs:",
+      JSON.stringify({ before: beforeResume, after: panelGets.length }),
+    );
     await page.waitForTimeout(100);
     expect(panelGets.length).toBe(beforeResume + 1);
     expect(statusGets).toEqual([]);
