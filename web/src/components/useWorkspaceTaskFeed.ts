@@ -39,7 +39,7 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
           if (metadata.notModified || result === undefined) break;
           if (result.reset || cursor === undefined) tasks = new Map();
           for (const task of result.tasks || []) tasks.set(task.id, task);
-          cursor = result.cursor;
+          cursor = result.cursor ?? undefined;
           more = !!result.hasMoreChanges;
           if (tasks.size > 100) {
             const ordered = [...tasks.values()].sort(

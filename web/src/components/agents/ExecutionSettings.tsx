@@ -9,11 +9,12 @@ import {
   saved,
   type PostBody,
 } from "../../api";
-import { busy, type Agent, type Json } from "../../types";
+import { busy, type Agent, type Json, type JsonValue } from "../../types";
 import {
   isDaybreakAlias,
   supportsDaybreakMode,
   useWorkerModels,
+  type WorkerModelInfo,
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "../Accounts";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
@@ -21,6 +22,14 @@ import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
+type SettingsValue = {
+  account_key?: string | null;
+  model: string | null;
+  effort: string | null;
+  fast_mode: boolean;
+  daybreak_enabled: boolean;
+};
+type ReviewSettings = NonNullable<Agent["reviewDefaults"]>;
 const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const plural = (count: number, noun: string) =>
@@ -29,14 +38,14 @@ const infoFor = (catalog: Catalog, model: string) =>
   catalog.models.find(
     (row) => row.model === model || row.resolvedModel === model,
   );
-const fastTier = (info?: Json) =>
-  info?.serviceTiers?.find((tier: Json) => tier.id === "priority");
-const effortOptions = (info?: Json) => [
+const fastTier = (info?: WorkerModelInfo) =>
+  info?.serviceTiers.find((tier) => tier.id === "priority");
+const effortOptions = (info?: WorkerModelInfo) => [
   {
     value: DEFAULT,
     label: `Default${info?.defaultReasoningEffort ? ` (${info.defaultReasoningEffort})` : ""}`,
   },
-  ...(info?.supportedReasoningEfforts || []).map((row: Json) => ({
+  ...(info?.supportedReasoningEfforts || []).map((row) => ({
     value: row.reasoningEffort,
     label: title(row.reasoningEffort),
   })),
@@ -76,14 +85,14 @@ const queuedFor = (agent: Agent) =>
   agent.pendingSettingsAccountKey !== accountOf(agent)
     ? null
     : agent.pendingSettings;
-const settingsFor = (agent: Agent, teamDefaults: boolean) => {
+const settingsFor = (agent: Agent, teamDefaults: boolean): SettingsValue => {
   if (teamDefaults)
     return {
       account_key: agent.workerDefaults?.accountKey ?? null,
       model:
         agent.workerDefaults?.model === undefined
           ? "gpt-6-luna"
-          : agent.workerDefaults.model,
+          : (agent.workerDefaults.model ?? null),
       effort:
         agent.workerDefaults?.effort === undefined
           ? "high"
@@ -93,18 +102,51 @@ const settingsFor = (agent: Agent, teamDefaults: boolean) => {
     };
   const queued = queuedFor(agent);
   return {
-    model: queued?.model ?? agent.model,
+    model: queued?.model ?? agent.model ?? null,
     effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
     fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
     daybreak_enabled: !!(queued?.daybreakEnabled ?? agent.daybreakEnabled),
   };
 };
-const sameSettings = (left: Json, right: Json) =>
+const settingsFromUnconfirmed = (request: ConversationBody): SettingsValue => {
+  const defaults = request.worker_defaults;
+  return {
+    account_key: defaults?.account_key ?? null,
+    model: request.model ?? defaults?.model ?? null,
+    effort: request.effort ?? defaults?.effort ?? null,
+    fast_mode: request.fast_mode ?? defaults?.fast_mode ?? false,
+    daybreak_enabled:
+      request.daybreak_enabled ?? defaults?.daybreak_enabled ?? false,
+  };
+};
+const sameSettings = (left: SettingsValue, right: SettingsValue) =>
   left.account_key === right.account_key &&
   left.model === right.model &&
   left.effort === right.effort &&
   left.fast_mode === right.fast_mode &&
   !!left.daybreak_enabled === !!right.daybreak_enabled;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const isJsonValue = (value: unknown): value is JsonValue => {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  )
+    return true;
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isRecord(value) && Object.values(value).every(isJsonValue);
+};
+const jsonObject = (value: unknown): Json | null => {
+  if (!isRecord(value)) return null;
+  const result: Json = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!isJsonValue(item)) return null;
+    result[key] = item;
+  }
+  return result;
+};
 
 export function ExecutionSettings(props: SettingsProps) {
   // Account transfers reuse the same agent ID in the conversation view.
@@ -167,11 +209,13 @@ function ScopedExecutionSettings({
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
   const receiptKey = `next-turn-settings:${JSON.stringify([agent.id, accountOf(agent)])}`;
-  const [unconfirmed, setUnconfirmed] = useState<Json | null>(() => {
-    if (teamDefaults) return null;
-    const value = saved<Json | null>(receiptKey, null);
-    return value?.id === agent.id && value?.next_turn === true ? value : null;
-  });
+  const [unconfirmed, setUnconfirmed] = useState<ConversationBody | null>(
+    () => {
+      if (teamDefaults) return null;
+      const value = saved<ConversationBody | null>(receiptKey, null);
+      return value?.id === agent.id && value?.next_turn === true ? value : null;
+    },
+  );
   const [pendingYolo, setPendingYolo] = useState<{
     value: boolean;
     baseline: boolean;
@@ -186,12 +230,12 @@ function ScopedExecutionSettings({
       setPendingYolo(null);
   }, [saving, pendingYolo, agent.yoloMode]);
   const [pending, setPending] = useState<{
-    values: Json;
-    baseline: Json;
+    values: SettingsValue;
+    baseline: SettingsValue;
   } | null>(null);
   const [reviewPending, setReviewPending] = useState<{
-    values: Json;
-    baseline: Json;
+    values: ReviewSettings;
+    baseline: ReviewSettings;
   } | null>(null);
   const [accountPending, setAccountPending] = useState<{
     target: string;
@@ -221,7 +265,10 @@ function ScopedExecutionSettings({
     effort: agent.reviewDefaults?.effort ?? null,
   };
   const reviewCurrent = reviewPending?.values || reviewStored;
-  const settled = unconfirmed || pending?.values || stored;
+  const settled =
+    (unconfirmed ? settingsFromUnconfirmed(unconfirmed) : null) ||
+    pending?.values ||
+    stored;
   const current = accountPending
     ? { ...settled, account_key: accountPending.target }
     : settled;
@@ -287,10 +334,11 @@ function ScopedExecutionSettings({
     )
       setReviewPending(null);
   }, [saving, reviewPending, reviewStored.model, reviewStored.effort]);
-  const selectedModel = current.model || agent.model;
+  const selectedModel = current.model || agent.model || "";
   const info = infoFor(catalog, selectedModel);
   const selectedProvider = teamDefaults ? info?.provider : agent.provider;
-  const active = !teamDefaults && (!!agent.inFlight || busy.has(agent.status));
+  const active =
+    !teamDefaults && (!!agent.inFlight || busy.has(agent.status ?? ""));
   const catalogKnown = !catalog.loading && !catalog.error;
   const disabled =
     saving ||
@@ -299,8 +347,10 @@ function ScopedExecutionSettings({
     (!teamDefaults && !catalogKnown);
   const models = catalog.models.filter((row) => !isDaybreakAlias(row.model));
   const daybreakEnabled = !!current.daybreak_enabled;
-  const supportsMode = (row: Json | undefined, enabled = daybreakEnabled) =>
-    supportsDaybreakMode(row, enabled);
+  const supportsMode = (
+    row: WorkerModelInfo | undefined,
+    enabled = daybreakEnabled,
+  ) => supportsDaybreakMode(row, enabled);
   const canEnableDaybreak = models.some((row) => supportsMode(row, true));
   const canDisableDaybreak = models.some((row) => supportsMode(row, false));
   const modeSupported = supportsMode(info);
@@ -310,17 +360,18 @@ function ScopedExecutionSettings({
     daybreakEnabled !== !!agent.daybreakEnabled;
   const modeLabel = daybreakEnabled ? "Daybreak" : "Standard";
   const modelOptions: ModelOption[] = models.map((row) => ({
-    value: row.model as string,
+    value: row.model,
     label: row.displayName || shortModel(row.model),
     description: row.description || undefined,
     isDefault: !!row.isDefault,
     disabled: !supportsMode(row),
   }));
   if (teamDefaults) {
-    const leadInfo = infoFor(catalog, agent.model);
+    const leadModel = agent.model ?? "";
+    const leadInfo = infoFor(catalog, leadModel);
     modelOptions.unshift({
       value: DEFAULT,
-      label: `Same as main agent (${agent.provider === "claude" ? leadInfo?.displayName || shortModel(agent.model) : shortModel(agent.model)})`,
+      label: `Same as main agent (${agent.provider === "claude" ? leadInfo?.displayName || shortModel(leadModel) : shortModel(leadModel)})`,
       description: leadInfo?.description || undefined,
       disabled: !supportsMode(leadInfo),
     });
@@ -352,7 +403,7 @@ function ScopedExecutionSettings({
       description: "Use the caller model and reasoning level.",
     },
     ...reviewModels.map((row) => ({
-      value: row.model as string,
+      value: row.model,
       label: row.displayName || shortModel(row.model),
       description: row.description || undefined,
       isDefault: !!row.isDefault,
@@ -376,7 +427,11 @@ function ScopedExecutionSettings({
       value: reviewCurrent.effort,
       label: title(reviewCurrent.effort),
     });
-  const submit = async (request: ConversationBody, next: Json, notice = "") => {
+  const submit = async (
+    request: ConversationBody,
+    next: SettingsValue,
+    notice = "",
+  ) => {
     if (saveLock.current) return;
     saveLock.current = true;
     request = { ...request, expected_account_key: accountOf(agent) };
@@ -391,7 +446,8 @@ function ScopedExecutionSettings({
     }
     const clearReceipt = () => {
       if (
-        saved<Json | null>(receiptKey, null)?.request_id === request.request_id
+        saved<ConversationBody | null>(receiptKey, null)?.request_id ===
+        request.request_id
       )
         save(receiptKey, null);
     };
@@ -484,8 +540,9 @@ function ScopedExecutionSettings({
       );
       save(subagentTransferReceiptKey, null);
       if (!mounted.current) return;
+      const transferResult = jsonObject(op);
       setTransfer(
-        op && typeof op === "object" ? { scope: "subagents", ...op } : null,
+        transferResult ? { scope: "subagents", ...transferResult } : null,
       );
       setStatus({ kind: "saved", text: "" });
     } catch (failure) {
@@ -541,7 +598,7 @@ function ScopedExecutionSettings({
     ]);
     if (checkedModel.current === key) return;
     checkedModel.current = key;
-    const wanted = stored.model || agent.model;
+    const wanted = stored.model || agent.model || "";
     if (supportsMode(infoFor(catalog, wanted), !!stored.daybreak_enabled))
       return;
     const eligible = models.filter((row) => supportsMode(row, false));
@@ -560,22 +617,25 @@ function ScopedExecutionSettings({
       `${shortModel(wanted)} is not available on ${accountLabel(stored.account_key)}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
     );
   });
+  const storedTransfer = jsonObject(agent.accountTransfer);
   const snapshotTransfer =
-    agent.accountTransfer?.scope === "subagents" ? agent.accountTransfer : null;
+    storedTransfer?.scope === "subagents" ? storedTransfer : null;
   // The snapshot summary is newer than the local response once it arrives.
   const shownTransfer = snapshotTransfer || transfer;
   const runTeamTransferAction = async (action: "retry" | "cancel") => {
-    if (saveLock.current || !shownTransfer?.id) return;
+    if (saveLock.current || typeof shownTransfer?.id !== "string") return;
     saveLock.current = true;
     setSaving(true);
     setError("");
     try {
       const op = await post("/api/agents/account-transfer", {
         action,
+        scope: "subagents",
         request_id: shownTransfer.id,
       });
-      if (mounted.current && op && typeof op === "object")
-        setTransfer({ scope: "subagents", ...op });
+      const transferResult = jsonObject(op);
+      if (mounted.current && transferResult)
+        setTransfer({ scope: "subagents", ...transferResult });
       await refresh();
     } catch (failure) {
       setError(errorText(failure));
@@ -584,19 +644,19 @@ function ScopedExecutionSettings({
       setSaving(false);
     }
   };
-  const change = async (patch: Json) => {
+  const change = async (patch: Partial<SettingsValue>) => {
     if (disabled) return;
     const next = { ...current, ...patch };
     const adjustments: string[] = [];
     if ("daybreak_enabled" in patch && catalogKnown) {
       if (
         !supportsMode(
-          infoFor(catalog, next.model || agent.model),
-          next.daybreak_enabled,
+          infoFor(catalog, next.model || agent.model || ""),
+          !!next.daybreak_enabled,
         )
       ) {
         const eligible = models.filter((row) =>
-          supportsMode(row, next.daybreak_enabled),
+          supportsMode(row, !!next.daybreak_enabled),
         );
         const replacement =
           eligible.find((row) => row.isDefault) || eligible[0];
@@ -613,7 +673,7 @@ function ScopedExecutionSettings({
     if (
       catalogKnown &&
       !supportsMode(
-        infoFor(catalog, next.model || agent.model),
+        infoFor(catalog, next.model || agent.model || ""),
         !!next.daybreak_enabled,
       )
     ) {
@@ -623,10 +683,10 @@ function ScopedExecutionSettings({
       return;
     }
     if (catalogKnown && ("model" in patch || next.model !== current.model)) {
-      const nextInfo = infoFor(catalog, next.model || agent.model);
+      const nextInfo = infoFor(catalog, next.model || agent.model || "");
       if (
         !nextInfo?.supportedReasoningEfforts?.some(
-          (row: Json) => row.reasoningEffort === next.effort,
+          (row) => row.reasoningEffort === next.effort,
         )
       ) {
         if (next.effort)
@@ -639,20 +699,30 @@ function ScopedExecutionSettings({
         next.fast_mode = false;
       }
     }
-    const request = {
-      id: agent.id,
-      ...(teamDefaults
-        ? { worker_defaults: next }
-        : {
-            ...next,
-            ...(active || queued
-              ? { next_turn: true, request_id: crypto.randomUUID() }
-              : {}),
-          }),
-    };
+    const request: ConversationBody = teamDefaults
+      ? {
+          id: agent.id,
+          worker_defaults: {
+            account_key: next.account_key,
+            model: next.model,
+            effort: next.effort,
+            fast_mode: next.fast_mode,
+            daybreak_enabled: next.daybreak_enabled,
+          },
+        }
+      : {
+          id: agent.id,
+          model: next.model,
+          effort: next.effort,
+          fast_mode: next.fast_mode,
+          daybreak_enabled: next.daybreak_enabled,
+          ...(active || queued
+            ? { next_turn: true, request_id: crypto.randomUUID() }
+            : {}),
+        };
     await submit(request, next, adjustments.join(" "));
   };
-  const changeReview = async (patch: Json) => {
+  const changeReview = async (patch: Partial<ReviewSettings>) => {
     if (disabled || saveLock.current) return;
     const next = { ...reviewCurrent, ...patch };
     if ("model" in patch) next.effort = null;
@@ -817,7 +887,11 @@ function ScopedExecutionSettings({
           <AccountTransferStatus
             transfer={shownTransfer}
             showCompleted
-            targetLabel={accountLabel(shownTransfer.targetAccountKey)}
+            targetLabel={accountLabel(
+              typeof shownTransfer.targetAccountKey === "string"
+                ? shownTransfer.targetAccountKey
+                : undefined,
+            )}
             pending={saving}
             onAction={(action) => void runTeamTransferAction(action)}
           />
@@ -827,7 +901,7 @@ function ScopedExecutionSettings({
           label={prefix + " model"}
           options={modelOptions}
           value={current.model || DEFAULT}
-          currentValue={currentModel}
+          currentValue={currentModel || ""}
           disabled={disabled}
           onChange={(value) =>
             void change({ model: value === DEFAULT ? null : value })
@@ -987,12 +1061,7 @@ function ScopedExecutionSettings({
               disabled={saving}
               loading={saving}
               onClick={() =>
-                void submit(unconfirmed, {
-                  model: unconfirmed.model,
-                  effort: unconfirmed.effort,
-                  fast_mode: unconfirmed.fast_mode,
-                  daybreak_enabled: !!unconfirmed.daybreak_enabled,
-                })
+                void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
               }
             >
               Check settings save

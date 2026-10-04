@@ -22,10 +22,27 @@ import {
   type GetOptions,
   type GetResult,
 } from "../api";
-import type { Agent, Json } from "../types";
+import type { Agent } from "../types";
 import "./Analytics.css";
 
 type AnalyticsResult = GetResult<"/api/analytics">;
+type AnalyticsUsageRecord = NonNullable<AnalyticsResult["timeline"]>[number];
+type AnalyticsItemRecord = NonNullable<AnalyticsResult["itemRecords"]>[number];
+type AnalyticsTool = NonNullable<AnalyticsResult["tools"]>[number];
+type AnalyticsTokenGroup =
+  | NonNullable<AnalyticsResult["agentTotals"]>[number]
+  | NonNullable<AnalyticsResult["modelTotals"]>[number]
+  | NonNullable<AnalyticsResult["accountTotals"]>[number];
+type AnalyticsRateLimitRecord = NonNullable<
+  AnalyticsResult["rateLimits"]
+>[number];
+type AnalyticsTurnRecord = NonNullable<AnalyticsResult["turns"]>[number];
+type AnalyticsPayload = NonNullable<AnalyticsItemRecord["input"]>;
+type AnalyticsTokens = NonNullable<AnalyticsResult["tokens"]>;
+type AnalyticsContextPoint = AnalyticsUsageRecord & {
+  last: AnalyticsUsageRecord["last"] & { totalTokens: number };
+  modelContextWindow: number;
+};
 type AnalyticsQuery = NonNullable<GetOptions<"/api/analytics">["query"]>;
 type AnalyticsScope = NonNullable<AnalyticsQuery["scope"]>;
 const analyticsScopes: readonly AnalyticsScope[] = ["agent", "team", "all"];
@@ -71,7 +88,11 @@ const tokenFields = [
   ["outputTokens", "Output", "Includes reasoning output"],
   ["reasoningOutputTokens", "Reasoning output", "Subset of output"],
   ["totalTokens", "Total", "Provider-reported total"],
-];
+] as const satisfies readonly (readonly [
+  keyof AnalyticsTokens,
+  string,
+  string,
+])[];
 function Metric({
   label,
   value,
@@ -108,13 +129,13 @@ function ContextChart({
   compactions,
   aggregate,
 }: {
-  timeline: Json[];
-  compactions: Json[];
+  timeline: AnalyticsUsageRecord[];
+  compactions: AnalyticsItemRecord[];
   aggregate: boolean;
 }) {
   const points = timeline
     .filter(
-      (p) =>
+      (p): p is AnalyticsContextPoint =>
         finite(p.at) &&
         finite(p.last?.totalTokens) &&
         finite(p.modelContextWindow) &&
@@ -129,7 +150,7 @@ function ContextChart({
     );
   const start = points[0].at,
     end = points.at(-1)!.at;
-  const groups = new Map<string, Json[]>();
+  const groups = new Map<string, AnalyticsContextPoint[]>();
   points.forEach((p) => {
     const id = aggregate ? "Selected agents" : p.agentId;
     groups.set(id, [...(groups.get(id) || []), p]);
@@ -138,8 +159,9 @@ function ContextChart({
     100,
     ...points.map((p) => (p.last.totalTokens / p.modelContextWindow) * 100),
   );
-  const x = (p: Json) => 42 + ((p.at - start) / (end - start || 1)) * 906;
-  const y = (p: Json) =>
+  const xAt = (at: number) => 42 + ((at - start) / (end - start || 1)) * 906;
+  const x = (p: AnalyticsContextPoint) => xAt(p.at);
+  const y = (p: AnalyticsContextPoint) =>
     152 - (((p.last.totalTokens / p.modelContextWindow) * 100) / peak) * 136;
   return (
     <>
@@ -168,8 +190,8 @@ function ContextChart({
             <line
               key={c.id}
               className="analytics-compaction-marker"
-              x1={x(c)}
-              x2={x(c)}
+              x1={xAt(c.at)}
+              x2={xAt(c.at)}
               y1="12"
               y2="152"
             >
@@ -209,15 +231,18 @@ function ContextChart({
     </>
   );
 }
-function TokenGroups({
+function TokenGroups<
+  T extends AnalyticsTokenGroup,
+  K extends keyof T & string,
+>({
   title,
   rows,
   identity,
   detail = false,
 }: {
   title: string;
-  rows: Json[];
-  identity: string;
+  rows: T[];
+  identity: K;
   detail?: boolean;
 }) {
   return (
@@ -257,14 +282,16 @@ function TokenGroups({
               {rows.map((r, i) => (
                 <tr key={`${r[identity]}:${i}`}>
                   <td>
-                    {r[identity] || "Unavailable"}
+                    {typeof r[identity] === "string"
+                      ? r[identity]
+                      : "Unavailable"}
                     {detail && <Raw value={r} label="Details" />}
                   </td>
                   <td>{count(r.tokens?.inputTokens)}</td>
                   <td>{count(r.tokens?.cachedInputTokens)}</td>
                   <td>{count(r.tokens?.outputTokens)}</td>
                   <td>{count(r.tokens?.totalTokens)}</td>
-                  {detail && (
+                  {detail && "toolCalls" in r && (
                     <>
                       <td>{count(r.toolCalls)}</td>
                       <td>{count(r.failedToolCalls)}</td>
@@ -280,7 +307,13 @@ function TokenGroups({
     </section>
   );
 }
-function CountGroup({ title, values }: { title: string; values: Json }) {
+function CountGroup({
+  title,
+  values,
+}: {
+  title: string;
+  values: Record<string, number>;
+}) {
   return (
     <div>
       <h4>{title}</h4>
@@ -305,12 +338,14 @@ function ToolRanking({
   onSelect,
 }: {
   title: string;
-  tools: Json[];
+  tools: AnalyticsTool[];
   model?: boolean;
   onSelect: (name: string) => void;
 }) {
-  const output = (t: Json) => (model ? t.modelOutputBytes : t.outputBytes);
-  const input = (t: Json) => (model ? t.modelInputBytes : t.inputBytes);
+  const output = (t: AnalyticsTool) =>
+    model ? t.modelOutputBytes : t.outputBytes;
+  const input = (t: AnalyticsTool) =>
+    model ? t.modelInputBytes : t.inputBytes;
   const ranked = [...tools].sort((a, b) => (output(b) || 0) - (output(a) || 0));
   const maxBytes = Math.max(1, ...ranked.map((t) => output(t) || 0));
   return (
@@ -366,7 +401,13 @@ function ToolRanking({
     </section>
   );
 }
-function Payload({ title, data }: { title: string; data?: Json | null }) {
+function Payload({
+  title,
+  data,
+}: {
+  title: string;
+  data?: AnalyticsPayload | null;
+}) {
   return (
     <div className="analytics-payload">
       <h4>{title}</h4>
@@ -404,7 +445,10 @@ export default function Analytics({
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<string | null>("overview");
   const [knownTools, setKnownTools] = useState<string[]>([]);
-  const [olderDetails, setOlderDetails] = useState<Record<string, Json[]>>({});
+  const [olderDetails, setOlderDetails] = useState<{
+    rateLimits: AnalyticsRateLimitRecord[];
+    turns: AnalyticsTurnRecord[];
+  }>({ rateLimits: [], turns: [] });
   const [loadingDetails, setLoadingDetails] = useState<Record<string, boolean>>(
     {},
   );
@@ -429,7 +473,7 @@ export default function Analytics({
   const viewKey = JSON.stringify([agent.id, scope, period, tool, offset]);
   const data = loadedQuery === viewKey ? dataRecord : null;
   useEffect(() => {
-    setOlderDetails({});
+    setOlderDetails({ rateLimits: [], turns: [] });
   }, [viewKey]);
   const loadOlderDetails = async (detail: "rateLimits" | "turns") => {
     if (!data) return;
@@ -447,10 +491,16 @@ export default function Analytics({
           ),
         },
       });
-      setOlderDetails((previous) => ({
-        ...previous,
-        [detail]: [...(previous[detail] || []), ...(page[detail] || [])],
-      }));
+      if (detail === "turns")
+        setOlderDetails((previous) => ({
+          ...previous,
+          turns: [...previous.turns, ...(page.turns || [])],
+        }));
+      else
+        setOlderDetails((previous) => ({
+          ...previous,
+          rateLimits: [...previous.rateLimits, ...(page.rateLimits || [])],
+        }));
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -472,7 +522,7 @@ export default function Analytics({
             [
               ...new Set([
                 ...previous,
-                ...(result.tools || []).map((t: Json) => t.name),
+                ...(result.tools || []).map((t) => t.name),
               ]),
             ].sort() as string[],
         );
@@ -510,12 +560,12 @@ export default function Analytics({
       setError(errorText(failure));
     }
   };
-  const s = data?.summary || {};
-  const timeline: Json[] = data?.timeline || [];
-  const tools: Json[] = [...(data?.tools || [])].sort(
+  const s = data?.summary;
+  const timeline: AnalyticsUsageRecord[] = data?.timeline || [];
+  const tools: AnalyticsTool[] = [...(data?.tools || [])].sort(
     (a, b) => (b.outputBytes || 0) - (a.outputBytes || 0),
   );
-  const calls: Json[] = data?.calls || [];
+  const calls: AnalyticsItemRecord[] = data?.calls || [];
   const selectedCall = calls.find((c) => c.id === selected);
   const total = data?.pagination?.total || 0;
   return (
@@ -634,7 +684,7 @@ export default function Analytics({
                   className="analytics-tab-count"
                   title="Model-visible tool calls"
                 >
-                  {count(s.modelToolCalls)}
+                  {count(s?.modelToolCalls)}
                 </span>
               </Tabs.Tab>
               <Tabs.Tab value="activity">Activity</Tabs.Tab>
@@ -643,16 +693,16 @@ export default function Analytics({
               <p className="analytics-definition">
                 Tokens come from provider reports. Tool sizes are in bytes.
               </p>
-              {(data.coverage?.captureErrors?.count > 0 ||
-                data.coverage?.historyErrors?.length > 0) && (
+              {(data.coverage?.captureErrors?.count ?? 0) > 0 ||
+              (data.coverage?.historyErrors?.length ?? 0) > 0 ? (
                 <p className="analytics-filter-note" role="status">
                   Collection reported errors. Some measurements may be missing.
                   See Data coverage below.
                 </p>
-              )}
-              {s.provisionalUsageSamples > 0 && (
+              ) : null}
+              {(s?.provisionalUsageSamples || 0) > 0 && (
                 <p className="analytics-filter-note">
-                  {count(s.provisionalUsageSamples)} provisional notices
+                  {count(s?.provisionalUsageSamples)} provisional notices
                   excluded; current requests may appear after history sync.
                   These notices can duplicate known requests.
                 </p>
@@ -663,36 +713,38 @@ export default function Analytics({
                 </p>
               )}
               <Tabs.Panel value="overview">
-                {(finite(s.exactResponseSamples) ||
-                  finite(s.legacyUsageSamples)) && (
+                {(finite(s?.exactResponseSamples) ||
+                  finite(s?.legacyUsageSamples)) && (
                   <p className="analytics-note">
-                    Token evidence: {count(s.exactResponseSamples)} identified
-                    response records; {count(s.legacyUsageSamples)} legacy usage
-                    records.
+                    Token evidence: {count(s?.exactResponseSamples)} identified
+                    response records; {count(s?.legacyUsageSamples)} legacy
+                    usage records.
                   </p>
                 )}
                 <div className="analytics-metrics">
-                  {tokenFields.map(([key, label, hint]) => (
-                    <Metric
-                      key={key}
-                      label={label}
-                      value={count(s.tokens?.[key])}
-                      hint={
-                        finite(s.tokenObservations?.[key]) &&
-                        finite(s.usageSamples) &&
-                        s.usageSamples > 0
-                          ? `${hint}. ${s.tokenObservations[key] < s.usageSamples ? `Partial: ${count(s.tokenObservations[key])} of ${count(s.usageSamples)} reports` : `All ${count(s.usageSamples)} reports`}`
-                          : hint
-                      }
-                    />
-                  ))}
+                  {tokenFields.map(([key, label, hint]) => {
+                    const observations = s?.tokenObservations?.[key];
+                    const samples = s?.usageSamples;
+                    return (
+                      <Metric
+                        key={key}
+                        label={label}
+                        value={count(s?.tokens?.[key])}
+                        hint={
+                          finite(observations) && finite(samples) && samples > 0
+                            ? `${hint}. ${observations < samples ? `Partial: ${count(observations)} of ${count(samples)} reports` : `All ${count(samples)} reports`}`
+                            : hint
+                        }
+                      />
+                    );
+                  })}
                 </div>
                 <div className="analytics-secondary">
                   <Metric
                     label="Cache hit rate"
                     value={
-                      finite(s.cacheHitRate)
-                        ? `${(s.cacheHitRate * 100).toFixed(1)}%`
+                      finite(s?.cacheHitRate)
+                        ? `${((s?.cacheHitRate ?? 0) * 100).toFixed(1)}%`
                         : "Unavailable"
                     }
                     hint="Cached input / input"
@@ -700,21 +752,21 @@ export default function Analytics({
                   <Metric
                     label="Peak context"
                     value={
-                      finite(s.peakContextPercent)
-                        ? `${s.peakContextPercent.toFixed(1)}%`
+                      finite(s?.peakContextPercent)
+                        ? `${(s?.peakContextPercent ?? 0).toFixed(1)}%`
                         : "Unavailable"
                     }
-                    hint={`${count(s.peakContextTokens)} tokens`}
+                    hint={`${count(s?.peakContextTokens)} tokens`}
                   />
                   <Metric
                     label="Compactions"
-                    value={count(s.compactions)}
+                    value={count(s?.compactions)}
                     hint="Recorded events"
                   />
                   <Metric
                     label="Agents / turns"
-                    value={`${count(s.agents)} / ${count(s.turns)}`}
-                    hint={`${count(s.usageSamples)} usage reports`}
+                    value={`${count(s?.agents)} / ${count(s?.turns)}`}
+                    hint={`${count(s?.usageSamples)} usage reports`}
                   />
                 </div>
                 <section className="analytics-section">
@@ -746,28 +798,28 @@ export default function Analytics({
                   <div className="analytics-secondary">
                     <Metric
                       label="Model input payload"
-                      value={bytes(s.modelInputBytes)}
+                      value={bytes(s?.modelInputBytes)}
                       hint="Recorded tool arguments"
                     />
                     <Metric
                       label="Model result payload"
-                      value={bytes(s.modelOutputBytes)}
+                      value={bytes(s?.modelOutputBytes)}
                       hint="Tool results returned to the model"
                     />
                     <Metric
                       label="Model tool calls"
-                      value={count(s.modelToolCalls)}
-                      hint={`${count(s.modelFailedToolCalls)} reported failures`}
+                      value={count(s?.modelToolCalls)}
+                      hint={`${count(s?.modelFailedToolCalls)} reported failures`}
                     />
                     <Metric
                       label="Native tool calls"
-                      value={count(s.protocolToolCalls)}
-                      hint={`${count(s.protocolFailedToolCalls)} reported failures`}
+                      value={count(s?.protocolToolCalls)}
+                      hint={`${count(s?.protocolFailedToolCalls)} reported failures`}
                     />
                   </div>
                   <p className="analytics-note">
-                    Model tool time: {duration(s.modelDurationMs)}. Native tool
-                    time: {duration(s.protocolDurationMs)}. Each value sums
+                    Model tool time: {duration(s?.modelDurationMs)}. Native tool
+                    time: {duration(s?.protocolDurationMs)}. Each value sums
                     measured calls within its group; parallel calls can overlap.
                   </p>
                 </section>
@@ -967,7 +1019,7 @@ export default function Analytics({
                   <div className="analytics-observations">
                     {[...(data.turns || []), ...(olderDetails.turns || [])]
                       .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-                      .map((turn: Json) => (
+                      .map((turn) => (
                         <details key={`${turn.agentId}:${turn.turnId}`}>
                           <summary>
                             <span>
@@ -1024,7 +1076,7 @@ export default function Analytics({
                     {[...(data.operations?.monitors || [])]
                       .sort((a, b) => (b.created || 0) - (a.created || 0))
                       .slice(0, 100)
-                      .map((m: Json) => (
+                      .map((m) => (
                         <details key={m.id}>
                           <summary>
                             <span>
@@ -1061,28 +1113,24 @@ export default function Analytics({
                       </thead>
                       <tbody>
                         {Object.entries(
-                          (data.notifications || []).reduce(
-                            (groups: Record<string, Json>, n: Json) => {
-                              const group = (groups[n.method] ||= {
-                                count: 0,
-                                bytes: 0,
-                              });
-                              group.count += n.count;
-                              group.bytes += n.bytes;
-                              return groups;
-                            },
-                            {},
-                          ),
-                        ).map(([method, value]) => {
-                          const n = value as Json;
-                          return (
-                            <tr key={method}>
-                              <td>{method}</td>
-                              <td>{count(n.count)}</td>
-                              <td>{bytes(n.bytes)}</td>
-                            </tr>
-                          );
-                        })}
+                          (data.notifications || []).reduce<
+                            Record<string, { count: number; bytes: number }>
+                          >((groups, n) => {
+                            const group = (groups[n.method] ||= {
+                              count: 0,
+                              bytes: 0,
+                            });
+                            group.count += n.count;
+                            group.bytes += n.bytes;
+                            return groups;
+                          }, {}),
+                        ).map(([method, n]) => (
+                          <tr key={method}>
+                            <td>{method}</td>
+                            <td>{count(n.count)}</td>
+                            <td>{bytes(n.bytes)}</td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1110,7 +1158,7 @@ export default function Analytics({
                       ...(olderDetails.rateLimits || []),
                     ]
                       .sort((a, b) => (b.at || 0) - (a.at || 0))
-                      .map((r: Json, i: number) => (
+                      .map((r, i: number) => (
                         <details key={`${r.accountKey}:${r.at}:${i}`}>
                           <summary>
                             <span>{r.accountKey}</span>
@@ -1143,7 +1191,7 @@ export default function Analytics({
                   <header>
                     <h3>Compactions</h3>
                     <span>
-                      {count(s.compactions)} recorded; latest 100 shown
+                      {count(s?.compactions)} recorded; latest 100 shown
                     </span>
                   </header>
                   {!(data.compactions || []).length ? (
@@ -1152,7 +1200,7 @@ export default function Analytics({
                     </p>
                   ) : (
                     <div className="analytics-observations">
-                      {data.compactions.slice(0, 100).map((c: Json) => (
+                      {(data.compactions || []).slice(0, 100).map((c) => (
                         <details key={c.id}>
                           <summary>
                             <span>
@@ -1185,7 +1233,7 @@ export default function Analytics({
                         </tr>
                       </thead>
                       <tbody>
-                        {(data.items || []).map((item: Json) => (
+                        {(data.items || []).map((item) => (
                           <tr key={item.type}>
                             <td>{item.type}</td>
                             <td>{count(item.count)}</td>
@@ -1255,17 +1303,17 @@ export default function Analytics({
                   stored history may have fewer measurements. Missing values
                   stay unavailable.
                 </p>
-                {(data.coverage?.notes || []).map((note: string, i: number) => (
+                {(data.coverage?.notes || []).map((note, i) => (
                   <p key={i}>{note}</p>
                 ))}
                 <p>
                   Cached input is part of input. Reasoning is part of output.
                 </p>
                 <p>Cost estimates are in Account limits.</p>
-                {data.coverage?.captureErrors?.count > 0 && (
+                {(data.coverage?.captureErrors?.count ?? 0) > 0 && (
                   <p className="analytics-error">
-                    {count(data.coverage.captureErrors.count)} collection errors
-                    recorded. Some data may be missing.
+                    {count(data.coverage?.captureErrors?.count)} collection
+                    errors recorded. Some data may be missing.
                   </p>
                 )}
                 <Raw value={data.coverage} label="Coverage metadata" />

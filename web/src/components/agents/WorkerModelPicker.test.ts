@@ -9,7 +9,7 @@ describe("supportsDaybreakMode", () => {
         { model: "claude-sonnet", availableAccessPrograms: null },
         false,
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("requires explicit standard access when cyber metadata is present", () => {
@@ -42,6 +42,18 @@ describe("supportsDaybreakMode", () => {
             model: "claude-sonnet",
             availableAccessPrograms: { cyber },
           },
+          false,
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each([null, "bad", []])(
+    "does not grant standard mode for malformed access metadata: %s",
+    (availableAccessPrograms) => {
+      expect(
+        supportsDaybreakMode(
+          { model: "claude-sonnet", availableAccessPrograms },
           false,
         ),
       ).toBe(false);

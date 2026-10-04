@@ -45,7 +45,8 @@ const pendingTarget = (
   request: PendingRequest | undefined,
 ): number | undefined => {
   if (!request) return undefined;
-  if ("subagent_concurrency" in request) return request.subagent_concurrency;
+  if ("subagent_concurrency" in request)
+    return request.subagent_concurrency ?? undefined;
   return request.agent_mode === "single"
     ? MIN_CONCURRENCY
     : DEFAULT_CONCURRENCY;
@@ -209,10 +210,12 @@ function ScopedConcurrencyControl({
     }
     // A saved v1 mode request is replayed byte-for-byte as its original body;
     // new requests persist the target and identity before touching the server.
+    const expectedRevision =
+      stored.pending?.expected_mode_revision ?? confirmed.revision;
     const request: PendingRequest = stored.pending ?? {
       id: lead.id,
-      subagent_concurrency: draft,
-      expected_mode_revision: confirmed.revision,
+      subagent_concurrency: validDraft ? draft : confirmed.concurrency,
+      expected_mode_revision: expectedRevision,
       request_id: crypto.randomUUID(),
     };
     const pending: Stored = { confirmed, pending: request };
@@ -238,7 +241,7 @@ function ScopedConcurrencyControl({
         !stateOf(result) ||
         !validConcurrency(result.concurrency) ||
         !validRevision(result.agentModeRevision) ||
-        result.agentModeRevision < request.expected_mode_revision
+        result.agentModeRevision < expectedRevision
       )
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",

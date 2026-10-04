@@ -34,11 +34,12 @@ export default function NativeRuntimeStatus({
   const [providers, setProviders] = useState<ProviderVersions>({
     checkedAt: null,
     providers: [],
+    warnings: [],
   });
   const [error, setError] = useState("");
   useEffect(() => {
     setData(null);
-    setProviders({ checkedAt: null, providers: [] });
+    setProviders({ checkedAt: null, providers: [], warnings: [] });
     setError("");
     if (!opened) return;
     let live = true;
@@ -52,7 +53,11 @@ export default function NativeRuntimeStatus({
         if (live) {
           setData(result.nativeRuntime ?? null);
           setProviders(
-            result.providerVersions || { checkedAt: null, providers: [] },
+            result.providerVersions || {
+              checkedAt: null,
+              providers: [],
+              warnings: [],
+            },
           );
           setError("");
         }

@@ -29,17 +29,25 @@ const completed = (agent: Agent): ChatReadProof | null =>
     : null;
 const sameResult = (a: ChatReadProof, b: ChatReadProof) =>
   a.id === b.id && a.threadId === b.threadId && a.turnId === b.turnId;
-const storedState = (agent: Agent): ChatReadState | null => {
-  const value = agent.readState;
-  return value &&
-    typeof value.threadId === "string" &&
-    typeof value.turnId === "string" &&
-    typeof value.read === "boolean" &&
-    Number.isSafeInteger(value.revision) &&
-    value.revision >= 0
-    ? value
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const parseReadState = (value: unknown): ChatReadState | null =>
+  isRecord(value) &&
+  typeof value.threadId === "string" &&
+  typeof value.turnId === "string" &&
+  typeof value.read === "boolean" &&
+  Number.isSafeInteger(value.revision) &&
+  typeof value.revision === "number" &&
+  value.revision >= 0
+    ? {
+        threadId: value.threadId,
+        turnId: value.turnId,
+        read: value.read,
+        revision: value.revision,
+      }
     : null;
-};
+const storedState = (agent: Pick<Agent, "readState">): ChatReadState | null =>
+  parseReadState(agent.readState);
 
 export function useChatReadState(
   data: Snapshot | null,
@@ -153,10 +161,10 @@ export function useChatReadState(
           },
         };
         const requestWorkspace = latest.current.workspaceId;
-        let canonical: Agent;
+        let response: unknown;
         for (let retry = 0; ; retry++) {
           try {
-            canonical = await post("/api/organization", body, {
+            response = await post("/api/organization", body, {
               workspaceId: requestWorkspace,
               timeoutMs: 15000,
             });
@@ -177,9 +185,10 @@ export function useChatReadState(
           }
         }
         if (!valid()) return;
-        const state = storedState(canonical);
+        const canonical = isRecord(response) ? response : null;
+        const state = parseReadState(canonical?.readState);
         if (
-          canonical.id !== proof.id ||
+          canonical?.id !== proof.id ||
           !state ||
           state.threadId !== proof.threadId ||
           state.turnId !== proof.turnId ||
@@ -214,7 +223,7 @@ export function useChatReadState(
               result &&
               sameResult(result, proof)
             ) {
-              const state = storedState(canonical!);
+              const state = canonical ? storedState(canonical) : null;
               const known = current.states.get(proof.id);
               if (state && (!known || state.revision >= known.revision))
                 current.states.set(proof.id, state);
