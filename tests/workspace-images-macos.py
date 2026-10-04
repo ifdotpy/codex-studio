@@ -358,7 +358,8 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         conflict_result = images.collect('agent-conflict')
         self.assertEqual(conflict_result['state'], 'conflict', conflict_result)
         self.assertEqual(conflict_result['path'], '.')
-        self.assertEqual(conflict_result['repositories'][0]['path'], '.')
+        root_result = next(row for row in conflict_result['repositories'] if row['path'] == '.')
+        self.assertEqual(root_result['state'], 'conflict')
         self.assertTrue(self.git('show-ref', '--verify', '--quiet',
                                  'refs/studio/agents/agent-conflict/raw', check=False).returncode == 0)
         self.assertNotEqual(self.git('show-ref', '--verify', '--quiet',
