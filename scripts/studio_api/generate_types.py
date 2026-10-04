@@ -84,6 +84,7 @@ def render(document: dict[str, JsonValue]) -> str:
                 "--output",
                 str(output_path),
                 "--alphabetize",
+                "--default-non-nullable=false",
             ],
             cwd=ROOT,
             check=True,

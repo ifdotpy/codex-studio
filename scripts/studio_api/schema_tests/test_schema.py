@@ -128,6 +128,45 @@ class SchemaContractTests(unittest.TestCase):
         )
         validate_contract_schemas(document)
 
+    def test_accepts_prefix_items_when_max_items_closes_tail(self) -> None:
+        document = sample_document(
+            {
+                "type": "array",
+                "prefixItems": [{"type": "string"}, {"type": "integer"}],
+                "maxItems": 2,
+            }
+        )
+        validate_contract_schemas(document)
+
+    def test_accepts_false_items_schema_as_closed_array_tail(self) -> None:
+        document = sample_document(
+            {"type": "array", "prefixItems": [{"type": "string"}], "items": False}
+        )
+        validate_contract_schemas(document)
+
+    def test_rejects_prefix_items_with_untyped_tail(self) -> None:
+        document = sample_document(
+            {"type": "array", "prefixItems": [{"type": "string"}]}
+        )
+        with self.assertRaisesRegex(ValueError, "prefixItems permits an untyped array tail"):
+            validate_contract_schemas(document)
+
+    def test_rejects_boolean_max_items_as_tuple_tail_bound(self) -> None:
+        document = sample_document(
+            {
+                "type": "array",
+                "prefixItems": [{"type": "string"}],
+                "maxItems": True,
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "prefixItems permits an untyped array tail"):
+            validate_contract_schemas(document)
+
+    def test_rejects_true_items_schema(self) -> None:
+        document = sample_document({"type": "array", "items": True})
+        with self.assertRaisesRegex(ValueError, "unconstrained item schema"):
+            validate_contract_schemas(document)
+
     def test_rejects_tuple_schema_with_untyped_prefix_item(self) -> None:
         document = sample_document(
             {"type": "array", "prefixItems": [{"type": "string"}, {}]}
@@ -258,6 +297,51 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
         self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
         self.assertIn('Status: "idle" | "running";', generated)
+
+    def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
+        document = sample_document({"$ref": "#/components/schemas/ResponseContract"})
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        schemas["MonitorInput"] = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "text": {"type": "string", "default": ""},
+                "rows": {"type": "integer", "default": 24},
+            },
+            "required": ["id"],
+        }
+        schemas["ResponseContract"] = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "status": {"type": "string", "default": "idle"},
+            },
+            "required": ["id", "status"],
+        }
+        path_item = document["paths"]
+        assert isinstance(path_item, dict)
+        operation = path_item["/api/example"]
+        assert isinstance(operation, dict)
+        get_operation = operation["get"]
+        assert isinstance(get_operation, dict)
+        get_operation["requestBody"] = {
+            "content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/MonitorInput"}}
+            }
+        }
+
+        generated = render(document)
+
+        monitor_input = generated.split("MonitorInput: {", 1)[1].split("\n    };", 1)[0]
+        response_contract = generated.split("ResponseContract: {", 1)[1].split("\n    };", 1)[0]
+        self.assertIn("id: string", monitor_input)
+        self.assertIn("text?: string", monitor_input)
+        self.assertIn("rows?: number", monitor_input)
+        self.assertIn("id: string", response_contract)
+        self.assertIn("status: string", response_contract)
 
 
 if __name__ == "__main__":

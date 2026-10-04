@@ -2239,7 +2239,7 @@ export interface components {
       /** Request Id */
       request_id: string;
       /** @default team */
-      scope: components["schemas"]["TransferScope"];
+      scope?: components["schemas"]["TransferScope"];
     };
     /** ActionContext */
     ActionContext: {
@@ -2984,7 +2984,7 @@ export interface components {
        * Accept Missing Whois
        * @default false
        */
-      accept_missing_whois: boolean;
+      accept_missing_whois?: boolean;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -3008,12 +3008,12 @@ export interface components {
        * Share Names
        * @default false
        */
-      share_names: boolean;
+      share_names?: boolean;
       /**
        * Share Status
        * @default false
        */
-      share_status: boolean;
+      share_status?: boolean;
     };
     /** AssetRecord */
     AssetRecord: {
@@ -3378,7 +3378,7 @@ export interface components {
        * Label
        * @default Checkpoint
        */
-      label: string;
+      label?: string;
     };
     /**
      * CheckpointCaptureResponse
@@ -3813,7 +3813,7 @@ export interface components {
        * @default submit
        * @enum {string}
        */
-      action: "submit" | "respond";
+      action?: "submit" | "respond";
       /** Complaint Id */
       complaint_id?: string | null;
       /** Id */
@@ -3887,7 +3887,7 @@ export interface components {
        * Connected
        * @default true
        */
-      connected: boolean;
+      connected?: boolean;
       /** Source */
       source: string;
       /** Target */
@@ -4033,12 +4033,12 @@ export interface components {
        * Share Names
        * @default false
        */
-      share_names: boolean;
+      share_names?: boolean;
       /**
        * Share Status
        * @default false
        */
-      share_status: boolean;
+      share_status?: boolean;
     };
     /** DeleteAccountRequest */
     DeleteAccountRequest: {
@@ -4170,7 +4170,7 @@ export interface components {
        * Deleted
        * @default false
        */
-      _deleted: boolean;
+      _deleted?: boolean;
       /** Id */
       id: string;
       /** Payload */
@@ -4197,43 +4197,43 @@ export interface components {
        * Syncentities
        * @default null
        */
-      _syncEntities: components["schemas"]["SyncEntity"][] | null;
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /**
        * Catalogpending
        * @default null
        */
-      catalogPending: boolean | null;
+      catalogPending?: boolean | null;
       /**
        * Code
        * @default null
        */
-      code: string | null;
+      code?: string | null;
       /** @default null */
-      details: components["schemas"]["JsonValue"] | null;
+      details?: components["schemas"]["JsonValue"] | null;
       /** Error */
       error: string;
       /**
        * Metadata
        * @default null
        */
-      metadata: {
+      metadata?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /**
        * Outcome
        * @default null
        */
-      outcome: "not_applied" | null;
+      outcome?: "not_applied" | null;
       /**
        * Protocolversion
        * @default null
        */
-      protocolVersion: number | null;
+      protocolVersion?: number | null;
       /**
        * Supportedversions
        * @default null
        */
-      supportedVersions: number[] | null;
+      supportedVersions?: number[] | null;
     };
     /** EventEntityDto */
     EventEntityDto: {
@@ -4709,7 +4709,7 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key: string;
+      account_key?: string;
       /** Cwd */
       cwd?: string | null;
       /** Id */
@@ -4815,7 +4815,7 @@ export interface components {
        * @default queue
        * @enum {string}
        */
-      delivery: "queue" | "steer" | "after_tool" | "after_turn";
+      delivery?: "queue" | "steer" | "after_tool" | "after_turn";
       /** Id */
       id: string;
       /** Room */
@@ -4969,24 +4969,24 @@ export interface components {
        * Closestdin
        * @default false
        */
-      closeStdin: boolean;
+      closeStdin?: boolean;
       /**
        * Cols
        * @default 80
        */
-      cols: number;
+      cols?: number;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 24
        */
-      rows: number;
+      rows?: number;
       /**
        * Text
        * @default
        */
-      text: string;
+      text?: string;
     };
     /**
      * MonitorState
@@ -5750,7 +5750,7 @@ export interface components {
        * @default 1
        * @enum {integer}
        */
-      rounds: 1 | 2;
+      rounds?: 1 | 2;
       /** Target */
       target: string;
       /** Team Id */
@@ -5779,12 +5779,12 @@ export interface components {
        * @default 1
        * @enum {integer}
        */
-      rounds: 1 | 2;
+      rounds?: 1 | 2;
       /**
        * Target
        * @default both
        */
-      target: string;
+      target?: string;
       /** Team Id */
       team_id: string;
       /** Text */
@@ -5951,7 +5951,7 @@ export interface components {
        * @default save
        * @enum {string}
        */
-      action: "save" | "delete";
+      action?: "save" | "delete";
       /** Effort */
       effort?: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
       /** Id */
@@ -5960,7 +5960,7 @@ export interface components {
        * Instructions
        * @default
        */
-      instructions: string;
+      instructions?: string;
       /** Isnew */
       isNew?: boolean | null;
       /** Model */
@@ -5972,7 +5972,7 @@ export interface components {
        * @default reviewer
        * @enum {string}
        */
-      role: "reviewer" | "implementer";
+      role?: "reviewer" | "implementer";
     };
     /** ProfileList */
     ProfileList: {
@@ -6268,7 +6268,7 @@ export interface components {
        * @default queue
        * @enum {string}
        */
-      delivery: "queue" | "steer" | "after_tool" | "after_turn";
+      delivery?: "queue" | "steer" | "after_tool" | "after_turn";
       /** Id */
       id: string;
       /**
@@ -6281,7 +6281,7 @@ export interface components {
        * @default queue
        * @enum {string}
        */
-      requestedDelivery: "queue" | "steer" | "after_tool" | "after_turn";
+      requestedDelivery?: "queue" | "steer" | "after_tool" | "after_turn";
       /**
        * Status
        * @constant
@@ -6453,7 +6453,7 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key: string;
+      account_key?: string;
       /** Credit Id */
       credit_id: string;
       /** Request Id */
@@ -6665,7 +6665,7 @@ export interface components {
        * @default save
        * @enum {string}
        */
-      action: "save" | "pause" | "resume" | "delete";
+      action?: "save" | "pause" | "resume" | "delete";
       /** Activeworkers */
       activeWorkers?: number | null;
       /** Agent */
@@ -6680,14 +6680,14 @@ export interface components {
        * Command
        * @default
        */
-      command: string;
+      command?: string;
       /** Created */
       created?: number | null;
       /**
        * Durationminutes
        * @default 30
        */
-      durationMinutes: number;
+      durationMinutes?: number;
       /** Epoch */
       epoch?: number | null;
       /** Error */
@@ -6697,7 +6697,7 @@ export interface components {
        * @default worker_completed
        * @enum {string}
        */
-      event: "worker_completed" | "monitor_exit" | "work_review" | "complaint";
+      event?: "worker_completed" | "monitor_exit" | "work_review" | "complaint";
       /** Eventtext */
       eventText?: string | null;
       /** Fileactivityat */
@@ -6714,7 +6714,7 @@ export interface components {
        * Intervalseconds
        * @default 60
        */
-      intervalSeconds: number;
+      intervalSeconds?: number;
       /** Isnew */
       isNew?: boolean | null;
       /**
@@ -6722,7 +6722,7 @@ export interface components {
        * @default interval
        * @enum {string}
        */
-      kind: "interval" | "once" | "file" | "event" | "low_workers";
+      kind?: "interval" | "once" | "file" | "event" | "low_workers";
       /** Lastat */
       lastAt?: number | null;
       /** Lastevent */
@@ -6743,14 +6743,14 @@ export interface components {
        * Livenesscommand
        * @default
        */
-      livenessCommand: string;
+      livenessCommand?: string;
       /** Lowsince */
       lowSince?: number | null;
       /**
        * Minimumworkers
        * @default 8
        */
-      minimumWorkers: number;
+      minimumWorkers?: number;
       /** Name */
       name?: string | null;
       /** Nextat */
@@ -6771,7 +6771,7 @@ export interface components {
        * Stalltimeoutseconds
        * @default 1800
        */
-      stallTimeoutSeconds: number;
+      stallTimeoutSeconds?: number;
       /** Stallwakegeneration */
       stallWakeGeneration?: number | null;
       /** Status */
@@ -6780,7 +6780,7 @@ export interface components {
        * Text
        * @default
        */
-      text: string;
+      text?: string;
       /** Wakes */
       wakes?: number | null;
     };
@@ -8156,7 +8156,7 @@ export interface components {
        * Descendants
        * @default true
        */
-      descendants: boolean;
+      descendants?: boolean;
       /** Id */
       id: string;
     };
@@ -8480,14 +8480,14 @@ export interface components {
        * Cols
        * @default 100
        */
-      cols: number;
+      cols?: number;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 28
        */
-      rows: number;
+      rows?: number;
     };
     /** TerminalInput */
     TerminalInput: {
@@ -8577,14 +8577,14 @@ export interface components {
        * Cols
        * @default 100
        */
-      cols: number;
+      cols?: number;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 28
        */
-      rows: number;
+      rows?: number;
     };
     /**
      * TerminalState
@@ -9237,7 +9237,7 @@ export interface components {
        * Item Id
        * @default
        */
-      item_id: string;
+      item_id?: string;
       kind: components["schemas"]["VoiceRecordKind"];
       /** Payload */
       payload?: {
@@ -9247,14 +9247,14 @@ export interface components {
        * Previous Item Id
        * @default
        */
-      previous_item_id: string;
+      previous_item_id?: string;
       /** Session Id */
       session_id: string;
       /**
        * Text
        * @default
        */
-      text: string;
+      text?: string;
     };
     /** VoiceRecordResponse */
     VoiceRecordResponse: {
@@ -9286,7 +9286,7 @@ export interface components {
        * After
        * @default 0
        */
-      after: number;
+      after?: number;
       /** Agent */
       agent: string;
     };
@@ -9521,7 +9521,7 @@ export interface components {
        * Description
        * @default
        */
-      description: string;
+      description?: string;
       /** Displaystatus */
       displayStatus?: string | null;
       /** Id */

@@ -205,7 +205,11 @@ def _schema_errors(
                 errors.extend(_schema_errors(child, document, f"{location}.properties.{name}", reference_stack))
 
     items = schema.get("items")
-    if items is not None:
+    if items is False:
+        pass
+    elif items is True:
+        errors.append(f"{location}.items: unconstrained item schema")
+    elif items is not None:
         errors.extend(_schema_errors(items, document, f"{location}.items", reference_stack))
 
     prefix_items = schema.get("prefixItems")
@@ -222,6 +226,12 @@ def _schema_errors(
                         reference_stack,
                     )
                 )
+            if items is None:
+                max_items = schema.get("maxItems")
+                if type(max_items) is not int or max_items > len(prefix_items):
+                    errors.append(
+                        f"{location}: prefixItems permits an untyped array tail without items or a sufficient maxItems bound"
+                    )
 
     additional = schema.get("additionalProperties")
     if isinstance(additional, dict):
