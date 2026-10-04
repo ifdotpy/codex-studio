@@ -179,6 +179,15 @@ class ApiContext:
                 return None
             raise
 
+    def workspace_id(self) -> str:
+        """Read the durable workspace identity without initializing SyncStore."""
+        uri = self.canvas.db.absolute().as_uri() + "?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=1) as db:
+            row = db.execute("SELECT id FROM sync_identity LIMIT 1").fetchone()
+        if row is None:
+            raise RuntimeError("The server workspace identity is unavailable")
+        return str(row[0])
+
     def costs(self) -> AccountCostReader:
         runtime = self._require_runtime()
         with self._lock:

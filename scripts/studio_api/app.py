@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import mimetypes
+import sqlite3
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request
@@ -11,7 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from studio_api.core_models import SessionResponse
 from studio_api.middleware import RequestBoundary
-from studio_api.responses import error_response
+from studio_api.models import ErrorResponse, JsonValue
+from studio_api.responses import error_response, install_error_response_docs
 from studio_api.models import JsonValue
 
 STATIC_ALLOWLIST = frozenset({
@@ -110,6 +112,12 @@ def create_app(context: ApiContext) -> FastAPI:
             {"location": [str(part) for part in row.get("loc", ())], "message": str(row.get("msg", "Invalid request"))}
             for row in error.errors()
         ]
+        if request.method == "POST" and request.url.path == "/api/action":
+            return context.send(
+                request,
+                ErrorResponse(error="Invalid request", outcome="not_applied", details=problems),
+                status=400,
+            )
         return error_response(context, request, "Invalid request", 400, details=problems)
 
     @app.exception_handler(StarletteHTTPException)
@@ -121,4 +129,21 @@ def create_app(context: ApiContext) -> FastAPI:
     async def response_error(request: Request, _error: ResponseValidationError) -> Response:
         return error_response(context, request, "The server could not validate its response", 500)
 
+    @app.exception_handler(ValueError)
+    async def value_error(request: Request, error: ValueError) -> Response:
+        return error_response(context, request, str(error), 400)
+
+    @app.exception_handler(RuntimeError)
+    async def runtime_error(request: Request, error: RuntimeError) -> Response:
+        return error_response(context, request, str(error), 400)
+
+    @app.exception_handler(OSError)
+    async def operating_system_error(request: Request, error: OSError) -> Response:
+        return error_response(context, request, str(error), 400)
+
+    @app.exception_handler(sqlite3.Error)
+    async def database_error(request: Request, error: sqlite3.Error) -> Response:
+        return error_response(context, request, str(error), 400)
+
+    install_error_response_docs(app)
     return app

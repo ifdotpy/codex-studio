@@ -91,11 +91,6 @@ class RequestBoundary:
             await _reject(send, 403, error)
             return
 
-        if write and not federation:
-            # This is a readonly cursor sample. It does not construct a service
-            # or touch durable state before input validation and route handling.
-            scope["studio_sync_entities_after"] = self.context.entity_sequence()
-
         if method not in {"POST", "PUT", "PATCH"}:
             await self.app(scope, receive, send)
             return
@@ -107,29 +102,26 @@ class RequestBoundary:
             return
         content_length = headers.get("content-length")
         declared: int | None = None
-        if content_length is not None:
-            try:
-                declared = int(content_length)
-            except ValueError:
-                await _reject(send, 400, "Invalid request size")
-                return
-            if declared <= 0:
-                await _reject(send, 413, "Invalid request size")
-                return
-            if declared > limit:
-                await _reject(send, 413, "Invalid request size")
-                return
+        if content_length is None:
+            await _reject(send, 413, "Invalid request size")
+            return
+        try:
+            declared = int(content_length)
+        except ValueError:
+            await _reject(send, 400, "Invalid request size")
+            return
+        if declared <= 0:
+            await _reject(send, 413, "Invalid request size")
+            return
+        if declared > limit:
+            await _reject(send, 413, "Invalid request size")
+            return
 
         body = bytearray()
-        deadline = asyncio.get_running_loop().time() + REQUEST_READ_TIMEOUT_SECONDS
         more = True
         while more:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                await _reject(send, 408, "Request body timed out")
-                return
             try:
-                message = await asyncio.wait_for(receive(), remaining)
+                message = await asyncio.wait_for(receive(), REQUEST_READ_TIMEOUT_SECONDS)
             except TimeoutError:
                 await _reject(send, 408, "Request body timed out")
                 return
@@ -146,9 +138,36 @@ class RequestBoundary:
         if not body:
             await _reject(send, 413, "Invalid request size")
             return
-        if declared is not None and len(body) != declared:
+        if len(body) != declared:
             await _reject(send, 400, "Incomplete request")
             return
+        if not federation:
+            try:
+                decoded = json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                await _reject(send, 400, "Invalid JSON")
+                return
+            if not isinstance(decoded, dict):
+                await _reject(send, 400, "JSON object required")
+                return
+            workspace = headers.get("x-canvas-workspace")
+            if workspace is not None or path == "/api/sync/drafts":
+                try:
+                    workspace_id = await asyncio.to_thread(self.context.workspace_id)
+                except (OSError, RuntimeError):
+                    await _reject(send, 400, "The server workspace identity is unavailable")
+                    return
+                if workspace != workspace_id:
+                    await _reject(send, 409, "The server workspace changed. Reload before sending.")
+                    return
+            # A readonly cursor sample occurs after complete body validation,
+            # but before router dispatch and any service write.
+            if not self.context.schema_only:
+                try:
+                    scope["studio_sync_entities_after"] = await asyncio.to_thread(self.context.entity_sequence)
+                except OSError:
+                    await _reject(send, 400, "The server sync state is unavailable")
+                    return
         delivered = False
 
         async def replay_receive() -> Message:
@@ -163,6 +182,8 @@ class RequestBoundary:
     def _trusted(self, scope: Scope, headers: HeaderView, *, write: bool, federation: bool) -> bool:
         extensions = scope.get("extensions", {})
         unix_transport = bool(extensions.get("studio.unix_socket"))
+        if federation and unix_transport:
+            return False
         if unix_transport:
             origin: str | None = "http://unix"
         else:
@@ -173,6 +194,10 @@ class RequestBoundary:
             origin = self.context.remote.request_origin(headers, peer, port)
         if origin is None:
             return False
+        if federation:
+            # Signed federation authenticates its own exact raw request; retain
+            # its established Serve origin gate without local Origin heuristics.
+            return True
         request_origin = headers.get("origin")
         if not unix_transport and request_origin not in (None, origin):
             return False
