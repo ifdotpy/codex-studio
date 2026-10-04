@@ -34,6 +34,14 @@ class SyncEntityContractTests(unittest.TestCase):
     def test_strict_agent_projection_rejects_unknown_status(self) -> None:
         with self.assertRaises(ValidationError):
             AgentEntityDto.model_validate({"id": "a", "status": "new-unreviewed-status"})
+        model_specific_effort = AgentEntityDto.model_validate({"id": "a", "effort": "minimal"})
+        self.assertEqual(model_specific_effort.effort, "minimal")
+        resumed = AgentEntityDto.model_validate({
+            "id": "a", "nativeRelease": {"phase": "resumed", "resetPending": False},
+        })
+        if resumed.nativeRelease is None or resumed.nativeRelease.phase is None:
+            self.fail("resumed native release phase was omitted")
+        self.assertEqual(resumed.nativeRelease.phase.value, "resumed")
 
     def test_legacy_status_file_public_row_has_named_external_fields(self) -> None:
         row = {

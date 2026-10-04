@@ -82,6 +82,7 @@ class NativeReleasePhase(ContractStrEnum):
     RELEASED = "released"
     UNKNOWN = "unknown"
     BLOCKED = "blocked"
+    RESUMED = "resumed"
 
 
 class AgentNativeRelease(ContractModel):
@@ -185,7 +186,8 @@ class AgentEntityDto(ContractModel):
     sharedRoomId: str | None = None
     model: str | None = None
     provider: AgentProvider | None = None
-    effort: Literal["none", "low", "medium", "high", "xhigh"] | None = None
+    # Reasoning effort levels come from the selected model's capability catalog.
+    effort: str | None = None
     fastMode: bool | None = None
     concurrency: int | None = None
     accountKey: str | None = None
