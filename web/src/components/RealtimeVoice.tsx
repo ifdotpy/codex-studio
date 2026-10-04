@@ -52,6 +52,7 @@ function NativeVoice({
   const mounted = useRef(true);
   const starting = useRef(false);
   const transportState = useRef<ResourceConnectionState>("connecting");
+  const pendingSession = useRef<Session | null>(null);
   const cursor = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -86,6 +87,7 @@ function NativeVoice({
     muteWanted.current = false;
     const p = peer.current;
     peer.current = null;
+    pendingSession.current = null;
     if (p) end(p);
     if (mounted.current) {
       setActive(false);
@@ -158,8 +160,10 @@ function NativeVoice({
           ).values(),
         ]);
         const p = peer.current;
-        if (p?.registered && data.session?.session_id === p.id)
-          await apply(p, data.session);
+        if (p && data.session?.session_id === p.id) {
+          if (p.registered) await apply(p, data.session);
+          else pendingSession.current = data.session;
+        }
       } catch (e) {
         // Stop capture on loss of Studio, even if the media peer still works.
         if (!disposed) {
@@ -349,7 +353,12 @@ function NativeVoice({
         end(current);
         return;
       }
-      await apply(current, result);
+      const notifiedSession = pendingSession.current;
+      pendingSession.current = null;
+      await apply(
+        current,
+        notifiedSession?.session_id === current.id ? notifiedSession : result,
+      );
     } catch (e) {
       if (ticket === generation.current) {
         failure(e);

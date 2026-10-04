@@ -147,7 +147,10 @@ function AccountCapacity({
         });
         if (!accountLimits(result, account.id, account.accountId))
           throw new Error("Limits belong to another account.");
-        if (live) setLimits(result);
+        if (live) {
+          setLimits(result);
+          setLimitsError(null);
+        }
       },
       (error) => {
         if (live) setLimitsError(error);

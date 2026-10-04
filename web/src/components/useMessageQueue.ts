@@ -6,6 +6,7 @@ import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
 import { watchResourceReads } from "./watchResourceReads";
+import { createQueueResourceRefresh } from "./queueResourceRefresh";
 
 type QueueView =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
@@ -99,6 +100,10 @@ export function useMessageQueue(p: {
   });
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
+  const resourceRefresh = useRef<{
+    key: string;
+    gate: ReturnType<typeof createQueueResourceRefresh>;
+  } | null>(null);
   const serial = useRef(0);
   const view = state.key === key ? state.view : emptyQueue;
   const pending =
@@ -128,11 +133,14 @@ export function useMessageQueue(p: {
     setPending({ key, request: readQueueRequest(key) });
     if (!p.enabled || !p.id) return;
     let active = true;
+    const gate = createQueueResourceRefresh(
+      () => locks.current.has(key),
+      reload,
+    );
+    resourceRefresh.current = { key, gate };
     const stop = watchResourceReads(
       { kind: "queue", agentId: p.id },
-      async () => {
-        if (!locks.current.has(key)) await reload();
-      },
+      gate.invalidate,
       (error) => {
         if (active) setFailure({ key, text: errorText(error) });
       },
@@ -140,6 +148,8 @@ export function useMessageQueue(p: {
     return () => {
       active = false;
       stop();
+      if (resourceRefresh.current?.gate === gate)
+        resourceRefresh.current = null;
     };
   }, [key, reload, p.enabled, p.id]);
 
@@ -204,6 +214,12 @@ export function useMessageQueue(p: {
     } finally {
       locks.current.delete(key);
       setBusy((value) => (value === key ? null : value));
+      const deferred = resourceRefresh.current;
+      if (deferred?.key === key)
+        void deferred.gate.flush().catch((error) => {
+          if (currentKey.current === key)
+            setFailure({ key, text: errorText(error) });
+        });
     }
   };
   const mutate = async (change: QueueChange) => {
