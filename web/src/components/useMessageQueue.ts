@@ -13,6 +13,12 @@ type QueueChange<T = QueueMutation> = T extends unknown
   ? Omit<T, "agent" | "expected_revision" | "request_id">
   : never;
 
+const emptyQueue: QueueView = {
+  items: [],
+  revision: "",
+  capabilities: { reorder: false, receipts: false },
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -80,7 +86,7 @@ export function useMessageQueue(p: {
     loaded?: boolean;
   }>({
     key,
-    view: { items: [] },
+    view: emptyQueue,
   });
   const [failure, setFailure] = useState({ key, text: "" });
   const [pendingState, setPending] = useState<{
@@ -93,7 +99,7 @@ export function useMessageQueue(p: {
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
   const serial = useRef(0);
-  const view = state.key === key ? state.view : { items: [] };
+  const view = state.key === key ? state.view : emptyQueue;
   const pending =
     pendingState.key === key ? pendingState.request : readQueueRequest(key);
 
