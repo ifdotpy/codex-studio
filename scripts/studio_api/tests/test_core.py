@@ -435,9 +435,13 @@ class CoreResponseTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="studio-api-core-") as state_dir:
             from codex_canvas import Canvas
+            import codex_canvas
             from studio_api.server import make_server
 
             canvas = Canvas(Path(state_dir))  # type: ignore[no-untyped-call]
+            web_root = Path(state_dir) / "web"
+            web_root.mkdir()
+            (web_root / "index.html").write_bytes(b"<html>fixture</html>")
             with patch.dict(sys.modules, fake_modules):
                 server = make_server(canvas, port=0, unix_socket=True)
             assert server.unix_server is not None
@@ -447,18 +451,21 @@ class CoreResponseTests(unittest.TestCase):
             unix_thread.start()
             socket_path = Path(state_dir) / "canvas.sock"
             try:
-                with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
-                    session = client.get("/api/session")
-                    state = client.get("/api/state")
-                    mismatch = client.post(
-                        "/api/action", json={"request_id": "req-1"},
-                        headers={"X-Canvas-Token": session.json()["token"], "X-Canvas-Workspace": "other"},
-                    )
-                    tcp_write = client.post(
-                        "/api/action", json={"request_id": "tcp-write"},
-                        headers={"X-Canvas-Token": session.json()["token"]},
-                    )
-                    denied_write = client.post("/api/action", json={"request_id": "denied"})
+                with patch.object(codex_canvas, "WEB", web_root):
+                    with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
+                        session = client.get("/api/session")
+                        state = client.get("/api/state")
+                        static = client.get("/")
+                        unknown = client.get("/api/unknown")
+                        mismatch = client.post(
+                            "/api/action", json={"request_id": "req-1"},
+                            headers={"X-Canvas-Token": session.json()["token"], "X-Canvas-Workspace": "other"},
+                        )
+                        tcp_write = client.post(
+                            "/api/action", json={"request_id": "tcp-write"},
+                            headers={"X-Canvas-Token": session.json()["token"]},
+                        )
+                        denied_write = client.post("/api/action", json={"request_id": "denied"})
                 uds_transport = httpx.HTTPTransport(uds=str(socket_path))
                 with httpx.Client(transport=uds_transport, base_url="http://localhost", timeout=5) as unix_client:
                     unix_session = unix_client.get("/api/session")
@@ -468,6 +475,10 @@ class CoreResponseTests(unittest.TestCase):
                     )
                 self.assertEqual(session.status_code, 200)
                 self.assertEqual(state.status_code, 200)
+                self.assertEqual(static.status_code, 200)
+                self.assertEqual(static.content, b"<html>fixture</html>")
+                self.assertEqual(unknown.status_code, 404)
+                self.assertEqual(unknown.json(), {"error": "Not found"})
                 self.assertEqual(mismatch.status_code, 409)
                 self.assertEqual(mismatch.json()["error"], "The server workspace changed. Reload before sending.")
                 self.assertEqual(tcp_write.status_code, 200, tcp_write.text)
