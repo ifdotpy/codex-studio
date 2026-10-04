@@ -19,7 +19,7 @@ import {
 test("an active AgentPanel follows native progress changes without polling", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(210_000);
   const repo = join(import.meta.dirname, "../../../..");
   const builtIndex = await readFile(join(repo, "web/dist/index.html"), "utf8");
   const builtEntry = builtIndex.match(/src="\.\/(assets\/index-[^"]+\.js)"/);
@@ -238,6 +238,16 @@ test("an active AgentPanel follows native progress changes without polling", asy
     const streamResponses = [];
     const servedAssets = [];
     const statusGets = [];
+    const backgroundRequests = [];
+    context.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname.startsWith("/api/") &&
+        url.pathname !== "/api/sync/stream" &&
+        (request.method() === "GET" || url.pathname === "/api/panel/layout")
+      )
+        backgroundRequests.push(`${request.method()} ${url.pathname}`);
+    });
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/panel" && request.method() === "GET")
@@ -491,11 +501,13 @@ test("an active AgentPanel follows native progress changes without polling", asy
 
     // Let the baseline read and first size report settle. An idle panel must
     // not issue periodic reads or renew an unchanged layout measurement. This
-    // spans both the former one-second panel poll and 30-second layout window.
+    // spans former panel, layout, and one-minute status refresh intervals.
     await page.waitForTimeout(1_500);
     const quietPanelGets = panelGets.length;
     const quietLayoutPosts = layoutPosts.length;
-    await page.waitForTimeout(31_000);
+    const quietRequestStart = backgroundRequests.length;
+    await page.waitForTimeout(120_000);
+    expect(backgroundRequests.slice(quietRequestStart)).toEqual([]);
     expect(panelGets.length).toBe(quietPanelGets);
     expect(layoutPosts.length).toBe(quietLayoutPosts);
 
