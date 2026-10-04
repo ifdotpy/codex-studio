@@ -5,6 +5,7 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
+import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
@@ -95,6 +96,30 @@ import {
   type Agent,
   type Json,
 } from "./types";
+
+type LeadCreateRequest = Omit<
+  PostBody<"/api/leads">,
+  "id" | "previous" | "reuse_empty" | "cwd" | "project_folder" | "account_key"
+> & {
+  id: string;
+  previous: string | null;
+  reuse_empty: boolean;
+  cwd?: string;
+  project_folder?: string;
+  account_key?: string;
+};
+function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
+  return (
+    typeof value.id === "string" &&
+    !!value.id &&
+    (value.previous === null || typeof value.previous === "string") &&
+    typeof value.reuse_empty === "boolean" &&
+    (value.cwd === undefined || typeof value.cwd === "string") &&
+    (value.project_folder === undefined ||
+      typeof value.project_folder === "string") &&
+    (value.account_key === undefined || typeof value.account_key === "string")
+  );
+}
 import Sidebar from "./components/Sidebar";
 import {
   chatIndicators,
@@ -379,7 +404,9 @@ export default function App() {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     ),
-    [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({}),
+    [limitsByAccount, setLimitsByAccount] = useState<
+      Record<string, AccountLimitsSnapshot>
+    >({}),
     [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -422,9 +449,19 @@ export default function App() {
         .filter((entry) => receipts.get(entry.id)?.status !== "cancelled")
         .map((entry) => {
           const receipt = receipts.get(entry.id);
-          return receipt && ["failed", "uncertain"].includes(receipt.status)
-            ? { ...entry, status: receipt.status, error: receipt.error }
-            : entry;
+          if (receipt?.status === "failed")
+            return {
+              ...entry,
+              status: "failed",
+              error: receipt.error || undefined,
+            } satisfies OutgoingMessage;
+          if (receipt?.status === "uncertain")
+            return {
+              ...entry,
+              status: "uncertain",
+              error: receipt.error || undefined,
+            } satisfies OutgoingMessage;
+          return entry;
         }),
     [outgoingMessages, receipts],
   );
@@ -438,7 +475,7 @@ export default function App() {
   } = useSyncedDrafts();
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
-  const creation = useRef<Json | null>(null),
+  const creation = useRef<LeadCreateRequest | null>(null),
     sends = useRef<Record<string, PostBody<"/api/messages">>>({}),
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
@@ -805,7 +842,7 @@ export default function App() {
           key,
           label: account?.label || key,
           email: account?.email,
-          provider: account?.provider,
+          provider: account?.provider ?? undefined,
           accountId: account?.accountId,
           signedOut: !!account?.disconnected,
           limits,
@@ -915,10 +952,11 @@ export default function App() {
     if (creationLock.current) return null;
     if (!retryId && !cwd) {
       cwd =
-        lead?.cwd ||
+        (lead?.cwd ?? undefined) ||
         (mobileClient
-          ? data?.runtime?.projects?.[0]?.path ||
-            leads.find((item) => item.cwd)?.cwd
+          ? (typeof data?.runtime?.projects?.[0]?.path === "string"
+              ? data.runtime.projects[0].path
+              : undefined) || leads.find((item) => item.cwd)?.cwd
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
@@ -926,9 +964,13 @@ export default function App() {
       const pending = pendingChatCreations(creationKey);
       creation.current =
         (retryId
-          ? pending.find((request) => request.id === retryId)
+          ? pending.find(
+              (request): request is LeadCreateRequest =>
+                isLeadCreateRequest(request) && request.id === retryId,
+            )
           : pending.find(
-              (request) =>
+              (request): request is LeadCreateRequest =>
+                isLeadCreateRequest(request) &&
                 (request.cwd ||
                   leads.find((item) => item.id === request.previous)?.cwd) ===
                   cwd &&
@@ -944,8 +986,10 @@ export default function App() {
     if (creation.current) cwd = creation.current.cwd;
     if (mobileClient && !cwd) {
       cwd =
-        lead?.cwd ||
-        data?.runtime?.projects?.[0]?.path ||
+        (lead?.cwd ?? undefined) ||
+        (typeof data?.runtime?.projects?.[0]?.path === "string"
+          ? data.runtime.projects[0].path
+          : undefined) ||
         leads.find((item) => item.cwd)?.cwd;
       if (!cwd) {
         setSidebar(false);
@@ -979,25 +1023,31 @@ export default function App() {
       data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
         ? {
-            account_key: data.runtime?.projects?.find(
-              (project) => project.path === cwd,
-            )!.accountKey,
+            account_key:
+              data.runtime?.projects?.find((project) => project.path === cwd)
+                ?.accountKey ?? undefined,
           }
         : {}),
     };
+    const creationRequest = creation.current;
+    if (!creationRequest) {
+      creationLock.current = false;
+      setCreating(false);
+      return null;
+    }
     if (!opened && getDraft("new"))
-      setDraft(getDraft("new"), creation.current.id);
+      setDraft(getDraft("new"), creationRequest.id);
     try {
       // Save the exact request before sending it. A lost response must retain this identity.
-      saveChatCreation(creationKey, creation.current);
+      saveChatCreation(creationKey, creationRequest);
       setPendingCreations(pendingChatCreations(creationKey));
-      const a = await post("/api/leads", creation.current, {
+      const a = await post("/api/leads", creationRequest, {
         timeoutMs: 15000,
       });
-      if (a.id !== creation.current.id)
+      if (a.id !== creationRequest.id)
         throw new Error("The server returned another chat identity.");
       rememberCreated(a, creationScope);
-      confirmChatCreation(creationKey, creation.current.id);
+      confirmChatCreation(creationKey, creationRequest.id);
       setPendingCreations(pendingChatCreations(creationKey));
       if (!opened && getDraft("new")) setDraft(getDraft("new"), a.id);
       setToast("");
@@ -1044,7 +1094,10 @@ export default function App() {
       const id = opened || (await newChat());
       if (!id) return;
       latestSend.current[id] = attempt;
-      if (agent?.source === "managed" && studioCommand(text, agent.provider)) {
+      if (
+        agent?.source === "managed" &&
+        studioCommand(text, agent.provider ?? undefined)
+      ) {
         const [command] = text.split(/\s+/);
         if (options?.assets?.length)
           throw new Error(
@@ -1056,7 +1109,7 @@ export default function App() {
           );
         if (command === "/stop" || command === "/stop-team")
           await post("/api/stop", {
-            id: command === "/stop-team" ? agent.rootId : id,
+            id: command === "/stop-team" ? (agent.rootId ?? id) : id,
             descendants: command === "/stop-team",
           });
         else
@@ -1235,15 +1288,21 @@ export default function App() {
                   isRoom ? "/api/room/delete" : "/api/conversation/delete",
                   { id },
                 );
+                const deleted =
+                  typeof r.deleted === "string"
+                    ? [r.deleted]
+                    : (r.deleted || []).filter(
+                        (value): value is string => typeof value === "string",
+                      );
                 setModal(null);
-                if (!isRoom) forgetCreated(r.deleted);
-                if (r.deleted.includes(opened)) {
+                if (!isRoom) forgetCreated(deleted);
+                if (opened && deleted.includes(opened)) {
                   navigationIntent.current++;
                   setOpened(null);
                 }
                 setDrafts((old) => {
                   const next = { ...old };
-                  for (const key of r.deleted) delete next[key];
+                  for (const key of deleted) delete next[key];
                   return next;
                 });
               })
@@ -1260,7 +1319,7 @@ export default function App() {
       title: "Choose project folder",
       body: (
         <ProjectDirectoryPicker
-          initialPath={target.cwd}
+          initialPath={target.cwd ?? undefined}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
             setModal(null);
@@ -1306,7 +1365,8 @@ export default function App() {
   const deferredIds = new Set<string>(
     (chatData?.runtime?.requests || [])
       .filter((request) => request.deferred && request.status === "pending")
-      .map((request) => request.agent),
+      .map((request) => request.agent)
+      .filter((agentId): agentId is string => typeof agentId === "string"),
   );
   const worker = (a: Agent) => (
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
@@ -1319,7 +1379,10 @@ export default function App() {
         indicator={indicators.get(a.id)}
         open={() => open(a.id)}
         previewResult={() =>
-          setFilePreview({ agent: a.id, path: a.overview?.resultFile })
+          setFilePreview({
+            agent: a.id,
+            path: a.overview?.resultFile ?? undefined,
+          })
         }
         remove={() => {
           setTeamOpen(false);
@@ -1340,12 +1403,12 @@ export default function App() {
       : workerFilter === "attention"
         ? failed(a)
         : workerFilter === "active"
-          ? busy.has(a.status)
+          ? busy.has(a.status ?? "")
           : true,
   );
   // The same states and names as the team summary; Finished stays collapsed below.
   const panelState = (a: Agent) =>
-    a.inFlight && ["running", "starting"].includes(a.status)
+    a.inFlight && ["running", "starting"].includes(a.status ?? "")
       ? "working"
       : workerState(a, answerIds, deferredIds);
   const groups = TEAM_PANEL_STATES.filter(
@@ -1523,11 +1586,13 @@ export default function App() {
                   data.runtime?.projects
                     ?.filter(
                       (item) =>
-                        path === item.path ||
-                        path.startsWith(item.path.replace(/\/$/, "") + "/"),
+                        typeof item.path === "string" &&
+                        (path === item.path ||
+                          path.startsWith(item.path.replace(/\/$/, "") + "/")),
                     )
-                    .sort((a, b) => b.path.length - a.path.length)[0]
-                    ?.accountKey || accounts.data.defaultAccountKey
+                    .sort(
+                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
+                    )[0]?.accountKey || accounts.data.defaultAccountKey
                 }
                 saved={async () => {
                   await refresh();
@@ -1607,9 +1672,9 @@ export default function App() {
                     ? livePhase.label
                     : [
                         statusLabel(
-                          agent.status,
-                          agent.activity?.phase,
-                          agent.parkedEvent,
+                          agent.status ?? "unknown",
+                          agent.activity?.phase ?? undefined,
+                          agent.parkedEvent ?? undefined,
                         ),
                         nativeReleaseLabel(agent),
                       ]
@@ -1654,8 +1719,11 @@ export default function App() {
               Team
               {workers.length > 0 && (
                 <span className="team-button-count">
-                  {workers.filter((worker) => busy.has(worker.status)).length}/
-                  {workers.length}
+                  {
+                    workers.filter((worker) => busy.has(worker.status ?? ""))
+                      .length
+                  }
+                  /{workers.length}
                 </span>
               )}
             </Button>
@@ -1738,7 +1806,10 @@ export default function App() {
                     onClick={toggleTeam}
                   >
                     Team{" "}
-                    {workers.filter((worker) => busy.has(worker.status)).length}
+                    {
+                      workers.filter((worker) => busy.has(worker.status ?? ""))
+                        .length
+                    }
                     /{workers.length}
                   </Menu.Item>
                 )}
@@ -1767,7 +1838,9 @@ export default function App() {
                       ] as const
                     )
                       .filter(([action]) =>
-                        menuActions(agent.provider).includes(action),
+                        menuActions(agent.provider ?? undefined).includes(
+                          action,
+                        ),
                       )
                       .map(([action, label, Icon]) => (
                         <Menu.Item
@@ -1775,7 +1848,7 @@ export default function App() {
                           data-action={action}
                           leftSection={<Icon size={14} />}
                           disabled={
-                            busy.has(agent.status) ||
+                            busy.has(agent.status ?? "") ||
                             !!agent.inFlight ||
                             !!nativeThreadError(agent) ||
                             !agent.threadId
@@ -1790,7 +1863,7 @@ export default function App() {
                     {(!!agent.inFlight ||
                       team.some(
                         (member) =>
-                          busy.has(member.status) ||
+                          (member.status != null && busy.has(member.status)) ||
                           member.status === "queued" ||
                           member.inFlight,
                       )) && (
@@ -1801,7 +1874,7 @@ export default function App() {
                         onClick={() => {
                           void run(() =>
                             post("/api/stop", {
-                              id: agent.rootId,
+                              id: agent.rootId ?? agent.id,
                               descendants: true,
                             }),
                           );
@@ -1911,7 +1984,17 @@ export default function App() {
                     (item.id === agent?.id || item.rootId === lead?.id) &&
                     (item.accountKey || "default") === account.id,
                 )
-                .flatMap((item) => [item.error, item.nativeStatus?.error])}
+                .flatMap((item) => {
+                  const nativeStatus = item.nativeStatus;
+                  const nativeError =
+                    nativeStatus &&
+                    typeof nativeStatus === "object" &&
+                    "error" in nativeStatus
+                      ? nativeStatus.error
+                      : undefined;
+                  return [item.error, nativeError];
+                })
+                .filter((value): value is string => typeof value === "string")}
               onSignIn={
                 account.provider === "claude"
                   ? setClaudeLoginKey
@@ -1926,7 +2009,7 @@ export default function App() {
         )}
         <div className="sync-notices">
           {!creating &&
-            pendingCreations.map((request) => (
+            pendingCreations.filter(isLeadCreateRequest).map((request) => (
               <div className="sync-status" key={request.id}>
                 <p>
                   The previous chat request needs confirmation:{" "}
@@ -2012,7 +2095,9 @@ export default function App() {
                 setSidebar(false);
                 setTeamOpen(false);
               }}
-              onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+              onNewChat={() =>
+                void newChat(agent?.cwd || lead?.cwd || undefined)
+              }
               onChooseChat={() => {
                 setSidebar(true);
                 setSidebarCollapsed(false);
@@ -2441,11 +2526,13 @@ export default function App() {
                   data.runtime?.projects
                     ?.filter(
                       (project) =>
-                        (agent || lead)?.cwd === project.path ||
-                        (agent || lead)?.cwd?.startsWith(project.path + "/"),
+                        typeof project.path === "string" &&
+                        ((agent || lead)?.cwd === project.path ||
+                          (agent || lead)?.cwd?.startsWith(`${project.path}/`)),
                     )
-                    .sort((a, b) => b.path.length - a.path.length)[0]
-                    ?.accountKeys
+                    .sort(
+                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
+                    )[0]?.accountKeys ?? undefined
                 }
                 state={accounts}
                 agent={agent || lead}
@@ -2536,7 +2623,7 @@ export default function App() {
               disabled={creating}
               onClick={() => {
                 setSettingsOpen(false);
-                void newChat(agent.cwd);
+                void newChat(agent.cwd ?? undefined);
               }}
             >
               New chat in this project

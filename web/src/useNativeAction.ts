@@ -2,7 +2,9 @@ import { useState } from "react";
 import { post, ApiError } from "./api";
 import type { PostBody } from "./api";
 import type { Agent } from "./types";
-type Request = PostBody<"/api/action">;
+type Request = Omit<PostBody<"/api/action">, "action"> & {
+  action: "compact" | "review";
+};
 type Action = Request["action"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {

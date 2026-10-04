@@ -22,6 +22,23 @@ import { onResume } from "./sync/resume";
 import type { GetResult } from "./api";
 import type { Message, Agent, Json } from "./types";
 type StateSnapshot = GetResult<"/api/state">;
+type TranscriptPageData = GetResult<"/api/transcript">;
+type AgentChatRecord = GetResult<"/api/agent-chat">["messages"][number];
+
+function agentChatMessages(records: AgentChatRecord[]): Message[] {
+  return records.map((record) => ({
+    id: record.id,
+    text: record.text,
+    role: "assistant",
+    kind: "message",
+    at: record.created,
+    created: record.created,
+    seq: record.seq,
+    sender: record.sender,
+    senderName: record.senderName,
+    sourceId: record.sender,
+  }));
+}
 export function useSnapshot() {
   const [data, setData] = useState<StateSnapshot | null>(null),
     [error, setError] = useState("");
@@ -295,7 +312,7 @@ export function transcriptMessages(
           requestedDelivery: r.requestedDelivery,
           deliveryError: r.deliveryError,
           materialized: r.materialized ?? m.materialized,
-          pending: r.pending,
+          pending: r.pending ?? undefined,
           assets: r.assets || (i === 0 ? m.assets : []),
           role: r.kind === "user" ? "user" : "tool",
           text: r.text,
@@ -330,7 +347,7 @@ type TranscriptPage = {
   after: string | null;
   focused: boolean;
   version?: string;
-  latest?: Json;
+  latest?: TranscriptPageData;
 };
 
 type RoomPage = {
@@ -420,10 +437,14 @@ export function useMessages(
     [after, setAfter] = useState<string | null>(null),
     [historical, setHistorical] = useState(false),
     [pageLoading, setPageLoading] = useState(false),
-    [liveAgent, setLiveAgent] = useState<Partial<Agent> | null>(null),
+    [liveAgent, setLiveAgent] = useState<TranscriptPageData["agent"] | null>(
+      null,
+    ),
     [connection, setConnection] = useState(""),
     [syncId, setSyncId] = useState<string | null>(null);
-  const latest = useRef<{ scope: string; data: Json } | null>(null);
+  const latest = useRef<{ scope: string; data: TranscriptPageData } | null>(
+    null,
+  );
   const pageAttempt = useRef(0);
   const pageBusy = useRef(false);
   const pageAnchor = useRef<{ scope: string; id: string } | null>(null);
@@ -441,7 +462,7 @@ export function useMessages(
     expanded = useRef(false);
   active.current = scope;
   const accept = useCallback(
-    (d: Json, seq?: number) => {
+    (d: TranscriptPageData, seq?: number) => {
       revision.current++;
       setLoadedId(scope);
       setLiveAgent(d.agent || null);
@@ -534,7 +555,7 @@ export function useMessages(
             : d.nextCursor || (d.truncated ? d.items?.[0]?.id : null),
           after: null,
           focused: false,
-          version: d.historyVersion,
+          version: d.historyVersion ?? undefined,
           latest: d,
         };
         pages.current.set(scope, page);
@@ -628,10 +649,7 @@ export function useMessages(
           if (!current()) return;
           setNotice("");
           setLoadedId(scope);
-          const received = (d.messages || []).map((m: Message) => ({
-            ...m,
-            role: "assistant",
-          }));
+          const received = agentChatMessages(d.messages);
           if (!page || cursor == null) {
             const bounded = boundTranscriptItems(received, sizeOfMessage);
             const next: RoomPage = {
@@ -779,6 +797,7 @@ export function useMessages(
           accept({
             items: [],
             unavailable: "This session is no longer available.",
+            truncated: false,
           });
         }
       },
@@ -858,7 +877,7 @@ export function useMessages(
           : result.nextAfterCursor || null,
         focused,
         anchorId: query.anchor || prior?.anchorId || query.around,
-        version: result.historyVersion,
+        version: result.historyVersion ?? undefined,
         latest: live,
       };
       const bounded = boundTranscriptItems(
@@ -943,10 +962,7 @@ export function useMessages(
         query: { room: id, after: page.after, limit: 100 },
       });
       if (active.current !== scope) return;
-      const later = (d.messages || []).map((m: Message) => ({
-        ...m,
-        role: "assistant",
-      }));
+      const later = agentChatMessages(d.messages);
       const bounded = boundTranscriptItems(
         [...page.items, ...later],
         sizeOfMessage,
@@ -986,13 +1002,17 @@ export function useMessages(
       const page = roomPages.current.get(scope);
       if (!page) return;
       const d = await syncGet("/api/agent-chat", {
-        query: { room: id, before: page.before ?? before, limit: 100 },
+        query: {
+          room: id,
+          before:
+            page.before ??
+            (typeof before === "number" ? before : Number(before)),
+          limit: 100,
+        },
       });
+      if (!d) return;
       if (active.current !== scope) return;
-      const olderItems = (d.messages || []).map((m: Message) => ({
-        ...m,
-        role: "assistant",
-      }));
+      const olderItems = agentChatMessages(d.messages);
       const bounded = boundTranscriptItems(
         [...olderItems, ...page.items],
         sizeOfMessage,
@@ -1029,19 +1049,19 @@ export function useMessages(
       });
       return;
     }
+    const cursor = typeof before === "number" ? before : Number(before);
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return;
     const d = await syncGet("/api/agent-chat", {
-      query: { room: id, before },
+      query: { room: id, before: cursor },
     });
+    if (!d) return;
     if (active.current !== scope) return;
     expanded.current = true;
-    setBefore(d.nextBefore);
+    setBefore(d.nextBefore ?? null);
     setItems((old) =>
       [
         ...new Map(
-          [
-            ...d.messages.map((m: Message) => ({ ...m, role: "assistant" })),
-            ...old,
-          ].map((m) => [m.id, m]),
+          [...agentChatMessages(d.messages), ...old].map((m) => [m.id, m]),
         ).values(),
       ].sort((a, b) => (a.seq || 0) - (b.seq || 0)),
     );

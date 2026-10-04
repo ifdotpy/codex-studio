@@ -26,6 +26,11 @@ addRxPlugin(RxDBLeaderElectionPlugin);
 function isGenerationCounter(value: number | undefined): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
+function requiredSyncNumber(value: number | null | undefined, field: string) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new Error(`The server returned an invalid ${field} sync value.`);
+  return value;
+}
 const syncStreamQuery = {
   protocol: "2",
 } satisfies NonNullable<GetOptions<"/api/sync/stream">["query"]>;
@@ -1167,11 +1172,23 @@ async function acquireProjection(
                 : null,
             );
             if (stopped) return;
-            if (remoteScope === "state:entities:v1" && result.reset === true) {
+            if (result.reset === true) {
+              if (remoteScope !== "state:entities:v1")
+                throw new Error("The server reset an unsupported sync scope.");
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
             }
+            if (
+              remoteScope === "state:entities:v1" &&
+              initialHigh !== undefined &&
+              result.initialHigh == null
+            )
+              throw new Error(
+                "The server omitted the initial sync checkpoint.",
+              );
+            if (remoteScope === "state:entities:v1" && result.maxSeq == null)
+              throw new Error("The server omitted the sync sequence limit.");
             if (
               remoteScope === "state:entities:v1" &&
               initialHigh !== undefined
@@ -1179,10 +1196,13 @@ async function acquireProjection(
               await persistProjection(db.projections, {
                 id: "state:entities:initial",
                 payload: "{}",
-                seq: result.initialHigh,
+                seq: requiredSyncNumber(
+                  result.initialHigh,
+                  "initial checkpoint",
+                ),
               });
             const entityBatch: SyncDocument[] = [];
-            for (const document of result.documents as SyncDocument[]) {
+            for (const document of result.documents) {
               if (
                 remoteScope === "state:entities:v1"
                   ? !document.id.startsWith("entity:")
@@ -1211,8 +1231,12 @@ async function acquireProjection(
                       workspaceId,
                       verifyWorkspace,
                     );
-                    const fullDocument = full.documents?.find(
-                      (row: SyncDocument) => row.id === scope && !row._deleted,
+                    if (full.reset === true)
+                      throw new Error(
+                        "The server reset transcript sync unexpectedly.",
+                      );
+                    const fullDocument = full.documents.find(
+                      (row) => row.id === scope && !row._deleted,
                     );
                     if (!fullDocument)
                       throw new Error(
@@ -1258,10 +1282,14 @@ async function acquireProjection(
                 });
                 readyPublished = true;
               }
-              initialHigh = result.initialHigh;
+              initialHigh = requiredSyncNumber(
+                result.initialHigh,
+                "initial checkpoint",
+              );
               more =
                 result.documents.length === ENTITY_BATCH_SIZE &&
-                result.checkpoint.seq < result.maxSeq;
+                result.checkpoint.seq <
+                  requiredSyncNumber(result.maxSeq, "maximum sequence");
             } else {
               more = false;
             }
@@ -1525,15 +1553,18 @@ export async function startDraftReplication(
     retryTime: 3000,
     pull: {
       handler: (checkpoint, batchSize) =>
-        attempt("pull", () =>
-          pull(
+        attempt("pull", async () => {
+          const result = await pull(
             "drafts",
             checkpoint?.seq || 0,
             batchSize,
             workspaceId,
             verifyWorkspace,
-          ),
-        ),
+          );
+          if (result.reset === true)
+            throw new Error("The server reset draft sync unexpectedly.");
+          return { documents: result.documents, checkpoint: result.checkpoint };
+        }),
       batchSize: 100,
     },
     push: {
