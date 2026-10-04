@@ -116,7 +116,7 @@ class TranscriptAgent(ContractModel):
     inFlight: StrictBool | None = None
     contextUsage: TranscriptContextUsage | None = None
     compactions: int | None = None
-    compactionsObservedOnly: int | None = None
+    compactionsObservedOnly: StrictBool | None = None
 
 
 class TranscriptPageResponse(ResponseModel):

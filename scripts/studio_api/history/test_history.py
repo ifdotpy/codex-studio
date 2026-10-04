@@ -324,7 +324,7 @@ class HistoryRouteTests(unittest.TestCase):
                     "inFlight": False, "turnId": None, "threadId": None,
                     "contextUsage": {"tokens": 25, "window": 4096, "at": 2.5},
                     "activity": {"phase": "thinking", "at": 2.5, "tools": []},
-                    "compactions": 1, "compactionsObservedOnly": 0,
+                    "compactions": 1, "compactionsObservedOnly": False,
                 }
 
             @staticmethod
@@ -369,6 +369,20 @@ class HistoryRouteTests(unittest.TestCase):
             }],
             turnId="turn-9",
         )
+        item_created = cast(
+            float,
+            connection.execute("SELECT created FROM runtime_items").fetchone()[0],
+        )
+        reasoning_record = {
+            "id": "reasoning-1",
+            "turnId": "turn-9",
+            "startedAt": item_created,
+            "finishedAt": item_created + 2.0,
+        }
+        connection.execute(
+            "INSERT INTO analytics_items VALUES ('reasoning-1','agent-1',?,'reasoning',?)",
+            (item_created, json.dumps(reasoning_record)),
+        )
         record = connection.execute("SELECT record FROM runtime_items").fetchone()[0]
         parsed = TranscriptRecord.model_validate(json.loads(record))
         self.assertEqual(parsed.id, "agent-1:turn-1")
@@ -389,6 +403,9 @@ class HistoryRouteTests(unittest.TestCase):
             producer, "agent-1", limit=120,
         )
         page = TranscriptPageResponse.model_validate(transcript)
+        self.assertEqual([entry.role for entry in page.items], ["user", "reasoning"])
+        reasoning_row = page.items[1].model_dump(mode="json", exclude_unset=True)
+        self.assertNotIn("title", reasoning_row)
         input_row = cast(list[TranscriptInput], page.items[0].inputs)[0]
         self.assertEqual(input_row.clientMessageId, "event-1")
         self.assertEqual(input_row.deliveryStatus, "delivered")
