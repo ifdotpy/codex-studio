@@ -238,11 +238,12 @@ class Backend:
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
     def sync_delta(self, repo_root: Path, target_repo: Path, token: object, *,
-                   excludes: tuple[str, ...]) -> object:
-        del token
+                   excludes: tuple[str, ...]) -> dict[str, Any]:
+        current_token = token.get("token") if isinstance(token, dict) else token
         repo_root, target_repo = Path(repo_root).resolve(), Path(target_repo).resolve()
         pid = self._ensure_namespace()
-        args = self._nsenter(pid) + ["rsync", "-a", "--delete"]
+        args = self._nsenter(pid) + ["rsync", "-a", "--delete", "--itemize-changes",
+                                     "--out-format=%i %n"]
         excluded = _relative_excludes(repo_root, excludes)
         # Linked worktrees and submodules can store objects below a .git
         # directory. Exclude these without walking the source tree.
@@ -251,8 +252,16 @@ class Backend:
             relative = "" if path == Path(".") else path.as_posix()
             args.append(f"--exclude=/{relative}/***")
         args.extend([str(repo_root) + "/", str(target_repo) + "/"])
-        _run(args)
-        return {"synced": True}
+        result = _run(args)
+        changed_paths = set()
+        for line in result.stdout.splitlines():
+            if len(line) < 12 or line[11] != " ":
+                continue
+            path = line[12:]
+            path = path.removeprefix("./").rstrip("/")
+            if path:
+                changed_paths.add(path)
+        return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}
 
     def unmount_workspace(self, mount: Path, *, force: bool = False) -> None:
         del force
