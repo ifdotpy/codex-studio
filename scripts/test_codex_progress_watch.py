@@ -60,6 +60,7 @@ class ProgressWatchdogTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-progress-watch-")
         self.root = Path(self.temporary.name)
+        self.callback_condition = threading.Condition()
         self.first = provision_progress(self.root, "first")
         self.second = provision_progress(self.root, "second")
         self.first.write_text("First status.\n", encoding="utf-8")
@@ -69,6 +70,19 @@ class ProgressWatchdogTests(unittest.TestCase):
         self.patch_observer.start()
         self.addCleanup(self.patch_observer.stop)
         self.addCleanup(self.temporary.cleanup)
+
+    def record_callback(self, calls, value):
+        with self.callback_condition:
+            calls.append(value)
+            self.callback_condition.notify_all()
+
+    def assert_callbacks(self, calls, expected):
+        with self.callback_condition:
+            self.assertTrue(
+                self.callback_condition.wait_for(lambda: len(calls) >= len(expected), timeout=2),
+                f"timed out waiting for callbacks: {calls!r}",
+            )
+            self.assertEqual(calls, expected)
 
     def test_watches_before_secure_baseline_and_only_signals_new_exact_file_state(self):
         watcher = ProgressFileWatchdog(self.root)
@@ -80,7 +94,7 @@ class ProgressWatchdogTests(unittest.TestCase):
             return original_read(state_dir, agent_id)
 
         with patch("codex_progress_watch.read_progress", side_effect=observed_read):
-            detach = watcher.subscribe("first", lambda: calls.append("changed"))
+            detach = watcher.subscribe("first", lambda: self.record_callback(calls, "changed"))
         observer = FakeObserver.instances[0]
         self.assertEqual(len(observer.watches), 1)
         self.assertEqual(observer.watches[0].path, str(self.first.parent))
@@ -90,22 +104,23 @@ class ProgressWatchdogTests(unittest.TestCase):
         observer.emit("first", "modified", self.second)
         observer.emit("first", "modified", self.first.parent / "nested/PROGRESS.md")
         observer.emit("first", "modified", self.first, is_directory=True)
-        self.assertEqual(calls, [])
+        with self.callback_condition:
+            self.assertEqual(calls, [])
 
         self.first.write_text("Updated status.\n", encoding="utf-8")
         observer.emit("first", "modified", self.first)
         observer.emit("first", "modified", self.first)
-        self.assertEqual(calls, ["changed"])
+        self.assert_callbacks(calls, ["changed"])
 
         temporary = self.first.with_suffix(".tmp")
         temporary.write_text("Atomic replacement.\n", encoding="utf-8")
         temporary.replace(self.first)
         observer.emit("first", "moved", temporary, dest_path=self.first)
-        self.assertEqual(calls, ["changed", "changed"])
+        self.assert_callbacks(calls, ["changed", "changed"])
 
         self.first.unlink()
         observer.emit("first", "deleted", self.first)
-        self.assertEqual(calls, ["changed", "changed", "changed"])
+        self.assert_callbacks(calls, ["changed", "changed", "changed"])
         detach()
         detach()
         self.assertEqual(observer.watches, [])
@@ -114,24 +129,24 @@ class ProgressWatchdogTests(unittest.TestCase):
     def test_errors_and_recovery_are_each_change_states_even_with_no_revision(self):
         watcher = ProgressFileWatchdog(self.root)
         calls = []
-        detach = watcher.subscribe("first", lambda: calls.append(True))
+        detach = watcher.subscribe("first", lambda: self.record_callback(calls, True))
         observer = FakeObserver.instances[0]
 
         self.first.write_bytes(b"\xff")
         observer.emit("first", "modified", self.first)
         observer.emit("first", "modified", self.first)
-        self.assertEqual(calls, [True])
+        self.assert_callbacks(calls, [True])
 
         self.first.write_text("Recovered status.\n", encoding="utf-8")
         observer.emit("first", "modified", self.first)
-        self.assertEqual(calls, [True, True])
+        self.assert_callbacks(calls, [True, True])
         detach()
 
     def test_refcounts_share_watch_and_detach_only_after_last_subscriber(self):
         watcher = ProgressFileWatchdog(self.root)
         first_calls, second_calls = [], []
-        detach_first = watcher.subscribe("first", lambda: first_calls.append(True))
-        detach_second = watcher.subscribe("first", lambda: second_calls.append(True))
+        detach_first = watcher.subscribe("first", lambda: self.record_callback(first_calls, True))
+        detach_second = watcher.subscribe("first", lambda: self.record_callback(second_calls, True))
         observer = FakeObserver.instances[0]
         self.assertEqual(len(observer.watches), 1)
 
@@ -139,8 +154,9 @@ class ProgressWatchdogTests(unittest.TestCase):
         self.assertEqual(len(observer.watches), 1)
         self.first.write_text("One subscriber remains.\n", encoding="utf-8")
         observer.emit("first", "modified", self.first)
-        self.assertEqual(first_calls, [])
-        self.assertEqual(second_calls, [True])
+        with self.callback_condition:
+            self.assertEqual(first_calls, [])
+        self.assert_callbacks(second_calls, [True])
 
         detach_second()
         self.assertTrue(observer.stopped)
@@ -150,15 +166,16 @@ class ProgressWatchdogTests(unittest.TestCase):
     def test_only_subscribed_agents_receive_changes(self):
         watcher = ProgressFileWatchdog(self.root)
         first_calls, second_calls = [], []
-        detach_first = watcher.subscribe("first", lambda: first_calls.append(True))
-        detach_second = watcher.subscribe("second", lambda: second_calls.append(True))
+        detach_first = watcher.subscribe("first", lambda: self.record_callback(first_calls, True))
+        detach_second = watcher.subscribe("second", lambda: self.record_callback(second_calls, True))
         observer = FakeObserver.instances[0]
         self.assertEqual(len(observer.watches), 2)
 
         self.second.write_text("Second changed.\n", encoding="utf-8")
         observer.emit("second", "modified", self.second)
-        self.assertEqual(first_calls, [])
-        self.assertEqual(second_calls, [True])
+        with self.callback_condition:
+            self.assertEqual(first_calls, [])
+        self.assert_callbacks(second_calls, [True])
 
         detach_first()
         self.assertEqual(len(observer.watches), 1)
@@ -176,6 +193,108 @@ class ProgressWatchdogTests(unittest.TestCase):
             self.assertTrue(changed.wait(timeout=5))
         finally:
             detach()
+
+    def test_native_dispatch_enqueues_without_waiting_for_watcher_lock(self):
+        self.patch_observer.stop()
+        watcher = ProgressFileWatchdog(self.root)
+        observer_callback = threading.Event()
+        subscribe_started = threading.Event()
+        subscribe_finished = threading.Event()
+        callback_lock_results = []
+
+        def on_change():
+            observer = watcher._observer
+            observer_lock_acquired = observer._lock.acquire(timeout=0.5)
+            condition_acquired = watcher._condition.acquire(timeout=0.5)
+            callback_lock_results.append((observer_lock_acquired, condition_acquired))
+            if condition_acquired:
+                watcher._condition.release()
+            if observer_lock_acquired:
+                observer._lock.release()
+            observer_callback.set()
+
+        detach_first = watcher.subscribe("first", on_change)
+        self.addCleanup(detach_first)
+        observer = watcher._observer
+        handler = watcher._watches["first"][1]
+        dispatch = handler.dispatch
+        event_dispatched = threading.Event()
+
+        def signal_after_dispatch(event):
+            dispatch(event)
+            if event.src_path.endswith("PROGRESS.md"):
+                event_dispatched.set()
+
+        handler.dispatch = signal_after_dispatch
+        detach_second = []
+        self.addCleanup(lambda: [detach() for detach in detach_second])
+
+        def subscribe_second():
+            subscribe_started.set()
+            detach = watcher.subscribe("second", lambda: None)
+            detach_second.append(detach)
+            subscribe_finished.set()
+
+        watcher._condition.acquire()
+        subscribe_thread = threading.Thread(target=subscribe_second)
+        try:
+            self.first.write_text("Concurrent native update.\n", encoding="utf-8")
+            self.assertTrue(event_dispatched.wait(timeout=5), "native handler waited on watcher lock")
+            # BaseObserver owns this lock while dispatching. It must be available
+            # even though the watcher condition is still held by this thread.
+            self.assertTrue(observer._lock.acquire(timeout=1), "native observer lock remained held")
+            observer._lock.release()
+            subscribe_thread.start()
+            self.assertTrue(subscribe_started.wait(timeout=1))
+            self.assertFalse(subscribe_finished.is_set())
+        finally:
+            watcher._condition.release()
+
+        subscribe_thread.join(timeout=5)
+        try:
+            self.assertFalse(subscribe_thread.is_alive(), "second native subscription deadlocked")
+            self.assertTrue(subscribe_finished.is_set())
+            self.assertTrue(observer_callback.wait(timeout=5))
+            self.assertEqual(callback_lock_results, [(True, True)])
+        finally:
+            for detach in detach_second:
+                detach()
+            detach_first()
+
+    def test_callback_can_unsubscribe_and_resubscribe_without_leaking_dispatcher(self):
+        self.patch_observer.stop()
+        watcher = ProgressFileWatchdog(self.root)
+        replacement_called = threading.Event()
+        resubscribed = threading.Event()
+        handles = {}
+
+        def replace_subscription():
+            handles.pop("first")()
+            handles["replacement"] = watcher.subscribe("first", replacement_called.set)
+            handles["replacement_observer"] = watcher._observer
+            resubscribed.set()
+
+        handles["first"] = watcher.subscribe("first", replace_subscription)
+        observer = watcher._observer
+        try:
+            self.first.write_text("Trigger callback resubscribe.\n", encoding="utf-8")
+            self.assertTrue(resubscribed.wait(timeout=5))
+            self.assertIsNotNone(watcher._dispatcher)
+            self.assertTrue(watcher._dispatcher.is_alive())
+
+            self.first.write_text("Trigger replacement callback.\n", encoding="utf-8")
+            self.assertTrue(replacement_called.wait(timeout=5))
+        finally:
+            handles.pop("replacement", lambda: None)()
+
+        self.assertIsNone(watcher._dispatcher)
+        self.assertFalse(observer.is_alive())
+        self.assertFalse(handles["replacement_observer"].is_alive())
+        self.assertEqual(watcher._watches, {})
+        self.assertEqual(watcher._subscribers, {})
+        watcher.subscribe("first", lambda: None)()
+        self.assertIsNone(watcher._dispatcher)
+        self.assertIsNone(watcher._observer)
 
     def test_unsupported_platform_does_not_leave_a_subscription(self):
         watcher = ProgressFileWatchdog(self.root)
