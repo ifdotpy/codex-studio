@@ -763,9 +763,22 @@ export default function App() {
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
+    // The lead's current account and the accounts of working subagents take
+    // part in this chat. Finished workers keep an account the chat left.
     const teamAgents = agents.filter(
       (item) =>
-        !item.deletedAt && (item.id === rootId || item.rootId === rootId),
+        !item.deletedAt &&
+        (item.id === rootId ||
+          (item.rootId === rootId &&
+            !item.archivedAt &&
+            (item.inFlight ||
+              ["running", "queued", "approval", "starting"].includes(
+                item.status,
+              ) ||
+              (["waiting", "parked"].includes(item.status) &&
+                ["answer", "working"].includes(
+                  indicators.get(item.id)?.kind || "",
+                ))))),
     );
     const keys = new Set(
       teamAgents.map((item) => item.accountKey || "default"),
@@ -813,6 +826,7 @@ export default function App() {
   }, [
     agent,
     agents,
+    indicators,
     accounts.data.accounts,
     limitsByAccount,
     data?.runtime.rateLimitsByAccount,
