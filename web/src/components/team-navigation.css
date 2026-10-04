@@ -245,7 +245,8 @@
 }
 
 /* Keep the card readable even when a process returns a command or stack trace. */
-#team .worker-error {
+#team .worker-error,
+#team .worker-stop-reason {
   color: light-dark(#a52c3c, #e7a0a6);
   font-size: 11px;
   line-height: 1.5;
@@ -255,17 +256,23 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.worker-error-details {
+#team .worker-stop-reason {
+  color: var(--muted);
+}
+.worker-error-details,
+.worker-stop-details {
   min-width: 0;
   padding-left: 12px;
   font-size: 11px;
   color: var(--muted);
 }
-.worker-error-details summary {
+.worker-error-details summary,
+.worker-stop-details summary {
   cursor: pointer;
   width: fit-content;
 }
-.worker-error-details pre {
+.worker-error-details pre,
+.worker-stop-details pre {
   max-height: 200px;
   overflow: auto;
   white-space: pre-wrap;

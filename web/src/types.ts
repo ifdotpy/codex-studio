@@ -120,3 +120,18 @@ export function agentErrorLabel(agent: Agent): string {
     return "The previous attempt stopped because Codex was offline.";
   return nativeErrorView(agent.error).message;
 }
+
+export function agentStopReason(agent: Agent): string {
+  if (
+    agent.status !== "paused" ||
+    agent.autoWake !== false ||
+    typeof agent.error !== "string"
+  )
+    return "";
+  const reason = agent.error;
+  return reason === "Stopped by user" ||
+    (reason.startsWith("Stopped by agent ") &&
+      reason.slice("Stopped by agent ".length).trim())
+    ? reason
+    : "";
+}
