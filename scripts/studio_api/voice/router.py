@@ -87,11 +87,17 @@ class VoiceApi(Protocol):
     ) -> object: ...
 
 
+class VoiceRuntime(Protocol):
+    """Narrow the legacy runtime to its voice-service accessor."""
+
+    def voice(self) -> VoiceApi: ...
+
+
 def _voice(context: ApiContext, request: Request) -> VoiceApi | Response:
-    runtime = context.runtime
+    runtime = cast(VoiceRuntime | None, context.runtime)
     if runtime is None:
         return context.send(request, {"error": "Not found"}, status=404)
-    return cast(VoiceApi, runtime.voice())
+    return runtime.voice()
 
 
 def _send(context: ApiContext, request: Request, value: object) -> Response:

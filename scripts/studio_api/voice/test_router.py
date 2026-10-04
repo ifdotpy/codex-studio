@@ -12,6 +12,7 @@ import unittest
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 from fastapi import FastAPI, Request
@@ -21,12 +22,13 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter
 from starlette.responses import JSONResponse, Response
 
+from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse, ResponseModel
 from studio_api.voice.models import VoiceRecordKind
 from studio_api.voice.router import create_router
 
 if TYPE_CHECKING:
-    from studio_api.context import ApiContext
+    from codex_canvas import Canvas
 
 
 class FakeVoice:
@@ -342,6 +344,27 @@ class VoiceRouterTests(unittest.TestCase):
         self.assertIn("200", operation["responses"])
         self.assertNotIn("/api/voice/{action}", schema["paths"])
         self.assertNotIn("/api/voice/{action:path}", schema["paths"])
+
+    def test_route_uses_real_api_context_response_validation(self) -> None:
+        canvas = cast(
+            "Canvas",
+            SimpleNamespace(root=Path("."), runtime=FakeRuntime(self.voice)),
+        )
+        context = ApiContext(canvas, token="test-token")
+        app = FastAPI()
+        app.include_router(create_router(context))
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/voice/status", json={"agent": "agent-1"}
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {"configured": True, "transport": "native", "auth": "chatgpt"},
+            response.json(),
+        )
+        self.assertEqual("application/json", response.headers["content-type"])
 
 
 if __name__ == "__main__":
