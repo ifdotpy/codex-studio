@@ -5,6 +5,24 @@ import type { Agent, Message } from "../types";
 const cachedErrors = new Map<string, Record<string, unknown>>();
 const inFlight = new Map<string, Promise<Record<string, unknown>>>();
 
+export function failedTurnsNeedingLookup(
+  items: Pick<Message, "turnId" | "turnStatus">[],
+  existing: Set<string>,
+): string[] {
+  return [
+    ...new Set(
+      items.flatMap((item) =>
+        item.turnStatus === "failed" &&
+        item.turnId &&
+        typeof item.turnId === "string" &&
+        !existing.has(item.turnId)
+          ? [item.turnId]
+          : [],
+      ),
+    ),
+  ];
+}
+
 // Old servers saved terminal errors in analytics without transcript notices.
 // The compact view also works with their full analytics response.
 export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
@@ -46,17 +64,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
           : [],
       ),
     );
-    const turns = [
-      ...new Set(
-        items.flatMap((item) =>
-          item.turnStatus === "failed" &&
-          typeof item.turnId === "string" &&
-          !existing.has(item.turnId)
-            ? [item.turnId]
-            : [],
-        ),
-      ),
-    ];
+    const turns = failedTurnsNeedingLookup(items, existing);
     return { errors, resolved, existing, turns };
   }, [
     items,
@@ -156,12 +164,13 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
   const enriched = useMemo(() => {
     const last = new Map<string, number>();
     items.forEach((item, index) => {
-      if (typeof item.turnId === "string") last.set(item.turnId, index);
+      if (item.turnId && typeof item.turnId === "string")
+        last.set(item.turnId, index);
     });
     if (!Object.keys(errors).length) return items;
     return items.flatMap((item, index): Message[] => {
       const turnId = item.turnId;
-      if (typeof turnId !== "string") return [item];
+      if (!turnId || typeof turnId !== "string") return [item];
       const error = errors[turnId];
       if (!error || existing.has(turnId) || last.get(turnId) !== index)
         return [item];

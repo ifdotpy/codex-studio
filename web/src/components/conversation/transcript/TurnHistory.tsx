@@ -389,7 +389,7 @@ export default function TurnHistory({
         .filter((turn) => turn.outcome === "failed")
         .flatMap((turn) => {
           const turnId = turn.items[0].turnId;
-          return typeof turnId === "string" ? [turnId] : [];
+          return turnId && typeof turnId === "string" ? [turnId] : [];
         }),
     );
     const byTurn = new Map<string, Message[]>();
@@ -418,7 +418,9 @@ export default function TurnHistory({
         const turnId = outcomeTurn.items[0].turnId;
         if (
           group.items[0].role === "user" ||
+          !group.items[0].turnId ||
           typeof group.items[0].turnId !== "string" ||
+          !turnId ||
           typeof turnId !== "string"
         )
           return (
