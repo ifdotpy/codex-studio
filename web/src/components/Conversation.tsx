@@ -2,7 +2,10 @@ import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
-import MessageQueue, { type QueueItem } from "./MessageQueue";
+import MessageQueue, {
+  type LocalQueueItem,
+  type QueueItem,
+} from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import { useMessageReceipts } from "./useMessageReceipts";
 import { receiptOutgoing, receiptTranscript } from "../sync/messageReceipts";
@@ -721,7 +724,7 @@ export default function Conversation(p: {
                   `${p.id}:${row.id}` === item.id,
               ),
           )
-          .map((item) => ({
+          .map((item): LocalQueueItem => ({
             id: item.clientMessageId || item.id,
             text: item.text,
             ...(item.assets ? { assets: item.assets } : {}),
@@ -730,7 +733,8 @@ export default function Conversation(p: {
           })),
       ].filter(
         (entry) =>
-          (entry.localDelivery === true || explicitQueue(entry)) &&
+          (("localDelivery" in entry && entry.localDelivery === true) ||
+            explicitQueue(entry)) &&
           !items.some(
             (item) =>
               item.role === "user" &&
