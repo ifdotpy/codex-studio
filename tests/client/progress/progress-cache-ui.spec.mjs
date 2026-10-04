@@ -181,23 +181,34 @@ test("Progress Cache Ui", async ({
     const currentText = () =>
       panel().locator(".agent-panel-current, .agent-panel-saved");
     await currentText().getByText(texts.lead, { exact: true }).waitFor();
-    await until(
-      () =>
-        responses.some(
-          (response) =>
-            response.agent === other.id && response.markdown === texts.other,
-        ),
-      "An unvisited chat prefetches its actual progress file",
-    );
     assert.equal(
       await page
         .locator(`[data-chat="${lead.id}"]`)
         .getAttribute("aria-current"),
       "true",
     );
-    console.log(
-      "PASS unvisited chat progress loads in the existing background prefetch",
+    const beforeOtherNavigation = responses.length;
+    await page.locator(`[data-chat="${other.id}"]`).click();
+    await until(
+      () =>
+        responses
+          .slice(beforeOtherNavigation)
+          .some(
+            (response) =>
+              response.agent === other.id && response.markdown === texts.other,
+          ),
+      "Explicitly navigating to another chat reads its actual progress file",
     );
+    await currentText().getByText(texts.other, { exact: true }).waitFor();
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await currentText().getByText(texts.lead, { exact: true }).waitFor();
+    assert.equal(
+      await page
+        .locator(`[data-chat="${lead.id}"]`)
+        .getAttribute("aria-current"),
+      "true",
+    );
+    console.log("PASS explicit navigation reads the target chat's progress");
     await page.evaluate(
       ({ lead, other }) => {
         window.progressFlashes = [];
@@ -287,11 +298,9 @@ test("Progress Cache Ui", async ({
     );
     assert.equal(await currentText().textContent(), texts.lead);
     console.log(
-      "PASS prefetched and visited progress render in the first frame with panel HTTP held",
+      "PASS visited progress renders in the first frame with panel HTTP held",
     );
 
-    await writeFile(files.get(lead.id), texts.update);
-    const updated = await readPanel(lead);
     await switchFrame(other, texts.other);
     await release();
     await until(
@@ -302,32 +311,39 @@ test("Progress Cache Ui", async ({
         ),
       "Other progress remains available",
     );
-    await until(
-      () =>
-        responses.some(
-          (response) =>
-            response.agent === lead.id &&
-            response.revision === updated.revision,
-        ),
-      "The background refresh reads the changed file before switching back",
-    );
     assert.equal(await panel().getAttribute("data-agent"), other.id);
     assert.equal(
       await currentText().textContent(),
       texts.other,
       "An old chat response cannot replace the current chat",
     );
+    await writeFile(files.get(lead.id), texts.update);
+    const updated = await readPanel(lead);
+    const beforeLeadActivation = responses.length;
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await panel()
       .locator(".agent-panel-current")
       .getByText(texts.update, { exact: true })
       .waitFor();
+    await until(
+      () =>
+        responses
+          .slice(beforeLeadActivation)
+          .some(
+            (response) =>
+              response.agent === lead.id &&
+              response.revision === updated.revision,
+          ),
+      "Selecting the panel reads its current progress revision",
+    );
     assert.equal(
       await panel().getAttribute("data-panel-revision"),
       updated.revision,
     );
     assert.equal(await panel().getAttribute("data-cached"), "no");
-    console.log("PASS background revision refresh preserves chat isolation");
+    console.log(
+      "PASS selected panel reads its current revision with chat isolation",
+    );
 
     assert.deepEqual(
       await page.evaluate(() => window.progressFlashes || []),

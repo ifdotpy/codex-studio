@@ -542,7 +542,8 @@ class Supervisor:
                 db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
                            (now, "Closed by operator after verified test/unknown-client ownership", handle))
                 db.commit()
-                return {"closed": True, "handle": handle, "pid": request["expectedPid"]}
+            result = {"closed": True, "handle": handle, "pid": request["expectedPid"]}
+            return result
         handle = request.get("handle")
         if not isinstance(handle, str) or not handle or len(handle) > 180:
             raise ValueError("Invalid supervisor handle")

@@ -181,6 +181,9 @@ def inventory():
         entries[path.relative_to(ROOT).as_posix()] = "component"
     for path in (ROOT / "scripts/benchmarks").rglob("test_*.py"):
         entries[path.relative_to(ROOT).as_posix()] = category(path)
+    for path in (ROOT / "scripts").glob("test_codex_*.py"):
+        if is_unittest_suite(path):
+            entries[path.relative_to(ROOT).as_posix()] = "component"
     for path, kind in LEGACY_SERVER_JS.items():
         if (ROOT / path).is_file():
             entries[path] = kind

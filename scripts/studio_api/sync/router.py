@@ -6,15 +6,17 @@ import asyncio
 import json
 import sqlite3
 import time
-from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, cast
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.sse import format_sse_event
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from studio_api.models import ErrorResponse
+from studio_api.responses import register_route_components
 from studio_api.sync.models import (
     DraftPushRequest,
     SyncGenerationState,
@@ -26,6 +28,15 @@ from studio_api.sync.models import (
     SyncStreamQuery,
     TranscriptStreamQuery,
 )
+from studio_api.sync.resources.models import (
+    DraftsResource,
+    ResourceChangeEvent,
+    ResourceHeartbeatEvent,
+    PanelResource,
+    ResourceRef,
+    ResourceTokenRatesEvent,
+    TranscriptResource,
+)
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -35,6 +46,10 @@ SYNC_BATCH_LIMIT = 100
 SYNC_ENTITY_PAGE_LIMIT = 500
 SYNC_STREAM_BYTE_LIMIT = 1_048_576
 SYNC_HEARTBEAT_SECONDS = 15.0
+RESOURCE_HEARTBEAT_SECONDS = 15.0
+MAX_RESOURCE_QUERY_BYTES = 65_536
+MAX_RESOURCE_COUNT = 256
+RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
 SYNC_POLL_SECONDS = 0.25
 TRANSCRIPT_COALESCE_SECONDS = 0.08
 SHARED_STREAM_POLL_SECONDS = 1.0
@@ -81,6 +96,33 @@ class TokenRateReader(Protocol):
     def workspace_snapshot(self) -> dict[str, object]: ...
 
 
+class PanelAgentValidator(Protocol):
+    def db(self) -> ContextManager[sqlite3.Connection]: ...
+    def checked_actor(self, db: sqlite3.Connection, agent_id: str) -> object: ...
+
+
+def _active_panel_agents(runtime: PanelAgentValidator, resources: Sequence[ResourceRef]) -> frozenset[str]:
+    """Validate panel identities before a native watcher can create their directory."""
+    agents = {
+        resource.root.agentId
+        for resource in resources
+        if isinstance(resource.root, PanelResource)
+    }
+    active: set[str] = set()
+    if not agents:
+        return frozenset()
+    with runtime.db() as db:
+        for agent_id in agents:
+            try:
+                runtime.checked_actor(db, agent_id)
+            except ValueError:
+                # Keep stale refs in the baseline so the client's targeted read
+                # can observe the normal not-found result; simply don't watch them.
+                continue
+            active.add(agent_id)
+    return frozenset(active)
+
+
 def _sync_store(context: ApiContext) -> SyncStoreContract:
     # SyncStore remains a legacy untyped service; keep that boundary explicit.
     return cast(SyncStoreContract, context.sync())
@@ -97,7 +139,23 @@ def _query_int(request: Request, key: str, default: int) -> int:
 
 
 def _event(event: str, payload: object) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+    return format_sse_event(event=event, data_str=json.dumps(payload, ensure_ascii=False))
+
+
+def _legacy_message(payload: object) -> bytes:
+    """Keep transcript updates on EventSource's default `message` channel."""
+    return format_sse_event(data_str=json.dumps(payload, ensure_ascii=False))
+
+
+def _resource_event(
+    event: str,
+    payload: ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent,
+) -> bytes:
+    return format_sse_event(
+        event=event,
+        id=str(payload.revision),
+        data_str=payload.model_dump_json(by_alias=True),
+    )
 
 
 def _stream_response(content: AsyncIterator[bytes], protocol_v1: bool = False) -> StreamingResponse:
@@ -121,12 +179,12 @@ def create_router(context: ApiContext) -> APIRouter:
     def protocol(request: Request) -> object:
         from pathlib import Path
 
-        capabilities = ["pull", "stream", "streamChanges", "entityReset"]
+        capabilities = ["pull", "stream", "streamChanges", "entityReset", "typedResources", "tokenRates"]
         if (Path(context.canvas.root) / "canvas.sock").exists():
             capabilities.append("unixSocket")
         value = {
             "protocolVersion": 1,
-            "supportedVersions": [1, 2],
+            "supportedVersions": [1, 2, 3],
             "capabilities": capabilities,
             "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
             "pullEndpoint": "/api/sync/pull",
@@ -186,7 +244,22 @@ def create_router(context: ApiContext) -> APIRouter:
         responses={
             200: {
                 "description": "Server-sent sync updates",
-                "content": {"text/event-stream": {"schema": {"type": "string"}}},
+                "content": {
+                    "text/event-stream": {
+                        "schema": {
+                            "oneOf": [
+                                {"$ref": "#/components/schemas/ResourceChangeEvent"},
+                                {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                                {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
+                            ],
+                            "x-sse-events": {
+                                "resources": "ResourceChangeEvent",
+                                "heartbeat": "ResourceHeartbeatEvent",
+                                "token-rates": "ResourceTokenRatesEvent",
+                            },
+                        }
+                    }
+                },
             },
             **ERROR_RESPONSES,
         },
@@ -195,13 +268,84 @@ def create_router(context: ApiContext) -> APIRouter:
         store = _sync_store(context)
         protocol_value = _first(request, "protocol")
         header_version = request.headers.get("X-Codex-Sync-Protocol")
-        if protocol_value not in (None, "1", "2") or header_version not in (None, "1", "2"):
+        if protocol_value not in (None, "1", "2", "3") or header_version not in (None, "1", "2", "3"):
             response = context.send(
                 request,
-                {"error": "Unsupported sync protocol version", "supportedVersions": [1, 2]},
+                {"error": "Unsupported sync protocol version", "supportedVersions": [1, 2, 3]},
                 status=426,
             )
             return cast(StreamingResponse, response)
+
+        if protocol_value and header_version and protocol_value != header_version:
+            return cast(StreamingResponse, context.send(
+                request,
+                {"error": "Conflicting sync protocol versions", "supportedVersions": [1, 2, 3]},
+                status=426,
+            ))
+
+        if protocol_value == "3" or header_version == "3":
+            resources_json = _first(request, "resources", "") or ""
+            if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Invalid resource subscription"}, status=400
+                ))
+            try:
+                raw_resources = json.loads(resources_json)
+                resources = RESOURCE_REFS_ADAPTER.validate_python(raw_resources)
+                if not resources or len(resources) > MAX_RESOURCE_COUNT:
+                    raise ValueError("Invalid resource count")
+                last_event_id = request.headers.get("Last-Event-ID")
+                if last_event_id is not None:
+                    if int(last_event_id) < 0 or int(last_event_id) > MAX_SAFE_CURSOR:
+                        raise ValueError("Invalid last event ID")
+            except (ValueError, TypeError, ValidationError):
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Invalid resource subscription"}, status=400
+                ))
+
+            try:
+                runtime = context.runtime
+                panel_agent_ids = frozenset(
+                    resource.root.agentId
+                    for resource in resources
+                    if isinstance(resource.root, PanelResource)
+                )
+                if panel_agent_ids and runtime is None:
+                    return cast(StreamingResponse, context.send(
+                        request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
+                    ))
+                active_panel_agents = (
+                    await run_in_threadpool(_active_panel_agents, runtime, resources)
+                    if runtime is not None and panel_agent_ids else None
+                )
+                subscription = context.resource_hub().subscribe(
+                    resources,
+                    loop=asyncio.get_running_loop(),
+                    reconnect=last_event_id is not None,
+                    progress_agent_ids=active_panel_agents,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
+                ))
+
+            async def resource_events() -> AsyncIterator[bytes]:
+                runtime = context.runtime
+                try:
+                    yield _resource_event("resources", subscription.initial)
+                    yield _resource_event("token-rates", subscription.initial_token_rates)
+                    while not await request.is_disconnected() and not (runtime and runtime.closed):
+                        event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                        if isinstance(event, ResourceTokenRatesEvent):
+                            yield _resource_event("token-rates", event)
+                        elif isinstance(event, ResourceChangeEvent):
+                            yield _resource_event("resources", event)
+                        elif event is None:
+                            yield _resource_event("heartbeat", subscription.heartbeat())
+                finally:
+                    subscription.close()
+
+            return _stream_response(resource_events())
 
         is_v1 = protocol_value == "1" or header_version == "1"
         query_scope = _first(request, "scope", "") or ""
@@ -332,6 +476,23 @@ def create_router(context: ApiContext) -> APIRouter:
 
         return _stream_response(events())
 
+    resource_event_route = router.routes[-1]
+    register_route_components(
+        resource_event_route,
+        {
+            "ResourceRef": ResourceRef.model_json_schema(ref_template="#/components/schemas/{model}"),
+            "ResourceChangeEvent": ResourceChangeEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "ResourceHeartbeatEvent": ResourceHeartbeatEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "ResourceTokenRatesEvent": ResourceTokenRatesEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
+
     @router.get(
         "/api/transcript/stream",
         response_class=StreamingResponse,
@@ -349,46 +510,83 @@ def create_router(context: ApiContext) -> APIRouter:
         if runtime is None:
             return cast(StreamingResponse, context.send(request, {"error": "Not found"}, status=404))
         agent_id = _first(request, "id", "") or ""
-        await run_in_threadpool(runtime.transcript, agent_id)
+        subscription = None
+        try:
+            subscription = context.resource_hub().subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId=agent_id))],
+                loop=asyncio.get_running_loop(),
+            )
+            initial_data = await run_in_threadpool(runtime.transcript, agent_id)
+        except BaseException as error:
+            if subscription is not None:
+                subscription.close()
+            if not isinstance(error, (OSError, ValueError, RuntimeError, sqlite3.Error)):
+                raise
+            return cast(StreamingResponse, context.send(
+                request, {"error": str(error) or "Transcript stream is unavailable"}, status=503
+            ))
 
         async def transcript_events() -> AsyncIterator[bytes]:
-            revision: int | None = -1
             previous: dict[str, dict[str, object]] = {}
             version = 0
             previous_order: list[str] | None = None
             try:
+                data = dict(initial_data)
+                records = {item["id"]: item for item in data.pop("items")}
+                previous_metadata = data
+                previous = records
+                previous_order = list(records)
+                version += 1
+                yield _legacy_message({
+                    **data, "version": version, "replace": True,
+                    "items": [{"id": item_id, "replace": item} for item_id, item in records.items()],
+                    "order": previous_order,
+                })
                 while not await request.is_disconnected() and not runtime.closed:
-                    current, data = await run_in_threadpool(runtime.wait_transcript, agent_id, revision)
-                    if current is None:
-                        return
-                    if data is None:
+                    event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                    if event is None:
                         yield b": heartbeat\n\n"
-                    else:
-                        records = {item["id"]: item for item in data.pop("items")}
-                        order = list(records)
-                        changed: list[dict[str, object]] = []
-                        for item_id, item in records.items():
-                            old = previous.get(item_id)
-                            if old == item:
-                                continue
-                            old_text = old.get("text") if old else None
-                            new_text = item.get("text")
-                            old_rest = {key: value for key, value in old.items() if key != "text"} if old else {}
-                            new_rest = {key: value for key, value in item.items() if key != "text"}
-                            if (isinstance(old_text, str) and isinstance(new_text, str)
-                                    and new_text.startswith(old_text) and old_rest == new_rest):
-                                changed.append({"id": item_id, "append": new_text[len(old_text):]})
-                            else:
-                                changed.append({"id": item_id, "replace": item})
-                        version += 1
-                        payload = {**data, "version": version, "replace": revision == -1, "items": changed}
-                        if revision == -1 or order != previous_order:
-                            payload["order"] = order
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
-                        revision, previous, previous_order = current, records, order
-                    await asyncio.sleep(TRANSCRIPT_COALESCE_SECONDS)
+                        continue
+                    if isinstance(event, ResourceTokenRatesEvent):
+                        continue
+                    data = await run_in_threadpool(runtime.transcript, agent_id)
+                    records = {item["id"]: item for item in data.pop("items")}
+                    metadata_changed = data != previous_metadata
+                    order = list(records)
+                    changed: list[dict[str, object]] = []
+                    for item_id, item in records.items():
+                        old = previous.get(item_id)
+                        if old == item:
+                            continue
+                        old_text = old.get("text") if old else None
+                        new_text = item.get("text")
+                        old_rest = {key: value for key, value in old.items() if key != "text"} if old else {}
+                        new_rest = {key: value for key, value in item.items() if key != "text"}
+                        if (isinstance(old_text, str) and isinstance(new_text, str)
+                                and new_text.startswith(old_text) and old_rest == new_rest):
+                            changed.append({"id": item_id, "append": new_text[len(old_text):]})
+                        else:
+                            changed.append({"id": item_id, "replace": item})
+                    removed = [item_id for item_id in previous if item_id not in records]
+                    if not changed and not removed and order == previous_order and not metadata_changed:
+                        previous = records
+                        continue
+                    version += 1
+                    payload = {
+                        **data,
+                        "version": version,
+                        "replace": False,
+                        "items": changed,
+                        **({"removed": removed} if removed else {}),
+                    }
+                    if order != previous_order:
+                        payload["order"] = order
+                    yield _legacy_message(payload)
+                    previous, previous_order, previous_metadata = records, order, data
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
                 yield _event("unavailable", {"error": str(error)})
+            finally:
+                subscription.close()
 
         return _stream_response(transcript_events())
 
@@ -401,6 +599,15 @@ def create_router(context: ApiContext) -> APIRouter:
         if workspace != identity["workspaceId"]:
             return context.send(request, {"error": "The server workspace changed. Reload before sending."}, status=409)
         body_rows = body.model_dump(mode="json", by_alias=True, exclude_unset=True)["rows"]
-        return context.send(request, store.push_drafts(body_rows))
+        previous_sequence = store.draft_sequence()
+        result = store.push_drafts(body_rows)
+        if store.draft_sequence() != previous_sequence:
+            from studio_api.sync.resources.hub import publish_resources
 
+            publish_resources(context.canvas.root, ResourceRef(DraftsResource(kind="drafts")))
+        return context.send(request, result)
+
+    from studio_api.sync.resources.relay.router import create_router as create_resource_notify_router
+
+    router.include_router(create_resource_notify_router(context))
     return router

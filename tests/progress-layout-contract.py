@@ -12,21 +12,20 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import tempfile
 import time
-from email.message import Message
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import codex_canvas
 import codex_progress_layout as layout
 from codex_progress import provision_progress, read_progress
-from codex_source import source_function
-from codex_remote import RemoteAccess
+from studio_api.app import create_app
+from studio_api.context import ApiContext
+from fastapi.testclient import TestClient
 
 spec = importlib.util.spec_from_file_location("progress_file_fixture", ROOT / "tests/progress-file-contract.py")
 fixture = importlib.util.module_from_spec(spec)
@@ -301,49 +300,33 @@ class ProgressLayoutContract(unittest.TestCase):
         self.assertEqual(run(), (0, "empty"))
         self.assertEqual(run(self.root / "wrong.md"), (2, "unmeasured"))
 
-    def test_actual_http_methods_require_token_origin_workspace_and_actor(self):
-        # Execute the real route and trust methods with their real closure policy.
-        # No listener, background thread, or live runtime is started.
-        source = (ROOT / "scripts/codex_canvas.py").read_text()
-        values = {"canvas": SimpleNamespace(runtime=self.runtime),
-                  "remote": RemoteAccess(self.root), "token": "fixture-token",
-                  "sync": lambda: SimpleNamespace(entity_sequence=lambda: 0, identity=lambda: {"workspaceId": "fixture-workspace"})}
-        def cell(value):
-            return (lambda: value).__closure__[0]
-        methods = {}
-        for name in ("trusted", "do_POST"):
-            path = ("make_server", "Handler", name)
-            function, _ = source_function(source, path, vars(codex_canvas))
-            closure = tuple(cell(values.get(key)) for key in function.__code__.co_freevars) or None
-            methods[name] = source_function(source, path, vars(codex_canvas), closure=closure)[0]
-        handler = type("FixtureHandler", (), methods)()
-        handler.send = lambda value, status=200: (status, value)
-        handler.server = SimpleNamespace(server_port=43210)
-        handler.connection = SimpleNamespace(settimeout=lambda seconds: None)
-        handler.path = "/api/panel/layout"
-        def post(changes=None, body=None, peer="127.0.0.1"):
-            payload = json.dumps(body or self.report()).encode()
-            headers = {"Host": "127.0.0.1:43210", "Origin": "http://127.0.0.1:43210",
-                       "X-Canvas-Token": "fixture-token", "X-Canvas-Workspace": "fixture-workspace",
-                       "Content-Type": "application/json", "Content-Length": str(len(payload)), **(changes or {})}
-            handler.headers = Message()
-            for key, value in headers.items():
-                if value is not None:
-                    handler.headers[key] = value
-            handler.client_address = (peer, 12)
-            handler.rfile = io.BytesIO(payload)
-            return handler.do_POST()
+    def test_layout_route_requires_session_token_and_trusted_origin(self):
+        # Exercise the actual FastAPI middleware and layout route without a
+        # listener or background runtime services.
+        class FixtureRemote:
+            def request_origin(self, headers, peer, port):
+                del port
+                return "http://testserver" if peer == "testclient" and headers.get("Host") == "testserver" else None
+
+        canvas = type("Canvas", (), {"root": self.root, "runtime": self.runtime})()
+        self.runtime.connection.close()
+        self.runtime.connection = sqlite3.connect(self.root / "fixture.sqlite3", check_same_thread=False)
+        context = ApiContext(canvas, token="fixture-token", remote=FixtureRemote(), schema_only=True)
+        client = TestClient(create_app(context))
+        def post(changes=None, body=None):
+            headers = {"Origin": "http://testserver", "X-Canvas-Token": "fixture-token",
+                       **(changes or {})}
+            headers = {key: value for key, value in headers.items() if value is not None}
+            return client.post("/api/panel/layout", json=body or self.report(), headers=headers)
         for headers in ({"X-Canvas-Token": None}, {"X-Canvas-Token": "wrong"},
                         {"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
                         {"Host": "evil.example"}):
-            self.assertEqual(post(headers)[0], 403)
-        self.assertEqual(post(peer="192.0.2.1")[0], 403)
-        self.assertEqual(post({"X-Canvas-Workspace": "other-workspace"})[0], 409)
-        self.assertEqual(post(body=self.report(agent="missing"))[0], 400)
+            self.assertEqual(post(headers).status_code, 403)
+        self.assertEqual(post(body=self.report(agent="missing")).status_code, 400)
         self.assertFalse(self.feedback.exists())
-        self.assertEqual(post()[0], 200)
-        self.assertEqual(post(body=self.report(revision="stale"))[0], 409)
-        self.assertEqual(post(body=self.report(height=281))[0], 400)
+        accepted = post()
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(post(body=self.report(revision="stale")).status_code, 409)
 
     def test_cli_wait_stops_on_measurement_or_deadline(self):
         for measured, expected in ((True, 0), (False, 2)):

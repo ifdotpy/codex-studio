@@ -2,16 +2,23 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   prefetchTranscript,
   TRANSCRIPT_PREFETCH_LIMIT,
+  watchResourceChanges,
   watchSyncInvalidations,
-  watchTranscriptRevisions,
 } from "../sync/client";
-import { peekTranscript } from "../sync/transcriptCache";
-import { prefetchProgress } from "../components/agents/progressCache";
+import type { ResourceVersion } from "../sync/resourceEvents";
+import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
+import { readProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
+import {
+  foregroundTranscriptPending,
+  TranscriptRefreshGate,
+} from "./chatPrefetchState";
 
-// One background slot shares history and progress work. A completed prefetch
-// releases its projection and holds no per-chat stream.
+const MAX_TRANSCRIPT_WATCHES = 12;
+
+// History stays warm only while a targeted transcript notification says it
+// changed. Progress is fetched lazily for an explicit navigation target.
 export function useChatPrefetch(
   data: Snapshot | null,
   opened: string | null,
@@ -23,46 +30,130 @@ export function useChatPrefetch(
     request: (id: string) => void;
     changed: () => void;
   } | null>(null);
+
   useEffect(() => {
     if (!workspaceId) return;
     let stopped = false;
     let active = 0;
-    let readyChat: string | null = null;
     let preferred: string | null = null;
-    let revisions: Record<string, number> | null = null;
-    const readyAt = Date.now() + 1000;
-    const running = new Set<string>();
-    const checked = new Map<string, { version: string; at: number }>();
-    const progressChecked = new Map<string, number>();
-    const failed = new Map<string, number>();
-    const progressFailed = new Map<string, number>();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = (delay: number) => {
+    const running = new Map<string, AbortController>();
+    const failedHistory = new Set<string>();
+    const pendingHistory = new Set<string>();
+    const pendingVersions = new Map<string, ResourceVersion>();
+    const refreshGate = new TranscriptRefreshGate();
+    const pendingProgress = new Set<string>();
+    const transcriptStops = new Map<string, () => void>();
+    let foregroundId: string | null | undefined;
+    let foregroundReady = false;
+    let stopForegroundCache: (() => void) | undefined;
+
+    const schedule = (delay = 0) => {
       clearTimeout(timer);
       if (!stopped) timer = setTimeout(pump, delay);
+    };
+    const watchForegroundTranscript = () => {
+      const snapshot = current.current;
+      const id = snapshot.data?.threads.some(
+        (agent) => agent.id === snapshot.opened && agent.source === "managed",
+      )
+        ? snapshot.opened
+        : null;
+      if (foregroundId === id) return;
+      stopForegroundCache?.();
+      stopForegroundCache = undefined;
+      foregroundId = id;
+      foregroundReady = !id || !!peekTranscript(workspaceId, id);
+      if (!id || foregroundReady) return;
+      stopForegroundCache = subscribeTranscript(workspaceId, id, () => {
+        foregroundReady = true;
+        schedule();
+      });
+    };
+    const watchTranscript = (id: string) => {
+      if (transcriptStops.has(id)) return;
+      const stop = watchResourceChanges(
+        { kind: "transcript", agentId: id },
+        (version) => {
+          // Reconnect can echo the cached revision while its refresh is active.
+          // A newer revision still queues a followup pull below.
+          if (refreshGate.shouldSuppress(id, version)) return;
+          failedHistory.delete(id);
+          pendingHistory.add(id);
+          if (version) pendingVersions.set(id, version);
+          schedule();
+        },
+      );
+      transcriptStops.set(id, stop);
+    };
+    const run = (
+      id: string,
+      stateDir: string,
+      history: boolean,
+      progress: boolean,
+      version?: ResourceVersion,
+    ) => {
+      const controller = new AbortController();
+      running.set(id, controller);
+      if (history) refreshGate.start(id, version);
+      active++;
+      void (async () => {
+        let historySucceeded = false;
+        try {
+          if (history) {
+            pendingHistory.delete(id);
+            const done = await prefetchTranscript(
+              workspaceId,
+              id,
+              controller.signal,
+            );
+            historySucceeded = done;
+            if (!done && !controller.signal.aborted && !pendingHistory.has(id))
+              failedHistory.add(id);
+          }
+          // Version suppression covers the history read, not any later
+          // progress request that happens to share this run.
+          if (history) refreshGate.historySettled(id);
+          if (progress && !controller.signal.aborted) {
+            pendingProgress.delete(id);
+            await readProgress(stateDir, id, controller.signal);
+          }
+        } catch {
+          if (history && !controller.signal.aborted && !pendingHistory.has(id))
+            failedHistory.add(id);
+        } finally {
+          running.delete(id);
+          if (history) {
+            const retryAfterFailure = refreshGate.finish(
+              id,
+              historySucceeded,
+              controller.signal.aborted,
+            );
+            if (
+              retryAfterFailure &&
+              !historySucceeded &&
+              !controller.signal.aborted &&
+              !pendingHistory.has(id)
+            ) {
+              failedHistory.delete(id);
+              pendingHistory.add(id);
+            }
+          }
+          active--;
+          schedule();
+        }
+      })();
     };
     const pump = () => {
       clearTimeout(timer);
       if (stopped || document.hidden || navigator.onLine === false) return;
-      if (Date.now() < readyAt) {
-        schedule(readyAt - Date.now());
-        return;
-      }
       const { data, opened } = current.current;
-      if (!data) {
-        schedule(1000);
+      if (!data || (!opened && data.threads.length > 0)) return;
+      watchForegroundTranscript();
+      if (foregroundTranscriptPending(foregroundId ?? null, foregroundReady))
         return;
-      }
       const selected = data.threads.find((agent) => agent.id === opened);
-      if (selected?.source === "managed" && opened && readyChat !== opened) {
-        if (!peekTranscript(workspaceId, opened)) {
-          schedule(500);
-          return;
-        }
-        readyChat = opened;
-      }
       const root = selected?.isLead ? selected.id : selected?.rootId;
-      const now = Date.now();
       const pool = data.threads.filter(
         (agent) =>
           agent.source === "managed" && agent.id !== opened && !agent.archived,
@@ -78,141 +169,110 @@ export function useChatPrefetch(
           Number(b.updated || b.created) - Number(a.updated || a.created),
       );
       const mobile = window.matchMedia("(max-width: 760px)").matches;
-      const historyTargets = mobile
+      const targets = mobile
         ? new Set(ranked.slice(0, 2).map((agent) => agent.id))
-        : null;
-      // Progress files have no transcript revision. Keep their separate checks
-      // limited to the nearest switch targets instead of every worker.
-      const progressTargets = new Set(
-        ranked.slice(0, 31).map((agent) => agent.id),
+        : new Set(
+            ranked.slice(0, MAX_TRANSCRIPT_WATCHES).map((agent) => agent.id),
+          );
+      for (const [id, stop] of transcriptStops) {
+        if (!targets.has(id)) {
+          stop();
+          transcriptStops.delete(id);
+          pendingHistory.delete(id);
+          pendingVersions.delete(id);
+          refreshGate.forget(id);
+          failedHistory.delete(id);
+          running.get(id)?.abort();
+        }
+      }
+      for (const [id, controller] of running)
+        if (!targets.has(id)) controller.abort();
+      for (const id of pendingProgress)
+        if (!targets.has(id)) pendingProgress.delete(id);
+      const candidates = ranked.filter(
+        (agent) =>
+          targets.has(agent.id) &&
+          pendingHistory.has(agent.id) &&
+          !failedHistory.has(agent.id) &&
+          !running.has(agent.id),
       );
-      const candidates = ranked.map((agent) => {
-        const version = revisions
-          ? String(revisions[agent.id] ?? 0)
-          : JSON.stringify(agent);
-        const previous = checked.get(agent.id);
-        const interval = agent.inFlight ? 5000 : 60000;
-        const changed = previous?.version !== version;
-        const historyAt = Math.max(
-          failed.get(agent.id) || 0,
-          !previous || changed
-            ? 0
-            : revisions
-              ? Infinity
-              : previous.at + interval,
-        );
-        const progressAt = progressTargets.has(agent.id)
-          ? Math.max(
-              progressFailed.get(agent.id) || 0,
-              (progressChecked.get(agent.id) || 0) + interval,
-            )
-          : Infinity;
-        return {
-          agent,
-          version,
-          historyAt:
-            historyTargets && !historyTargets.has(agent.id)
-              ? Infinity
-              : historyAt,
-          progressAt,
-        };
-      });
-      for (const { agent, version, historyAt, progressAt } of candidates) {
+      for (const agent of ranked)
+        if (targets.has(agent.id)) watchTranscript(agent.id);
+      for (const agent of candidates) {
         if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
-        if (running.has(agent.id) || Math.min(historyAt, progressAt) > now)
-          continue;
-        active++;
-        running.add(agent.id);
-        const historyDue = historyAt <= now;
-        const progressDue = progressAt <= now;
-        void (async () => {
-          // Keep at most one request in each background slot.
-          const [history] = await Promise.allSettled([
-            historyDue
-              ? prefetchTranscript(workspaceId, agent.id)
-              : Promise.resolve(null),
-          ]);
-          const [progress] = await Promise.allSettled([
-            progressDue
-              ? prefetchProgress(data.stateDir, agent.id)
-              : Promise.resolve(null),
-          ]);
-          return [history, progress] as const;
-        })()
-          .then(([history, progress]) => {
-            if (stopped) return;
-            if (historyDue) {
-              if (history.status === "fulfilled" && history.value) {
-                checked.set(agent.id, { version, at: Date.now() });
-                failed.delete(agent.id);
-              } else
-                failed.set(
-                  agent.id,
-                  Date.now() + (history.status === "rejected" ? 15000 : 3000),
-                );
-            }
-            if (progressDue) {
-              if (progress.status === "fulfilled" && progress.value) {
-                progressChecked.set(agent.id, Date.now());
-                progressFailed.delete(agent.id);
-              } else progressFailed.set(agent.id, Date.now() + 15000);
-            }
-          })
-          .finally(() => {
-            active--;
-            running.delete(agent.id);
-            schedule(50);
-          });
+        const version = pendingVersions.get(agent.id);
+        pendingVersions.delete(agent.id);
+        run(
+          agent.id,
+          data.stateDir,
+          true,
+          pendingProgress.has(agent.id),
+          version,
+        );
       }
-      const eligible = new Set(data.threads.map((agent) => agent.id));
-      for (const records of [checked, progressChecked, failed, progressFailed])
-        for (const id of records.keys())
-          if (!eligible.has(id)) records.delete(id);
-      if (active < TRANSCRIPT_PREFETCH_LIMIT) {
-        const due = candidates
-          .filter(({ agent }) => !running.has(agent.id))
-          .map(({ historyAt, progressAt }) => Math.min(historyAt, progressAt));
-        schedule(Math.max(50, Math.min(60000, ...due.map((at) => at - now))));
+      if (active >= TRANSCRIPT_PREFETCH_LIMIT) return;
+      for (const agent of ranked) {
+        if (!pendingProgress.has(agent.id) || running.has(agent.id)) continue;
+        if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
+        pendingProgress.delete(agent.id);
+        run(agent.id, data.stateDir, false, true);
       }
+      for (const id of pendingHistory)
+        if (!targets.has(id)) {
+          pendingHistory.delete(id);
+          pendingVersions.delete(id);
+        }
     };
     const request = (id: string) => {
       if (current.current.opened === id) return;
       preferred = id;
-      const previous = checked.get(id);
-      // Rehydrate an evicted chat before a pointer click or keyboard activation.
-      // Coalesce repeated pointer/focus events for the same fresh page.
-      if (
-        !peekTranscript(workspaceId, id) ||
-        !previous ||
-        Date.now() - previous.at > 1000
-      )
-        checked.delete(id);
-      progressChecked.delete(id);
-      schedule(0);
+      if (!peekTranscript(workspaceId, id)) {
+        failedHistory.delete(id);
+        pendingHistory.add(id);
+      }
+      pendingProgress.add(id);
+      schedule();
     };
-    control.current = { request, changed: () => schedule(0) };
+    control.current = {
+      request,
+      changed: () => {
+        watchForegroundTranscript();
+        schedule();
+      },
+    };
     schedule(1000);
-    const stopRevisions = watchTranscriptRevisions(workspaceId, (next) => {
-      revisions = next;
-      schedule(0);
-    });
-    const stopInvalidations = watchSyncInvalidations("state", () =>
-      schedule(0),
-    );
-    const stopResume = onResume(() => {
-      // The resumed stream reports changed revisions. Keep idle chat checks.
-      if (!revisions) checked.clear();
-      schedule(0);
-    });
+    const stopInvalidations = watchSyncInvalidations("state", () => schedule());
+    const stopResume = onResume(() => schedule());
+    const stopVisibility = () => {
+      if (document.hidden || navigator.onLine === false) {
+        for (const controller of running.values()) controller.abort();
+        for (const [id, stop] of transcriptStops) {
+          stop();
+          refreshGate.forget(id);
+        }
+        transcriptStops.clear();
+      }
+      schedule();
+    };
+    document.addEventListener("visibilitychange", stopVisibility);
+    window.addEventListener("online", stopVisibility);
+    window.addEventListener("offline", stopVisibility);
     return () => {
       stopped = true;
       control.current = null;
       clearTimeout(timer);
-      stopRevisions();
+      stopForegroundCache?.();
+      for (const controller of running.values()) controller.abort();
+      for (const stop of transcriptStops.values()) stop();
+      transcriptStops.clear();
       stopInvalidations();
       stopResume();
+      document.removeEventListener("visibilitychange", stopVisibility);
+      window.removeEventListener("online", stopVisibility);
+      window.removeEventListener("offline", stopVisibility);
     };
   }, [workspaceId, data?.stateDir]);
+
   useEffect(() => {
     control.current?.changed();
   }, [data, opened]);

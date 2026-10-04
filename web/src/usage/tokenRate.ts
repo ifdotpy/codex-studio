@@ -1,25 +1,36 @@
+import type { components } from "../generated/api";
+
 // This cache receives volatile SSE events. It never enters the sync database.
-export type TokenRate = {
-  turnId: string;
-  active: boolean;
-  estimated: boolean;
-  rate: number;
-  outputTokens: number;
-};
+export type TokenRate = components["schemas"]["TokenRateValue"];
+type TokenRateEvent = components["schemas"]["ResourceTokenRatesEvent"];
+let watchStream:
+  | ((listener: (event: TokenRateEvent) => void) => () => void)
+  | undefined;
+export function configureTokenRateStream(
+  watch: (listener: (event: TokenRateEvent) => void) => () => void,
+) {
+  watchStream = watch;
+}
 const values = new Map<string, TokenRate | null>();
 const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
 const teamMembers = new Map<string, Set<string>>();
-function validRate(value: TokenRate | null) {
+function validRate(value: unknown): value is TokenRate | null {
   return (
     value === null ||
-    (typeof value.turnId === "string" &&
+    (isRecord(value) &&
+      typeof value.turnId === "string" &&
       typeof value.active === "boolean" &&
       typeof value.estimated === "boolean" &&
+      typeof value.rate === "number" &&
       Number.isFinite(value.rate) &&
       value.rate >= 0 &&
+      typeof value.outputTokens === "number" &&
       Number.isFinite(value.outputTokens) &&
       value.outputTokens >= 0)
   );
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
@@ -41,15 +52,10 @@ export function clearTeamTokenRates(teamId: string) {
 }
 export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
   try {
-    const batch = JSON.parse(event.data);
-    if (
-      batch.teamId !== teamId ||
-      !batch.rates ||
-      typeof batch.rates !== "object" ||
-      Array.isArray(batch.rates)
-    )
+    const batch: unknown = JSON.parse(event.data);
+    if (!isRecord(batch) || batch.teamId !== teamId || !isRecord(batch.rates))
       return;
-    const entries = Object.entries(batch.rates) as [string, TokenRate | null][];
+    const entries = Object.entries(batch.rates);
     if (
       entries.length > 1024 ||
       entries.some(([id, value]) => id.length > 200 || !validRate(value))
@@ -62,14 +68,14 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
         if (!next.has(id)) publishRate(workerRateKey(teamId, id), null);
     teamMembers.set(teamId, next);
     for (const [id, value] of entries)
-      publishRate(workerRateKey(teamId, id), value);
+      if (validRate(value)) publishRate(workerRateKey(teamId, id), value);
   } catch {
     /* Ignore malformed telemetry without affecting the team. */
   }
 }
 export function receiveTokenRate(id: string, event: MessageEvent) {
   try {
-    const value: TokenRate | null = JSON.parse(event.data);
+    const value: unknown = JSON.parse(event.data);
     if (!validRate(value)) return;
     publishRate(id, value);
   } catch {
@@ -89,7 +95,7 @@ function validRates(value: unknown): value is Record<string, TokenRate | null> {
     !Array.isArray(value) &&
     Object.keys(value).length <= 1024 &&
     Object.entries(value).every(
-      ([id, rate]) => id.length <= 200 && validRate(rate as TokenRate | null),
+      ([id, rate]) => id.length <= 200 && validRate(rate),
     ),
   );
 }
@@ -100,9 +106,14 @@ function publishTeam(teamId: string) {
 }
 // Uses the shared workspace stream. No transport or database belongs to a card.
 export function watchTeamTokenRates(teamId: string) {
+  const stopStream =
+    typeof window !== "undefined" && watchStream
+      ? watchStream(receiveResourceTokenRates)
+      : () => {};
   openTeams.set(teamId, (openTeams.get(teamId) || 0) + 1);
   publishTeam(teamId);
   return () => {
+    stopStream();
     const count = (openTeams.get(teamId) || 1) - 1;
     if (count) openTeams.set(teamId, count);
     else {
@@ -110,6 +121,11 @@ export function watchTeamTokenRates(teamId: string) {
       clearTeamTokenRates(teamId);
     }
   };
+}
+export function receiveResourceTokenRates(
+  event: components["schemas"]["ResourceTokenRatesEvent"],
+) {
+  return receiveWorkspaceTokenRates({ rates: event.rates, teams: event.teams });
 }
 export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
   if (

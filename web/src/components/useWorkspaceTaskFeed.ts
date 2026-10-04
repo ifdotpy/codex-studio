@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { get, type ApiReadMetadata, type GetResult } from "../api";
+import { errorText, get, type ApiReadMetadata, type GetResult } from "../api";
 import type { BackgroundTask } from "../types";
+import { watchResourceReads } from "./watchResourceReads";
 
 type TaskFeed = GetResult<"/api/workspace/tasks">;
 
@@ -8,8 +9,10 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
   const [feed, setFeed] = useState<{
     leadId?: string;
     tasks: TaskFeed["tasks"];
+    error: string;
   }>({
     tasks: [],
+    error: "",
   });
   useEffect(() => {
     if (!opened || !leadId) return;
@@ -49,22 +52,39 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
               ordered.slice(0, 100).map((task) => [task.id, task]),
             );
           }
-          if (alive) setFeed({ leadId, tasks: [...tasks.values()] });
+          if (alive) setFeed({ leadId, tasks: [...tasks.values()], error: "" });
         }
-      } catch {
-        // The next five-second poll retries from the last applied cursor.
+      } catch (error) {
+        if (alive)
+          setFeed((previous) => ({
+            leadId,
+            tasks: previous.leadId === leadId ? previous.tasks : [],
+            error: errorText(error),
+          }));
       } finally {
         busy = false;
       }
     };
 
-    void load();
-    const timer = setInterval(() => void load(), 5000);
+    const stop = watchResourceReads(
+      { kind: "tasks", agentId: leadId },
+      load,
+      (error) => {
+        if (alive)
+          setFeed((previous) => ({
+            leadId,
+            tasks: previous.leadId === leadId ? previous.tasks : [],
+            error: errorText(error),
+          }));
+      },
+    );
     return () => {
       alive = false;
-      clearInterval(timer);
+      stop();
     };
   }, [opened, leadId]);
 
-  return feed.leadId === leadId ? feed.tasks : null;
+  return feed.leadId === leadId
+    ? { tasks: feed.tasks, error: feed.error }
+    : null;
 }

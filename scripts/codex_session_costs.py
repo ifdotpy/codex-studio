@@ -25,8 +25,17 @@ def provider_for(model):
     return None
 
 
+def _publish_session_cost(state_dir: str | Path, agent_id: str) -> None:
+    """Invalidate the requested chat after its async estimate settles."""
+    from studio_api.sync.resources.hub import publish_resources
+    from studio_api.sync.resources.models import ResourceRef, SessionCostResource
+
+    publish_resources(state_dir, ResourceRef(SessionCostResource(kind="session-cost", agentId=agent_id)))
+
+
 class SessionCostReader:
     CACHE_ROOTS = 16
+    MAX_QUEUED_REFRESHES = 16
 
     def __init__(self, db_path, pricing, accounts=None, *, state_root=None, clock=time.time):
         self.db_path = Path(db_path)
@@ -40,6 +49,9 @@ class SessionCostReader:
         self.cache = OrderedDict()
         self.file_cache = OrderedDict()
         self.refreshing = set()
+        self.refresh_waiters = OrderedDict()
+        self.refresh_queue = OrderedDict()
+        self.active_refresh_root = None
         self.inflight = {}
         self.lock = threading.RLock()
 
@@ -224,33 +236,97 @@ class SessionCostReader:
             return None
 
     def _start_refresh(self, agent_id, root, *, min_interval=0):
+        start_now = False
+        notify_overflow = False
         with self.lock:
-            # Heavy history reads share one worker across all chats.
-            if self.refreshing:
+            # A root stays refreshing while queued or active. The queue is
+            # bounded; waiter maps exist only for these transient refreshes.
+            if root in self.refreshing:
+                waiters = self.refresh_waiters.setdefault(root, OrderedDict())
+                waiters[agent_id] = None
+                waiters.move_to_end(agent_id)
                 return False
             checked = self.__dict__.setdefault("refresh_checks", OrderedDict()).get(root)
             if checked is not None and self.clock() - checked < min_interval:
                 return False
-            self.refreshing.add(root)
-        try:
-            threading.Thread(target=self._background_refresh, args=(agent_id, root),
-                             name="session-cost-refresh", daemon=True).start()
-        except RuntimeError:
-            with self.lock:
-                self.refreshing.discard(root)
-            return False
-        return True
-
-    def _background_refresh(self, agent_id, root):
-        try:
-            self._compute_shared(agent_id, root, refresh=True)
-            with self.lock:
-                self.__dict__.setdefault("refresh_errors", OrderedDict()).pop(root, None)
+            if (self.active_refresh_root is not None
+                    and len(self.refresh_queue) >= self.MAX_QUEUED_REFRESHES):
+                error = RuntimeError("Session cost refresh queue is full")
+                errors = self.__dict__.setdefault("refresh_errors", OrderedDict())
+                errors[root] = error
+                errors.move_to_end(root)
+                while len(errors) > self.CACHE_ROOTS:
+                    errors.popitem(last=False)
                 checks = self.__dict__.setdefault("refresh_checks", OrderedDict())
                 checks[root] = self.clock()
                 checks.move_to_end(root)
                 while len(checks) > self.CACHE_ROOTS:
                     checks.popitem(last=False)
+                notify_overflow = True
+            else:
+                self.refreshing.add(root)
+                self.refresh_waiters[root] = OrderedDict(((agent_id, None),))
+                self.refresh_waiters.move_to_end(root)
+                if self.active_refresh_root is None:
+                    self.active_refresh_root = root
+                    start_now = True
+                else:
+                    self.refresh_queue[root] = None
+                    self.refresh_queue.move_to_end(root)
+        if notify_overflow:
+            _publish_session_cost(self.state_root, agent_id)
+            return False
+        if not start_now:
+            return True
+        return self._launch_refresh(root, agent_id)
+
+    def _launch_refresh(self, root, agent_id):
+        try:
+            threading.Thread(target=self._background_refresh, args=(agent_id, root),
+                             name="session-cost-refresh", daemon=True).start()
+        except RuntimeError:
+            with self.lock:
+                errors = self.__dict__.setdefault("refresh_errors", OrderedDict())
+                errors[root] = RuntimeError("Could not start session cost refresh")
+                errors.move_to_end(root)
+                while len(errors) > self.CACHE_ROOTS:
+                    errors.popitem(last=False)
+                checks = self.__dict__.setdefault("refresh_checks", OrderedDict())
+                checks[root] = self.clock()
+                checks.move_to_end(root)
+                while len(checks) > self.CACHE_ROOTS:
+                    checks.popitem(last=False)
+                self.refreshing.discard(root)
+                waiters = tuple(self.refresh_waiters.pop(root, ()))
+                if self.active_refresh_root == root:
+                    self.active_refresh_root = None
+                next_refresh = self._take_queued_refresh_locked()
+            for waiter_id in waiters or (agent_id,):
+                _publish_session_cost(self.state_root, waiter_id)
+            if next_refresh is not None:
+                self._launch_refresh(*next_refresh)
+            return False
+        return True
+
+    def _take_queued_refresh_locked(self):
+        if self.active_refresh_root is not None or not self.refresh_queue:
+            return None
+        root, _ = self.refresh_queue.popitem(last=False)
+        waiters = self.refresh_waiters.get(root)
+        if not waiters:
+            self.refreshing.discard(root)
+            return self._take_queued_refresh_locked()
+        self.active_refresh_root = root
+        return root, next(iter(waiters))
+
+    def _background_refresh(self, agent_id, root):
+        with self.lock:
+            previous_cache = self.cache.get(root)
+            previous_error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
+        try:
+            self._compute_shared(agent_id, root, refresh=True)
+            with self.lock:
+                self.__dict__.setdefault("refresh_errors", OrderedDict()).pop(root, None)
         except Exception as error:
             with self.lock:
                 errors = self.__dict__.setdefault("refresh_errors", OrderedDict())
@@ -260,7 +336,28 @@ class SessionCostReader:
                     errors.popitem(last=False)
         finally:
             with self.lock:
+                checks = self.__dict__.setdefault("refresh_checks", OrderedDict())
+                checks[root] = self.clock()
+                checks.move_to_end(root)
+                while len(checks) > self.CACHE_ROOTS:
+                    checks.popitem(last=False)
                 self.refreshing.discard(root)
+                waiters = tuple(self.refresh_waiters.pop(root, ()))
+                if self.active_refresh_root == root:
+                    self.active_refresh_root = None
+                current_cache = self.cache.get(root)
+                current_error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
+                next_refresh = self._take_queued_refresh_locked()
+            previous_error_key = (type(previous_error), str(previous_error)) if previous_error else None
+            current_error_key = (type(current_error), str(current_error)) if current_error else None
+            changed = (current_cache != previous_cache
+                       or current_error_key != previous_error_key)
+            if waiters or changed:
+                publish_ids = waiters or ((agent_id,) if changed else ())
+                for waiter_id in publish_ids:
+                    _publish_session_cost(self.state_root, waiter_id)
+            if next_refresh is not None:
+                self._launch_refresh(*next_refresh)
 
     def snapshot(self, agent_id, *, wait=False):
         db = self._connect()
@@ -305,9 +402,9 @@ class SessionCostReader:
                      and source.get("agentsSignature") == agent_signature
                      and source.get("claudeSignature") == claude_signature)
             changed = not valid
-            started = self._start_refresh(agent_id, root) if changed else False
+            started = self._start_refresh(agent_id, root, min_interval=10) if changed else False
             with self.lock:
-                refreshing = started or root in self.refreshing
+                refreshing = root in self.refreshing
             return {**result, "cacheAgeSeconds": round(age, 1), "refreshing": refreshing}
         result = self._compute_shared(agent_id, root)
         return {**result, "cacheAgeSeconds": 0, "refreshing": False}
@@ -326,9 +423,10 @@ class SessionCostReader:
                        or source.get("pricingSignature") != pricing_signature
                        or source.get("agentsSignature") != agent_signature)
             due = checked is None or self.clock() - checked >= 10
-            started = self._start_refresh(agent_id, root, min_interval=10) if changed or due else False
+            if changed or due:
+                self._start_refresh(agent_id, root, min_interval=10)
             with self.lock:
-                refreshing = changed or started or root in self.refreshing
+                refreshing = root in self.refreshing
             return {**result, "cacheAgeSeconds": round(max(0, self.clock() - cached_at), 1),
                     "refreshing": refreshing}
         self._start_refresh(agent_id, root, min_interval=10)

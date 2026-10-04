@@ -4,9 +4,12 @@ import logging
 import math
 import threading
 import time
+from pathlib import Path
 
 MIN_DURATION = .25
 MAX_RATE = 1000.0
+MAX_RATE_ENTRIES = 1024
+TOKEN_RATE_EXPIRY_SECONDS = 90
 _logged_implausible_correction = False
 NON_TOOLS = {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction', 'compactionSnapshot'}
 
@@ -178,17 +181,79 @@ class TurnRate:
 
 
 class TokenRates:
-    def __init__(self, clock=time.time):
+    def __init__(self, clock=time.time, *, state_dir=None):
         self.clock = clock
+        self.state_dir = Path(state_dir) if state_dir is not None else None
         self.lock = threading.RLock()
         self.entries = OrderedDict()
         self.agents = {}
         self.requests = {}
         self.response_rates = OrderedDict()
         self.pending_response_rates = OrderedDict()
+        self.expiry_lock = threading.Lock()
+        self.expiry_timers = OrderedDict()
+        self._publication_lock = threading.Lock()
+        self._last_published_snapshot = None
+
+    def _publish_if_changed(self, previous):
+        if self.state_dir is None:
+            return
+        # Mutators release self.lock before calling this method. The serializer
+        # then takes a coherent state snapshot briefly and releases self.lock
+        # before synchronous hub publication. Hub code must never call back into
+        # TokenRates or acquire this publication lock.
+        with self._publication_lock:
+            with self.lock:
+                current = self.workspace_snapshot()
+            if current == previous or current == self._last_published_snapshot:
+                return
+            from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
+
+            rates = {
+                agent_id: TokenRateValue(**value)
+                for agent_id, value in current['rates'].items()
+            }
+            teams = {
+                root_id: {
+                    agent_id: TokenRateValue(**value)
+                    for agent_id, value in team.items()
+                }
+                for root_id, team in current['teams'].items()
+            }
+            snapshot = TokenRateSnapshot(rates=rates, teams=teams)
+            from studio_api.sync.resources.hub import publish_token_rates
+
+            publish_token_rates(self.state_dir, snapshot)
+            self._last_published_snapshot = current
+
+    def _schedule_expiry(self, key, agent_id, turn):
+        timer = threading.Timer(TOKEN_RATE_EXPIRY_SECONDS, self._expire, (key, agent_id, turn))
+        timer.daemon = True
+        with self.expiry_lock:
+            prior = self.expiry_timers.pop(key, None)
+            if prior is not None:
+                prior.cancel()
+            self.expiry_timers[key] = timer
+            while len(self.expiry_timers) > MAX_RATE_ENTRIES:
+                _, expired = self.expiry_timers.popitem(last=False)
+                expired.cancel()
+        timer.start()
+
+    def _expire(self, key, agent_id, turn):
+        previous = self.workspace_snapshot()
+        with self.lock:
+            entry = self.entries.get(key)
+            rate = entry.get('rate') if entry else None
+            if rate is None or rate.turn != turn or rate.active:
+                return
+            entry['rate'] = None
+        with self.expiry_lock:
+            self.expiry_timers.pop(key, None)
+        self._publish_if_changed(previous)
 
     def request_started(self, account, connection, thread, request_id, at=None):
         now = at if count(at) is not None else self.clock()
+        previous = self.workspace_snapshot()
         key = (account, connection, thread)
         with self.lock:
             entry = self.entries.get(key)
@@ -197,9 +262,11 @@ class TokenRates:
                 span = 'request:' + str(request_id)
                 rate.start_tool(span, now)
                 self.requests[(account, connection, str(request_id))] = (key, rate.turn, span)
+        self._publish_if_changed(previous)
 
     def request_finished(self, account, connection, request_id, at=None):
         now = at if count(at) is not None else self.clock()
+        previous = self.workspace_snapshot()
         with self.lock:
             request = self.requests.pop((account, connection, str(request_id)), None)
             if request:
@@ -208,16 +275,18 @@ class TokenRates:
                 rate = entry.get('rate') if entry else None
                 if rate and rate.active and rate.turn == turn:
                     rate.finish_tool(span, now)
+        self._publish_if_changed(previous)
 
     def observe(self, agent, method, params, account, connection, at=None):
         key = (account, connection, agent.get('threadId'))
         now = at if count(at) is not None else self.clock()
+        previous = self.workspace_snapshot()
         with self.lock:
             entry = self.entries.setdefault(key, {'agent': agent['id'], 'rate': None, 'lifetime': None})
             entry['root'] = agent.get('rootId') or agent['id']
             self.agents[agent['id']] = key
             self.entries.move_to_end(key)
-            while len(self.entries) > 1024:
+            while len(self.entries) > MAX_RATE_ENTRIES:
                 old_key, old = self.entries.popitem(last=False)
                 if self.agents.get(old['agent']) == old_key:
                     self.agents.pop(old['agent'], None)
@@ -284,6 +353,9 @@ class TokenRates:
                 rate.finish(now)
                 self.requests = {request_id: value for request_id, value in self.requests.items()
                                  if value[0] != key or value[1] != turn}
+        self._publish_if_changed(previous)
+        if method == 'turn/completed' and rate and rate.turn == turn:
+            self._schedule_expiry(key, agent['id'], turn)
 
     def _response(self, rate, output, now, identity, agent_id, thread):
         output = count(output)
@@ -333,6 +405,7 @@ class TokenRates:
             return dict(sample) if sample else None
 
     def stream(self, method, params, account, connection, at=None):
+        previous = self.workspace_snapshot()
         with self.lock:
             entry = self.entries.get((account, connection, params.get('threadId')))
             rate = entry['rate'] if entry else None
@@ -351,6 +424,7 @@ class TokenRates:
                 if output is not None:
                     identity = params.get('responseId') or (('turn', turn_output) if turn_output is not None else None)
                     self._response(rate, output, now, identity, entry['agent'], params.get('threadId'))
+        self._publish_if_changed(previous)
 
     def team_snapshot(self, root_id):
         with self.lock:
@@ -382,4 +456,6 @@ class TokenRates:
 
 def token_rates(runtime):
     rates = runtime.__dict__.get('_token_rates')
-    return rates if rates is not None else runtime.__dict__.setdefault('_token_rates', TokenRates())
+    return rates if rates is not None else runtime.__dict__.setdefault(
+        '_token_rates', TokenRates(state_dir=getattr(runtime, 'root', None))
+    )

@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
 import { errorText, post, type PostResult } from "../api";
+import type { ResourceConnectionState } from "../sync/client";
 import "./realtime-voice.css";
+import { watchResourceReads } from "./watchResourceReads";
+import { watchVoiceTransport } from "./voiceTransport";
 
 type VoiceRecords = PostResult<"/api/voice/records">;
 type VoiceRecord = VoiceRecords["records"][number];
@@ -47,6 +50,9 @@ function NativeVoice({
   const generation = useRef(0);
   const muteWanted = useRef(false);
   const mounted = useRef(true);
+  const starting = useRef(false);
+  const transportState = useRef<ResourceConnectionState>("connecting");
+  const pendingSession = useRef<Session | null>(null);
   const cursor = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -57,6 +63,7 @@ function NativeVoice({
       { agent: agentId, session_id },
       { timeoutMs: 15000 },
     );
+  const watchVoice = opened || active;
   const end = (p: Peer) => {
     p.closed = true;
     clearTimeout(p.deadline);
@@ -76,9 +83,11 @@ function NativeVoice({
   const close = () => {
     clearTimeout(reconnectTimer.current);
     ++generation.current;
+    starting.current = false;
     muteWanted.current = false;
     const p = peer.current;
     peer.current = null;
+    pendingSession.current = null;
     if (p) end(p);
     if (mounted.current) {
       setActive(false);
@@ -116,9 +125,24 @@ function NativeVoice({
     };
   }, []);
   useEffect(() => {
-    if (!opened && !active) return;
+    if (!watchVoice) return;
     let disposed = false;
     let fetching = false;
+    const stopConnection = watchVoiceTransport(
+      (state) => {
+        transportState.current = state;
+      },
+      () => {
+        if (starting.current || (peer.current && !peer.current.closed)) {
+          failure(
+            new Error(
+              "Studio connection lost. The microphone is off. Start voice again after the connection returns.",
+            ),
+          );
+          setOpened(true);
+        }
+      },
+    );
     const update = async () => {
       if (fetching) return;
       fetching = true;
@@ -136,8 +160,10 @@ function NativeVoice({
           ).values(),
         ]);
         const p = peer.current;
-        if (p?.registered && data.session?.session_id === p.id)
-          await apply(p, data.session);
+        if (p && data.session?.session_id === p.id) {
+          if (p.registered) await apply(p, data.session);
+          else pendingSession.current = data.session;
+        }
       } catch (e) {
         // Stop capture on loss of Studio, even if the media peer still works.
         if (!disposed) {
@@ -154,22 +180,41 @@ function NativeVoice({
         fetching = false;
       }
     };
-    void update();
-    const timer = window.setInterval(() => void update(), active ? 1200 : 5000);
+    const stop = watchResourceReads(
+      { kind: "voice", agentId },
+      update,
+      (error) => {
+        if (disposed) return;
+        if (peer.current) {
+          failure(
+            new Error(
+              `Studio connection lost. The microphone is off. Start voice again after the connection returns. ${errorText(error)}`,
+            ),
+          );
+          setOpened(true);
+        } else setError((previous) => previous || errorText(error));
+      },
+    );
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      stopConnection();
+      stop();
     };
-  }, [opened, active]);
+  }, [agentId, watchVoice]);
   const start = async () => {
     if (peer.current) return;
     const ticket = ++generation.current;
+    starting.current = true;
     setError("");
     setBlockedAudio(false);
     setStatus("Connecting…");
     setActive(true);
     let p: Peer | null = null;
     try {
+      if (transportState.current !== "live")
+        throw new Error(
+          "Studio connection is unavailable. Try voice again when connected.",
+        );
       await post("/api/voice/status", { agent: agentId }, { timeoutMs: 15000 });
       if (ticket !== generation.current) return;
       if (!window.isSecureContext || !navigator.mediaDevices)
@@ -308,12 +353,19 @@ function NativeVoice({
         end(current);
         return;
       }
-      await apply(current, result);
+      const notifiedSession = pendingSession.current;
+      pendingSession.current = null;
+      await apply(
+        current,
+        notifiedSession?.session_id === current.id ? notifiedSession : result,
+      );
     } catch (e) {
       if (ticket === generation.current) {
         failure(e);
         notify(errorText(e));
       } else if (p && !p.closed) end(p);
+    } finally {
+      starting.current = false;
     }
   };
   const toggleMute = () => {

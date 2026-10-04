@@ -18,7 +18,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_worktree_creation import WorktreeNeedsReview, _run_checkout, create_worker_worktree
+import codex_worktree_disk
 from codex_worktree_disk import (
+    CACHE_TTL,
     WorktreeDiskScanner,
     _allocated_bytes,
     _apfs_private_bytes,
@@ -220,9 +222,21 @@ class WorktreeContracts(unittest.TestCase):
         db.commit()
         db.close()
         scanner = WorktreeDiskScanner(state, pause=lambda _: None)
+        publications = []
+
+        def publish_after_scan(state_dir, agent_ids):
+            acquired = scanner.lock.acquire(blocking=False)
+            publications.append((state_dir, set(agent_ids), acquired))
+            if acquired:
+                scanner.lock.release()
+
         with patch('codex_worktree_disk._measure_worktree', wraps=_measure_worktree) as measure:
-            order = scanner.scan_once(priority_ids=['child', 'missing'])
+            with patch('codex_worktree_disk._publish_worktree_disk', side_effect=publish_after_scan):
+                order = scanner.scan_once(priority_ids=['child', 'missing'])
             scanner.scan_once()
+        self.assertEqual(len(publications), 1)
+        self.assertEqual(publications[0][1], {'worker', 'child', 'missing'})
+        self.assertTrue(publications[0][2], 'resource publication runs after scanner lock release')
         self.assertEqual(measure.call_count, 2, 'unchanged worktrees use the path cache')
         self.assertEqual(measure.call_args_list[0].args[0], child)
         self.assertEqual(order[:2], ['child', 'missing'])
@@ -248,6 +262,18 @@ class WorktreeContracts(unittest.TestCase):
             by_agent, scoped = management_view(SimpleNamespace(root=state), [{'id': 'worker'}])
         self.assertEqual(scoped['totalBytes'], by_agent['worker']['bytes'])
         self.assertLess(scoped['totalBytes'], scoped['allWorkersBytes'])
+
+    def test_stale_full_snapshot_refreshes_only_when_read_is_requested(self):
+        now = [0.0]
+        scanner = WorktreeDiskScanner(self.root / 'manual-refresh', clock=lambda: now[0])
+        scanner.started = True
+        scanner.last_scan_at = 0.0
+
+        scanner.request()
+        self.assertFalse(scanner.wake.is_set(), 'fresh snapshots do not trigger background scans')
+        now[0] = CACHE_TTL
+        scanner.request()
+        self.assertTrue(scanner.wake.is_set(), 'an explicit stale read requests a refresh')
 
     def test_apfs_private_measure_excludes_a_clone_fixture(self):
         if sys.platform != 'darwin':

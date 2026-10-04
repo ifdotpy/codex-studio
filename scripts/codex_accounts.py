@@ -12,6 +12,7 @@ import uuid
 import time
 
 from codex_state import codex_home
+from studio_api.accounts.events import publish_account_change
 
 
 def auth_metadata(home):
@@ -610,6 +611,7 @@ class AccountStore:
 
     def login_completed(self, key, params):
         with self.lock:
+            before = json.dumps(self.data, sort_keys=True)
             row = self._row(key)
             receipts = [r for r in self.data.setdefault("logins", {}).values() if r.get("accountKey") == key]
             for receipt in receipts:
@@ -631,3 +633,6 @@ class AccountStore:
                 self.refresh(key)
                 self.login_receipts()
             self._save()
+            changed = json.dumps(self.data, sort_keys=True) != before
+        if changed:
+            publish_account_change(self.root.parent)

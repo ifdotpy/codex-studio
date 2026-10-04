@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  consumeModelRetryTicket,
   supportsDaybreakMode,
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
@@ -52,4 +53,22 @@ describe("supportsDaybreakMode", () => {
       ).toBe(false);
     },
   );
+});
+
+describe("consumeModelRetryTicket", () => {
+  it("consumes a matching explicit retry once and never for SSE reloads", () => {
+    const ticket = { current: { key: "account:false", attempt: 3 } };
+
+    expect(consumeModelRetryTicket(ticket, "account:false", 2)).toBe(false);
+    expect(ticket.current).toEqual({ key: "account:false", attempt: 3 });
+    expect(consumeModelRetryTicket(ticket, "account:false", 3)).toBe(true);
+    expect(consumeModelRetryTicket(ticket, "account:false", 3)).toBe(false);
+  });
+
+  it("discards a retry ticket if the selected catalog changed", () => {
+    const ticket = { current: { key: "account:false", attempt: 3 } };
+
+    expect(consumeModelRetryTicket(ticket, "other:true", 3)).toBe(false);
+    expect(ticket.current).toBeNull();
+  });
 });

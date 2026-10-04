@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import asyncio
+from contextlib import contextmanager
+import sqlite3
 import threading
+import tempfile
 import unittest
 from typing import cast
 
@@ -19,7 +22,16 @@ from unittest.mock import patch
 from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
+from studio_api.responses import install_error_response_docs
 from studio_api.sync.router import create_router
+from studio_api.sync.resources.hub import ResourceHub
+from studio_api.sync.resources.models import (
+    ResourceRef,
+    TokenRateSnapshot,
+    TokenRateValue,
+    TranscriptResource,
+)
+from codex_runtime import Runtime
 
 
 class StoreStub:
@@ -32,6 +44,8 @@ class StoreStub:
         self.runtime: RuntimeStub | None = None
         self.invalid_push_response = False
         self.reset_pull = False
+        self.drafts_revision = 0
+        self.draft_revision_increment = 1
 
     def identity(self) -> dict[str, object]:
         return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
@@ -57,8 +71,12 @@ class StoreStub:
             "state": 1, "transcripts": 1, "drafts": 1,
         }}
 
+    def draft_sequence(self) -> int:
+        return self.drafts_revision
+
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
         self.push_calls.append(rows)
+        self.drafts_revision += self.draft_revision_increment
         if self.invalid_push_response:
             return [{"id": "x", "payload": "{}", "seq": True, "_deleted": False}]
         return []
@@ -78,21 +96,36 @@ class RuntimeStub:
     closed = True
 
     def __init__(self) -> None:
-        self.transcript_responses: list[tuple[int | None, dict[str, object] | None]] = []
-        self.transcript_revisions: list[int | None] = []
+        self.transcript_responses: list[dict[str, object]] = []
+        self.transcript_reads = 0
+        self.hub: ResourceHub | None = None
+        self.transcript_close_after = 2
+        self.transcript_error: Exception | None = None
+        self.active_agents = {"agent-a"}
+
+    @contextmanager
+    def db(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def checked_actor(self, _db: sqlite3.Connection, agent_id: str) -> object:
+        if agent_id not in self.active_agents:
+            raise ValueError("Unknown managed agent")
+        return {"id": agent_id}
 
     def transcript(self, _agent_id: str) -> dict[str, object]:
-        return {"items": [], "truncated": False}
-
-    def wait_transcript(
-        self, _agent_id: str, revision: int | None
-    ) -> tuple[int | None, dict[str, object] | None]:
-        self.transcript_revisions.append(revision)
-        if not self.transcript_responses:
-            self.closed = True
-            return None, None
-        response = self.transcript_responses.pop(0)
-        if not self.transcript_responses:
+        self.transcript_reads += 1
+        if self.transcript_error is not None:
+            raise self.transcript_error
+        response = self.transcript_responses.pop(0) if self.transcript_responses else {
+            "items": [], "truncated": False,
+        }
+        if self.transcript_reads < self.transcript_close_after and self.hub is not None:
+            self.hub.publish(ResourceRef(TranscriptResource(kind="transcript", agentId=_agent_id)))
+        if self.transcript_reads >= self.transcript_close_after:
             self.closed = True
         return response
 
@@ -100,6 +133,15 @@ class RuntimeStub:
 class TokenRatesStub:
     def workspace_snapshot(self) -> dict[str, object]:
         return {"rates": {"agent-a": {"rate": 8.5}}, "teams": {}}
+
+
+class ProgressWatchdogStub:
+    def __init__(self) -> None:
+        self.agents: list[str] = []
+
+    def subscribe(self, agent_id: str, _on_change: object):
+        self.agents.append(agent_id)
+        return lambda: None
 
 
 class ConnectedRequest(Request):
@@ -114,9 +156,24 @@ class ContextStub:
         self.runtime = RuntimeStub()
         self.runtime.closed = True
         self.store.runtime = self.runtime
+        self.watchdog = ProgressWatchdogStub()
+        self.hub = ResourceHub(
+            "workspace-a",
+            progress_watchdog=self.watchdog,
+            token_rates=TokenRateSnapshot(
+                rates={"agent-a": TokenRateValue(
+                    turnId="turn-a", active=True, estimated=False, rate=8.5, outputTokens=17,
+                )},
+                teams={},
+            ),
+        )
+        self.runtime.hub = self.hub
 
     def sync(self) -> StoreStub:
         return self.store
+
+    def resource_hub(self) -> ResourceHub:
+        return self.hub
 
     def send(self, request: Request, value: object, status: int = 200, **_kwargs: object) -> JSONResponse:
         route = cast(object, request.scope["route"])
@@ -148,17 +205,37 @@ class SyncRouterTests(unittest.TestCase):
     def test_stream_openapi_declares_event_stream_without_json_success(self) -> None:
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))
+        install_error_response_docs(app)
         paths = app.openapi()["paths"]
         for path in ("/api/sync/stream", "/api/transcript/stream"):
             responses = paths[path]["get"]["responses"]
-            self.assertEqual(
-                responses["200"]["content"],
-                {"text/event-stream": {"schema": {"type": "string"}}},
-            )
+            if path == "/api/sync/stream":
+                event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
+                self.assertEqual(
+                    event_schema["oneOf"],
+                    [
+                        {"$ref": "#/components/schemas/ResourceChangeEvent"},
+                        {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                        {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
+                    ],
+                )
+                components = app.openapi()["components"]["schemas"]
+                self.assertIn("ResourceRef", components)
+                self.assertIn("ResourceChangeEvent", components)
+                self.assertIn("ResourceHeartbeatEvent", components)
+                self.assertIn("ResourceTokenRatesEvent", components)
+                self.assertIn("resources", event_schema["x-sse-events"])
+            else:
+                self.assertEqual(
+                    responses["200"]["content"],
+                    {"text/event-stream": {"schema": {"type": "string"}}},
+                )
             self.assertIn("400", responses)
             self.assertIn("application/json", responses["400"]["content"])
 
-    def read_stream(self, context: ContextStub, path: str) -> str:
+    def read_stream(
+        self, context: ContextStub, path: str, headers: list[tuple[bytes, bytes]] | None = None
+    ) -> str:
         router = create_router(cast(ApiContext, context))
         route = cast(
             APIRoute,
@@ -169,15 +246,16 @@ class SyncRouterTests(unittest.TestCase):
             "method": "GET", "scheme": "http", "path": path.split("?", 1)[0],
             "raw_path": path.split("?", 1)[0].encode(),
             "query_string": path.split("?", 1)[1].encode() if "?" in path else b"",
-            "headers": [], "client": ("test", 1000), "server": ("test", 80),
+            "headers": headers or [], "client": ("test", 1000), "server": ("test", 80),
         }
         request = ConnectedRequest(scope)
 
         async def read() -> bytes:
             if path.startswith("/api/sync/stream"):
-                protocol = "2" if "protocol=2" in path else "1"
+                protocol = "3" if "protocol=3" in path else "2" if "protocol=2" in path else "1"
+                resources = request.query_params.get("resources")
                 response = await route.endpoint(
-                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4)
+                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4, resources=resources)
                 )
             else:
                 response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
@@ -203,6 +281,39 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("event: token-rates", body)
         self.assertIn('"rates": {"agent-a": {"rate": 8.5}}', body)
         self.assertIn('"workspaceId": "workspace-a"', body)
+
+    def test_protocol_three_emits_typed_initial_resources_and_token_rates(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "transcript", "agentId": "agent-a"}], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn("event: resources", body)
+        self.assertIn('"reason":"initial"', body)
+        self.assertIn('"kind":"transcript","agentId":"agent-a"', body)
+        self.assertIn("event: token-rates", body)
+        self.assertIn('"turnId":"turn-a"', body)
+        self.assertIn('"epoch":"', body)
+
+    def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":"))
+        body = self.read_stream(
+            context,
+            "/api/sync/stream?protocol=3&resources=" + resources,
+            headers=[(b"last-event-id", b"7")],
+        )
+        self.assertIn('"reason":"reconnect"', body)
+        self.assertIn('"kind":"panel","agentId":"agent-a"', body)
+
+    def test_missing_panel_agent_does_not_block_or_watch_other_resources(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([
+            {"kind": "panel", "agentId": "deleted-agent"},
+            {"kind": "state"},
+        ], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn('"kind":"panel","agentId":"deleted-agent"', body)
+        self.assertIn('"kind":"state"', body)
+        self.assertEqual(context.watchdog.agents, [])
 
     def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
         context = ContextStub()
@@ -287,6 +398,20 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
         self.assertEqual(len(context.store.push_calls), 1)
+
+    def test_noop_draft_write_does_not_publish_resource_change(self) -> None:
+        context = ContextStub()
+        context.store.draft_revision_increment = 0
+        payload = json.dumps({"id": "device:lead", "device": "device", "session": "lead", "text": "draft"})
+        response = make_client(context).post(
+            "/api/sync/drafts",
+            headers={"X-Canvas-Workspace": "workspace-a"},
+            json={"rows": [{"newDocumentState": {
+                "id": "device:lead", "payload": payload, "_deleted": False,
+            }}]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(context.hub._revision, 0)
 
     def test_wrong_workspace_blocks_draft_mutation(self) -> None:
         context = ContextStub()
@@ -435,10 +560,10 @@ class SyncRouterTests(unittest.TestCase):
         context = ContextStub()
         context.runtime.closed = False
         context.runtime.transcript_responses = [
-            (1, {"items": [{"id": "b", "text": "hello", "kind": "message"},
-                           {"id": "a", "text": "second", "kind": "message"}], "truncated": False}),
-            (2, {"items": [{"id": "a", "text": "second", "kind": "message"},
-                           {"id": "b", "text": "hello world", "kind": "message"}], "truncated": False}),
+            {"items": [{"id": "b", "text": "hello", "kind": "message"},
+                        {"id": "a", "text": "second", "kind": "message"}], "truncated": False},
+            {"items": [{"id": "a", "text": "second", "kind": "message"},
+                        {"id": "b", "text": "hello world", "kind": "message"}], "truncated": False},
         ]
         body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
         events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines() if line.startswith("data: ")]
@@ -447,7 +572,113 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(events[0]["order"], ["b", "a"])
         self.assertEqual(events[1]["order"], ["a", "b"])
         self.assertEqual(events[1]["items"], [{"id": "b", "append": " world"}])
-        self.assertEqual(context.runtime.transcript_revisions, [-1, 1])
+        self.assertEqual(context.runtime.transcript_reads, 2)
+        self.assertNotIn("event: transcript", body)
+        self.assertTrue(body.startswith("data: "))
+
+    def test_legacy_transcript_stream_receives_disconnect_status_change(self) -> None:
+        context = ContextStub()
+        context.canvas.root = tempfile.gettempdir() + "/studio-transcript-disconnect-test"
+        context.runtime.closed = False
+        context.runtime.transcript_close_after = 2
+        context.runtime.transcript_responses = [
+            {"items": [], "agent": {"id": "agent-a", "status": "running"}},
+            {"items": [], "agent": {"id": "agent-a", "status": "interrupted"}},
+        ]
+        agent = {
+            "id": "agent-a", "rootId": "agent-a", "status": "running", "autoWake": True,
+            "inFlight": True, "threadId": "thread-a", "turnId": "turn-a", "epoch": 1,
+        }
+        backend = Runtime.__new__(Runtime)
+        backend.lock = threading.RLock()
+        backend.connection_ids = {"default": "connection-a"}
+        backend.offline_accounts = {"default"}
+        backend.offline = False
+        backend.loaded = {"agent-a"}
+        backend.servers = {}
+        backend.preparations = {}
+        connection = sqlite3.connect(":memory:")
+        connection.executescript("""
+            CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, status TEXT, error TEXT);
+            CREATE TABLE runtime_tasks(record TEXT);
+            CREATE TABLE runtime_monitors(record TEXT);
+        """)
+
+        @contextmanager
+        def database():
+            yield connection
+
+        backend.db = database
+        backend.records = lambda _db, table=None: [agent] if table == "agents" else []
+        backend.retire_legacy_steer = lambda *_args: None
+        backend.capacity_restart = lambda *_args: None
+
+        def put_agent(_db: object, table: str, record: dict[str, object]) -> None:
+            self.assertEqual(table, "agents")
+            agent.update(record)
+            context.hub.publish(
+                ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
+            )
+
+        backend.put = put_agent
+        route = next(
+            route for route in create_router(cast(ApiContext, context)).routes
+            if getattr(route, "path", None) == "/api/transcript/stream"
+        )
+        scope: dict[str, object] = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/api/transcript/stream",
+            "raw_path": b"/api/transcript/stream", "query_string": b"id=agent-a",
+            "headers": [], "client": ("test", 1000), "server": ("test", 80),
+        }
+        request = ConnectedRequest(scope)
+
+        async def exercise() -> tuple[bytes, bytes]:
+            response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
+            first = cast(bytes, await response.body_iterator.__anext__())
+            backend.disconnected("default", "connection-a")
+            second = cast(bytes, await response.body_iterator.__anext__())
+            await response.body_iterator.aclose()
+            return first, second
+
+        try:
+            first, second = asyncio.run(exercise())
+            self.assertTrue(first.startswith(b"data: "))
+            self.assertNotIn(b"event: transcript", first)
+            self.assertTrue(second.startswith(b"data: "))
+            self.assertNotIn(b"event: transcript", second)
+            payload = json.loads(second.split(b"data: ", 1)[1].split(b"\n", 1)[0])
+            self.assertEqual(payload["agent"]["status"], "interrupted")
+        finally:
+            connection.close()
+
+    def test_transcript_stream_emits_metadata_only_changes(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+        context.runtime.transcript_close_after = 3
+        context.runtime.transcript_responses = [
+            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
+             "activity": {"phase": "writing"}},
+            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
+             "activity": {"phase": "completed"}},
+        ]
+
+        body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
+
+        events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
+                  if line.startswith("data: ")]
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[1]["activity"], {"phase": "completed"})
+        self.assertEqual(events[1]["items"], [])
+
+    def test_transcript_initial_read_failure_closes_subscription(self) -> None:
+        context = ContextStub()
+        context.runtime.transcript_error = OSError("transcript unavailable")
+
+        response = make_client(context).get("/api/transcript/stream?id=agent-a")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(context.hub._subscriptions, set())
 
 
 if __name__ == "__main__":

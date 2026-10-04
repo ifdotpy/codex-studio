@@ -6,9 +6,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, browserExecutablePath } from "../playwright.mjs";
+import { isResourceChangeEvent } from "../../../web/src/generated/stream-validators.js";
 
 test("Account settings errors", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { chromium, webkit } = require("playwright-core");
@@ -22,6 +23,24 @@ test("Account settings errors", async () => {
     data: { message: "A nested provider reason", retryAfter: 17 },
     additionalDetails: ["Retain this field"],
   };
+  const workspaceId = "0123456789abcdef0123456789abcdef";
+  const resourceStreams = new Set();
+  let resourceRevision = 0;
+  const writeResourceEvent = (stream, reason, resources = stream.resources) => {
+    if (reason !== "initial") resourceRevision++;
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch: "account-errors-fixture",
+      revision: resourceRevision,
+      reason,
+      resources,
+    };
+    assert.ok(isResourceChangeEvent(event));
+    stream.response.write(
+      `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  };
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-account-errors-"));
   const server = await createServer({
     configFile: false,
@@ -32,6 +51,28 @@ test("Account settings errors", async () => {
       {
         name: "account-error-fixture",
         configureServer(server) {
+          server.middlewares.use("/api/sync/identity", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify({ workspaceId }));
+          });
+          server.middlewares.use("/api/sync/stream", (req, res) => {
+            const stream = {
+              response: res,
+              resources: JSON.parse(
+                new URL(req.url || "/", "http://localhost").searchParams.get(
+                  "resources",
+                ) || "[]",
+              ),
+            };
+            res.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+            });
+            resourceStreams.add(stream);
+            writeResourceEvent(stream, "initial");
+            res.on("close", () => resourceStreams.delete(stream));
+          });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -77,10 +118,13 @@ test("Account settings errors", async () => {
     const page = await browser.newPage({
       viewport: { width: 1100, height: 850 },
     });
+    page.setDefaultTimeout(5000);
     const errors = [],
       mutations = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let limitsHttpFailure = false;
+    let limitsRecovered = false;
+    let limitsReads = 0;
     const limitsFailureBody = {
       error: failure,
       requestId: "limits-request",
@@ -88,31 +132,63 @@ test("Account settings errors", async () => {
     };
     await page.route("**/api/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/api/sync/identity" || pathname === "/api/sync/stream")
+        return route.continue();
+      if (pathname === "/api/limits") limitsReads++;
       if (route.request().method() !== "GET") mutations.push(pathname);
       if (pathname === "/api/limits" && limitsHttpFailure)
         return route.fulfill({ status: 503, json: limitsFailureBody });
+      if (pathname === "/api/limits" && limitsRecovered)
+        return route.fulfill({
+          json: {
+            accountKey: "default",
+            at: Date.now() / 1000,
+            data: {
+              rateLimits: {
+                limitId: "codex",
+                planType: "pro",
+                primary: { usedPercent: 20, windowDurationMins: 300 },
+                secondary: {
+                  usedPercent: 20,
+                  windowDurationMins: 10080,
+                },
+              },
+            },
+          },
+        });
       return route.fulfill({
         json:
-          pathname === "/api/rules"
+          pathname === "/api/accounts"
             ? {
-                rules: [
-                  {
-                    id: "rule",
-                    agent: "lead",
-                    name: "Rule diagnostic",
-                    kind: "low_workers",
-                    error: failure,
-                    text: "Saved rule text",
-                  },
-                ],
+                accounts: [],
+                archivedAccounts: [],
+                defaultAccountKey: "default",
+                logins: [],
               }
-            : pathname === "/api/capabilities"
-              ? { errors: [failure], managed: [], native: [] }
-              : pathname === "/api/changes"
-                ? { scope: "chat", git: false, error: failure, files: [] }
-                : pathname === "/api/limits"
-                  ? { accountKey: "default", error: failure, data: null }
-                  : {},
+            : pathname === "/api/rules"
+              ? {
+                  rules: [
+                    {
+                      id: "rule",
+                      agent: "lead",
+                      name: "Rule diagnostic",
+                      kind: "low_workers",
+                      error: failure,
+                      text: "Saved rule text",
+                    },
+                  ],
+                }
+              : pathname === "/api/capabilities"
+                ? { errors: [failure], managed: [], native: [] }
+                : pathname === "/api/changes"
+                  ? { scope: "chat", git: false, error: failure, files: [] }
+                  : pathname === "/api/limits"
+                    ? {
+                        accountKey: "default",
+                        error: failure.message,
+                        data: null,
+                      }
+                    : {},
       });
     });
     await page.goto(
@@ -146,13 +222,15 @@ test("Account settings errors", async () => {
               .locator("..")
               .locator(":scope > span")
               .last()
-              .innerText(),
+              .textContent(),
           ),
           expected,
         );
         assert.equal(await page.locator("[data-shell]").count(), 1);
       }
-      await page.getByText(failure.message, { exact: true }).waitFor();
+      await page
+        .getByText(failure.message, { exact: true })
+        .waitFor({ state: "attached" });
       await details(failure);
       const changed = {
         message: "Updated provider error",
@@ -160,26 +238,38 @@ test("Account settings errors", async () => {
         metadata: { region: "fixture" },
       };
       await page.evaluate((value) => window.changeError(value), changed);
-      await page.getByText(changed.message, { exact: true }).waitFor();
-      assert.match(await page.locator("[role=alert]").innerText(), /new-code/);
+      await page
+        .getByText(changed.message, { exact: true })
+        .waitFor({ state: "attached" });
+      assert.match(
+        await page.locator("[role=alert]").textContent(),
+        /new-code/,
+      );
       await page.evaluate(() => window.showSurface("accounts"));
       await page
         .getByRole("button", { name: "Account: Fixture account" })
         .click();
       await details(changed);
-      await page.getByText("Manage accounts", { exact: false }).click();
+      await page
+        .getByRole("menuitem", { name: /Manage accounts/ })
+        .click({ force: true });
       await page.getByRole("dialog").waitFor();
       await details(changed);
       const limits = page.getByLabel("Limits for Fixture account");
-      await limits.getByText(failure.message, { exact: true }).waitFor();
-      await details(failure, limits);
+      await limits
+        .getByText(failure.message, { exact: true })
+        .waitFor({ state: "attached" });
       await page.keyboard.press("Escape");
       limitsHttpFailure = true;
       await page
         .getByRole("button", { name: "Account: Fixture account" })
         .click();
-      await page.getByText("Manage accounts", { exact: false }).click();
-      await limits.getByText(failure.message, { exact: true }).waitFor();
+      await page
+        .getByRole("menuitem", { name: /Manage accounts/ })
+        .click({ force: true });
+      await limits
+        .getByText("Provider request failed")
+        .waitFor({ state: "attached" });
       await limits
         .getByRole("button", { name: "Error details", exact: true })
         .click();
@@ -195,6 +285,66 @@ test("Account settings errors", async () => {
       assert.equal(httpDiagnostic.message, failure.message);
       assert.deepEqual(httpDiagnostic.details, limitsFailureBody);
       assert.equal(await page.locator("[data-shell]").count(), 1);
+      limitsHttpFailure = false;
+      limitsRecovered = true;
+      const readsBeforeChange = limitsReads;
+      const recoveredRead = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/limits" &&
+          response.status() === 200,
+        { timeout: 5000 },
+      );
+      assert.ok(
+        [...resourceStreams].some((stream) =>
+          stream.resources.some(
+            (resource) =>
+              resource.kind === "limits" && resource.accountKey === "default",
+          ),
+        ),
+        "the active limits resource is subscribed",
+      );
+      for (const stream of resourceStreams) {
+        writeResourceEvent(
+          stream,
+          "change",
+          stream.resources.filter(
+            (resource) =>
+              resource.kind === "limits" && resource.accountKey === "default",
+          ),
+        );
+      }
+      await recoveredRead;
+      await limits
+        .getByText(/80%\s*left/)
+        .first()
+        .waitFor();
+      assert.equal(limitsReads, readsBeforeChange + 1);
+      assert.equal(
+        await limits.getByText(/80%\s*left/).count(),
+        2,
+        "typed notification displays recovered primary and weekly limits",
+      );
+      assert.equal(
+        await limits.getByText(failure.message, { exact: true }).count(),
+        0,
+        "a successful typed resource reread clears the previous limit error",
+      );
+      const readsBeforeReconnect = limitsReads;
+      const reconnectRead = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/limits" &&
+          response.status() === 200,
+        { timeout: 5000 },
+      );
+      for (const stream of resourceStreams)
+        writeResourceEvent(stream, "reconnect");
+      await reconnectRead;
+      await limits
+        .getByText(/80%\s*left/)
+        .first()
+        .waitFor();
+      assert.equal(limitsReads, readsBeforeReconnect + 1);
+      assert.equal(await limits.getByText(/80%\s*left/).count(), 2);
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
         await page.evaluate((value) => window.showSurface(value), section);

@@ -38,7 +38,6 @@ import {
   useSyncExternalStore,
 } from "react";
 import { get, post, errorText } from "../api";
-import { refreshProjection } from "../sync/client";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
@@ -681,19 +680,6 @@ export default function Conversation(p: {
   }, [p.id]);
   const managed = agent?.source === "managed";
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
-  const refreshDelivery = useCallback(async () => {
-    if (p.id) await refreshProjection(`transcript:${p.id}`);
-  }, [p.id]);
-  const pendingDelivery =
-    managed &&
-    items.some(
-      (item) =>
-        item.role === "user" &&
-        (item.pending ||
-          ["sending", "pending", "queued", "reserved", "dispatching"].includes(
-            item.deliveryStatus || "",
-          )),
-    );
   const messageQueue = useMessageQueue({
     id: p.id,
     enabled: managed,
@@ -702,8 +688,6 @@ export default function Conversation(p: {
     observed: p.onObserved,
     edited: p.onOutgoingEdit,
     refresh: p.refresh,
-    pendingDelivery,
-    refreshDelivery,
   });
   const queued = useMemo<QueueItem[]>(
     () =>

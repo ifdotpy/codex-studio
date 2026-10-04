@@ -41,6 +41,7 @@ import type { paths } from "../../generated/api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, JsonValue, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
+import { watchResourceReads } from "../watchResourceReads";
 import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
 
@@ -216,7 +217,7 @@ export default function BackgroundTasks({
       ...(data.runtime?.monitors ?? [])
         .map(monitorTask)
         .filter((task): task is BackgroundTask => task !== null),
-      ...(taskFeed ?? data.runtime?.tasks ?? []).map(workspaceTask),
+      ...(taskFeed?.tasks ?? data.runtime?.tasks ?? []).map(workspaceTask),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
@@ -336,6 +337,11 @@ export default function BackgroundTasks({
               }}
             />
           </div>
+          {taskFeed?.error && (
+            <p role="alert" className="task-error">
+              {taskFeed.error}
+            </p>
+          )}
           <div className="tasks-rows">
             {(
               [
@@ -476,23 +482,22 @@ function TaskDetail({
   useEffect(() => {
     if (!opened || summary.kind === "monitor") return;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const load = async () => {
-      try {
+    const stop = watchResourceReads(
+      { kind: "task", taskId: summary.id },
+      async () => {
         const value = await get("/api/task", { query: { id: summary.id } });
         if (!stopped) {
           setDetail(value);
           setLoadError("");
         }
-      } catch (error) {
+      },
+      (error) => {
         if (!stopped) setLoadError(errorText(error));
-      }
-      if (!stopped) timer = setTimeout(load, 1600);
-    };
-    void load();
+      },
+    );
     return () => {
       stopped = true;
-      clearTimeout(timer);
+      stop();
     };
   }, [opened, summary.id, summary.kind]);
   const task =

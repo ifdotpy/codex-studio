@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from codex_runtime import Runtime
     from codex_session_costs import SessionCostReader
     from codex_sync import SyncStore
+    from studio_api.sync.resources.hub import ResourceHub
     from codex_terminals import TerminalManager
 
 
@@ -81,6 +82,7 @@ class ApiContext:
         self._pricing: PricingCatalog | None = None
         self._session_cost_reader: SessionCostReader | None = None
         self._sync_store: SyncStore | None = None
+        self._resource_hub: ResourceHub | None = None
 
     @classmethod
     def for_schema(cls) -> ApiContext:
@@ -168,10 +170,37 @@ class ApiContext:
                     setattr(self.runtime, "sync_store", self._sync_store)
             return self._sync_store
 
+    def resource_hub(self) -> ResourceHub:
+        """Return the process-local typed event hub for this workspace."""
+        with self._lock:
+            if self._resource_hub is None:
+                from codex_token_rate import token_rates
+                from studio_api.sync.resources.hub import (
+                    LazyProgressWatchdog,
+                    ResourceHub,
+                    register_resource_hub,
+                )
+                from studio_api.sync.resources.models import TokenRateSnapshot
+
+                identity = self.sync().identity()
+                runtime = self.runtime
+                initial_rates = (
+                    TokenRateSnapshot.model_validate(token_rates(runtime).workspace_snapshot())
+                    if runtime else TokenRateSnapshot(rates={}, teams={})
+                )
+                self._resource_hub = ResourceHub(
+                    cast(str, identity["workspaceId"]),
+                    LazyProgressWatchdog(self.canvas.root),
+                    initial_rates,
+                )
+                register_resource_hub(self.canvas.root, self._resource_hub)
+            return self._resource_hub
+
     def initialize(self) -> None:
         """Prepare durable workspace identity before accepting requests."""
         if not self.schema_only:
             self.sync()
+            self.resource_hub()
 
     def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
         if self.runtime:
@@ -415,6 +444,7 @@ class ApiContext:
         return encodings.get("gzip", encodings.get("*", 0)) > 0
 
     def close(self) -> None:
+        resource_hub = None
         with self._lock:
             if self._cost_reader is not None:
                 self._cost_reader.close()  # type: ignore[no-untyped-call]
@@ -424,6 +454,13 @@ class ApiContext:
                 self._terminal = None
             if self._session_cost_reader is not None:
                 self._session_cost_reader = None
+            resource_hub = self._resource_hub
+            self._resource_hub = None
+        if resource_hub is not None:
+            from studio_api.sync.resources.hub import unregister_resource_hub
+
+            unregister_resource_hub(self.canvas.root, resource_hub)
+            resource_hub.close()
 
     def _require_runtime(self) -> Runtime:
         runtime = self.runtime

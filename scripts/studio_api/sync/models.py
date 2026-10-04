@@ -684,6 +684,14 @@ class TurnRecoveryDto(ContractModel):
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
+    imageWorkspaceRelative: str | None = None
+    imageWorkspaceStartCommit: str | None = None
+    imageWorkspaceSnapshotCommit: str | None = None
+    imageWorkspaceMount: str | None = None
+    imageWorkspaceNoticeSent: str | None = None
+    imageWorkspaceNoticeText: str | None = None
+    imageWorkspaceNoticeError: str | None = None
+    imageWorkspaceCollect: dict[str, JsonValue] | None = None
     startOutcomeHold: StartOutcomeHoldDto | None = None
     turnRecovery: TurnRecoveryDto | None = None
 
@@ -1350,7 +1358,7 @@ class StateSnapshot(ResponseModel):
 
 class SyncProtocolResponse(ResponseModel):
     protocolVersion: Literal[1]
-    supportedVersions: list[Literal[1, 2]]
+    supportedVersions: list[Literal[1, 2, 3]]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]
@@ -1373,6 +1381,10 @@ class SyncStreamQuery(ContractModel):
     protocol: str | None = None
     scope: str | None = None
     after: int | None = None
+    resources: str | None = Field(
+        default=None,
+        description="Protocol 3 JSON-encoded array of ResourceRef values",
+    )
 
 
 class TranscriptStreamQuery(ContractModel):

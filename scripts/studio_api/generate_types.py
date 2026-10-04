@@ -29,6 +29,8 @@ CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
 GENERATOR_PATH = ROOT / "node_modules" / ".bin" / "openapi-typescript"
 FORMATTER_PATH = ROOT / "node_modules" / ".bin" / "oxfmt"
+STREAM_GENERATOR_PATH = ROOT / "web" / "scripts" / "api" / "stream-validators.mjs"
+STREAM_GENERATED_NAMES = ("stream-validators.js", "stream-validators.d.ts")
 JSON_VALUE_TS_ALIAS = (
     "export type JsonValue = null | boolean | number | string | JsonValue[] "
     "| { [key: string]: JsonValue };"
@@ -112,23 +114,47 @@ def render(document: dict[str, JsonValue]) -> str:
         return output_path.read_text(encoding="utf-8")
 
 
+def render_stream_validators(document: dict[str, JsonValue]) -> dict[Path, str]:
+    """Generate browser runtime guards from the same schema as API types."""
+    cache_root = Path(os.environ.get(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
+    temp_root = cache_root / OPENAPI_TEMP_DIRECTORY
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="stream-generation-", dir=temp_root) as name:
+        directory = Path(name)
+        source = directory / "openapi.json"
+        source.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+        subprocess.run(
+            ["node", str(STREAM_GENERATOR_PATH), str(source), str(directory)],
+            cwd=ROOT, check=True, text=True,
+        )
+        outputs = [directory / name for name in STREAM_GENERATED_NAMES]
+        subprocess.run(
+            [str(FORMATTER_PATH), "--write", f"--config={ROOT / '.oxfmtrc.json'}",
+             *(str(path) for path in outputs)],
+            cwd=ROOT, check=True, text=True,
+        )
+        return {OUTPUT.with_name(path.name): path.read_text(encoding="utf-8") for path in outputs}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated API types are stale")
     options = parser.parse_args(argv)
     try:
-        expected = render(openapi_document())
+        document = openapi_document()
+        expected_files = {OUTPUT: render(document), **render_stream_validators(document)}
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"API type generation failed: {error}", file=sys.stderr)
         return 1
-    current = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
-    if options.check:
-        if current != expected:
-            print(f"{OUTPUT.relative_to(ROOT)} is stale; run npm run api:generate", file=sys.stderr)
-            return 1
-        return 0
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(expected, encoding="utf-8")
+    for path, expected in expected_files.items():
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+        if options.check:
+            if current != expected:
+                print(f"{path.relative_to(ROOT)} is stale; run npm run api:generate", file=sys.stderr)
+                return 1
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(expected, encoding="utf-8")
     return 0
 
 

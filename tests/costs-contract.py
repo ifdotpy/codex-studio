@@ -110,6 +110,24 @@ class CostsTests(unittest.TestCase):
         start.assert_not_called()
         self.assertIn("command is invalid", self.reader.state["error"])
 
+    def test_refresh_notifies_after_state_is_persisted_and_unlocked(self):
+        observations = []
+        reader = None
+
+        def on_change():
+            acquired = reader.lock.acquire(blocking=False)
+            observations.append((acquired, reader.path.exists(), reader.busy))
+            if acquired:
+                reader.lock.release()
+
+        reader = CostReader(self.root / "published", command=lambda: [str(self.cli)], on_change=on_change)
+        try:
+            reader._refresh()
+            self.assertEqual(observations, [(True, True, False)])
+            self.assertIsNone(reader.state["error"])
+        finally:
+            reader.close()
+
     def test_missing_invalid_and_cross_provider_data(self):
         for value in (
             None,

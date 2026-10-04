@@ -2,6 +2,7 @@ import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, get, post, save, saved, type PostResult } from "../api";
 import type { Account } from "./Accounts";
+import { watchResourceReads } from "./watchResourceReads";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type LoginAction = "start" | "code" | "cancel";
@@ -65,22 +66,21 @@ export default function ClaudeSignIn({
   useEffect(() => {
     if (!requestId || !active(receipt)) return;
     let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
+    const stop = watchResourceReads(
+      { kind: "accounts" },
+      async () => {
         const result = await get("/api/accounts/claude/login", {
           query: { request_id: requestId },
         });
         if (live) store(result, requestId);
-      } catch (failure) {
+      },
+      (failure) => {
         if (live) setError(errorText(failure));
-      }
-      if (live) timer = setTimeout(poll, 2000);
-    };
-    void poll();
+      },
+    );
     return () => {
       live = false;
-      clearTimeout(timer);
+      stop();
     };
   }, [requestId, receipt?.status]);
   const run = async (action: LoginAction) => {

@@ -144,6 +144,7 @@ import ConversationTitle from "./components/shell/ConversationTitle";
 import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
+import { watchResourceReads } from "./components/watchResourceReads";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -901,28 +902,25 @@ export default function App() {
   }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
   useEffect(() => {
     if (!data?.stateDir) return;
-    void reloadLimits();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void reloadLimits();
-    }, 60000);
-    const refreshVisible = () => {
-      if (document.visibilityState === "visible") void reloadLimits();
-    };
-    window.addEventListener("focus", refreshVisible);
-    document.addEventListener("visibilitychange", refreshVisible);
+    const keys = new Set([
+      accountKey,
+      ...usageAccountKeys.split("\n").filter(Boolean),
+    ]);
+    const stops = [...keys].map((key) =>
+      watchResourceReads(
+        { kind: "limits", accountKey: key },
+        async () => {
+          await reloadLimitsFor(key, true);
+        },
+        () => {
+          // reloadLimitsFor stores errors in visible account state.
+        },
+      ),
+    );
     return () => {
-      clearInterval(timer);
-      window.removeEventListener("focus", refreshVisible);
-      document.removeEventListener("visibilitychange", refreshVisible);
+      for (const stop of stops) stop();
     };
-  }, [data?.stateDir, opened, reloadLimits]);
-  useEffect(() => {
-    if (!visibleLimits?.error) return;
-    const timer = setTimeout(() => {
-      void reloadLimits();
-    }, 30000);
-    return () => clearTimeout(timer);
-  }, [accountKey, visibleLimits?.error, reloadLimits]);
+  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsFor]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

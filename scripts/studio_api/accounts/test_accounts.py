@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import base64
+import asyncio
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 import sys
 import shutil
 import tempfile
+import threading
 from typing import Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
@@ -21,6 +23,15 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
+from studio_api.sync.resources.hub import (
+    ResourceHub,
+    register_resource_hub,
+    unregister_resource_hub,
+)
+from studio_api.sync.resources.models import AccountsResource, ResourceRef
+from studio_api.accounts.events import (
+    publish_account_change as publish_account_change_to_hub,
+)
 
 from studio_api.context import ApiContext
 from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
@@ -376,6 +387,37 @@ class _AccountStore(Protocol):
     def discover(self) -> dict[str, JsonValue]: ...
 
 
+class _TimedLock(Protocol):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+def _available_to_other_thread(lock: _TimedLock) -> bool:
+    acquired_by_other: list[bool] = []
+    finished = threading.Event()
+
+    def probe() -> None:
+        acquired = False
+        try:
+            acquired = lock.acquire(timeout=0.1)
+            acquired_by_other.append(acquired)
+        finally:
+            try:
+                if acquired:
+                    lock.release()
+            finally:
+                finished.set()
+
+    probe_thread = threading.Thread(target=probe, daemon=True)
+    probe_thread.start()
+    if not finished.wait(timeout=0.5):
+        probe_thread.join(timeout=0.1)
+        return False
+    probe_thread.join(timeout=0.1)
+    return not probe_thread.is_alive() and acquired_by_other == [True]
+
+
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
@@ -426,6 +468,90 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["accounts"][0]["accountId"], "account-default")
         self.assertNotIn("fixture-secret", response.text)
+
+    def test_accounts_get_does_not_publish_and_mutation_retries_are_deduplicated(self) -> None:
+        state_dir = cast(Path, getattr(self.store, "root")).parent
+        hub = ResourceHub("account-route-workspace")
+        loop = asyncio.new_event_loop()
+        register_resource_hub(state_dir, hub)
+        subscription = hub.subscribe(
+            [ResourceRef(AccountsResource(kind="accounts"))], loop=loop
+        )
+        try:
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
+            self.assertEqual(self.client.get("/api/accounts").status_code, 200)
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
+            second = self.root / "second-profile"
+            second.mkdir()
+            self._write_auth(second, "account-second")
+            body = {"home": str(second)}
+            response = self.client.post("/api/accounts/register", json=body)
+            self.assertEqual(response.status_code, 200, response.text)
+            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.reason, "change")
+            self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+            repeated = self.client.post("/api/accounts/register", json=body)
+            self.assertEqual(repeated.status_code, 200, repeated.text)
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
+        finally:
+            subscription.close()
+            unregister_resource_hub(state_dir, hub)
+            loop.close()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(repeated.json(), response.json())
+
+    def test_async_native_login_completion_publishes_after_account_lock(self) -> None:
+        import codex_accounts
+
+        request_id = str(uuid4())
+        store_data = cast(dict[str, object], getattr(self.store, "data"))
+        store_data["logins"] = {
+            request_id: {
+                "requestId": request_id,
+                "accountKey": "default",
+                "status": "pending",
+                "loginId": "native-login",
+            }
+        }
+        lock_was_available: list[bool] = []
+        account_lock = getattr(self.store, "lock")
+        state_dir = cast(Path, getattr(self.store, "root")).parent
+        hub = ResourceHub("native-login-workspace")
+        loop = asyncio.new_event_loop()
+        register_resource_hub(state_dir, hub)
+        subscription = hub.subscribe(
+            [ResourceRef(AccountsResource(kind="accounts"))], loop=loop
+        )
+
+        def published(state_dir: Path) -> None:
+            lock_was_available.append(_available_to_other_thread(cast(_TimedLock, account_lock)))
+            self.assertEqual(state_dir, cast(Path, getattr(self.store, "root")).parent)
+            publish_account_change_to_hub(state_dir)
+
+        try:
+            with patch.object(
+                codex_accounts, "publish_account_change", side_effect=published
+            ) as publish:
+                getattr(self.store, "login_completed")(
+                    "default", {"loginId": "native-login", "success": False}
+                )
+                getattr(self.store, "login_completed")(
+                    "default", {"loginId": "native-login", "success": False}
+                )
+
+            publish.assert_called_once()
+            self.assertEqual(lock_was_available, [True])
+            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.reason, "change")
+            self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+        finally:
+            subscription.close()
+            unregister_resource_hub(state_dir, hub)
+            loop.close()
 
     def test_account_route_uses_actual_api_context_response_validation(self) -> None:
         context = ApiContext.for_schema()
@@ -528,6 +654,14 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertIn("ErrorResponse", json.dumps(operation["responses"]["400"]))
         self.assertNotIn("content", operation["responses"]["422"])
         self.assertNotIn("HTTPValidationError", json.dumps(operation["responses"]))
+        models_operation = self.app.openapi()["paths"]["/api/models"]["get"]
+        retry_parameter = next(
+            param for param in models_operation["parameters"] if param["name"] == "retry"
+        )
+        self.assertEqual(
+            next(value["const"] for value in retry_parameter["schema"]["anyOf"] if "const" in value),
+            "1",
+        )
 
     def test_worker_catalog_preserves_actual_unavailable_account_metadata(self) -> None:
         from codex_catalog import CatalogUnavailable
@@ -573,6 +707,32 @@ class AccountsRouterTests(unittest.TestCase):
             response = self.client.get("/api/models")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Still loading", "catalogPending": True})
+
+    def test_catalog_unavailable_returns_terminal_error_body(self) -> None:
+        from codex_catalog import CatalogUnavailable
+
+        with patch.object(self.runtime, "catalog", side_effect=CatalogUnavailable("Catalog is unavailable")):
+            response = self.client.get("/api/models")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Catalog is unavailable"})
+
+    def test_models_route_forwards_only_singleton_explicit_retry(self) -> None:
+        from codex_catalog import DISPLAY_RETRY
+
+        seen: list[bool] = []
+
+        def catalog(_account_key: str) -> dict[str, object]:
+            seen.append(DISPLAY_RETRY.get())
+            return {"data": []}
+
+        with patch.object(self.runtime, "catalog", side_effect=catalog):
+            self.assertEqual(self.client.get("/api/models").status_code, 200)
+            self.assertEqual(self.client.get("/api/models?retry=1").status_code, 200)
+            self.assertEqual(
+                self.client.get("/api/models?retry=1&retry=1").status_code,
+                200,
+            )
+        self.assertEqual(seen, [False, True, False])
 
     def test_real_reset_producer_reuses_exact_request_after_retry(self) -> None:
         fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
