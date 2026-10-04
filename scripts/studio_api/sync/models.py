@@ -386,10 +386,29 @@ class RoomLastMessage(ContractModel):
     created: float
 
 
-class RoomRadioActive(ContractModel):
+class _RoomRadioIdentity(ContractModel):
+    identity: tuple[str | None, int | None, int]
+
+    @field_validator("identity", mode="before")
+    @classmethod
+    def accept_runtime_identity(cls, value: object) -> object:
+        # codex_radio persists this fixed tuple in JSON, which is read back as a list.
+        return tuple(value) if isinstance(value, list) else value
+
+
+class RoomRadioActive(_RoomRadioIdentity):
     eventId: str
     agentId: str
+    epoch: int
+    threadId: str | None
+    through: int
     turnId: str | None = None
+
+
+class RoomRadioSeen(_RoomRadioIdentity):
+    """Per-agent transcript cursor persisted by the shared-radio runtime."""
+
+    seq: int
 
 
 class RoomRadio(ContractModel):
@@ -401,6 +420,7 @@ class RoomRadio(ContractModel):
     next: list[str]
     active: RoomRadioActive | None
     error: str | None
+    seen: dict[str, RoomRadioSeen] | None = None
 
 
 class RoomEntityDto(ContractModel):

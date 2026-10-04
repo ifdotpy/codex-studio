@@ -22,6 +22,7 @@ from studio_api.sync.models import (
     DraftPushRequest,
     EntityCollection,
     RuntimeSnapshot,
+    RoomRadioSeen,
     SnapshotAgentDto,
     StateSnapshot,
     SyncDocument,
@@ -34,6 +35,23 @@ class RuntimeFixture(Protocol):
     def create(self, data: dict[str, object], parent: str | None = None, defer: bool = False,
                parent_epoch: int | None = None, draft: bool = False) -> dict[str, JsonValue]: ...
     def close(self) -> None: ...
+
+
+class RadioFixture(Protocol):
+    def setUp(self) -> None: ...
+    def tearDown(self) -> None: ...
+    def doCleanups(self) -> None: ...
+    def room(self) -> dict[str, JsonValue]: ...
+    def action(self, action: str, **extra: JsonValue) -> JsonValue: ...
+    def start(self) -> tuple[str, str]: ...
+    def answer(
+        self,
+        key: str,
+        turn: str,
+        text: str = "reply",
+        item: str = "answer",
+        status: str = "completed",
+    ) -> JsonValue: ...
 
 
 class SyncEntityContractTests(unittest.TestCase):
@@ -80,6 +98,59 @@ class SyncEntityContractTests(unittest.TestCase):
                 self.assertIs(projected.get("worktree"), False)
             finally:
                 runtime.close()
+
+    def test_runtime_radio_open_projects_persisted_seen_cursor(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        test_path = repository / "tests" / "radio-contract.py"
+        spec = importlib.util.spec_from_file_location("sync_radio_fixture", test_path)
+        if spec is None or spec.loader is None:
+            self.fail("radio fixture could not be loaded")
+        fixture = importlib.util.module_from_spec(spec)
+        test_directory = str(test_path.parent)
+        sys.path.insert(0, test_directory)
+        try:
+            spec.loader.exec_module(fixture)
+        finally:
+            sys.path.remove(test_directory)
+        radio_factory = cast(Callable[[], RadioFixture], getattr(fixture, "Radio"))
+        radio = radio_factory()
+        radio.setUp()
+        try:
+            projected = project("room", radio.room())
+            if not isinstance(projected, dict):
+                self.fail("runtime radio room did not project")
+            public_radio = projected.get("radio")
+            if not isinstance(public_radio, dict):
+                self.fail("runtime radio record did not project")
+            self.assertEqual(public_radio.get("seen"), {})
+
+            radio.action("send", text="Record a shared reply")
+            agent_id, turn_id = radio.start()
+            radio.answer(agent_id, turn_id)
+            updated = project("room", radio.room())
+            if not isinstance(updated, dict):
+                self.fail("updated runtime radio room did not project")
+            updated_radio = updated.get("radio")
+            if not isinstance(updated_radio, dict):
+                self.fail("updated runtime radio record did not project")
+            self.assertEqual(
+                updated_radio.get("seen"),
+                {agent_id: {"identity": ["native-" + agent_id, 1, 0], "seq": 1}},
+            )
+        finally:
+            radio.tearDown()
+            radio.doCleanups()
+
+    def test_radio_seen_identity_has_exact_runtime_types(self) -> None:
+        valid = RoomRadioSeen.model_validate({"identity": ["native-a", 3, 1], "seq": 9})
+        self.assertEqual(
+            valid.model_dump(mode="json"),
+            {"identity": ["native-a", 3, 1], "seq": 9},
+        )
+        for identity in (["native-a", False, 1], ["native-a", 3, "1"], ["native-a", 3]):
+            with self.subTest(identity=identity):
+                with self.assertRaises(ValidationError):
+                    RoomRadioSeen.model_validate({"identity": identity, "seq": 9})
 
     def test_strict_agent_projection_rejects_unknown_status(self) -> None:
         with self.assertRaises(ValidationError):
