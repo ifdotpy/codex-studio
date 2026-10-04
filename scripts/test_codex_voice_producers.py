@@ -45,8 +45,92 @@ class _VoiceRuntime:
     def agent(self, agent_id: str) -> dict[str, object]:
         return self.actors[agent_id]
 
+    def put(self, db, table: str, record: dict[str, object]) -> None:
+        return None
+
+    def connection_current(self, account: str, connection: str) -> bool:
+        return account == "default" and connection == "connection-a"
+
 
 class VoiceResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
+    def test_cancel_waits_for_reserved_start_dispatch_then_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = _VoiceRuntime(Path(directory))
+            voice = VoiceStore(runtime)
+            with runtime.db() as db:
+                db.execute(
+                    "INSERT INTO voice_sessions(id,agent,created,state) VALUES(?,?,?,?)",
+                    ("session-race", "lead", 1.0, "connecting"),
+                )
+            context = {
+                "agent": "lead", "thread": "thread-a", "account": "default",
+                "connection": "connection-a", "server": object(), "cancel": False,
+                "submitted": False, "start_dispatched": False,
+                "dispatch_lock": threading.Lock(), "stopping": False,
+            }
+            voice.connections["session-race"] = context
+            voice._assert_start_context = lambda _context, _db: {"epoch": 1}
+
+            start_entered = threading.Event()
+            release_start = threading.Event()
+            cancel_published = threading.Event()
+            calls: list[str] = []
+            errors: list[BaseException] = []
+
+            def controlled_submit(_server, method, _params, _callback) -> None:
+                if method == "thread/realtime/start":
+                    start_entered.set()
+                    if not release_start.wait(2):
+                        raise TimeoutError("test did not release reserved start")
+                calls.append(method)
+
+            voice._submit = controlled_submit
+            voice._publish_voice = lambda _agent: cancel_published.set()
+
+            def submit_start() -> None:
+                try:
+                    voice._submit_start("session-race", "v=0\\r\\n")
+                except BaseException as error:
+                    errors.append(error)
+
+            start_thread = threading.Thread(target=submit_start)
+            end_thread = threading.Thread(target=lambda: voice.end("lead", "session-race"))
+            start_thread.start()
+            try:
+                self.assertTrue(start_entered.wait(1), "start did not reach RPC dispatch")
+                end_thread.start()
+                self.assertTrue(cancel_published.wait(1), "cancellation was not committed")
+                self.assertEqual(calls, [], "stop must not overtake the paused start RPC")
+                self.assertTrue(context["cancel"])
+                self.assertEqual(voice.session("lead", "session-race")["state"], "stopping")
+                release_start.set()
+                start_thread.join(2)
+                end_thread.join(2)
+                self.assertFalse(start_thread.is_alive())
+                self.assertFalse(end_thread.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(
+                    calls,
+                    ["thread/realtime/start", "thread/realtime/stop"],
+                )
+
+                self.assertTrue(voice.native_notification(
+                    {
+                        "method": "thread/realtime/closed",
+                        "params": {"threadId": "thread-a", "reason": "requested"},
+                    },
+                    "default",
+                    "connection-a",
+                ))
+                final = voice.session("lead", "session-race")
+                self.assertEqual(final["state"], "ended")
+                self.assertIsNotNone(final["ended"])
+            finally:
+                release_start.set()
+                start_thread.join(2)
+                if end_thread.ident is not None:
+                    end_thread.join(2)
+
     async def test_native_callback_publishes_after_nested_commit_and_locks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

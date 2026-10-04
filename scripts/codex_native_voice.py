@@ -69,7 +69,8 @@ class NativeVoice:
                            (session_id, agent, time.time(), sdp, "connecting"))
                 db.commit()
                 self.connections[session_id] = {"agent": agent, "epoch": actor.get("epoch"), "account": actor.get("accountKey", "default"),
-                                                "initial_thread": actor.get("threadId"), "cancel": False, "submitted": False, "stopping": False}
+                                                "initial_thread": actor.get("threadId"), "cancel": False, "submitted": False,
+                                                "start_dispatched": False, "dispatch_lock": threading.Lock(), "stopping": False}
                 # Preparation must not occupy the shared coordination executor.
                 threading.Thread(target=self._start_native, args=(agent, session_id, sdp), daemon=True, name="native-voice-start").start()
         self._publish_voice(agent)
@@ -105,8 +106,6 @@ class NativeVoice:
 
     def _submit_start(self, sid, sdp, reloaded=False):
         context = self.connections[sid]
-        if context["cancel"] or context["submitted"]:
-            return
         params = {"threadId": context["thread"], "version": "v3", "outputModality": "audio",
                   "realtimeSessionId": sid, "clientManagedHandoffs": False,
                   "flushTranscriptTailOnSessionEnd": False, "transport": {"type": "webrtc", "sdp": sdp}}
@@ -116,20 +115,46 @@ class NativeVoice:
                 future.result()  # Acceptance is not an SDP answer or a connected peer.
             except Exception as error:
                 if not reloaded and "does not support realtime conversation" in str(error):
-                    context["submitted"] = False
+                    with self.native_lock:
+                        context["submitted"] = False
+                        context["start_dispatched"] = False
                     # This precise native rejection happens before submitting Core's start operation.
                     threading.Thread(target=self._reload_idle, args=(sid, sdp), daemon=True, name="native-voice-enable").start()
                 else:
                     self._state(sid, "failed", str(error), ended=True)
 
-        with self.runtime.lock:
-            with self.runtime.db() as db:
-                current = self._assert_start_context(context, db)
-                # Authorize handoffs only after the paid operation passes admission.
-                current.update(autoWake=True, turnEpoch=current["epoch"])
-                self.runtime.put(db, "agents", current)
-            context["submitted"] = True
-        self._submit(context["server"], "thread/realtime/start", params, completed)
+        # Start and stop share a per-session dispatch lock. Cancellation may
+        # reserve a stop while this RPC is paused after reservation, but it
+        # cannot send stop ahead of the start. RPC calls remain outside both
+        # runtime and native state locks.
+        dispatch_lock = context["dispatch_lock"]
+        with dispatch_lock:
+            with self.native_lock:
+                if context["cancel"] or context["submitted"]:
+                    return
+                context["submitted"] = True
+                context["start_dispatched"] = False
+            try:
+                with self.runtime.lock:
+                    with self.runtime.db() as db:
+                        current = self._assert_start_context(context, db)
+                        # Authorize handoffs only after the paid operation passes admission.
+                        current.update(autoWake=True, turnEpoch=current["epoch"])
+                        self.runtime.put(db, "agents", current)
+                with self.native_lock:
+                    cancelled = context["cancel"]
+                    if cancelled:
+                        context["submitted"] = False
+                if cancelled:
+                    return
+                self._submit(context["server"], "thread/realtime/start", params, completed)
+                with self.native_lock:
+                    context["start_dispatched"] = True
+            except BaseException:
+                with self.native_lock:
+                    context["submitted"] = False
+                    context["start_dispatched"] = False
+                raise
 
     def _assert_start_context(self, context, db):
         from codex_budget import budget_admission
@@ -368,24 +393,31 @@ class NativeVoice:
             return self._state(sid, "ended", ended=True, publish=False), False
 
     def _stop_native(self, sid):
-        with self.native_lock:
-            context = self.connections[sid]
-            if context["stopping"]:
+        context = self.connections[sid]
+        dispatch_lock = context["dispatch_lock"]
+        with dispatch_lock:
+            with self.native_lock:
+                if context["stopping"]:
+                    return
+                context["stopping"] = True
+                start_dispatched = context["start_dispatched"]
+            if not start_dispatched:
+                self._state(sid, "ended", ended=True)
                 return
-            context["stopping"] = True
-        if not self.runtime.connection_current(context["account"], context["connection"]):
-            self._state(sid, "lost", "Voice connection ended", ended=True)
-            return
-        def completed(future):
+            if not self.runtime.connection_current(context["account"], context["connection"]):
+                self._state(sid, "lost", "Voice connection ended", ended=True)
+                return
+
+            def completed(future):
+                try:
+                    future.result()
+                    # Core closes voice asynchronously. Do not release ownership on its RPC ack.
+                except Exception as error:
+                    self._state(sid, "unknown", str(error))
             try:
-                future.result()
-                # Core closes voice asynchronously. Do not release ownership on its RPC ack.
+                self._submit(context["server"], "thread/realtime/stop", {"threadId": context["thread"]}, completed)
             except Exception as error:
                 self._state(sid, "unknown", str(error))
-        try:
-            self._submit(context["server"], "thread/realtime/stop", {"threadId": context["thread"]}, completed)
-        except Exception as error:
-            self._state(sid, "unknown", str(error))
 
     def speech(self, agent, record_id, session_id, request_id=None):
         self._agent(agent)
