@@ -25,6 +25,7 @@ test("Sync recovery browser", async ({
       errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let identityStatus = 503,
+      hangSession = false,
       failPull = false,
       badReceipt = true;
     let workspaceId = "c".repeat(32);
@@ -49,12 +50,40 @@ test("Sync recovery browser", async ({
         status: identityStatus,
         json:
           identityStatus === 200
-            ? { token: "fixture", marker: "http" }
+            ? {
+                token: "fixture",
+                stateDir: "fixture-workspace",
+                threads: [],
+                chats: [],
+                nodes: [],
+                edges: [],
+                at: 1,
+                runtime: {
+                  agents: [],
+                  complaints: [],
+                  connected: false,
+                  events: [],
+                  monitors: [],
+                  nativeNotices: [],
+                  peerTeams: [],
+                  peerTeamsVersion: 1,
+                  projectOrganizationVersion: 1,
+                  projects: [],
+                  rateLimits: { accountKey: "default", at: null, data: {} },
+                  rateLimitsByAccount: {},
+                  requests: [],
+                  rooms: [],
+                  rules: [],
+                  tasks: [],
+                  tasksHistoryLimit: 100,
+                  marker: "http",
+                },
+              }
             : { error: "Connection unavailable" },
       }),
     );
     await page.route("**/api/session", (route) =>
-      route.fulfill({ json: { token: "fixture" } }),
+      hangSession ? undefined : route.fulfill({ json: { token: "fixture" } }),
     );
     await page.route("**/api/sync/stream*", (route) =>
       route.fulfill({ contentType: "text/event-stream", body: "" }),
@@ -69,6 +98,7 @@ test("Sync recovery browser", async ({
           ? { error: "Pull unavailable" }
           : {
               workspaceId,
+              generation: 1,
               documents: after
                 ? []
                 : [
@@ -87,6 +117,8 @@ test("Sync recovery browser", async ({
                     },
                   ],
               checkpoint: { seq: 1 },
+              maxSeq: 1,
+              initialHigh: 1,
             },
       });
     });
@@ -127,13 +159,23 @@ test("Sync recovery browser", async ({
       () => window.snapshot?.error && window.outbox?.error,
     );
     identityStatus = 200;
+    const previousSnapshotError = await page.evaluate(
+      () => window.snapshot.error,
+    );
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
     await page.waitForFunction(
-      () =>
-        window.snapshot.data?.runtime.marker === "replicated" &&
-        window.second.data?.runtime.marker === "replicated" &&
-        !window.snapshot.error &&
-        !window.outbox.error,
+      (previousError) =>
+        (window.snapshot.data?.runtime?.marker === "replicated" &&
+          window.second.data?.runtime?.marker === "replicated" &&
+          !window.snapshot.error &&
+          !window.outbox.error) ||
+        window.snapshot.error !== previousError,
+      previousSnapshotError,
+    );
+    assert.equal(
+      await page.evaluate(() => window.snapshot.data?.runtime?.marker),
+      "replicated",
+      "The entity pull must replace the valid legacy state fallback",
     );
     failPull = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -154,11 +196,12 @@ test("Sync recovery browser", async ({
       "replicated",
       "An empty pull clears stale errors without a new snapshot",
     );
+    hangSession = true;
     const timeout = await page.evaluate(async () => {
-      const { api } = await import("/src/api.ts");
+      const { get } = await import("/src/api.ts");
       const start = performance.now();
       try {
-        await api("/hang", undefined, { timeoutMs: 100 });
+        await get("/api/session", { timeoutMs: 100 });
         return null;
       } catch (error) {
         return {
@@ -168,7 +211,12 @@ test("Sync recovery browser", async ({
         };
       }
     });
-    assert.equal(timeout.name, "NetworkTimeoutError");
+    hangSession = false;
+    assert.equal(
+      timeout.name,
+      "NetworkTimeoutError",
+      `Timeout result: ${JSON.stringify(timeout)}`,
+    );
     assert.ok(timeout.elapsed < 2000);
     const body = {
       id: "receipt-check",
