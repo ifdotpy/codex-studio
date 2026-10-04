@@ -159,23 +159,13 @@ test("Sync recovery browser", async ({
       () => window.snapshot?.error && window.outbox?.error,
     );
     identityStatus = 200;
-    const previousSnapshotError = await page.evaluate(
-      () => window.snapshot.error,
-    );
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
     await page.waitForFunction(
-      (previousError) =>
-        (window.snapshot.data?.runtime?.marker === "replicated" &&
-          window.second.data?.runtime?.marker === "replicated" &&
-          !window.snapshot.error &&
-          !window.outbox.error) ||
-        window.snapshot.error !== previousError,
-      previousSnapshotError,
-    );
-    assert.equal(
-      await page.evaluate(() => window.snapshot.data?.runtime?.marker),
-      "replicated",
-      "The entity pull must replace the valid legacy state fallback",
+      () =>
+        window.snapshot.data?.runtime?.marker === "replicated" &&
+        window.second.data?.runtime?.marker === "replicated" &&
+        !window.snapshot.error &&
+        !window.outbox.error,
     );
     failPull = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
