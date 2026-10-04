@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive
 
 
 def _uuid_string(value: str) -> str:
@@ -163,28 +164,20 @@ class ProjectReadResponse(ResponseModel):
     items: list[Project]
 
 
-class SharedRadioState(ContractModel):
-    direct: bool | None = None
-    teamId: str
-    revision: int
-    status: Literal["idle", "waiting", "blocked", "stopping", "speaking"]
-    speaker: str | None = None
-    next: list[str]
-    active: JsonValue | None = None
-    error: str | None = None
-    seen: dict[str, JsonValue]
+class PeerRadioActive(RoomRadioActive):
+    epoch: int
+    interruptRequested: bool | None = None
+    questionContinuationPlanned: bool | None = None
 
 
-class PeerRoomResponse(ContractModel):
-    id: str
-    kind: Literal["private"]
-    members: list[str]
-    projectPath: str
-    customName: str
-    created: float
-    updated: float | None = None
-    userHidden: bool
-    radio: SharedRadioState
+class PeerRoomRadio(RoomRadio):
+    active: PeerRadioActive | None
+
+
+class PeerRoomResponse(RoomEntityDto):
+    customName: str | None = None
+    created: float | None = None
+    radio: PeerRoomRadio
 
 
 class ProviderModel(ContractModel):

@@ -202,7 +202,7 @@ class AccountsModelTests(unittest.TestCase):
             radio_response: PeerTeamsResponse = TypeAdapter(PeerTeamsResponse).validate_python(opened.json())
             self.assertIsInstance(radio_response, PeerRadioResponse)
             room = cast(PeerRadioResponse, radio_response).room
-            self.assertEqual(room.members, sorted([first["id"], second["id"]]))
+            self.assertEqual(set(room.members or ()), {first["id"], second["id"]})
             self.assertEqual(room.radio.teamId, team_id)
             self.assertEqual(room.radio.status, "idle")
             self.assertIsNotNone(room.updated)
