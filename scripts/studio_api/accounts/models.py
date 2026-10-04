@@ -36,7 +36,12 @@ class ClaudeOptions(ContractModel):
     configDir: str | None = None
     launchArgs: str | None = None
     autoCompactWindow: int | None = None
-    customModels: list[JsonValue] | None = None
+    customModels: list[ClaudeCustomModel] | None = None
+
+
+class ClaudeCustomModel(ContractModel):
+    id: str
+    label: str
 
 
 class Account(ContractModel):
@@ -67,6 +72,7 @@ class CodexLoginReceipt(ContractModel):
     error: str | None = None
     resolvedAccountKey: str | None = None
     createdAt: float | None = None
+    reauthAccountKey: str | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
@@ -260,21 +266,21 @@ class ClaudeSessionCommandRequest(ContractModel):
     action: Literal["command"]
     id: str
     command: str
-    request_id: UUID
+    request_id: str = Field(min_length=1)
 
 
 class ClaudeSessionSettingsRequest(ContractModel):
     action: Literal["settings"]
     id: str
     settings: ClaudeSettings
-    request_id: UUID | None = None
+    request_id: str | None = Field(default=None, min_length=1)
 
 
 class ClaudeSessionRollbackRequest(ContractModel):
     action: Literal["rollback"]
     id: str
     turn_id: str
-    request_id: UUID
+    request_id: str = Field(min_length=1)
 
 
 class ClaudeSettings(ContractModel):
@@ -289,27 +295,89 @@ class ClaudeSessionStopTaskRequest(ContractModel):
     task_id: str
 
 
-class ClaudeSessionResponse(ResponseModel):
-    settings: JsonValue | None = None
-    turns: list[JsonValue] | None = None
-    tasks: list[JsonValue] | None = None
-    controlOperation: JsonValue | None = None
-    commands: JsonValue | None = None
-    status: str | None = None
-    request_id: str | None = None
-    outcome: str | None = None
-    items: list[JsonValue] | None = None
+class ClaudeSessionSettings(ClaudeSettings):
+    binaryPath: str | None = None
+    configDir: str | None = None
+    launchArgs: str | None = None
+    customModels: list[ClaudeCustomModel] | None = None
+
+
+class ClaudeControlOperation(ContractModel):
+    requestId: str
+    turnId: str | None = None
+    phase: Literal["provider_pending", "provider_ready", "completed", "failed"]
     error: str | None = None
+
+
+class ClaudeTurn(ContractModel):
+    id: str
+    status: Literal["inProgress", "completed", "failed", "interrupted"]
+    text: str
+
+
+class ClaudeBackgroundTask(ContractModel):
+    task_id: str
+    description: str | None = None
+    status: str | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
+class ClaudeSessionStateResponse(ResponseModel):
+    settings: ClaudeSessionSettings = Field(default_factory=ClaudeSessionSettings)
+    turns: list[ClaudeTurn] = Field(default_factory=list)
+    tasks: list[ClaudeBackgroundTask] = Field(default_factory=list)
+    controlOperation: ClaudeControlOperation | None = None
+    version: str | None = None
+    nativeId: str | None = None
+    contextWindow: int | None = None
+    totalTokens: int | None = None
+
+
+class ClaudeCommand(ContractModel):
+    name: str
+    description: str
+    argumentHint: str
+    builtin: bool
+    aliases: list[str]
+
+
+class ClaudeDeliveryResponse(ResponseModel):
+    id: str
+    status: Literal["pending", "queued", "dispatching", "delivered", "uncertain", "cancelled", "failed"]
+    error: str | None = None
+
+
+class ClaudeSettingsResponse(ResponseModel):
+    settings: ClaudeSessionSettings
+
+
+class ClaudeRollbackResponse(ResponseModel):
+    threadId: str
+    nativeId: str
+    removedTurns: int
+
+
+class ClaudeStopTaskResponse(ResponseModel):
+    pass
+
+
+ClaudeSessionResponse = (
+    ClaudeSessionStateResponse
+    | list[ClaudeCommand]
+    | ClaudeDeliveryResponse
+    | ClaudeSettingsResponse
+    | ClaudeRollbackResponse
+    | ClaudeStopTaskResponse
+)
+
+
 class LimitsQuery(ContractModel):
-    account_key: str
+    account_key: str = "default"
     cached: str | None = None
 
 
 class ModelsQuery(ContractModel):
-    account_key: str
+    account_key: str = "default"
     workers: str | None = None
 
 
