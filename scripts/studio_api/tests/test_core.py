@@ -208,7 +208,8 @@ class CoreResponseTests(unittest.TestCase):
         self.assertNotIn("outcome", body)
 
     def test_unchecked_pydantic_model_is_not_a_typed_contract(self) -> None:
-        self.assertFalse(ApiContext._response_contract(UncheckedLegacyResponse))
+        self.assertFalse(ApiContext._response_contract(list[UncheckedLegacyResponse]))
+        self.assertTrue(ApiContext._response_contract(list[JsonValue]))
 
     def test_schema_factory_assembles_all_domain_routers_without_state_io(self) -> None:
         package_names = (

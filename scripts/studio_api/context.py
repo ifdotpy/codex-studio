@@ -355,6 +355,8 @@ class ApiContext:
 
     @staticmethod
     def _nested_response_contract(candidate: object) -> bool:
+        if candidate is JsonValue:
+            return True
         if candidate is type(None):
             return True
         if isinstance(candidate, type):
