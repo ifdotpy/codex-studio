@@ -24,6 +24,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_connection_recovery import recover, tick as connection_recovery_tick
 from codex_restart_recovery import capture, restore, settle_reconciled
+from codex_context_repair import recover_unconfirmed_inputs
 
 
 class RestartContract(fixture.ConnectionRecoveryContract):
@@ -672,7 +673,7 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                 "SELECT status,turn_id FROM runtime_events WHERE id='exact-native-input'").fetchone()),
                 ('delivered','accepted-turn'))
 
-    def test_scenario_5_proves_input_was_not_accepted_before_restart(self):
+    def test_scenario_5_absent_submitted_input_remains_uncertain(self):
         with self.runtime.db() as db:
             a = self.runtime.agent(self.key, db)
             self.runtime.enqueue(db, a, 'user', 'Original instruction', 'not-accepted-input')
@@ -683,18 +684,13 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.restart(threadId='native-thread', turnId=None, startAttempt={
             'id':'not-accepted-attempt','epoch':self.a['epoch'],'accountKey':'default',
             'threadId':'native-thread','events':['not-accepted-input'],'submitted':True})
-        self.runtime.dispatch()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            with self.runtime.db() as db:
-                status = db.execute("SELECT status FROM runtime_events WHERE id='not-accepted-input'").fetchone()[0]
-            if status == 'pending':
-                break
-            time.sleep(.02)
+        result = recover_unconfirmed_inputs(self.runtime, self.key)
+        self.assertEqual(result['inputs'], [{'id': 'not-accepted-input', 'decision': 'waiting'}])
         with self.runtime.db() as db:
             self.assertEqual(db.execute(
-                "SELECT status FROM runtime_events WHERE id='not-accepted-input'").fetchone()[0], 'pending')
-        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
+                "SELECT status FROM runtime_events WHERE id='not-accepted-input'").fetchone()[0], 'uncertain')
+        self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'held')
+        self.assertFalse(any(method == 'turn/start' for method, _ in self.server.calls))
 
     def test_submitted_input_without_turn_is_held(self):
         parent_id = self.make_worker()
