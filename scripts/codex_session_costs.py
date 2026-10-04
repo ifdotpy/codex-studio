@@ -25,6 +25,19 @@ def provider_for(model):
     return None
 
 
+def _publish_session_cost(state_dir: str | Path, agent_id: str) -> None:
+    """Invalidate the requested chat after its async estimate settles."""
+    try:
+        from studio_api.sync.resources.hub import publish_resources
+    except ModuleNotFoundError as error:
+        if error.name != "studio_api.sync.resources.hub":
+            raise
+        return
+    from studio_api.sync.resources.models import ResourceRef, SessionCostResource
+
+    publish_resources(state_dir, ResourceRef(SessionCostResource(kind="session-cost", agentId=agent_id)))
+
+
 class SessionCostReader:
     CACHE_ROOTS = 16
 
@@ -261,6 +274,7 @@ class SessionCostReader:
         finally:
             with self.lock:
                 self.refreshing.discard(root)
+            _publish_session_cost(self.state_root, agent_id)
 
     def snapshot(self, agent_id, *, wait=False):
         db = self._connect()

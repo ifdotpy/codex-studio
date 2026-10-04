@@ -1,6 +1,7 @@
 """Background, read-only measurements of Studio worker worktrees."""
 
 import ctypes
+from collections.abc import Iterable
 import json
 import os
 import sqlite3
@@ -21,6 +22,24 @@ _scanners = {}
 _scanners_lock = threading.Lock()
 _apfs_api_lock = threading.Lock()
 _apfs_api = None
+
+
+def _publish_worktree_disk(state_dir: str | Path, agent_ids: Iterable[str]) -> None:
+    if not agent_ids:
+        return
+    try:
+        from studio_api.sync.resources.hub import publish_resources
+    except ModuleNotFoundError as error:
+        if error.name != 'studio_api.sync.resources.hub':
+            raise
+        return
+    from studio_api.sync.resources.models import ResourceRef, WorktreeDiskResource
+
+    resources = tuple(
+        ResourceRef(WorktreeDiskResource(kind='worktree-disk', agentId=agent_id))
+        for agent_id in sorted(set(agent_ids))
+    )
+    publish_resources(state_dir, *resources)
 
 
 class _AttrList(ctypes.Structure):
@@ -149,6 +168,7 @@ def _change_signature(path):
 
 class WorktreeDiskScanner:
     def __init__(self, state_root, *, clock=time.time, pause=time.sleep):
+        self.state_dir = Path(state_root)
         self.db_path = Path(state_root) / 'canvas.sqlite3'
         self.clock = clock
         self.pause = pause
@@ -216,6 +236,7 @@ class WorktreeDiskScanner:
         with self.lock:
             self.scanning = True
             self.error = None
+            previous_sizes = {key: dict(row) for key, row in self.sizes.items()}
         paths = {key: str(path.absolute()) if path is not None else None
                  for key, path in workers.items()}
         live_paths = {path for path in paths.values() if path is not None}
@@ -262,11 +283,17 @@ class WorktreeDiskScanner:
                         self.sizes[agent_id] = dict(row)
         with self.lock:
             self.scanning = False
+            changed_ids = {
+                agent_id
+                for agent_id in previous_sizes.keys() | self.sizes.keys()
+                if previous_sizes.get(agent_id) != self.sizes.get(agent_id)
+            }
+        _publish_worktree_disk(self.state_dir, changed_ids)
         return order
 
     def _run(self):
         while True:
-            self.wake.wait(60)
+            self.wake.wait()
             self.wake.clear()
             try:
                 self.scan_once(self._take_priority())
@@ -274,6 +301,8 @@ class WorktreeDiskScanner:
                 with self.lock:
                     self.error = str(error)[:160]
                     self.scanning = False
+                    affected = set(self.sizes)
+                _publish_worktree_disk(self.state_dir, affected)
 
     def snapshot(self, priority_ids=()):
         self.request(priority_ids)

@@ -14,8 +14,13 @@ class NativeVoice:
                 id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL,
                 state TEXT NOT NULL, error TEXT)""")
             # A process restart cannot restore a browser's microphone or peer.
+            agents = [row[0] for row in db.execute(
+                "SELECT DISTINCT agent FROM voice_sessions WHERE state IS NOT NULL AND ended IS NULL"
+            )]
             db.execute("UPDATE voice_sessions SET state='lost',ended=?,error=? WHERE state IS NOT NULL AND ended IS NULL",
                        (time.time(), "Voice connection ended. The transcript is saved."))
+        for agent in agents:
+            self._publish_voice(agent)
 
     def status(self, agent):
         self._agent(agent)
@@ -31,8 +36,12 @@ class NativeVoice:
 
     def _state(self, sid, state, error=None, ended=False):
         with self.runtime.db() as db:
+            row = db.execute("SELECT agent FROM voice_sessions WHERE id=?", (sid,)).fetchone()
             db.execute("UPDATE voice_sessions SET state=?,error=?,ended=CASE WHEN ? THEN COALESCE(ended,?) ELSE ended END WHERE id=?",
                        (state, error, ended, time.time(), sid))
+        if row:
+            self._publish_voice(row["agent"])
+            self._flush_voice_publications()
 
     def start(self, agent, session_id, sdp):
         actor = self._agent(agent)
@@ -58,6 +67,8 @@ class NativeVoice:
                                                 "initial_thread": actor.get("threadId"), "cancel": False, "submitted": False, "stopping": False}
                 # Preparation must not occupy the shared coordination executor.
                 threading.Thread(target=self._start_native, args=(agent, session_id, sdp), daemon=True, name="native-voice-start").start()
+        self._publish_voice(agent)
+        self._flush_voice_publications()
         return self.session(agent, session_id)
 
     def _start_native(self, agent, sid, sdp):
@@ -87,6 +98,8 @@ class NativeVoice:
                 self._submit_start(sid, sdp)
         except Exception as error:
             self._state(sid, "failed", str(error), ended=True)
+        finally:
+            self._flush_voice_publications()
 
     def _submit_start(self, sid, sdp, reloaded=False):
         context = self.connections[sid]
@@ -175,6 +188,8 @@ class NativeVoice:
                 self._submit_start(sid, sdp, reloaded=True)
         except Exception as error:
             self._state(sid, "failed", str(error), ended=True)
+        finally:
+            self._flush_voice_publications()
 
     def _save_transcript(self, sid, role, text, partial=False):
         context = self.connections[sid]
@@ -232,6 +247,7 @@ class NativeVoice:
                 with self.runtime.db() as db:
                     db.execute("UPDATE voice_sessions SET answer=?,state=CASE WHEN ended IS NULL THEN 'ready' ELSE state END WHERE id=?",
                                (params["sdp"], sid))
+                self._publish_voice(context["agent"])
                 if context["cancel"]:
                     self._stop_native(sid)
             elif method == "thread/realtime/item/completed" and item.get("type") == "transcriptSegment":
@@ -251,6 +267,7 @@ class NativeVoice:
                     reason = params.get("reason")
                     self._state(sid, "ended", "Voice disconnected. The saved transcript remains." if reason and reason != "requested" else None, ended=True)
                 context["closed"] = True
+        self._flush_voice_publications()
         return True
 
     def disconnected_native(self, account, connection):
@@ -260,6 +277,7 @@ class NativeVoice:
                     context["cancel"] = True
                     self._flush_transcript(sid)
                     self._state(sid, "lost", "Codex disconnected. The saved transcript remains.", ended=True)
+        self._flush_voice_publications()
 
     def end(self, agent, session_id):
         self._agent(agent)
@@ -276,6 +294,7 @@ class NativeVoice:
             if current["ended"] and not context:
                 return current
             self._cancel(session_id)
+        self._flush_voice_publications()
         return self.session(agent, session_id)
 
     def end_active(self, agent):
@@ -283,6 +302,7 @@ class NativeVoice:
             for sid, context in self.connections.items():
                 if context["agent"] == agent and not context.get("closed"):
                     self._cancel(sid)
+        self._flush_voice_publications()
 
     def _cancel(self, sid):
         context = self.connections.get(sid)

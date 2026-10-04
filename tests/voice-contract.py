@@ -50,9 +50,13 @@ with tempfile.TemporaryDirectory() as root:
     voice = VoiceStore(runtime)
     with runtime.db() as db:
         db.execute("INSERT INTO voice_sessions(id,agent,created) VALUES('session','lead',0)")
+    publications = []
+    voice._publish_voice = lambda agent: publications.append((agent, runtime.lock._is_owned()))
     args = ("lead","session","one","user","Exact path: /a/b, budget 37")
     first = voice.record(*args)
+    assert publications == [("lead", False)]
     assert voice.record(*args)["seq"] == first["seq"]
+    assert len(publications) == 1, "duplicate receipts do not publish unchanged voice history"
     rejects(lambda: voice.record("lead","session","one","user","changed"))
     rejects(lambda: voice.record("other","session","two","user","cross-chat"))
     rejects(lambda: voice.record("lead","session","three","orchestrator","spoof"))

@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_worktree_creation import WorktreeNeedsReview, _run_checkout, create_worker_worktree
+import codex_worktree_disk
 from codex_worktree_disk import (
     WorktreeDiskScanner,
     _allocated_bytes,
@@ -220,9 +221,21 @@ class WorktreeContracts(unittest.TestCase):
         db.commit()
         db.close()
         scanner = WorktreeDiskScanner(state, pause=lambda _: None)
+        publications = []
+
+        def publish_after_scan(state_dir, agent_ids):
+            acquired = scanner.lock.acquire(blocking=False)
+            publications.append((state_dir, set(agent_ids), acquired))
+            if acquired:
+                scanner.lock.release()
+
         with patch('codex_worktree_disk._measure_worktree', wraps=_measure_worktree) as measure:
-            order = scanner.scan_once(priority_ids=['child', 'missing'])
+            with patch('codex_worktree_disk._publish_worktree_disk', side_effect=publish_after_scan):
+                order = scanner.scan_once(priority_ids=['child', 'missing'])
             scanner.scan_once()
+        self.assertEqual(len(publications), 1)
+        self.assertEqual(publications[0][1], {'worker', 'child', 'missing'})
+        self.assertTrue(publications[0][2], 'resource publication runs after scanner lock release')
         self.assertEqual(measure.call_count, 2, 'unchanged worktrees use the path cache')
         self.assertEqual(measure.call_args_list[0].args[0], child)
         self.assertEqual(order[:2], ['child', 'missing'])

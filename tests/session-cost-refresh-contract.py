@@ -71,6 +71,20 @@ class SessionCostRefreshContract(unittest.TestCase):
                        (json.dumps(record),))
             db.execute("INSERT INTO analytics_usage_roots VALUES ('lead',1)")
 
+    def test_background_refresh_publishes_after_refresh_state_is_released(self):
+        observations = []
+
+        def publish(state_dir, agent_id):
+            acquired = self.reader.lock.acquire(blocking=False)
+            observations.append((state_dir, agent_id, acquired, "lead" in self.reader.refreshing))
+            if acquired:
+                self.reader.lock.release()
+
+        with patch("codex_session_costs._publish_session_cost", side_effect=publish):
+            self.reader._background_refresh("lead", "lead")
+
+        self.assertEqual(observations, [(self.db_path.parent, "lead", True, False)])
+
     def test_append_decodes_only_new_rows_and_keeps_exact_usage(self):
         self.write_rows(*({"type": "user", "text": "x" * 100} for _ in range(1000)))
         self.reader._log_rows(self.log)

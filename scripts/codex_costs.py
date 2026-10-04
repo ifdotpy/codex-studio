@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from codex_pricing import PricingCatalog, price_usage
 from codex_claude_costs import parse_claude_usage
 
@@ -141,16 +142,31 @@ def report_fingerprint(data):
     ).hexdigest()
 
 
+def _publish_costs(state_dir: str | Path) -> None:
+    """Invalidate cost snapshots after a completed refresh is visible."""
+    try:
+        from studio_api.sync.resources.hub import publish_resources
+    except ModuleNotFoundError as error:
+        if error.name != "studio_api.sync.resources.hub":
+            raise
+        return
+    from studio_api.sync.resources.models import CostsResource, ResourceRef
+
+    publish_resources(state_dir, ResourceRef(CostsResource(kind="costs")))
+
+
 class CostReader:
     """One local scan at a time. GET requests return without waiting for the CLI."""
 
     # A first scan of a large profile (25 GB of sessions) takes minutes. A kill
     # discards its progress, so a short bound never let such a profile finish.
-    def __init__(self, root, interval=120, timeout=900, clock=None, *, command, environment=None, scan_lock=None):
+    def __init__(self, root, interval=120, timeout=900, clock=None, *, command, environment=None, scan_lock=None,
+                 on_change: Callable[[], None] | None = None):
         if not callable(command):
             raise ValueError("A local cost scanner command is required.")
         self.environment = dict(environment) if environment is not None else None
         self.scan_lock = scan_lock
+        self.on_change = on_change
         self.command = command
         self.path = Path(root) / "local-costs.json"
         self.scope = hashlib.sha256(json.dumps([
@@ -210,6 +226,7 @@ class CostReader:
     def _refresh(self):
         scan_lock = self.scan_lock
         acquired = False
+        changed = False
         try:
             if scan_lock is not None:
                 acquired = scan_lock.acquire(timeout=self.timeout)
@@ -265,16 +282,20 @@ class CostReader:
                         "sourceFingerprint": fingerprint,
                     }
                     self._save()
+                    changed = True
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired) as error:
             with self.lock:
                 self.state["error"] = str(error)[:300]
                 self.state["checkedAt"] = self.clock()
+                changed = True
         finally:
             if acquired:
                 scan_lock.release()
             with self.lock:
                 self.process = None
                 self.busy = False
+            if changed and self.on_change is not None:
+                self.on_change()
 
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,7 +319,8 @@ class AccountCostReader:
     """Account profile logs and caches. No native API or ambient Pi scan."""
 
     def __init__(self, root, accounts, *, reader_factory=CostReader, command_factory=None, pricing=None):
-        self.root = Path(root) / "account-costs"
+        self.state_dir = Path(root)
+        self.root = self.state_dir / "account-costs"
         self.accounts = accounts
         self.readers = {}
         self.lock = threading.RLock()
@@ -331,7 +353,8 @@ class AccountCostReader:
                 if reader is None:
                     config = Path(account.get("home") or Path.home() / ".claude").expanduser().resolve()
                     reader = ClaudeCostReader(self.root / "claude" / hashlib.sha256((account_key + str(config)).encode()).hexdigest(),
-                                              config, self.pricing)
+                                              config, self.pricing,
+                                              on_change=lambda: _publish_costs(self.state_dir))
                     self.claude_readers[account_key] = reader
             return {**reader.snapshot(), "accountKey": account_key}
         home = Path(account["home"]).expanduser().resolve()
@@ -344,7 +367,8 @@ class AccountCostReader:
             if reader is None:
                 cache = self.root / scope
                 reader = self.reader_factory(cache, environment={**os.environ, "CODEX_HOME": str(home)},
-                    scan_lock=self.scan_lock, command=lambda: self._command(home, cache / "scanner"))
+                    scan_lock=self.scan_lock, command=lambda: self._command(home, cache / "scanner"),
+                    on_change=lambda: _publish_costs(self.state_dir))
                 self.readers[scope] = reader
             value = reader.snapshot()
         data = value.get("data")
@@ -367,11 +391,13 @@ class AccountCostReader:
 
 class ClaudeCostReader:
     """Cached estimates from one Claude Code configuration directory."""
-    def __init__(self, state, config_dir, pricing, *, clock=time.time):
+    def __init__(self, state, config_dir, pricing, *, clock=time.time,
+                 on_change: Callable[[], None] | None = None):
         self.state_path = Path(state) / "claude-costs.json"
         self.config_dir = Path(config_dir)
         self.pricing = pricing
         self.clock = clock
+        self.on_change = on_change
         self.lock = threading.RLock()
         self.files = {}
         self.data = None
@@ -465,3 +491,8 @@ class ClaudeCostReader:
         except Exception as error:
             with self.lock:
                 self.error = str(error)[:300]
+        finally:
+            # Refresh completion and failure both change what the API returns.
+            # Notify only after releasing the reader lock.
+            if self.on_change is not None:
+                self.on_change()

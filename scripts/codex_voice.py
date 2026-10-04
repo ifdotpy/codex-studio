@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import time
+import threading
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from codex_native_voice import NativeVoice
 class VoiceStore(NativeVoice):
     def __init__(self, runtime):
         self.runtime = runtime
+        self._pending_voice_agents = set()
+        self._pending_voice_lock = threading.Lock()
         with runtime.db() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS voice_sessions (
@@ -32,6 +35,37 @@ class VoiceStore(NativeVoice):
 
         self.init_native()
         self.prune_audio()
+
+    def _publish_voice(self, agent):
+        native_lock = getattr(self, "native_lock", None)
+        held = bool(getattr(self.runtime.lock, "_is_owned", lambda: False)())
+        held = held or bool(native_lock and getattr(native_lock, "_is_owned", lambda: False)())
+        if held:
+            with self._pending_voice_lock:
+                self._pending_voice_agents.add(agent)
+            return
+        try:
+            from studio_api.sync.resources.hub import publish_resources
+        except ModuleNotFoundError as error:
+            if error.name != "studio_api.sync.resources.hub":
+                raise
+            return
+        from studio_api.sync.resources.models import ResourceRef, VoiceResource
+
+        publish_resources(
+            self.runtime.root,
+            ResourceRef(VoiceResource(kind="voice", agentId=agent)),
+        )
+
+    def _flush_voice_publications(self):
+        native_lock = getattr(self, "native_lock", None)
+        if (getattr(self.runtime.lock, "_is_owned", lambda: False)()
+                or native_lock and getattr(native_lock, "_is_owned", lambda: False)()):
+            return
+        with self._pending_voice_lock:
+            agents, self._pending_voice_agents = self._pending_voice_agents, set()
+        for agent in agents:
+            self._publish_voice(agent)
 
     def _agent(self, agent):
         row = self.runtime.agent(agent)
@@ -59,6 +93,7 @@ class VoiceStore(NativeVoice):
         if kind == "playback" and (text not in {"queued", "playing", "played", "interrupted", "unknown"} or not isinstance((payload or {}).get("record_id"), str)):
             raise ValueError("Invalid playback status")
         values = (event_id,agent,session_id,kind,text,item_id,previous_item_id,encoded)
+        inserted = False
         with self.runtime.lock, self.runtime.db() as db:
             old = db.execute("SELECT * FROM voice_records WHERE id=?", (event_id,)).fetchone()
             if old:
@@ -68,7 +103,12 @@ class VoiceStore(NativeVoice):
             if session_id and not db.execute("SELECT 1 FROM voice_sessions WHERE id=? AND agent=?", (session_id,agent)).fetchone():
                 raise ValueError("Unknown voice session")
             db.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES(?,?,?,?,?,?,?,?,?)", (*values,time.time()))
-            return dict(db.execute("SELECT * FROM voice_records WHERE id=?", (event_id,)).fetchone())
+            result = dict(db.execute("SELECT * FROM voice_records WHERE id=?", (event_id,)).fetchone())
+            inserted = True
+        if inserted:
+            self._publish_voice(agent)
+            self._flush_voice_publications()
+        return result
 
     def history(self, agent):
         data = self.records(agent)
@@ -93,6 +133,7 @@ class VoiceStore(NativeVoice):
             if epoch is not None and (current["epoch"] != epoch or not current.get("autoWake")):
                 raise ValueError("The orchestrator turn is stopped or replaced")
             row = self.record(agent, "", "speak:" + (request_id or uuid.uuid4().hex), "orchestrator", text, _internal=True)
+        self._flush_voice_publications()
         with self.runtime.db() as db:
             active = db.execute("SELECT id FROM voice_sessions WHERE agent=? AND state='ready' AND ended IS NULL", (agent,)).fetchone()
         if active:
@@ -135,7 +176,10 @@ class VoiceStore(NativeVoice):
                 if len(text) > 32000:
                     raise ValueError("The transcript exceeds 32000 characters. Send a smaller selection; no text was truncated")
                 db.execute("INSERT INTO voice_deliveries(id,agent,records,text,edited_text) VALUES(?,?,?,?,?)", (message_id,agent,encoded,text,edited_text))
-        return self.runtime.send(agent,text,message_id=message_id,delivery="queue")
+        result = self.runtime.send(agent,text,message_id=message_id,delivery="queue")
+        self._publish_voice(agent)
+        self._flush_voice_publications()
+        return result
 
     def audio(self, agent, session_id, chunk_id, audio, mime):
         self._agent(agent)
