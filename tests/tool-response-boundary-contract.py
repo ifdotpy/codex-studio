@@ -60,6 +60,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         self.calls_before = NoNativeServer.calls
         with patch.object(Runtime, 'schedule', lambda _runtime: None):
             self.runtime = Runtime(Path(self.temp.name), NoNativeServer)
+        self.runtime.image_workspace_support = lambda _repo: (False, 'disabled in protocol fixture')
         self.addCleanup(self.runtime.close)
         self.sink = ResponseSink()
         self.runtime.servers['default'] = self.sink
