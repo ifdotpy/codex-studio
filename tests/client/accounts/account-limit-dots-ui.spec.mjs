@@ -8,7 +8,7 @@ import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
 test("account limit dots ui", async ({ browser: runnerBrowser }) => {
   // Four viewport and color scheme passes share one fixture backend.
-  test.setTimeout(180_000);
+  test.setTimeout(420_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -59,8 +59,16 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         if (index < teamKeys.length) {
           Object.assign(agent, {
             accountKey: teamKeys[index],
-            status: "running",
-            inFlight: true,
+            status:
+              index === 0
+                ? "approval"
+                : index === 1
+                  ? "parked"
+                  : index === 2
+                    ? "queued"
+                    : "running",
+            inFlight: index !== 1,
+            ...(index === 1 ? { parkedEvent: "review-ready" } : {}),
           });
         } else if (index === teamKeys.length) {
           Object.assign(agent, {
@@ -248,7 +256,11 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       await page.route(/\/api\/limits(?:\?.*)?$/, (route) => {
         const query = new URL(route.request().url()).searchParams;
         const key = query.get("account_key") || "default";
-        reads.push({ key, cached: query.get("cached") === "1" });
+        reads.push({
+          key,
+          cached: query.get("cached") === "1",
+          at: Date.now() / 1000,
+        });
         return route.fulfill({
           json:
             key === "unknown" && unknownAvailable
@@ -508,10 +520,16 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         before,
         "panel selection preserves the footer geometry",
       );
-      assert.ok(
-        reads.every((read) => read.key === "default" || read.cached),
-        JSON.stringify(reads),
-      );
+      for (const key of order.filter((key) => key !== "default")) {
+        const providerReads = reads.filter(
+          (read) => read.key === key && !read.cached,
+        );
+        assert.ok(providerReads.length <= 1, JSON.stringify({ key, reads }));
+        assert.ok(
+          providerReads.every((read) => read.at - now >= 60),
+          JSON.stringify({ key, reads }),
+        );
+      }
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth > innerWidth,

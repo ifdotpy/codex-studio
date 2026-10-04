@@ -769,7 +769,11 @@ export default function App() {
             (item.inFlight ||
               ["running", "queued", "approval", "starting"].includes(
                 item.status,
-              )))),
+              ) ||
+              (["waiting", "parked"].includes(item.status) &&
+                ["answer", "working"].includes(
+                  indicators.get(item.id)?.kind || "",
+                ))))),
     );
     const keys = new Set(
       teamAgents.map((item) => item.accountKey || "default"),
@@ -817,6 +821,7 @@ export default function App() {
   }, [
     agent,
     agents,
+    indicators,
     accounts.data.accounts,
     limitsByAccount,
     data?.runtime.rateLimitsByAccount,
