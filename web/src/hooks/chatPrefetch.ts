@@ -10,7 +10,10 @@ import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
 import { readProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
-import { foregroundTranscriptPending } from "./chatPrefetchState";
+import {
+  foregroundTranscriptPending,
+  TranscriptRefreshGate,
+} from "./chatPrefetchState";
 
 const MAX_TRANSCRIPT_WATCHES = 12;
 
@@ -38,7 +41,7 @@ export function useChatPrefetch(
     const failedHistory = new Set<string>();
     const pendingHistory = new Set<string>();
     const pendingVersions = new Map<string, ResourceVersion>();
-    const runningVersions = new Map<string, ResourceVersion>();
+    const refreshGate = new TranscriptRefreshGate();
     const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
     let foregroundId: string | null | undefined;
@@ -72,15 +75,9 @@ export function useChatPrefetch(
       const stop = watchResourceChanges(
         { kind: "transcript", agentId: id },
         (version) => {
-          const runningVersion = runningVersions.get(id);
           // Reconnect can echo the cached revision while its refresh is active.
           // A newer revision still queues a followup pull below.
-          if (
-            version &&
-            runningVersion?.epoch === version.epoch &&
-            runningVersion?.revision === version.revision
-          )
-            return;
+          if (refreshGate.shouldSuppress(id, version)) return;
           failedHistory.delete(id);
           pendingHistory.add(id);
           if (version) pendingVersions.set(id, version);
@@ -98,9 +95,10 @@ export function useChatPrefetch(
     ) => {
       const controller = new AbortController();
       running.set(id, controller);
-      if (history && version) runningVersions.set(id, version);
+      if (history) refreshGate.start(id, version);
       active++;
       void (async () => {
+        let historySucceeded = false;
         try {
           if (history) {
             pendingHistory.delete(id);
@@ -109,18 +107,38 @@ export function useChatPrefetch(
               id,
               controller.signal,
             );
-            if (!done && !controller.signal.aborted) failedHistory.add(id);
+            historySucceeded = done;
+            if (!done && !controller.signal.aborted && !pendingHistory.has(id))
+              failedHistory.add(id);
           }
+          // Version suppression covers the history read, not any later
+          // progress request that happens to share this run.
+          if (history) refreshGate.historySettled(id);
           if (progress && !controller.signal.aborted) {
             pendingProgress.delete(id);
             await readProgress(stateDir, id, controller.signal);
           }
         } catch {
-          if (!controller.signal.aborted && !pendingHistory.has(id))
+          if (history && !controller.signal.aborted && !pendingHistory.has(id))
             failedHistory.add(id);
         } finally {
           running.delete(id);
-          runningVersions.delete(id);
+          if (history) {
+            const retryAfterFailure = refreshGate.finish(
+              id,
+              historySucceeded,
+              controller.signal.aborted,
+            );
+            if (
+              retryAfterFailure &&
+              !historySucceeded &&
+              !controller.signal.aborted &&
+              !pendingHistory.has(id)
+            ) {
+              failedHistory.delete(id);
+              pendingHistory.add(id);
+            }
+          }
           active--;
           schedule();
         }
@@ -162,6 +180,7 @@ export function useChatPrefetch(
           transcriptStops.delete(id);
           pendingHistory.delete(id);
           pendingVersions.delete(id);
+          refreshGate.forget(id);
           failedHistory.delete(id);
           running.get(id)?.abort();
         }
@@ -227,7 +246,10 @@ export function useChatPrefetch(
     const stopVisibility = () => {
       if (document.hidden || navigator.onLine === false) {
         for (const controller of running.values()) controller.abort();
-        for (const stop of transcriptStops.values()) stop();
+        for (const [id, stop] of transcriptStops) {
+          stop();
+          refreshGate.forget(id);
+        }
         transcriptStops.clear();
       }
       schedule();

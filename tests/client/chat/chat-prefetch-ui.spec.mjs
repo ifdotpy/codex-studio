@@ -114,6 +114,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       [b.id, { seq: 300, data: payload(b, "B-first") }],
     ]);
     const reads = [],
+      completedReads = [],
       streams = [],
       entityPulls = [],
       emittedEntityEvents = [],
@@ -124,6 +125,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     let holdNetwork = false,
       holdWorkspaceB = false,
       holdRecoveryB = false,
+      failRecoveryBOnce = false,
       staleB = false;
     let staleReplies = 0,
       releaseA,
@@ -156,7 +158,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 Connection: "keep-alive",
               });
               response.write(
-                `event: resources\ndata: ${JSON.stringify({
+                `retry: 100\nevent: resources\ndata: ${JSON.stringify({
                   protocol: 3,
                   workspaceId,
                   epoch: "prefetch-epoch",
@@ -201,6 +203,53 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           `codex-desktop-opened:${stateDir}`,
           JSON.stringify(id),
         );
+        window.__resourceFlushAcks = [];
+        window.__resourceFlushObserved = [];
+        window.__pendingResourceFlushRevisions = [];
+        window.__activeResourceFlushRevisions = [];
+        const nativeSetTimeout = window.setTimeout.bind(window);
+        window.setTimeout = function (callback, delay, ...args) {
+          if (
+            typeof callback === "function" &&
+            callback.name === "flushResourceChanges"
+          ) {
+            const revisions = window.__pendingResourceFlushRevisions.splice(0);
+            window.__resourceFlushObserved.push(revisions);
+            return nativeSetTimeout(() => {
+              window.__activeResourceFlushRevisions = revisions;
+              try {
+                callback(...args);
+              } finally {
+                window.__activeResourceFlushRevisions = [];
+              }
+            }, delay);
+          }
+          if (delay === 0 && window.__activeResourceFlushRevisions.length > 0)
+            window.__resourceFlushAcks.push(
+              ...window.__activeResourceFlushRevisions,
+            );
+          return nativeSetTimeout(callback, delay, ...args);
+        };
+        const addEventListener = EventSource.prototype.addEventListener;
+        EventSource.prototype.addEventListener = function (
+          type,
+          listener,
+          options,
+        ) {
+          if (type !== "resources" || typeof listener !== "function")
+            return addEventListener.call(this, type, listener, options);
+          const trackedListener = function (event) {
+            try {
+              window.__pendingResourceFlushRevisions.push(
+                JSON.parse(event.data).revision,
+              );
+            } catch {
+              // Ignore malformed resource envelopes in test instrumentation.
+            }
+            return listener.call(this, event);
+          };
+          return addEventListener.call(this, type, trackedListener, options);
+        };
       },
       { stateDir: original.stateDir, id: a.id },
     );
@@ -335,6 +384,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           releaseRecoveryB = resolve;
         });
       }
+      if (failRecoveryBOnce && id === b.id) {
+        failRecoveryBOnce = false;
+        return route.fulfill({
+          status: 503,
+          json: { error: "One simulated transcript pull failure" },
+        });
+      }
       await route.fulfill({
         json: {
           workspaceId,
@@ -352,6 +408,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           checkpoint: { seq: Math.max(after, value.seq) },
         },
       });
+      completedReads.push({ id, seq: value.seq });
     };
     await page.route("**/api/**", handle);
     const queryHas = (query, ref) =>
@@ -397,6 +454,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         resources,
       })}\n\n`;
       for (const { response } of pending) response.write(data);
+      return notificationRevision;
     };
     const invalidate = async (name) => {
       const response = await fetch(origin + "/api/rename", {
@@ -693,17 +751,95 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       readsAfterResume,
       "Online and pageshow coalesce while the recovery transcript read is in flight",
     );
-    values.set(b.id, { seq: 303, data: payload(b, "B-during-recovery") });
+    const flushAckCount = await page.evaluate(
+      () => window.__resourceFlushAcks.length,
+    );
+    const streamOpenCount = streamEvents.filter(
+      (event) => event.kind === "open",
+    ).length;
+    for (const { response } of streamConnections) response.end();
+    await until(
+      () =>
+        streamEvents.filter((event) => event.kind === "open").length >
+        streamOpenCount,
+      "A resumed stream reconnects while the history pull is held",
+    );
+    try {
+      await until(
+        () =>
+          page.evaluate(
+            ({ count, revision }) =>
+              window.__resourceFlushAcks.length > count &&
+              window.__resourceFlushAcks.at(-1) === revision,
+            { count: flushAckCount, revision: notificationRevision },
+          ),
+        "The same-version reconnect baseline reaches the transcript watcher while its pull is held",
+      );
+    } catch (error) {
+      const diagnostic = await page.evaluate(() => ({
+        acks: window.__resourceFlushAcks,
+        flushes: window.__resourceFlushObserved,
+        pending: window.__pendingResourceFlushRevisions,
+      }));
+      throw new Error(
+        `${error.message}; flush diagnostic: ${JSON.stringify({ diagnostic, notificationRevision, streamEvents: streamEvents.slice(-5), streamQueries: streamQueries.slice(-4) })}`,
+      );
+    }
+    releaseRecoveryB?.();
+    holdRecoveryB = false;
+    await until(
+      () => completedReads.some((read) => read.id === b.id && read.seq === 302),
+      "The first recovered transcript pull completes",
+    );
+    await page.waitForTimeout(300);
+    assert.equal(
+      reads.filter((read) => read.id === b.id).length,
+      readsAfterResume,
+      "A same-version recovery baseline does not queue a duplicate after the held read succeeds",
+    );
+
+    holdRecoveryB = true;
+    recoveryReadStarted = false;
+    releaseRecoveryB = undefined;
+    values.set(b.id, { seq: 303, data: payload(b, "B-trigger-pull") });
     await emitResourceChange(
       [{ kind: "transcript", agentId: b.id }],
       "change",
       () => {},
       [{ kind: "transcript", agentId: b.id }],
     );
+    await until(
+      () => recoveryReadStarted,
+      "A newer transcript event starts the second held history pull",
+    );
+    const readsBeforeNewerFollowup = reads.filter(
+      (read) => read.id === b.id,
+    ).length;
+    values.set(b.id, { seq: 304, data: payload(b, "B-during-recovery") });
+    const inFlightRevision = await emitResourceChange(
+      [{ kind: "transcript", agentId: b.id }],
+      "change",
+      () => {},
+      [{ kind: "transcript", agentId: b.id }],
+    );
+    await until(
+      () =>
+        page.evaluate(
+          (revision) => window.__resourceFlushAcks.includes(revision),
+          inFlightRevision,
+        ),
+      "The targeted watch callback must queue work for the newer revision while B's pull is held",
+    );
+    await page.waitForTimeout(50);
+    assert.equal(
+      reads.filter((read) => read.id === b.id).length,
+      readsBeforeNewerFollowup,
+      "The newer notification is acknowledged before releasing the in-flight read",
+    );
     releaseRecoveryB?.();
     holdRecoveryB = false;
     await until(
-      () => reads.some((read) => read.id === b.id && read.seq === 303),
+      () => reads.some((read) => read.id === b.id && read.seq === 304),
       "A newer transcript revision arriving during recovery gets one followup pull",
     );
     const settledResumeReads = reads.filter((read) => read.id === b.id).length;
@@ -711,7 +847,61 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     assert.equal(
       reads.filter((read) => read.id === b.id).length,
       settledResumeReads,
-      `Resume coalesces unchanged callbacks and preserves one newer in-flight event: ${JSON.stringify({ reads: reads.filter((read) => read.id === b.id), readsAfterResume, streamEvents: streamEvents.slice(-8), emittedEntityEvents: emittedEntityEvents.slice(-4), streamQueries: streamQueries.slice(-8) })}`,
+      `Resume coalesces unchanged callbacks and preserves one newer in-flight event: ${JSON.stringify({ reads: reads.filter((read) => read.id === b.id), readsAfterResume, readsBeforeNewerFollowup, streamEvents: streamEvents.slice(-8), emittedEntityEvents: emittedEntityEvents.slice(-4), streamQueries: streamQueries.slice(-8) })}`,
+    );
+
+    holdRecoveryB = true;
+    recoveryReadStarted = false;
+    releaseRecoveryB = undefined;
+    values.set(b.id, { seq: 305, data: payload(b, "B-during-recovery") });
+    await emitResourceChange(
+      [{ kind: "transcript", agentId: b.id }],
+      "change",
+      () => {},
+      [{ kind: "transcript", agentId: b.id }],
+    );
+    await until(
+      () => recoveryReadStarted,
+      "The failure scenario starts its target transcript read",
+    );
+    const failedReadStartCount = reads.filter(
+      (read) => read.id === b.id && read.seq === 305,
+    ).length;
+    const retryAckCount = await page.evaluate(
+      () => window.__resourceFlushAcks.length,
+    );
+    const retryStreamOpenCount = streamEvents.filter(
+      (event) => event.kind === "open",
+    ).length;
+    failRecoveryBOnce = true;
+    for (const { response } of streamConnections) response.end();
+    await until(
+      () =>
+        streamEvents.filter((event) => event.kind === "open").length >
+        retryStreamOpenCount,
+      "The failed pull scenario reconnects its resource stream",
+    );
+    await until(
+      () =>
+        page.evaluate(
+          ({ count, revision }) =>
+            window.__resourceFlushAcks.length > count &&
+            window.__resourceFlushAcks.at(-1) === revision,
+          { count: retryAckCount, revision: notificationRevision },
+        ),
+      "A same-version recovery callback arrives before the held history read fails",
+    );
+    releaseRecoveryB?.();
+    holdRecoveryB = false;
+    await until(
+      () => completedReads.some((read) => read.id === b.id && read.seq === 305),
+      "A failed same-version history pull receives one bounded retry",
+    );
+    await page.waitForTimeout(750);
+    assert.equal(
+      reads.filter((read) => read.id === b.id && read.seq === 305).length,
+      failedReadStartCount + 1,
+      "A suppressed recovery signal allows exactly one retry after failure",
     );
     assert.equal(await selected(), a.name);
     await until(
@@ -746,7 +936,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           {
             databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
             documentId: `transcript:${b.id}`,
-            sequence: 303,
+            sequence: 305,
           },
         ),
       "RxDB must persist B's refreshed projection before network interruption",

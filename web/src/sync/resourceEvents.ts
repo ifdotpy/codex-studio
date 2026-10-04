@@ -343,7 +343,7 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
 
 function scheduleFlush() {
   if (flushTimer !== undefined) return;
-  flushTimer = setTimeout(() => {
+  flushTimer = setTimeout(function flushResourceChanges() {
     flushTimer = undefined;
     if (pendingReset) {
       pendingReset = false;
