@@ -488,9 +488,11 @@ def _object_dir(repo: Path) -> Path:
     return Path(value).resolve()
 
 
-def _prepare_repo(target: Path, source: Path, *, refresh=False, view=False):
-    code = r'''import pathlib,shutil,subprocess,sys
+def _prepare_repo(target: Path, source: Path, *, refresh=False, view=False,
+                  copy_index=False, return_head=False):
+    code = r'''import json,pathlib,re,shutil,subprocess,sys
 source,target=map(pathlib.Path,sys.argv[1:3]); refresh=sys.argv[3]=="1"
+copy_index=sys.argv[4]=="1"; return_head=sys.argv[5]=="1"
 source_marker=source/".git"; target_marker=target/".git"
 if source_marker.is_file():
     value=source_marker.read_text().strip()
@@ -521,37 +523,39 @@ if needs_private:
 else:
     source_config=common/"config"
     if source_config.is_file(): shutil.copy2(source_config,target_marker/"config")
-if source_marker.is_file():
-    for config in (target_marker/"config",target_marker/"config.worktree"):
-        if config.is_file():
-            subprocess.run(["git","config","--file",str(config),"--unset-all","core.worktree"],
-                           capture_output=True,check=False)
+paths=subprocess.run(["git","-C",str(source),"rev-parse","--path-format=absolute",
+                      "--git-path","objects","--git-path","index","HEAD"],
+                     capture_output=True,text=True,check=True).stdout.splitlines()
+source_objects=pathlib.Path(paths[0]).resolve(); source_index=pathlib.Path(paths[1]).resolve(); head=paths[2]
 objects=target_marker/"objects"; objects.mkdir(parents=True,exist_ok=True)
-print(objects)
+alternate=objects/"info"/"alternates"; alternate.parent.mkdir(parents=True,exist_ok=True)
+alternate.write_text(str(source_objects)+"\n")
+if copy_index and source_index.is_file(): shutil.copy2(source_index,target_marker/"index")
+for config in (target_marker/"config",target_marker/"config.worktree"):
+    if not config.exists(): config.touch()
+    lines=config.read_text(errors="replace").splitlines()
+    kept=[]; section=""
+    for line in lines:
+        match=re.match(r"\s*\[([^]]+)\]",line)
+        if match: section=match.group(1).split()[0].lower()
+        if section=="core" and re.match(r"\s*(checkstat|trustctime|worktree)\s*=",line,re.I): continue
+        kept.append(line)
+    kept.extend(("[core]","\tcheckStat = minimal","\ttrustctime = false"))
+    config.write_text("\n".join(kept)+"\n")
+print(json.dumps({"objects":str(objects),"head":head}))
 '''
+    args = [sys.executable, '-c', code, str(source), str(target),
+            '1' if refresh else '0', '1' if copy_index else '0', '1' if return_head else '0']
     if view:
-        objects = Path(_command([sys.executable, '-c', code, str(source), str(target),
-                                 '1' if refresh else '0'],
-                                view=True, check=True).stdout.decode().strip())
+        output = _command(args, view=True, check=True, timeout=60).stdout.decode()
     else:
-        objects = Path(subprocess.run([sys.executable, '-c', code, str(source), str(target),
-                                       '1' if refresh else '0'],
-                                      check=True, capture_output=True, text=True,
-                                      timeout=60).stdout.strip())
-    alternate = objects / 'info' / 'alternates'
-    source_objects = _object_dir(source)
-    if view:
-        code = ('import pathlib,sys; p=pathlib.Path(sys.argv[1]); '
-                'p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2])')
-        _command([sys.executable, '-c', code, str(alternate), str(source_objects) + '\n'],
-                 view=True, check=True)
-    else:
-        alternate.parent.mkdir(parents=True, exist_ok=True)
-        alternate.write_text(str(source_objects) + '\n')
-    _git(target, 'config', 'core.checkStat', 'minimal', view=view)
-    _git(target, 'config', 'core.trustctime', 'false', view=view)
+        output = subprocess.run(args, check=True, capture_output=True, text=True,
+                                timeout=60).stdout
+    details = json.loads(output)
     if refresh:
         return _git(target, 'status', '--porcelain=v1', '-z', timeout=300, view=view)
+    if return_head:
+        return details['head']
     return ''
 
 
@@ -695,9 +699,8 @@ def _repo_state_list(root: Path, mount_repo: Path, known_paths, delta):
         source = root / rel
         if not (source / '.git').exists():
             continue
-        _prepare_repo(target, source, view=True)
-        _copy_index(source, target, view=True)
-        items.append({'path': str(rel), 'startCommit': _git(source, 'rev-parse', 'HEAD').strip(),
+        head = _prepare_repo(target, source, view=True, copy_index=True, return_head=True)
+        items.append({'path': str(rel), 'startCommit': head,
                       'snapshotCommit': None, 'branch': None})
     return items
 
