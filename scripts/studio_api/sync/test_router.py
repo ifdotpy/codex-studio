@@ -30,12 +30,17 @@ class StoreStub:
         self.stream_batches: list[dict[str, object]] = []
         self.runtime: RuntimeStub | None = None
         self.invalid_push_response = False
+        self.reset_pull = False
 
     def identity(self) -> dict[str, object]:
         return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
 
     def pull(self, *args: object) -> dict[str, object]:
         self.pull_arguments = args
+        if self.reset_pull:
+            return {
+                "workspaceId": "workspace-a", "reset": True, "floor": 4, "maxSeq": 8,
+            }
         return {
             "workspaceId": "workspace-a",
             "documents": [],
@@ -180,6 +185,16 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+
+    def test_entity_pull_reset_has_its_own_complete_response_variant(self) -> None:
+        context = ContextStub()
+        context.store.reset_pull = True
+        response = make_client(context).get("/api/sync/pull?scope=state:entities:v1&reset=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "workspaceId": "workspace-a", "reset": True, "floor": 4,
+            "maxSeq": 8, "generation": 3,
+        })
 
     def test_invalid_draft_batch_is_rejected_before_sync_service_or_write(self) -> None:
         context = ContextStub()

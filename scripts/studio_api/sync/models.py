@@ -504,6 +504,7 @@ class AgentEntityDto(ContractModel):
     archived: bool | None = None
     projectFolder: str | None = None
     projectFolderRevision: int | None = None
+    project: str | None = None
 
 
 class SnapshotAgentDto(AgentEntityDto):
@@ -756,6 +757,15 @@ class TaskEntityDto(ContractModel):
 
 
 class SnapshotTaskDto(TaskEntityDto):
+    agent: str
+    kind: TaskKind
+    status: TaskStatus
+    created: float
+    type: str | None = None
+    itemId: str | None = None
+    server: str | None = None
+    startedAtMs: float | None = None
+    completedAtMs: float | None = None
     arguments: str | None = None
     tail: str | None = None
     error: str | None = None
@@ -1011,19 +1021,66 @@ class WorkSnapshotDto(WorkEntityDto):
     displayStatus: str | None = None
 
 
+class RateLimitWindowDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    usedPercent: float | None = None
+    resetsAt: float | None = None
+    windowDurationMins: float | None = None
+
+
+class RateLimitBucketDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    limitId: str | None = None
+    limitName: str | None = None
+    planType: str | None = None
+    rateLimitReachedType: str | None = None
+    primary: RateLimitWindowDto | None = None
+    secondary: RateLimitWindowDto | None = None
+
+
+class RateLimitsDataDto(ContractModel):
+    """Known renderer-facing rate-limit fields with provider JSON extensions."""
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    rateLimits: RateLimitBucketDto | None = None
+    rateLimitsByLimitId: dict[str, RateLimitBucketDto] | None = None
+    rateLimitResetCredits: JsonValue | None = None
+    accountId: str | None = None
+    status: str | None = None
+    signedIn: bool | None = None
+    ordinaryUsageAllowed: bool | None = None
+
+
 class AccountRateLimitsDto(ContractModel):
     """Account-specific read envelope; provider rate-limit data stays JSON."""
     accountKey: str
     at: float | None
-    data: JsonValue | None = None
+    data: RateLimitsDataDto | None = None
     error: str | None = None
+
+
+class NativeNoticeDto(ContractModel):
+    """Account notices and provider-version advisories shown in the UI."""
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    id: str | None = None
+    accountKey: str | None = None
+    connectionId: str | None = None
+    provider: str | None = None
+    version: str | None = None
+    baseline: str | None = None
+    message: str | None = None
+    details: JsonValue | None = None
+    at: float | None = None
 
 
 class WorkspaceEntityDto(ContractModel):
     connected: bool | None = None
-    rateLimits: JsonValue | None = None
+    rateLimits: AccountRateLimitsDto | None = None
     rateLimitsByAccount: dict[str, AccountRateLimitsDto] | None = None
-    nativeNotices: list[JsonValue] | None = None
+    nativeNotices: list[NativeNoticeDto] | None = None
     projectOrganizationVersion: int | None = None
     peerTeamsVersion: int | None = None
     tasksHistoryLimit: int | None = None
@@ -1057,8 +1114,8 @@ class RuntimeSnapshot(ResponseModel):
     complaints: list[SnapshotComplaintDto]
     work: list[WorkSnapshotDto] | None = None
     rules: list[RuleSnapshotDto]
-    rateLimits: JsonValue
-    nativeNotices: list[JsonValue]
+    rateLimits: AccountRateLimitsDto
+    nativeNotices: list[NativeNoticeDto]
     rateLimitsByAccount: dict[str, AccountRateLimitsDto]
     events: list[EventEntityDto]
     connected: bool
@@ -1147,12 +1204,20 @@ class SyncCheckpoint(ContractModel):
 class SyncPullResponse(ResponseModel):
     workspaceId: str
     generation: int
-    documents: list[SyncDocument] | None = None
-    checkpoint: SyncCheckpoint | None = None
-    reset: bool | None = None
+    documents: list[SyncDocument]
+    checkpoint: SyncCheckpoint
+    reset: Literal[False] | None = None
     floor: int | None = None
     maxSeq: int | None = None
     initialHigh: int | None = None
+
+
+class SyncPullResetResponse(ResponseModel):
+    workspaceId: str
+    generation: int
+    reset: Literal[True]
+    floor: int
+    maxSeq: int
 
 
 class DraftDocumentInput(ContractModel):

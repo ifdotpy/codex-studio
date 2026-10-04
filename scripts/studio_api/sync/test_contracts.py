@@ -228,6 +228,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 "taskClaims": ["work-a"],
             },
             "lastEvent": "2026-10-04T03:00:00Z",
+            "project": "Studio",
             "privateRuntimeField": "not projected",
         }
         projected = project("agent", source)
@@ -276,21 +277,42 @@ class SyncEntityContractTests(unittest.TestCase):
 
         runtime_snapshot = RuntimeSnapshot.model_validate({
             "agents": [snapshot_source], "projects": [], "projectOrganizationVersion": 1,
-            "peerTeamsVersion": 1, "peerTeams": [], "tasks": [], "tasksHistoryLimit": 100,
+            "peerTeamsVersion": 1, "peerTeams": [], "tasks": [{
+                "id": "agent-a:item-a", "agent": "agent-a", "kind": "command",
+                "type": "commandExecution", "itemId": "item-a", "status": "completed",
+                "created": 13.0, "startedAtMs": 13000, "completedAtMs": 14000,
+            }], "tasksHistoryLimit": 100,
             "monitors": [], "requests": [request_source], "rooms": [], "complaints": [],
-            "rules": [], "rateLimits": {}, "nativeNotices": [],
+            "rules": [], "rateLimits": {
+                "accountKey": "default", "at": 14.0, "error": None,
+                "data": {"accountId": "acct", "rateLimits": {
+                    "limitId": "codex", "planType": "plus",
+                    "primary": {"usedPercent": 95, "resetsAt": 30, "windowDurationMins": 300},
+                }},
+            }, "nativeNotices": [{
+                "id": "provider-version:default", "accountKey": "default", "provider": "codex",
+                "version": "0.153.0", "baseline": "0.153.4", "message": "Update available", "at": 14.0,
+            }],
             "rateLimitsByAccount": {"default": {
                 "accountKey": "default", "at": None, "data": None, "error": None,
             }},
             "events": [], "connected": True,
         })
         self.assertEqual(runtime_snapshot.requests[0].epoch, 4)
+        self.assertEqual(runtime_snapshot.tasks[0].itemId, "item-a")
+        self.assertIsNotNone(runtime_snapshot.rateLimits.data)
+        assert runtime_snapshot.rateLimits.data is not None
+        self.assertIsNotNone(runtime_snapshot.rateLimits.data.rateLimits)
+        assert runtime_snapshot.rateLimits.data.rateLimits is not None
+        self.assertEqual(runtime_snapshot.rateLimits.data.rateLimits.planType, "plus")
+        self.assertEqual(runtime_snapshot.nativeNotices[0].provider, "codex")
         state = StateSnapshot.model_validate({
             "token": "session", "stateDir": "/state", "threads": [snapshot_source],
             "chats": [], "nodes": [snapshot_source], "edges": [], "at": 15.0,
             "runtime": runtime_snapshot.model_dump(mode="json"),
         })
         self.assertIsNotNone(state.runtime)
+        self.assertEqual(state.threads[0].project, "Studio")
 
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
         with self.assertRaises(ValidationError):
@@ -379,7 +401,9 @@ class SyncEntityContractTests(unittest.TestCase):
             "agents": [active_agent], "projects": [], "projectOrganizationVersion": 1,
             "peerTeamsVersion": 1, "peerTeams": [], "tasks": [], "tasksHistoryLimit": 100,
             "monitors": [], "requests": [], "rooms": [], "complaints": [], "rules": [],
-            "rateLimits": {}, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
+            "rateLimits": {
+                "accountKey": "default", "at": None, "data": None, "error": None,
+            }, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
             "connected": True,
         }
         snapshot = StateSnapshot.model_validate({

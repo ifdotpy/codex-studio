@@ -23,6 +23,7 @@ from studio_api.sync.models import (
     SyncDocument,
     SyncPullQuery,
     SyncPullResponse,
+    SyncPullResetResponse,
     SyncStreamQuery,
     TranscriptStreamQuery,
 )
@@ -138,7 +139,11 @@ def create_router(context: ApiContext) -> APIRouter:
         }
         return context.send(request, value)
 
-    @router.get("/api/sync/pull", response_model=SyncPullResponse, responses=ERROR_RESPONSES)
+    @router.get(
+        "/api/sync/pull",
+        response_model=SyncPullResponse | SyncPullResetResponse,
+        responses=ERROR_RESPONSES,
+    )
     def pull(request: Request, _query: SyncPullQuery = Depends()) -> object:
         scope = _first(request, "scope", "state") or "state"
         after = _query_int(request, "after", 0)
