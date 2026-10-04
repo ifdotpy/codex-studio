@@ -30,8 +30,15 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, post, errorText } from "../../api";
-import type { paths } from "../../generated/api";
+import {
+  get,
+  post,
+  errorText,
+  type ApiPostPath,
+  type GetResult,
+  type PostBody,
+  type PostResult,
+} from "../../api";
 import type { Agent, Json, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
@@ -52,21 +59,7 @@ type Props = {
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };
-type PostPath = Extract<
-  {
-    [Path in keyof paths]: paths[Path] extends { post: unknown } ? Path : never;
-  }[keyof paths],
-  string
->;
-type PostBody<Path extends PostPath> = paths[Path] extends {
-  post: {
-    requestBody: { content: { "application/json": infer Body } };
-  };
-}
-  ? Body
-  : never;
-type PostResult<Path extends PostPath> = Awaited<ReturnType<typeof post<Path>>>;
-type WorkspaceAction = <Path extends PostPath>(
+type WorkspaceAction = <Path extends ApiPostPath>(
   path: Path,
   body: PostBody<Path>,
 ) => Promise<PostResult<Path>>;
@@ -109,7 +102,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 function ResourceState({
   state,
 }: {
-  state: { error: string; loading: boolean; data: Json | null };
+  state: { error: string; loading: boolean; data: unknown };
 }) {
   return state.error ? (
     <p role="alert" className="workspace-error">
@@ -199,7 +192,7 @@ export function Workspace(props: Props) {
     return () => clearInterval(timer);
   }, [props.opened, reload]);
   const run = useCallback(
-    async <Path extends PostPath>(
+    async <Path extends ApiPostPath>(
       path: Path,
       body: PostBody<Path>,
     ): Promise<PostResult<Path>> => {
@@ -403,12 +396,25 @@ function Changes(c: Context) {
       },
     });
   const [path, setPath] = useState(""),
-    [comment, setComment] = useState<Json | null>(null),
+    [comment, setComment] = useState<{
+      path: string;
+      line: number;
+      turnId?: string;
+      text: string;
+      id: string;
+    } | null>(null),
     [saving, setSaving] = useState(false);
   const report = state.data?.scope === "chat" ? state.data : null;
-  const files: Json[] = report?.files || [];
-  const annotations: Json[] = (comments.data?.annotations || []).filter(
-    (entry: Json) => entry.agent === c.selected?.id,
+  const files = (report?.files || []).filter(
+    (file) => typeof file.path === "string" && typeof file.status === "string",
+  );
+  const annotations = (comments.data?.annotations || []).filter(
+    (entry) =>
+      entry.agent === c.selected?.id &&
+      typeof entry.id === "string" &&
+      typeof entry.path === "string" &&
+      typeof entry.line === "number" &&
+      typeof entry.text === "string",
   );
   let line = 0,
     current = "",
@@ -516,7 +522,9 @@ function Changes(c: Context) {
                       setComment({
                         path: row.path,
                         line: row.line,
-                        turnId: report?.turnId,
+                        ...(typeof report?.turnId === "string"
+                          ? { turnId: report.turnId }
+                          : {}),
                         text: "",
                         id: crypto.randomUUID(),
                       })
@@ -600,7 +608,12 @@ function Find(c: Context) {
     },
     [],
   );
-  const [source, setSource] = useState<Json | null>(null),
+  type SearchResult = GetResult<"/api/search">["results"][number];
+  type SearchItem = GetResult<"/api/search/item">;
+  type SearchSource =
+    | (SearchResult & { loading: boolean })
+    | (SearchItem & { loading: boolean });
+  const [source, setSource] = useState<SearchSource | null>(null),
     [sourceError, setSourceError] = useState("");
   const [query, setQuery] = useState(""),
     [search, setSearch] = useState("");
@@ -635,7 +648,7 @@ function Find(c: Context) {
         </Button>
       </form>
       <ResourceState state={state} />
-      {(state.data?.results || []).map((result: Json, index: number) => (
+      {(state.data?.results || []).map((result, index) => (
         <UnstyledButton
           className="workspace-row"
           key={`${result.kind}:${result.id}:${index}`}
@@ -683,7 +696,7 @@ function Find(c: Context) {
           <>
             <div className="workspace-toolbar">
               <Badge variant="light" color="gray">
-                {source.kind || source.type}
+                {source.kind || ("type" in source ? source.type : "")}
               </Badge>
               <small className="workspace-muted">{source.id}</small>
             </div>
@@ -1014,8 +1027,15 @@ function Profiles(c: Context) {
       c.notify,
     ),
     [busy, setBusy] = useState(false),
-    [remove, setRemove] = useState<Json | null>(null),
-    [launch, setLaunch] = useState<Json | null>(null);
+    [remove, setRemove] = useState<
+      GetResult<"/api/profiles">["profiles"][number] | null
+    >(null),
+    [launch, setLaunch] = useState<{
+      id: string;
+      profile_id: string;
+      name: string;
+      prompt: string;
+    } | null>(null);
   const lead = c.data.threads.find(
     (a) => a.id === (c.selected?.rootId || c.selected?.id) && a.isLead,
   );
@@ -1027,8 +1047,9 @@ function Profiles(c: Context) {
     description: row.description || undefined,
     isDefault: !!row.isDefault,
   }));
-  if (draft?.model && !profileModels.some((row) => row.value === draft.model))
-    profileModels.unshift({ value: draft.model, label: draft.model });
+  const draftModel = typeof draft?.model === "string" ? draft.model : "";
+  if (draftModel && !profileModels.some((row) => row.value === draftModel))
+    profileModels.unshift({ value: draftModel, label: draftModel });
   return (
     <>
       <ResourceState state={state} />
@@ -1056,7 +1077,7 @@ function Profiles(c: Context) {
           New profile
         </Button>
       </div>
-      {(state.data?.profiles || []).map((profile: Json) => (
+      {(state.data?.profiles || []).map((profile) => (
         <div className="workspace-row" key={profile.id}>
           <div className="workspace-row-head">
             <strong>{profile.name}</strong>
@@ -1119,7 +1140,27 @@ function Profiles(c: Context) {
               e.preventDefault();
               setBusy(true);
               try {
-                await c.run("/api/profiles", { ...draft, action: "save" });
+                await c.run("/api/profiles", {
+                  action: "save",
+                  id: typeof draft.id === "string" ? draft.id : undefined,
+                  isNew: draft.isNew === true,
+                  name: typeof draft.name === "string" ? draft.name : "",
+                  role: draft.role === "reviewer" ? "reviewer" : "implementer",
+                  model: draftModel,
+                  effort:
+                    draft.effort === "low" ||
+                    draft.effort === "medium" ||
+                    draft.effort === "high" ||
+                    draft.effort === "xhigh" ||
+                    draft.effort === "max" ||
+                    draft.effort === "ultra"
+                      ? draft.effort
+                      : null,
+                  instructions:
+                    typeof draft.instructions === "string"
+                      ? draft.instructions
+                      : "",
+                });
                 setDraft((current) => (current === draft ? null : current));
               } catch {
               } finally {
@@ -1130,19 +1171,21 @@ function Profiles(c: Context) {
             <TextInput
               label="Name"
               required
-              value={draft.name}
+              value={typeof draft.name === "string" ? draft.name : ""}
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             />
             <NativeSelect
               label="Role"
-              value={draft.role}
+              value={
+                typeof draft.role === "string" ? draft.role : "implementer"
+              }
               onChange={(e) => setDraft({ ...draft, role: e.target.value })}
               data={["implementer", "reviewer"]}
             />
             {catalog.models.length ? (
               <ModelPicker
                 label="Model"
-                value={draft.model}
+                value={draftModel}
                 options={profileModels}
                 onChange={(model) => setDraft({ ...draft, model })}
               />
@@ -1150,13 +1193,13 @@ function Profiles(c: Context) {
               <TextInput
                 label="Model"
                 required
-                value={draft.model}
+                value={draftModel}
                 onChange={(e) => setDraft({ ...draft, model: e.target.value })}
               />
             )}
             <NativeSelect
               label="Reasoning effort"
-              value={draft.effort}
+              value={typeof draft.effort === "string" ? draft.effort : "high"}
               onChange={(e) => setDraft({ ...draft, effort: e.target.value })}
               data={["low", "medium", "high", "xhigh", "max", "ultra"]}
             />
@@ -1164,7 +1207,9 @@ function Profiles(c: Context) {
               label="Instructions"
               minRows={7}
               autosize
-              value={draft.instructions}
+              value={
+                typeof draft.instructions === "string" ? draft.instructions : ""
+              }
               onChange={(e) =>
                 setDraft({ ...draft, instructions: e.target.value })
               }
@@ -1193,6 +1238,8 @@ function Profiles(c: Context) {
               await c.run("/api/profiles", {
                 id: remove?.id,
                 action: "delete",
+                role: remove?.role ?? "reviewer",
+                instructions: remove?.instructions ?? "",
               });
               setRemove(null);
             } catch {
@@ -1218,7 +1265,9 @@ function Profiles(c: Context) {
               setBusy(true);
               try {
                 const worker = await c.run("/api/agents", {
-                  ...launch,
+                  id: launch.id,
+                  profile_id: launch.profile_id,
+                  prompt: launch.prompt,
                   parent: lead!.id,
                   cwd: lead!.cwd,
                 });

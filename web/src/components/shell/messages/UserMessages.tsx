@@ -1,7 +1,7 @@
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
 import { get, post, ApiError, errorText, save, saved } from "../../../api";
-import { type Snapshot } from "../../../types";
+import type { Complaint, Snapshot } from "../../../types";
 import type { paths } from "../../../generated/api";
 import "./complaint-book.css";
 import ErrorDescription from "../../ErrorDescription";
@@ -178,6 +178,7 @@ export default function UserMessages({
   target = "user",
   hideEmpty = false,
   focusId,
+  onlyComplaintId,
   focusRequestId,
   refresh,
   notify,
@@ -186,6 +187,7 @@ export default function UserMessages({
   target?: "user" | "lead";
   hideEmpty?: boolean;
   focusId?: string;
+  onlyComplaintId?: string;
   focusRequestId?: string;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
@@ -200,8 +202,10 @@ export default function UserMessages({
       ),
     [pendingKey],
   );
-  const records = data.runtime.complaints.filter(
-    (message) => recipient(message) === target,
+  const records = (data.runtime?.complaints ?? []).filter(
+    (message) =>
+      recipient(message) === target &&
+      (!onlyComplaintId || message.id === onlyComplaintId),
   );
   return (
     <section className="user-message-list">
