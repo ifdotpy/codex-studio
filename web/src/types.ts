@@ -32,13 +32,12 @@ export type LocalMessageAttachment = {
 };
 export type Message = Omit<
   TranscriptWireItem,
-  "assets" | "deliveryStatus" | "role" | "text" | "turnId"
+  "assets" | "deliveryStatus" | "role" | "text"
 > & {
   assets?: Array<TranscriptAsset | LocalMessageAttachment> | null;
   deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending";
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
-  turnId?: string;
   accountKey?: string;
   author?: string;
   details?: JsonValue;
@@ -46,7 +45,7 @@ export type Message = Omit<
   excerpt?: string;
   localDelivery?: boolean;
   model?: string;
-  nativeError?: boolean;
+  nativeError?: JsonValue;
   nativeHook?: boolean;
   nativeHookQuiet?: boolean;
   nativeNotice?: "error" | "warning";

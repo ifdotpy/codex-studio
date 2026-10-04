@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
+import type { components } from "./generated/api";
+import type { JsonValue, Message } from "./types";
 import type {
   ApiSuccessBodyFor,
   ApiGetContract,
@@ -187,6 +189,27 @@ type GeneratedDiscoverAssertion = Assert<
 >;
 const generatedDiscoverAssertion: GeneratedDiscoverAssertion = true;
 void generatedDiscoverAssertion;
+
+type TranscriptTurnId =
+  components["schemas"]["TranscriptItemResponse"]["turnId"];
+type AnalyticsTurnError = components["schemas"]["AnalyticsTurnRecord"]["error"];
+type MessageWireAssertions = [
+  Assert<Equal<Message["turnId"], TranscriptTurnId>>,
+  Assert<Equal<Message["nativeError"], AnalyticsTurnError>>,
+];
+const messageWireAssertions: MessageWireAssertions = [true, true];
+void messageWireAssertions;
+
+const nullableTranscriptTurnId: Message["turnId"] = null;
+const nullableAnalyticsError: Message["nativeError"] = null;
+const jsonAnalyticsError: Message["nativeError"] = {
+  message: "provider error",
+  details: ["context"],
+};
+const jsonValueAssertion: JsonValue = jsonAnalyticsError;
+void nullableTranscriptTurnId;
+void nullableAnalyticsError;
+void jsonValueAssertion;
 
 function generatedFacadeRequestAssertions() {
   post("/api/accounts/discover", {});
