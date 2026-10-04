@@ -135,6 +135,21 @@ class OldTurnTaskCompletion(unittest.TestCase):
                                      'status': 'completed'})
         self.assertEqual(self.task(), original)
 
+    def test_params_item_id_cannot_replace_the_native_completion_identity(self):
+        original = self.start('dynamicToolCall')
+        transcript = self.transcript()
+        before = copy.deepcopy(self.advance())
+        for native_id in (None, '', 7):
+            item = {'type': 'dynamicToolCall', 'status': 'completed', 'success': True}
+            if native_id is not None:
+                item['id'] = native_id
+            self.runtime.notification({'method': 'item/completed', 'params': {
+                'threadId': 'fixture-thread', 'turnId': 'old-turn',
+                'itemId': 'old-item', 'item': item}})
+            self.assertEqual(self.task(), original)
+            self.assertEqual(self.transcript(), transcript)
+            self.assertEqual(self.runtime.agent(self.agent['id']), before)
+
     def test_failure_receipt_settles_history_without_resuming_stopped_owner(self):
         self.start('mcpToolCall')
         before = copy.deepcopy(self.update(turnId='new-turn', epoch=self.agent['epoch'] + 1,

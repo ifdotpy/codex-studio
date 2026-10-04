@@ -5,11 +5,11 @@ import sys
 
 from codex_source import signature, source_function
 
-SOURCES = ('8a7cda7ac5d1a3be896da919416ff479c8d65285381e5b718c69260ca10ff84a',
-           '012f54d730b83b7f3dc478354945fb94eb2fd245d48bc5b72e403a65a0e6eaf2')
+SOURCES = ('44fa58a5250381e20d6f39f7ff5665f6af34e1168924fe44cce026208534a61f',
+           'ef7a72083f0e3b581a301e33807c7c20b4a9270755082f332a169674365afc3e')
 FUNCTIONS = {
     'record_task': ('02230a41c80aa34dc33bdf92ecce9d2a3165b7b9ae2f9aefacf1a000a47051dc',
-                    '45491db50507205f66d5760cf1fd94d228698e4cbb80912ad20f8721d6190c65'),
+                    '0fff5fd992b29e3d6f8abcf69581528090f556b3d2732d677f4baf55244ac9a9'),
     'scheduler_agents': ('ab2138ef38e99eb6cabe86a7f9666861c788b07e3a734f3a63feede0e94ed38b',
                          '3f3a656130e0d61c321abcc8df4d632ceec908465966137d6a3b0c17fcff9979'),
 }

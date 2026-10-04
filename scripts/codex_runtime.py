@@ -5531,7 +5531,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         elif method != "item/commandExecution/outputDelta":
             return
         item_id = item.get("id") or p.get("itemId")
-        if not item_id:
+        if not isinstance(item_id, str) or not item_id:
             return
         key = a["id"] + ":" + item_id
         row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (key,)).fetchone()
@@ -5539,8 +5539,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # An exact result can settle an existing historical tool. A stale start
         # or an unknown item cannot establish work in the current agent state.
         historical_tool = (stale and method == "item/completed" and task
+                           and isinstance(item.get("id"), str) and bool(item["id"])
                            and task.get("kind") == "tool" and task.get("agent") == a["id"]
-                           and task.get("itemId") == item_id
+                           and task.get("itemId") == item["id"]
                            and task.get("turnId") == p.get("turnId")
                            and task.get("type") == item.get("type"))
         if stale and not (historical_tool or (task and task["kind"] == "command"
