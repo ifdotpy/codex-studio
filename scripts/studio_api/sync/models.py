@@ -1344,7 +1344,7 @@ class StateSnapshot(ResponseModel):
 
 class SyncProtocolResponse(ResponseModel):
     protocolVersion: Literal[1]
-    supportedVersions: list[Literal[1, 2]]
+    supportedVersions: list[Literal[1, 2, 3]]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]

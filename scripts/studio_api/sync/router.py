@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, cast
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from studio_api.models import ErrorResponse
 from studio_api.responses import register_route_components
@@ -42,6 +42,10 @@ SYNC_BATCH_LIMIT = 100
 SYNC_ENTITY_PAGE_LIMIT = 500
 SYNC_STREAM_BYTE_LIMIT = 1_048_576
 SYNC_HEARTBEAT_SECONDS = 15.0
+RESOURCE_HEARTBEAT_SECONDS = 15.0
+MAX_RESOURCE_QUERY_BYTES = 65_536
+MAX_RESOURCE_COUNT = 256
+RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
 SYNC_POLL_SECONDS = 0.25
 TRANSCRIPT_COALESCE_SECONDS = 0.08
 SHARED_STREAM_POLL_SECONDS = 1.0
@@ -107,6 +111,14 @@ def _event(event: str, payload: object) -> bytes:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
 
 
+def _resource_event(
+    event: str,
+    payload: ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent,
+) -> bytes:
+    encoded = json.dumps(payload.model_dump(mode="json", by_alias=True), ensure_ascii=False, separators=(",", ":"))
+    return f"id: {payload.revision}\nevent: {event}\ndata: {encoded}\n\n".encode()
+
+
 def _stream_response(content: AsyncIterator[bytes], protocol_v1: bool = False) -> StreamingResponse:
     headers = {
         "Cache-Control": "no-cache, no-transform",
@@ -128,12 +140,12 @@ def create_router(context: ApiContext) -> APIRouter:
     def protocol(request: Request) -> object:
         from pathlib import Path
 
-        capabilities = ["pull", "stream", "streamChanges", "entityReset"]
+        capabilities = ["pull", "stream", "streamChanges", "entityReset", "typedResources", "tokenRates"]
         if (Path(context.canvas.root) / "canvas.sock").exists():
             capabilities.append("unixSocket")
         value = {
             "protocolVersion": 1,
-            "supportedVersions": [1, 2],
+            "supportedVersions": [1, 2, 3],
             "capabilities": capabilities,
             "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
             "pullEndpoint": "/api/sync/pull",
@@ -217,13 +229,69 @@ def create_router(context: ApiContext) -> APIRouter:
         store = _sync_store(context)
         protocol_value = _first(request, "protocol")
         header_version = request.headers.get("X-Codex-Sync-Protocol")
-        if protocol_value not in (None, "1", "2") or header_version not in (None, "1", "2"):
+        if protocol_value not in (None, "1", "2", "3") or header_version not in (None, "1", "2", "3"):
             response = context.send(
                 request,
-                {"error": "Unsupported sync protocol version", "supportedVersions": [1, 2]},
+                {"error": "Unsupported sync protocol version", "supportedVersions": [1, 2, 3]},
                 status=426,
             )
             return cast(StreamingResponse, response)
+
+        if protocol_value and header_version and protocol_value != header_version:
+            return cast(StreamingResponse, context.send(
+                request,
+                {"error": "Conflicting sync protocol versions", "supportedVersions": [1, 2, 3]},
+                status=426,
+            ))
+
+        if protocol_value == "3" or header_version == "3":
+            resources_json = _first(request, "resources", "") or ""
+            if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Invalid resource subscription"}, status=400
+                ))
+            try:
+                raw_resources = json.loads(resources_json)
+                resources = RESOURCE_REFS_ADAPTER.validate_python(raw_resources)
+                if not resources or len(resources) > MAX_RESOURCE_COUNT:
+                    raise ValueError("Invalid resource count")
+                last_event_id = request.headers.get("Last-Event-ID")
+                if last_event_id is not None:
+                    if int(last_event_id) < 0 or int(last_event_id) > MAX_SAFE_CURSOR:
+                        raise ValueError("Invalid last event ID")
+            except (ValueError, TypeError, ValidationError):
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Invalid resource subscription"}, status=400
+                ))
+
+            try:
+                subscription = context.resource_hub().subscribe(
+                    resources,
+                    loop=asyncio.get_running_loop(),
+                    reconnect=last_event_id is not None,
+                )
+            except (OSError, RuntimeError, ValueError):
+                return cast(StreamingResponse, context.send(
+                    request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
+                ))
+
+            async def resource_events() -> AsyncIterator[bytes]:
+                runtime = context.runtime
+                try:
+                    yield _resource_event("resources", subscription.initial)
+                    yield _resource_event("token-rates", subscription.initial_token_rates)
+                    while not await request.is_disconnected() and not (runtime and runtime.closed):
+                        event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                        if isinstance(event, ResourceTokenRatesEvent):
+                            yield _resource_event("token-rates", event)
+                        elif isinstance(event, ResourceChangeEvent):
+                            yield _resource_event("resources", event)
+                        elif event is None:
+                            yield _resource_event("heartbeat", subscription.heartbeat())
+                finally:
+                    subscription.close()
+
+            return _stream_response(resource_events())
 
         is_v1 = protocol_value == "1" or header_version == "1"
         query_scope = _first(request, "scope", "") or ""

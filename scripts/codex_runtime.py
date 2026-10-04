@@ -5407,8 +5407,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     **({"readAt": current["readAt"]} if current.get("readAt") else {}),
                     "error": None,
                 }
-                self.store_rate_limits(account_key, value)
+                changed = self.store_rate_limits(account_key, value)
             self.usage_resume_limits_changed(account_key, value)
+            if changed:
+                from studio_api.sync.resources.hub import publish_resources
+                from studio_api.sync.resources.models import LimitsResource, ResourceRef
+
+                publish_resources(
+                    self.root,
+                    ResourceRef(LimitsResource(kind="limits", accountKey=account_key)),
+                )
             return
         if method == "command/exec/outputDelta":
             self.output(p, account_key, connection_id)
@@ -6538,6 +6546,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "rateLimits": self.rate_limits,
                     "rateLimitsByAccount": self.rate_limits_by_account.copy(),
                 })
+        return changed
 
     def limit_refresh_lock(self, account_key):
         with self.lock:

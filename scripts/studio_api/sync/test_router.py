@@ -21,6 +21,8 @@ from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
 from studio_api.responses import install_error_response_docs
 from studio_api.sync.router import create_router
+from studio_api.sync.resources.hub import ResourceHub
+from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
 
 
 class StoreStub:
@@ -115,9 +117,21 @@ class ContextStub:
         self.runtime = RuntimeStub()
         self.runtime.closed = True
         self.store.runtime = self.runtime
+        self.hub = ResourceHub(
+            "workspace-a",
+            token_rates=TokenRateSnapshot(
+                rates={"agent-a": TokenRateValue(
+                    turnId="turn-a", active=True, estimated=False, rate=8.5, outputTokens=17,
+                )},
+                teams={},
+            ),
+        )
 
     def sync(self) -> StoreStub:
         return self.store
+
+    def resource_hub(self) -> ResourceHub:
+        return self.hub
 
     def send(self, request: Request, value: object, status: int = 200, **_kwargs: object) -> JSONResponse:
         route = cast(object, request.scope["route"])
@@ -177,7 +191,9 @@ class SyncRouterTests(unittest.TestCase):
             self.assertIn("400", responses)
             self.assertIn("application/json", responses["400"]["content"])
 
-    def read_stream(self, context: ContextStub, path: str) -> str:
+    def read_stream(
+        self, context: ContextStub, path: str, headers: list[tuple[bytes, bytes]] | None = None
+    ) -> str:
         router = create_router(cast(ApiContext, context))
         route = cast(
             APIRoute,
@@ -188,15 +204,16 @@ class SyncRouterTests(unittest.TestCase):
             "method": "GET", "scheme": "http", "path": path.split("?", 1)[0],
             "raw_path": path.split("?", 1)[0].encode(),
             "query_string": path.split("?", 1)[1].encode() if "?" in path else b"",
-            "headers": [], "client": ("test", 1000), "server": ("test", 80),
+            "headers": headers or [], "client": ("test", 1000), "server": ("test", 80),
         }
         request = ConnectedRequest(scope)
 
         async def read() -> bytes:
             if path.startswith("/api/sync/stream"):
-                protocol = "2" if "protocol=2" in path else "1"
+                protocol = "3" if "protocol=3" in path else "2" if "protocol=2" in path else "1"
+                resources = request.query_params.get("resources")
                 response = await route.endpoint(
-                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4)
+                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4, resources=resources)
                 )
             else:
                 response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
@@ -222,6 +239,28 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("event: token-rates", body)
         self.assertIn('"rates": {"agent-a": {"rate": 8.5}}', body)
         self.assertIn('"workspaceId": "workspace-a"', body)
+
+    def test_protocol_three_emits_typed_initial_resources_and_token_rates(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "transcript", "agentId": "agent-a"}], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn("event: resources", body)
+        self.assertIn('"reason":"initial"', body)
+        self.assertIn('"kind":"transcript","agentId":"agent-a"', body)
+        self.assertIn("event: token-rates", body)
+        self.assertIn('"turnId":"turn-a"', body)
+        self.assertIn('"epoch":"', body)
+
+    def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":"))
+        body = self.read_stream(
+            context,
+            "/api/sync/stream?protocol=3&resources=" + resources,
+            headers=[(b"last-event-id", b"7")],
+        )
+        self.assertIn('"reason":"reconnect"', body)
+        self.assertIn('"kind":"panel","agentId":"agent-a"', body)
 
     def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
         context = ContextStub()
