@@ -228,7 +228,7 @@ class WorkspaceImagesMacTests(unittest.TestCase):
             try:
                 return original_git(repo, *args, **kwargs)
             finally:
-                if 'commit' in args and 'studio snapshot' in args:
+                if 'write-tree' in args or 'commit-tree' in args:
                     steps['snapshotCommit'] += time.monotonic() - tick
 
         images._git = timed_git

@@ -205,7 +205,9 @@ def main():
         steps = {'clone': 0.0, 'attach': 0.0, 'delta': 0.0,
                  'indexCopy': 0.0, 'refSync': 0.0, 'pathStage': 0.0,
                  'snapshotCommit': 0.0, 'gitCalls': {}, 'directCommands': {},
-                 'helperSteps': {}}
+                 'helperSteps': {},
+                 'snapshotSteps': {'writeTree': 0.0, 'commitTree': 0.0,
+                                   'updateRef': 0.0}}
         saved_methods = {}
         for method, key in (('clone_workspace', 'clone'), ('mount_workspace', 'attach'),
                             ('sync_delta', 'delta')):
@@ -230,9 +232,17 @@ def main():
                 command = str(args[0]) if args else '(empty)'
                 row = steps['gitCalls'].setdefault(command, {'count': 0, 'seconds': 0.0})
                 row['count'] += 1
-                row['seconds'] += time.monotonic() - tick
-                if 'commit' in args and 'studio snapshot' in args:
-                    steps['snapshotCommit'] += time.monotonic() - tick
+                elapsed = time.monotonic() - tick
+                row['seconds'] += elapsed
+                if 'write-tree' in args:
+                    steps['snapshotSteps']['writeTree'] += elapsed
+                elif 'commit-tree' in args:
+                    steps['snapshotSteps']['commitTree'] += elapsed
+                elif 'update-ref' in args and 'refs/heads/codex-agent/' in ' '.join(args):
+                    steps['snapshotSteps']['updateRef'] += elapsed
+                if ('write-tree' in args or 'commit-tree' in args
+                        or ('update-ref' in args and 'refs/heads/codex-agent/' in ' '.join(args))):
+                    steps['snapshotCommit'] += elapsed
 
         images._git = timed_git
         original_command = images._command

@@ -871,9 +871,15 @@ def create_workspace(repo_root, agent_id, *, start_commit=None,
                                     *(f':(literal){path.as_posix()}' for path in paths)], view=True, timeout=60)
                           if paths else None)
                 if staged and staged.returncode == 1:
-                    _git(target, '-c', 'user.name=Codex Studio', '-c', 'user.email=studio@localhost',
-                         'commit', '-m', 'studio snapshot', timeout=300, view=True)
-                    item['snapshotCommit'] = _git(target, 'rev-parse', 'HEAD', view=True).strip()
+                    tree = _git(target, 'write-tree', view=True).strip()
+                    snapshot = _git(
+                        target, '-c', 'user.name=Codex Studio', '-c',
+                        'user.email=studio@localhost', 'commit-tree', tree,
+                        '-p', branch_tip, '-m', 'studio snapshot', timeout=300,
+                        view=True).strip()
+                    _git(target, 'update-ref', 'refs/heads/' + item['branch'],
+                         snapshot, branch_tip, view=True)
+                    item['snapshotCommit'] = snapshot
             state.update({'repositories': repos, 'snapshotCommit': next(
                 (x['snapshotCommit'] for x in repos if x['path'] == '.'), None),
                 'startCommit': start_commit or next((x['startCommit'] for x in repos if x['path'] == '.'), None),
