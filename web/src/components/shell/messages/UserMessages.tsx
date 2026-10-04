@@ -11,6 +11,7 @@ import AgentAvatar from "../../agents/AgentAvatar";
 import { writeLocalDraft } from "../../../sync/localDraft";
 import {
   complaintReplyRequest,
+  submitComplaintResponse,
   type UserComplaintResponse,
 } from "./complaintReplyRequest";
 
@@ -80,9 +81,13 @@ function MessageResponse({
     setSending(true);
     setError("");
     try {
-      await post("/api/complaints", payload, {
-        sessionToken: token,
-      });
+      const outcome = await submitComplaintResponse(
+        payload,
+        token,
+        (request, sessionToken) =>
+          post("/api/complaints", request, { sessionToken }),
+        (id) => get("/api/complaint", { query: { id } }),
+      );
       requests.delete(detail.id);
       save(pendingKey, Object.fromEntries(requests));
       setRetry(false);
@@ -90,11 +95,8 @@ function MessageResponse({
       const storageError = writeLocalDraft(storageKey, null);
       if (storageError) notify(storageError);
       setText("");
-      try {
-        onResponse(await get("/api/complaint", { query: { id: detail.id } }));
-      } catch (error) {
-        notify(errorText(error));
-      }
+      if ("detail" in outcome) onResponse(outcome.detail);
+      else notify(errorText(outcome.reloadError));
       try {
         await refresh();
       } catch (error) {
