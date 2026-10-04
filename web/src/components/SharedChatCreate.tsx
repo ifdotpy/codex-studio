@@ -1,7 +1,7 @@
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
-import type { Json, Snapshot } from "../types";
+import type { JsonValue, Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ModelPicker, type ModelOption } from "./ModelPicker";
@@ -42,11 +42,28 @@ function ParticipantFields({
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const options: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
-    label: row.displayName || row.model,
-    description: row.description || undefined,
-    isDefault: !!row.isDefault,
+    label:
+      typeof row.displayName === "string" && row.displayName
+        ? row.displayName
+        : row.model,
+    ...(typeof row.description === "string" && row.description
+      ? { description: row.description }
+      : {}),
+    isDefault: row.isDefault === true,
   }));
   const info = catalog.models.find((row) => row.model === value.model);
+  const reasoningEfforts = Array.isArray(info?.supportedReasoningEfforts)
+    ? info.supportedReasoningEfforts.flatMap((item: JsonValue) => {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          typeof item.reasoningEffort !== "string"
+        )
+          return [];
+        return [item.reasoningEffort];
+      })
+    : [];
   useEffect(() => {
     valid(!!info && !catalog.loading && !catalog.error);
     if (!frozen && !value.model && catalog.models.length) {
@@ -89,18 +106,18 @@ function ParticipantFields({
         options={options}
         onChange={(model) => change({ ...value, model, effort: undefined })}
       />
-      {!!info?.supportedReasoningEfforts?.length && (
+      {!!reasoningEfforts.length && (
         <NativeSelect
           label={`Reasoning for agent ${index + 1}`}
           value={value.effort || ""}
           data={[
             {
               value: "",
-              label: `Default${info.defaultReasoningEffort ? ` (${info.defaultReasoningEffort})` : ""}`,
+              label: `Default${typeof info?.defaultReasoningEffort === "string" ? ` (${info.defaultReasoningEffort})` : ""}`,
             },
-            ...info.supportedReasoningEfforts.map((row: Json) => ({
-              value: row.reasoningEffort,
-              label: row.reasoningEffort,
+            ...reasoningEfforts.map((effort) => ({
+              value: effort,
+              label: effort,
             })),
           ]}
           onChange={(e) =>

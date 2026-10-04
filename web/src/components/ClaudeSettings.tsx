@@ -9,10 +9,25 @@ import { requiresThinking } from "../../../scripts/claude_bridge/thinking.mjs";
 import "./claude-settings.css";
 
 type ClaudeValues = {
-  permissionMode: NonNullable<ClaudeSessionState["settings"]["permissionMode"]>;
+  permissionMode: NonNullable<
+    NonNullable<ClaudeSessionState["settings"]>["permissionMode"]
+  >;
   thinking: boolean;
   autoCompactWindow?: number;
 };
+
+function permissionMode(value: string): ClaudeValues["permissionMode"] | null {
+  switch (value) {
+    case "default":
+    case "acceptEdits":
+    case "auto":
+    case "plan":
+    case "bypassPermissions":
+      return value;
+    default:
+      return null;
+  }
+}
 
 type ClaudeSessionRequest = PostBody<"/api/claude/session">;
 type ClaudeSessionResponse = PostResult<"/api/claude/session">;
@@ -38,7 +53,10 @@ function isClaudeCommandsResponse(
   return Array.isArray(value);
 }
 
-const valuesFrom = (value: ClaudeSessionState, agent: Agent): ClaudeValues => ({
+const valuesFrom = (
+  value: Pick<ClaudeSessionState, "settings">,
+  agent: Agent,
+): ClaudeValues => ({
   permissionMode:
     value.settings?.permissionMode ||
     (agent.yoloMode === false ? "default" : "bypassPermissions"),
@@ -221,6 +239,13 @@ export function ClaudeSettings({
     (typeof agent.status === "string" && busy.has(agent.status)) ||
     busyAction ||
     !!savingField;
+  const nativeStatusError =
+    agent.nativeStatus &&
+    typeof agent.nativeStatus === "object" &&
+    "error" in agent.nativeStatus &&
+    typeof agent.nativeStatus.error === "string"
+      ? agent.nativeStatus.error
+      : undefined;
 
   return (
     <section
@@ -234,11 +259,11 @@ export function ClaudeSettings({
         label="Permission mode"
         value={values.permissionMode}
         disabled={locked}
-        onChange={(event) =>
-          void saveSetting("Permission mode", {
-            permissionMode: event.currentTarget.value,
-          })
-        }
+        onChange={(event) => {
+          const selected = permissionMode(event.currentTarget.value);
+          if (selected)
+            void saveSetting("Permission mode", { permissionMode: selected });
+        }}
         data={[
           { value: "default", label: "Ask for permission" },
           { value: "acceptEdits", label: "Allow file edits" },
@@ -435,9 +460,7 @@ export function ClaudeSettings({
           errors={[
             error,
             typeof agent.error === "string" ? agent.error : undefined,
-            typeof agent.nativeStatus?.error === "string"
-              ? agent.nativeStatus.error
-              : undefined,
+            nativeStatusError,
           ]}
           onSignIn={onSignIn}
         />

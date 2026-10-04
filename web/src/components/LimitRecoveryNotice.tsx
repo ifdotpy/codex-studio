@@ -4,7 +4,7 @@ import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../usage/limitRecovery";
 import { copyText } from "../clipboard/clipboard";
 import { errorText, post, type PostResult } from "../api";
-import type { Json } from "../types";
+import type { Agent } from "../types";
 
 export default function LimitRecoveryNotice({
   recovery,
@@ -14,7 +14,7 @@ export default function LimitRecoveryNotice({
 }: {
   recovery?: LimitRecovery;
   agentId?: string;
-  usageResume?: Json;
+  usageResume?: Agent["usageResume"];
   inline?: boolean;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
