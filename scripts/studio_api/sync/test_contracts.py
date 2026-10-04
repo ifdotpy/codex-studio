@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import json
+import importlib.util
+import sys
+import tempfile
 import unittest
+from collections.abc import Callable
+from pathlib import Path
+from typing import Protocol, cast
 
 from pydantic import ValidationError
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from codex_sync_entities import COLLECTION_FIELDS, project, validate_entity_payload
+from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
     DraftPushRequest,
@@ -23,13 +30,56 @@ from studio_api.sync.models import (
 )
 
 
+class RuntimeFixture(Protocol):
+    def create(self, data: dict[str, object], parent: str | None = None, defer: bool = False,
+               parent_epoch: int | None = None, draft: bool = False) -> dict[str, object]: ...
+    def close(self) -> None: ...
+
+
 class SyncEntityContractTests(unittest.TestCase):
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
         self.assertIn("id", COLLECTION_FIELDS["task"])
-        agent = project("agent", {"id": "a", "status": "running", "private": "excluded"})
+        source: dict[str, JsonValue] = {
+            "id": "a",
+            "status": "running",
+            "private": "excluded",
+        }
+        agent = project("agent", source)
         self.assertEqual(agent, {"id": "a", "status": "running"})
+
+    def test_runtime_draft_create_persists_boolean_worktree_projection(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        test_directory = repository / "tests"
+        test_path = test_directory / "runtime-contract.py"
+        sys.path.insert(0, str(test_directory))
+        try:
+            spec = importlib.util.spec_from_file_location("sync_runtime_fixture", test_path)
+            if spec is None or spec.loader is None:
+                self.fail("runtime fixture could not be loaded")
+            fixture = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fixture)
+        finally:
+            sys.path.remove(str(test_directory))
+
+        runtime_factory = cast(
+            Callable[[Path, Callable[..., object]], RuntimeFixture],
+            getattr(fixture, "Runtime"),
+        )
+        fake_server = cast(Callable[..., object], getattr(fixture, "FakeServer"))
+        with tempfile.TemporaryDirectory(prefix="sync-agent-projection-") as temporary:
+            runtime = runtime_factory(Path(temporary), fake_server)
+            try:
+                agent = runtime.create(
+                    {"name": "Draft Lead", "prompt": "", "cwd": temporary}, draft=True
+                )
+                projected = project("agent", agent)
+                if not isinstance(projected, dict):
+                    self.fail("runtime agent did not project")
+                self.assertIs(projected.get("worktree"), False)
+            finally:
+                runtime.close()
 
     def test_strict_agent_projection_rejects_unknown_status(self) -> None:
         with self.assertRaises(ValidationError):

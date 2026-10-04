@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SyncEntity
+from studio_api.models import (
+    ContractModel,
+    ContractStrEnum,
+    JsonValue,
+    ResponseModel,
+    SyncEntity as SyncEntity,
+)
 
 
 class AgentStatus(ContractStrEnum):
@@ -192,7 +198,7 @@ class AgentEntityDto(ContractModel):
     concurrency: int | None = None
     accountKey: str | None = None
     cwd: str | None = None
-    worktree: str | None = None
+    worktree: bool | str | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None
