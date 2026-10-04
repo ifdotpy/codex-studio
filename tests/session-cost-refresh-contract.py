@@ -262,7 +262,8 @@ class SessionCostRefreshContract(unittest.TestCase):
             with patch.object(reader, "_connect", traced):
                 reader._background_refresh("lead", "lead")
             self.assertEqual(reader.cache["lead"][1]["totalUSD"], expected["totalUSD"])
-            self.assertFalse(any("session_cost_excluded" in statement for statement in statements), statements)
+            self.assertFalse(any("session_cost_usage" in statement or "session_cost_claude_messages" in statement
+                                 for statement in statements), statements)
 
 
 if __name__ == "__main__":

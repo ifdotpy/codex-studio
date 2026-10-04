@@ -5935,8 +5935,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def request(self, message, account_key="default", connection_id=None):
         token_rate_received_at = time.time()
-        if not self.connection_current(account_key, connection_id):
-            return
+        if self.closed or not self.connection_current(account_key, connection_id):
+            # A normal return lets the dispatcher ACK this native frame.
+            # Keep an unadmitted request for the current transport instead.
+            raise ConnectionError("The native request was not admitted because its account connection ended")
         params = message.get("params") or {}
         thread_id = params.get("threadId")
         if thread_id and message.get("method") != "currentTime/read":
@@ -5951,7 +5953,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.reserve_tool_request(message, account_key, connection_id)
             except Exception as error:
                 if self.closed or not self.connection_current(account_key, connection_id):
-                    return
+                    raise ConnectionError("The native request was not admitted because its account connection ended") from error
                 self.reply({"id": message["id"], "result": {"success": False,
                     "contentItems": [{"type": "inputText", "text": str(error)}]}}, account_key, connection_id)
                 return
@@ -5972,8 +5974,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "message": "Codex Studio does not support this server request: " + message["method"]}}, account_key, connection_id)
             return
         with self.lock, self.db() as db:
-            if not self.connection_current(account_key, connection_id):
-                return
+            if self.closed or not self.connection_current(account_key, connection_id):
+                raise ConnectionError("The native request was not admitted because its account connection ended")
             p = message.get("params", {})
             request_thread = p.get("threadId")
             a = self.tool_request_actor(db, request_thread, account_key)
@@ -6236,7 +6238,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     result = stamp_tool_result({"success": False, "contentItems": [
                         {"type": "inputText", "text": THREAD_BLOCK_MESSAGE}]}, time.time())
                     self.finish_tool_request(key, result, outcome="not_applied", db=db)
-                if result is None:
+                stale_epoch = (record.get("epoch") != a["epoch"]
+                               or (p.get("turnId") and a.get("turnEpoch", a["epoch"]) != a["epoch"]))
+                if result is None and record.get("stage") == "queued" and stale_epoch:
+                    # Only a queued, unstarted receipt proves no mutation ran.
+                    # Preserve any ambiguous receipt without claiming it again.
+                    from codex_tool_requests import operation_receipt_evidence
+                    result = self.tool_result(db, key)
+                    if result is not None:
+                        self.finish_tool_request(key, result, db=db)
+                    elif (record.get("outcome") == "pending" and record.get("started") is None
+                          and operation_receipt_evidence(db, key) is None):
+                        result = stamp_tool_result({"success": False, "contentItems": [
+                            {"type": "inputText", "text": "This tool call belongs to an earlier turn"}]}, time.time())
+                        self.finish_tool_request(key, result, outcome="not_applied", db=db)
+                elif result is None:
                     claimed = self.begin_tool_request(key)
             if result is None:
                 if not claimed:
