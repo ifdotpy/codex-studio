@@ -16,6 +16,8 @@ import sqlite3
 import statistics
 import sys
 import time
+import uuid
+from collections.abc import Callable
 
 from codex_payloads import (
     EXTERNALIZE_THRESHOLD,
@@ -30,6 +32,11 @@ from codex_payloads import (
     trim_task,
 )
 from codex_state import state_dir as default_state_dir
+from studio_api.sync.resources.models import ResourceRef, TaskResource, TasksResource
+from studio_api.sync.resources.relay.client import (
+    NotifyCommittedWriteError,
+    ResourceRelayClient,
+)
 
 
 TARGETS = {
@@ -88,7 +95,8 @@ def _newest_ids(db, agent: str, cache: dict[str, set[str]]) -> set[str]:
 
 
 def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
-                  batch_bytes: int = 2 * 1024 * 1024, now: float | None = None) -> dict:
+                  batch_bytes: int = 2 * 1024 * 1024, now: float | None = None,
+                  notify: Callable[[str, list[ResourceRef]], object] | None = None) -> dict:
     if table not in TARGETS:
         raise ValueError("Unknown payload table")
     runtime_table, column = TARGETS[table]
@@ -157,6 +165,7 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
     started = time.perf_counter_ns()
     moved = scanned = 0
     conflict = False
+    changed_tasks: dict[str, set[str]] = {}
     try:
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -184,6 +193,10 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entity_meta'").fetchone():
                     from codex_sync_entities import sync_task_write
                     sync_task_write(db, next_record)
+                    task_id = str(next_record.get("id", row["id"]))
+                    agent_id = next_record.get("agent")
+                    if isinstance(agent_id, str) and agent_id:
+                        changed_tasks.setdefault(agent_id, set()).add(task_id)
                 moved += max(0, len(raw_record.encode("utf-8")) - len(updated.encode("utf-8")))
             scanned += 1
             last = row["rowid"]
@@ -199,13 +212,29 @@ def migrate_batch(state: Path, db, table: str, *, batch_rows: int = 16,
         raise
     finally:
         release_db_writer_lock(db)
+    if notify is not None and changed_tasks:
+        resources: list[ResourceRef] = []
+        for agent_id in sorted(changed_tasks):
+            resources.append(ResourceRef(TasksResource(kind="tasks", agentId=agent_id)))
+            resources.extend(
+                ResourceRef(TaskResource(kind="task", taskId=task_id))
+                for task_id in sorted(changed_tasks[agent_id])
+            )
+        request_id = str(uuid.uuid4())
+        try:
+            notify(request_id, resources)
+        except NotifyCommittedWriteError as error:
+            raise NotifyCommittedWriteError(
+                f"Payload batch committed at cursor {last}; UI invalidation is unconfirmed: {error}"
+            ) from error
     lock_ms = (time.perf_counter_ns() - started) / 1_000_000
     return {"table": table, "done": done, "cursor": last, "rows": scanned,
             "movedBytes": moved, "lockMs": round(lock_ms, 3), "conflict": conflict}
 
 
 def run(state: Path, *, tables: list[str], batch_rows: int, batch_bytes: int,
-        max_batches: int | None, restart_tasks: bool = False) -> dict:
+        max_batches: int | None, restart_tasks: bool = False,
+        relay: ResourceRelayClient | None = None) -> dict:
     db = _connect(state / "canvas.sqlite3")
     samples = {table: [] for table in tables}
     bytes_moved = {table: 0 for table in tables}
@@ -219,7 +248,14 @@ def run(state: Path, *, tables: list[str], batch_rows: int, batch_bytes: int,
             unfinished = False
             for table in tables:
                 effective_rows = min(batch_rows, 1) if table == "tasks" else batch_rows
-                result = migrate_batch(state, db, table, batch_rows=effective_rows, batch_bytes=batch_bytes)
+                result = migrate_batch(
+                    state,
+                    db,
+                    table,
+                    batch_rows=effective_rows,
+                    batch_bytes=batch_bytes,
+                    notify=relay.notify if relay is not None else None,
+                )
                 if result.get("busy"):
                     time.sleep(0.05)
                     unfinished = True
@@ -279,9 +315,18 @@ def main(argv: list[str] | None = None) -> int:
     tables = list(TARGETS) if args.table == "all" else [args.table]
     if args.restart_tasks and tables != ["tasks"]:
         parser.error("--restart-tasks requires --table tasks")
-    print(json.dumps(run(state, tables=tables, batch_rows=args.batch_rows,
-                         batch_bytes=args.batch_bytes, max_batches=args.max_batches,
-                         restart_tasks=args.restart_tasks), sort_keys=True))
+    try:
+        result = run(state, tables=tables, batch_rows=args.batch_rows, batch_bytes=args.batch_bytes,
+                     max_batches=args.max_batches, restart_tasks=args.restart_tasks,
+                     relay=ResourceRelayClient())
+    except NotifyCommittedWriteError as error:
+        print(
+            f"Source payload batch committed; UI invalidation is unconfirmed. "
+            f"Do not repeat the source batch to recover it. {error}",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

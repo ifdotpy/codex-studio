@@ -31,6 +31,8 @@ from codex_payloads import (
     resolve_result,
     store_bytes,
 )
+from studio_api.sync.resources.models import TaskResource, TasksResource
+from studio_api.sync.resources.relay.client import NotifyCommittedWriteError
 
 
 class PayloadStorageContract(unittest.TestCase):
@@ -46,6 +48,7 @@ class PayloadStorageContract(unittest.TestCase):
         self.db.execute("CREATE TABLE runtime_payload_migrations "
                         "(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,"
                         "status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT)")
+        self.db.execute("CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         self.db.commit()
 
     def tearDown(self):
@@ -98,6 +101,50 @@ class PayloadStorageContract(unittest.TestCase):
         saved = migrate_batch(self.root, self.db, "tasks", batch_rows=13, now=now)
         self.assertTrue(saved["done"])
         self.assertEqual(saved["rows"], 0)
+
+    def test_task_retention_notifies_only_after_committed_entity_changes(self):
+        now = 1_800_000_000
+        for i in range(101):
+            record = {"id": f"a:{i:03}", "agent": "agent-a", "created": now - 10 * 86400 + i,
+                      "status": "completed", "tail": "output-" + "q" * 2048}
+            self.db.execute("INSERT INTO runtime_tasks VALUES (?,?)", (record["id"], json.dumps(record)))
+        self.db.commit()
+        notified: list[tuple[str, list[object]]] = []
+
+        def notify(request_id, resources):
+            self.assertFalse(self.db.in_transaction)
+            row = self.db.execute("SELECT record FROM runtime_tasks WHERE id='a:000'").fetchone()
+            self.assertTrue(json.loads(row["record"]).get("outputPreviewOnly"))
+            notified.append((request_id, resources))
+
+        result = migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now, notify=notify)
+        self.assertFalse(result["done"])
+        self.assertTrue(migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now)["done"])
+        self.assertEqual(len(notified), 1)
+        self.assertIsInstance(notified[0][1][0].root, TasksResource)
+        self.assertIsInstance(notified[0][1][1].root, TaskResource)
+        self.assertEqual(notified[0][1][0].root.agentId, "agent-a")
+        self.assertEqual(notified[0][1][1].root.taskId, "a:000")
+
+    def test_failed_task_notification_reports_committed_batch_without_reapplying_it(self):
+        now = 1_800_000_000
+        for i in range(101):
+            record = {"id": f"a:{i:03}", "agent": "agent-a", "created": now - 10 * 86400 + i,
+                      "status": "completed", "tail": "output-" + "q" * 2048}
+            self.db.execute("INSERT INTO runtime_tasks VALUES (?,?)", (record["id"], json.dumps(record)))
+        self.db.commit()
+
+        def failed_notify(_request_id, _resources):
+            raise NotifyCommittedWriteError("server unavailable")
+
+        with self.assertRaisesRegex(NotifyCommittedWriteError, "Payload batch committed"):
+            migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now, notify=failed_notify)
+        migrated = json.loads(self.db.execute(
+            "SELECT record FROM runtime_tasks WHERE id='a:000'").fetchone()["record"])
+        self.assertTrue(migrated.get("outputPreviewOnly"))
+        resumed = migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now)
+        self.assertTrue(resumed["done"])
+        self.assertEqual(resumed["rows"], 0)
 
     def test_gc_preserves_references_and_waits_for_grace(self):
         ref = store_bytes(self.root, b"referenced", db=self.db)

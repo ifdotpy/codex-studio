@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import json
 import os
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import subprocess
 import sys
 import tempfile
@@ -24,12 +25,44 @@ from codex_canvas import Canvas, make_server, READ_LIMIT
 import codex_canvas
 
 
+class RelayFixture(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"token": "canvas-test-token"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        request = json.loads(self.rfile.read(length))
+        body = json.dumps({"requestId": request["requestId"], "accepted": True}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *args):
+        return
+
+
 class CanvasContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="codex-canvas-test-")
         self.root = Path(self.temp.name) / "state"
         self.profile = Path(self.temp.name) / "profile"
-        self.env = patch.dict(os.environ, {"CODEX_AGENTS_STATE_DIR": str(self.root), "CODEX_HOME": str(self.profile), "CODEX_BOARD_STATE_DIR": ""})
+        self.relay = ThreadingHTTPServer(("127.0.0.1", 0), RelayFixture)
+        self.relay_thread = threading.Thread(target=self.relay.serve_forever, daemon=True)
+        self.relay_thread.start()
+        self.env = patch.dict(os.environ, {
+            "CODEX_AGENTS_STATE_DIR": str(self.root),
+            "CODEX_HOME": str(self.profile),
+            "CODEX_BOARD_STATE_DIR": "",
+            "CODEX_CANVAS_URL": f"http://127.0.0.1:{self.relay.server_port}",
+            "PATH": f"{Path(sys.executable).parent}:{os.environ.get('PATH', '')}",
+        })
         self.env.start()
         self.canvas = Canvas()
         for wave in ("one", "two"):
@@ -43,6 +76,9 @@ class CanvasContract(unittest.TestCase):
 
     def tearDown(self):
         self.env.stop()
+        self.relay.shutdown()
+        self.relay_thread.join(timeout=5)
+        self.relay.server_close()
         self.temp.cleanup()
 
     def write(self, wave, rows):

@@ -4,8 +4,11 @@ import argparse
 import json
 import os
 import sys
+import uuid
 sys.dont_write_bytecode = True
 from codex_canvas import Canvas
+from studio_api.sync.resources.models import ResourceRef, StateResource, WorkspaceResource
+from studio_api.sync.resources.relay.client import NotifyCommittedWriteError, notify_external_write
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('action', choices=['list', 'agent'])
@@ -26,6 +29,12 @@ try:
         result = {k: snapshot[k] for k in ('nodes', 'edges')}
     else:
         result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
+        notify_external_write(str(uuid.uuid4()), [
+            ResourceRef(StateResource(kind="state")),
+            ResourceRef(WorkspaceResource(kind="workspace", agentId=args.id)),
+        ])
     print(json.dumps(result, ensure_ascii=False, indent=2))
+except NotifyCommittedWriteError as error:
+    sys.exit(f"Source change committed; UI invalidation is unconfirmed. Do not repeat the source operation. {error}")
 except (ValueError, RuntimeError) as error:
     sys.exit(str(error))
