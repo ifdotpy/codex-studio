@@ -17,7 +17,10 @@ import "./radio-chat.css";
 
 // Keep the exact command across navigation and reloads until the server confirms it.
 type PeerTeamRequest = PostBody<"/api/peer-teams">;
-type RadioRequest = Extract<PeerTeamRequest, { action: "radio" }>;
+type RadioRequest = Extract<
+  PeerTeamRequest,
+  { action: "radio"; radio_action: "send" | "pass" | "stop" }
+>;
 type RadioActionInput =
   | { action: "pass"; target: string }
   | { action: "stop" }
