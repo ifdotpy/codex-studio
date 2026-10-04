@@ -22,12 +22,14 @@ from .models import (
     AgentQuery,
     AgentRoomQuery,
     AnnotationBody,
+    AnnotationReceipt,
     AnswerBody,
     AnswerResult,
     ChatRead,
     ChatCreateBody,
     ChatCreated,
     ChatReceipt,
+    ComplaintDetailResponse,
     ChangesQuery,
     ChangesResponse,
     ComplaintBody,
@@ -51,11 +53,13 @@ from .models import (
     QueueView,
     ReceiptQuery,
     RequestIdQuery,
+    RulesQuery,
     RoomDeleteBody,
     RuleBody,
     RuleList,
     RuleMutation,
     TaskFeedQuery,
+    TaskDetailResponse,
     TaskIdQuery,
     ToolRequestCancelBody,
     WorkBody,
@@ -259,20 +263,21 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, _runtime(context).profiles(_body(body)))
 
     @router.get("/api/rules", response_model=RuleList, responses={400: {"model": ErrorResponse}})
-    def rules(request: Request) -> Response:
+    def rules(request: Request, documented: RulesQuery = Depends()) -> Response:
+        _query(RulesQuery, request)
         return context.send(request, _runtime(context).rules(), etag=True)
 
     @router.post("/api/rules", response_model=RuleMutation, responses={400: {"model": ErrorResponse}})
     def update_rules(request: Request, body: RuleBody) -> Response:
         return context.send(request, _runtime(context).rules(_body(body)))
 
-    @router.get("/api/task", response_model=VersionedRuntimeRecord,
+    @router.get("/api/task", response_model=TaskDetailResponse,
                 responses={400: {"model": ErrorResponse}})
     def task_detail(request: Request, documented: TaskIdQuery = Depends()) -> Response:
         query = _query(TaskIdQuery, request)
         return context.send(request, _runtime(context).task_detail(query.id))
 
-    @router.get("/api/complaint", response_model=VersionedRuntimeRecord,
+    @router.get("/api/complaint", response_model=ComplaintDetailResponse,
                 responses={400: {"model": ErrorResponse}})
     def complaint_detail(request: Request, documented: TaskIdQuery = Depends()) -> Response:
         query = _query(TaskIdQuery, request)
@@ -289,7 +294,7 @@ def create_router(context: ApiContext) -> APIRouter:
         query = _query(AgentRoomQuery, request)
         return context.send(request, _canvas(context).messages(query.room))
 
-    @router.post("/api/annotation", response_model=VersionedRuntimeRecord,
+    @router.post("/api/annotation", response_model=AnnotationReceipt,
                  responses={400: {"model": ErrorResponse}})
     def annotation(request: Request, body: AnnotationBody) -> Response:
         values = _body(body)

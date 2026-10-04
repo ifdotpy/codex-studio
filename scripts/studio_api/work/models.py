@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
 from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.history.models import CheckpointSummary, TranscriptAsset
+from studio_api.sync.models import (
+    MonitorEntityDto,
+    ComplaintResponseDto,
+    RuleSnapshotDto,
+    SnapshotComplaintDto,
+    SnapshotRoomDto,
+    SnapshotTaskDto,
+    TaskKind,
+    TaskStatus,
+    TaskEntityDto,
+)
 
 
 class AgentQuery(ContractModel):
@@ -56,6 +68,10 @@ class ChangesQuery(AgentQuery):
     scope: Literal["chat"] | None = None
 
 
+class RulesQuery(AgentQuery):
+    pass
+
+
 class OperationBody(ContractModel):
     agent: StrictStr | None = None
     id: StrictStr | None = None
@@ -77,14 +93,63 @@ class WorkBody(OperationBody):
     reason: StrictStr | None = Field(default=None, max_length=12000)
 
 
-class QueueBody(OperationBody):
-    action: Literal["cancel", "edit", "first", "reorder"]
+class QueueCancelBody(OperationBody):
+    action: Literal["cancel"]
+    id: StrictStr | None = None
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
     expectedText: StrictStr | None = None
-    text: StrictStr | None = None
-    ordered_ids: list[StrictStr] | None = None
+
+    @model_validator(mode="after")
+    def has_message_identity(self) -> QueueCancelBody:
+        if not self.id and not self.message_id:
+            raise ValueError("Supply a queued message ID")
+        return self
+
+
+class QueueEditBody(OperationBody):
+    action: Literal["edit"]
+    id: StrictStr | None = None
+    request_id: StrictStr | None = Field(default=None, max_length=200)
+    message_id: StrictStr | None = None
+    expected_revision: StrictStr | None = None
+    expectedText: StrictStr | None = None
+    text: StrictStr
+
+    @model_validator(mode="after")
+    def has_message_identity(self) -> QueueEditBody:
+        if not self.id and not self.message_id:
+            raise ValueError("Supply a queued message ID")
+        return self
+
+
+class QueueFirstBody(OperationBody):
+    action: Literal["first"]
+    id: StrictStr | None = None
+    request_id: StrictStr | None = Field(default=None, max_length=200)
+    message_id: StrictStr | None = None
+    expected_revision: StrictStr | None = None
+    expectedText: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def has_message_identity(self) -> QueueFirstBody:
+        if not self.id and not self.message_id:
+            raise ValueError("Supply a queued message ID")
+        return self
+
+
+class QueueReorderBody(OperationBody):
+    action: Literal["reorder"]
+    request_id: StrictStr | None = Field(default=None, max_length=200)
+    expected_revision: StrictStr
+    ordered_ids: list[StrictStr]
+
+
+QueueBody = Annotated[
+    QueueCancelBody | QueueEditBody | QueueFirstBody | QueueReorderBody,
+    Field(discriminator="action"),
+]
 
 
 class PlanBody(OperationBody):
@@ -285,7 +350,7 @@ class QueueItem(ContractModel):
     kind: Literal["user", "followup"]
     status: Literal["pending"]
     created: StrictInt | StrictFloat
-    assets: list[JsonValue] = Field(default_factory=list)
+    assets: list[TranscriptAsset] = Field(default_factory=list)
     delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
     requestedDelivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
     acceptedAt: StrictInt | StrictFloat | None = None
@@ -311,20 +376,33 @@ class PlanView(ResponseModel):
     steps: list[JsonValue] = Field(default_factory=list)
 
 
+class QuestionEntry(ContractModel):
+    id: StrictStr
+    question: StrictStr
+    isSecret: StrictBool
+
+
+class AnswerHistoryEntry(ContractModel):
+    id: StrictStr
+    question: StrictStr
+    isSecret: StrictBool
+    answer: JsonValue
+
+
 class AgentRequest(ResponseModel):
     id: StrictStr
     agent: StrictStr
-    method: StrictStr
-    status: Literal["pending", "answered", "answering", "uncertain", "expired"]
+    method: Literal["agent/asyncQuestion", "item/tool/requestUserInput", "mcpServer/elicitation/request"]
+    status: Literal["pending", "blocked", "answered", "answering", "uncertain", "expired", "declined", "failed"]
     createdAt: StrictInt | StrictFloat | None = None
     answeredAt: StrictInt | StrictFloat | None = None
     answeredBy: StrictStr | None = None
-    decision: StrictStr | None = None
+    decision: Literal["answer", "accept", "decline", "cancel"] | None = None
     deferred: StrictBool | None = None
     deferredAt: StrictInt | StrictFloat | None = None
     deferredBy: StrictStr | None = None
-    questions: list[JsonValue] = Field(default_factory=list)
-    answerHistory: list[JsonValue] | None = None
+    questions: list[QuestionEntry] = Field(default_factory=list)
+    answerHistory: list[AnswerHistoryEntry] | None = None
     answerError: StrictStr | None = None
 
 
@@ -379,9 +457,20 @@ class ReceiptList(ResponseModel):
     items: list[MessageReceipt]
 
 
+class ChatMessage(ContractModel):
+    seq: StrictInt
+    id: StrictStr
+    room: StrictStr
+    sender: StrictStr
+    senderName: StrictStr
+    text: StrictStr
+    created: StrictInt | StrictFloat
+    deliveries: dict[StrictStr, StrictStr]
+
+
 class ChatRead(ResponseModel):
-    room: JsonValue
-    messages: list[JsonValue]
+    room: SnapshotRoomDto
+    messages: list[ChatMessage]
     nextBefore: StrictInt | None = None
     nextAfter: StrictInt | None = None
 
@@ -416,12 +505,73 @@ class RuntimeRecords(ResponseModel):
     items: list[VersionedRuntimeRecord]
 
 
+class AnnotationRecord(ContractModel):
+    id: StrictStr
+    agent: StrictStr
+    rootId: StrictStr
+    path: StrictStr
+    line: StrictInt
+    text: StrictStr
+    created: StrictInt | StrictFloat
+    turnId: StrictStr | None = None
+
+
+class RuleRecord(RuleSnapshotDto):
+    updated: StrictInt | StrictFloat | None = None
+    stall_timeout_seconds: StrictInt | None = None
+    eventText: StrictStr | None = None
+    stallProbe: StrictBool | None = None
+    stallEventKey: StrictStr | None = None
+    stallText: StrictStr | None = None
+    lastStallFinished: StrictInt | StrictFloat | None = None
+    lastStallExitCode: StrictInt | None = None
+    lastStallError: StrictStr | None = None
+    lastExitCode: StrictInt | None = None
+    lastOutput: StrictStr | None = None
+    activeWorkers: StrictInt | None = None
+    lastEvent: StrictStr | None = None
+    lastFinished: StrictInt | StrictFloat | None = None
+
+
+class AnnotationReceipt(AnnotationRecord, ResponseModel):
+    pass
+
+
+class ComplaintDetailResponse(SnapshotComplaintDto, ResponseModel):
+    id: StrictStr
+    version: StrictInt
+    text: StrictStr
+    responses: list[ComplaintResponseDto]
+
+
+class TaskDetailResponse(SnapshotTaskDto, ResponseModel):
+    type: StrictStr | None = None
+    itemId: StrictStr | None = None
+    startedAtMs: StrictInt | StrictFloat | None = None
+    completedAtMs: StrictInt | StrictFloat | None = None
+    server: StrictStr | None = None
+    outputTruncated: StrictBool | None = None
+
+
+class WorkspaceTaskRecord(TaskEntityDto):
+    agent: StrictStr
+    kind: TaskKind
+    status: TaskStatus
+    created: StrictInt | StrictFloat
+    itemId: StrictStr | None = None
+    type: StrictStr | None = None
+    server: StrictStr | None = None
+    startedAtMs: StrictInt | StrictFloat | None = None
+    completedAtMs: StrictInt | StrictFloat | None = None
+    outputTruncated: StrictBool | None = None
+
+
 class ToolRequestList(ResponseModel):
     requests: list[VersionedRuntimeRecord]
 
 
 class RuleList(ResponseModel):
-    rules: list[VersionedRuntimeRecord]
+    rules: list[RuleRecord]
 
 
 class RuleMutation(ResponseModel):
@@ -493,12 +643,22 @@ class ProgressPanel(ResponseModel):
     error: StrictStr | None
 
 
+class TaskCursor(ContractModel):
+    updated: StrictInt | StrictFloat
+    id: StrictStr
+
+
+class TaskHistoryCursor(ContractModel):
+    created: StrictInt | StrictFloat
+    id: StrictStr
+
+
 class WorkspaceTaskFeed(ResponseModel):
-    tasks: list[VersionedRuntimeRecord]
-    cursor: JsonValue | None = None
+    tasks: list[WorkspaceTaskRecord]
+    cursor: TaskCursor | None = None
     hasMore: StrictBool
     hasMoreChanges: StrictBool | None = None
-    nextBefore: JsonValue | None = None
+    nextBefore: TaskHistoryCursor | None = None
     reset: StrictBool | None = None
 
 
@@ -513,14 +673,14 @@ class ChatCreated(ResponseModel):
 
 class WorkspaceView(ResponseModel):
     work: list[WorkItem] | None = None
-    annotations: list[VersionedRuntimeRecord] | None = None
-    checkpoints: list[VersionedRuntimeRecord] | None = None
+    annotations: list[AnnotationRecord] | None = None
+    checkpoints: list[CheckpointSummary] | None = None
     plans: list[PlanView] | None = None
-    rules: list[VersionedRuntimeRecord] | None = None
+    rules: list[RuleRecord] | None = None
     inbox: list[VersionedRuntimeRecord] | None = None
-    tasks: list[VersionedRuntimeRecord] | None = None
+    tasks: list[WorkspaceTaskRecord] | None = None
     tasksHistoryLimit: StrictInt | None = None
-    monitors: list[VersionedRuntimeRecord] | None = None
+    monitors: list[MonitorEntityDto] | None = None
 
 
 class PanelLayoutReport(ContractModel):

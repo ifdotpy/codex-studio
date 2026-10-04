@@ -77,7 +77,8 @@ class WorkRouterTests(unittest.TestCase):
     def test_chat_query_documents_parameters_and_keeps_first_duplicate(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock(return_value={
-            "room": {}, "messages": [], "nextBefore": None, "nextAfter": None,
+            "room": {"id": "feed:team", "name": "Team", "members": []},
+            "messages": [], "nextBefore": None, "nextAfter": None,
         })
         client = make_client(context)
 
@@ -91,7 +92,8 @@ class WorkRouterTests(unittest.TestCase):
     def test_chat_query_skips_blank_duplicate_values_like_parse_qs(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock(return_value={
-            "room": {}, "messages": [], "nextBefore": None, "nextAfter": None,
+            "room": {"id": "feed:team", "name": "Team", "members": []},
+            "messages": [], "nextBefore": None, "nextAfter": None,
         })
         response = make_client(context).get("/api/agent-chat?room=feed&before=&before=11&limit=&limit=5")
 
@@ -160,6 +162,90 @@ class WorkRouterTests(unittest.TestCase):
 
         context.runtime.work_action.assert_called_once_with("agent-1", work_body, "operation-1")
         context.runtime.queue_action.assert_called_once_with("agent-1", queue_body)
+
+    def test_queue_request_schema_is_discriminated_and_requires_action_fields(self) -> None:
+        schema = make_client(FakeContext()).get("/openapi.json").json()
+        request = schema["paths"]["/api/queue"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertIn("oneOf", request)
+        edit_ref = next(ref for ref in request["oneOf"] if ref["$ref"].endswith("QueueEditBody"))
+        edit = schema["components"]["schemas"]["QueueEditBody"]
+        self.assertEqual(edit_ref["$ref"], "#/components/schemas/QueueEditBody")
+        self.assertTrue({"action", "text"} <= set(edit["required"]))
+        self.assertEqual(edit["properties"]["action"]["const"], "edit")
+
+    def test_queue_preserves_message_id_alias_and_validates_identity_before_runtime(self) -> None:
+        context = FakeContext()
+        context.runtime.queue_action = Mock(return_value={"status": "cancelled"})
+        client = make_client(context)
+
+        accepted = client.post("/api/queue", json={
+            "agent": "agent-1", "action": "cancel", "message_id": "message-1",
+        })
+        rejected = client.post("/api/queue", json={"agent": "agent-1", "action": "cancel"})
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        context.runtime.queue_action.assert_called_once_with("agent-1", {
+            "agent": "agent-1", "action": "cancel", "message_id": "message-1",
+        })
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(context.runtime.queue_action.call_count, 1)
+
+    def test_queue_assets_use_attachment_view_contract(self) -> None:
+        context = FakeContext()
+        asset = {
+            "id": "asset-1", "agent": "agent-1", "name": "photo.png",
+            "mime": "image/png", "image": True, "size": 12, "hash": "sha256",
+            "created": 1.5,
+        }
+        context.runtime.queue_action = Mock(return_value={
+            "items": [{
+                "id": "message-1", "text": "", "kind": "user", "status": "pending",
+                "created": 2.0, "assets": [asset], "delivery": "queue", "requestedDelivery": "queue",
+            }],
+            "revision": "revision-1", "capabilities": {"reorder": True, "receipts": True},
+        })
+
+        response = make_client(context).get("/api/queue?agent=agent-1")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["items"][0]["assets"], [asset])
+
+    def test_workspace_task_feed_uses_required_task_fields_and_structured_cursors(self) -> None:
+        context = FakeContext()
+        task = {
+            "id": "agent-1:item-1", "agent": "agent-1", "kind": "tool", "status": "completed",
+            "created": 1.0, "finished": 2.0, "name": "web_search", "type": "webSearch",
+            "itemId": "item-1", "startedAtMs": 1000, "completedAtMs": 2000,
+        }
+        context.runtime.workspace_task_feed = Mock(return_value={
+            "tasks": [task], "cursor": {"updated": 2.0, "id": "agent-1:item-1"},
+            "hasMore": True, "hasMoreChanges": False,
+            "nextBefore": {"created": 1.0, "id": "agent-1:item-1"}, "reset": False,
+        })
+
+        response = make_client(context).get("/api/workspace/tasks")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["tasks"], [task])
+        self.assertEqual(response.json()["cursor"], {"updated": 2.0, "id": "agent-1:item-1"})
+        self.assertEqual(response.json()["nextBefore"], {"created": 1.0, "id": "agent-1:item-1"})
+
+    def test_complaint_detail_has_typed_version_text_and_responses(self) -> None:
+        context = FakeContext()
+        complaint = {
+            "id": "complaint-1", "leadId": "agent-1", "author": "user", "text": "Help",
+            "version": 1, "status": "open", "created": 1.0, "updated": 2.0,
+            "responses": [{
+                "id": "response-1", "author": "agent-1", "text": "On it",
+                "status": "in_progress", "at": 2.0,
+            }],
+        }
+        context.runtime.complaint_detail = Mock(return_value=complaint)
+
+        response = make_client(context).get("/api/complaint?id=complaint-1")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), complaint)
 
     def test_post_work_list_action_preserves_legacy_list_response(self) -> None:
         context = FakeContext()
