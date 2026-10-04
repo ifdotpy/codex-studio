@@ -236,6 +236,25 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.rt.prepare(self.rt.agent(worker))
         self.rt.start_image_base.assert_called_once_with(str(self.repo), worker)
 
+    def test_child_spawn_maps_parent_image_path_to_the_user_repository(self):
+        worker = self.spawn()['id']
+        actor = self.rt.agent(worker)
+        mount = self.root / 'parent-image'
+        image_repo = mount / 'repo'
+        child_folder = image_repo / 'project' / 'child'
+        child_folder.mkdir(parents=True)
+        actor.update(imageWorkspaceReady=True, imageWorkspaceRepo=str(self.repo))
+        engine = types.ModuleType('codex_workspace_images')
+        engine.ensure_mounted = Mock(return_value={'repoPath': str(image_repo)})
+        engine.exec_prefix = Mock(return_value=['nsenter', '--'])
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
+                patch('codex_runtime.git_toplevel', return_value=str(image_repo)) as detect:
+            repo, directory, prefix = self.rt.worker_spawn_repository(actor, str(child_folder))
+        self.assertEqual(repo, str(self.repo))
+        self.assertEqual(directory, str(self.repo / 'project' / 'child'))
+        self.assertEqual(prefix, ['nsenter', '--'])
+        detect.assert_called_once_with(str(child_folder), prefix=['nsenter', '--'])
+
     def test_collect_conflict_is_saved_in_the_worker_result(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
@@ -273,10 +292,12 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
         worker = self.spawn()['id']
         image_mount = self.root / 'image-to-archive'
-        (image_mount / 'repo' / 'project').mkdir(parents=True)
+        image_repo = image_mount / 'repo'
+        image_repo.parent.mkdir(parents=True)
+        subprocess.run(['git', 'clone', '-q', '--shared', str(self.repo), str(image_repo)], check=True)
         with self.rt.lock, self.rt.db() as db:
             record = self.rt.agent(worker, db)
-            record.update(cwd=str(image_mount / 'repo' / 'project'), imageWorkspaceReady=True,
+            record.update(cwd=str(image_repo), imageWorkspaceReady=True,
                           imageWorkspacePhase='ready', imageWorkspaceMount=str(image_mount))
             self.rt.put(db, 'agents', record)
         subprocess.run(['git', '-C', str(self.repo), 'branch',
@@ -285,6 +306,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         engine.collect = Mock(return_value={'branch': 'codex-agent/' + worker})
         engine.remove_workspace = Mock(return_value={'freedBytes': 123, 'state': 'removed'})
         engine.workspace_bytes = Mock(return_value=123)
+        engine.ensure_mounted = Mock(return_value={'mount': str(image_mount), 'repoPath': str(image_repo)})
+        engine.exec_prefix = Mock(return_value=[])
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             cleanup = _cleanup_image_workspace(self.rt, worker)
         self.assertEqual(cleanup['state'], 'removed')

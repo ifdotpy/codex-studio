@@ -256,6 +256,66 @@ class RealWorktreeContract(Contract):
             self.rt.put(db, 'agents', a)
         return path
 
+    def image_workspace(self):
+        from types import ModuleType
+        mount = Path(self.tmp.name) / 'image'
+        image_repo = mount / 'repo'
+        mount.mkdir()
+        subprocess.run(['git', 'clone', '-q', '--shared', str(self.repo), str(image_repo)], check=True)
+        self.worker(cwd=str(image_repo), worktree=False, worktreeReady=False,
+                    imageWorkspace=True, imageWorkspaceReady=True, imageWorkspacePhase='ready',
+                    imageWorkspaceRepo=str(self.repo), imageWorkspaceRelative='.',
+                    imageWorkspaceMount=str(mount))
+        engine = ModuleType('codex_workspace_images')
+        engine.workspace_bytes = lambda _agent: 4096
+        engine.ensure_mounted = lambda _agent: {'mount': str(mount), 'repoPath': str(image_repo)}
+        engine.exec_prefix = lambda: []
+        engine.collect = lambda _agent: {'state': 'collected'}
+        engine.remove_workspace = lambda _agent: {'freedBytes': 4096}
+        return mount, image_repo, engine
+
+    def test_image_archive_keeps_uncommitted_and_untracked_changes(self):
+        from unittest.mock import Mock
+        mount, image_repo, engine = self.image_workspace()
+        (image_repo / 'draft.txt').write_text('unfinished')
+        engine.collect = Mock(return_value={'state': 'collected'})
+        engine.remove_workspace = Mock(return_value={'freedBytes': 4096})
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            result = self.call('archive')
+        self.assertEqual(result['workspace']['state'], 'kept')
+        self.assertIn('uncommitted or untracked', result['workspace']['reason'])
+        self.assertTrue((image_repo / 'draft.txt').is_file())
+        engine.collect.assert_called_once_with('worker')
+        engine.remove_workspace.assert_not_called()
+
+    def test_conflict_archive_restores_from_the_collected_raw_head(self):
+        from unittest.mock import Mock
+        mount, image_repo, engine = self.image_workspace()
+        (self.repo / 'raw-only.txt').write_text('raw result\n')
+        self.git('add', 'raw-only.txt')
+        self.git('commit', '-qm', 'raw agent commit')
+        raw_head = self.git('rev-parse', 'HEAD')
+        self.git('update-ref', 'refs/studio/agents/worker/raw', raw_head)
+        engine.collect = Mock(return_value={
+            'state': 'conflict', 'conflict': 'raw-only.txt',
+            'rawRef': 'refs/studio/agents/worker/raw'})
+        engine.remove_workspace = Mock(return_value={'freedBytes': 4096})
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            archived = self.call('archive')
+            self.assertEqual(archived['workspace']['state'], 'conflict')
+            with self.rt.db() as db:
+                saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
+            self.assertEqual(saved['head'], raw_head)
+            restored_repo = Path(self.tmp.name) / 'restored' / 'repo'
+            restored_repo.mkdir(parents=True)
+            engine.create_workspace = Mock(return_value={
+                'mount': str(restored_repo.parent), 'repoPath': str(restored_repo),
+                'branch': 'codex-agent/worker', 'snapshotCommit': None})
+            restored = self.call('restore')
+        self.assertEqual(restored['status'], 'restored')
+        engine.create_workspace.assert_called_once_with(
+            str(self.repo), 'worker', start_commit=raw_head)
+
     def test_clean_archive_keeps_ref_and_restore_recreates_checkout(self):
         path = self.repo / '.worktrees' / 'codex-agents' / 'worker'
         head = self.git('rev-parse', 'HEAD', cwd=path)

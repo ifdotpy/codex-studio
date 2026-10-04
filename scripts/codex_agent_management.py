@@ -52,19 +52,36 @@ def _brief(a):
 
 
 def _cleanup_image_workspace(rt, agent_id):
-    from codex_workspace_images import collect, remove_workspace, workspace_bytes
-    agent = rt.agent(agent_id)
+    from codex_workspace_images import (collect, ensure_mounted, exec_prefix,
+                                       remove_workspace, workspace_bytes)
+    with rt.lock, rt.db() as db:
+        agent = rt.agent(agent_id, db)
     repo = agent.get('imageWorkspaceRepo')
     relative = agent.get('imageWorkspaceRelative', '.')
+    collected = None
     try:
         before = workspace_bytes(agent_id)
         collected = collect(agent_id)
-        result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
-                                 'refs/heads/codex-agent/' + agent_id],
+        mounted = ensure_mounted(agent_id)
+        dirty = subprocess.run([*exec_prefix(), 'git', '-C', mounted['repoPath'],
+                                'status', '--porcelain', '--untracked-files=all'],
+                               capture_output=True, text=True, timeout=30)
+        if dirty.returncode:
+            raise RuntimeError('Could not check the image workspace Git state: '
+                               + dirty.stderr[:800])
+        if dirty.stdout.strip():
+            raise RuntimeError('Image workspace has uncommitted or untracked changes; '
+                               'commit them before archiving')
+        raw_ref = collected.get('rawRef')
+        if not raw_ref and (collected.get('conflict') or collected.get('conflicts')):
+            raw_ref = 'refs/studio/agents/' + agent_id + '/raw'
+        ref = raw_ref or 'refs/heads/codex-agent/' + agent_id
+        result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify', ref],
                                 capture_output=True, timeout=30)
         if result.returncode:
-            result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
-                                     'refs/studio/agents/' + agent_id + '/raw'],
+            fallback_ref = ('refs/heads/codex-agent/' + agent_id if raw_ref
+                            else 'refs/studio/agents/' + agent_id + '/raw')
+            result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify', fallback_ref],
                                     check=True, capture_output=True, timeout=30)
         head = result.stdout.decode().strip()
         removed = remove_workspace(agent_id)
@@ -87,8 +104,11 @@ def _cleanup_image_workspace(rt, agent_id):
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
             current['imageWorkspaceError'] = 'Archive collect or removal failed: ' + str(error)[:1200]
+            if collected is not None:
+                current['imageWorkspaceCollect'] = collected
             rt.put(db, 'agents', current)
-        return {'state': 'kept', 'bytes': 0, 'reason': str(error)[:500]}
+        return {'state': 'kept', 'bytes': 0, 'reason': str(error)[:500],
+                **({'collect': collected} if collected is not None else {})}
 
 
 def _completed_native_turn(a):

@@ -3759,6 +3759,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self._image_base_callback_agents.discard(agent_id)
             raise
 
+    def worker_spawn_repository(self, actor, directory):
+        prefix = ()
+        if actor.get("imageWorkspaceReady"):
+            from codex_workspace_images import ensure_mounted, exec_prefix
+            mounted = ensure_mounted(actor["id"])
+            prefix = exec_prefix()
+            detected_repo = git_toplevel(directory, prefix=prefix)
+            if detected_repo:
+                try:
+                    relative = Path(directory).resolve().relative_to(
+                        Path(mounted["repoPath"]).resolve())
+                except ValueError:
+                    pass
+                else:
+                    repo = actor.get("imageWorkspaceRepo")
+                    if repo:
+                        return repo, str(Path(repo) / relative), prefix
+                return detected_repo, directory, prefix
+            return None, directory, prefix
+        return git_toplevel(directory), directory, prefix
+
     def image_base_completed(self, agent_id, status):
         try:
             with self.lock, self.db() as db:
@@ -6025,7 +6046,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         base_cache = {}
         for spec in specs:
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
-            repo = git_toplevel(directory) if spec.get("role", "implementer") == "implementer" else None
+            if spec.get("role", "implementer") == "implementer":
+                repo, directory, _prefix = self.worker_spawn_repository(actor, directory)
+            else:
+                repo = None
             base = None
             use_image = False
             image_error = None
