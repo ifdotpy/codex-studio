@@ -1,6 +1,6 @@
 import createClient from "openapi-fetch";
 import type { FetchResponse } from "openapi-fetch";
-import type { paths } from "./generated/api";
+import type { components, paths } from "./generated/api";
 import type {
   ApiGetOptions,
   ApiPathsFor,
@@ -201,14 +201,12 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
   };
 }
 
-function syncDocuments(value: unknown, workspaceId: string | undefined) {
-  if (
-    !isRecord(value) ||
-    !Array.isArray(value._syncEntities) ||
-    value._syncEntities.length === 0 ||
-    typeof window === "undefined"
-  )
-    return;
+type SyncEnvelope = {
+  _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+};
+
+function syncDocuments(value: SyncEnvelope, workspaceId: string | undefined) {
+  if (!value._syncEntities?.length || typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent("codex-sync-entities", {
       detail: {
@@ -312,7 +310,7 @@ export async function post<Path extends PathsFor<"post">>(
     if (!("data" in result)) return undefined as PostResult<Path>;
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
-    syncDocuments(result.data, options.workspaceId);
+    syncDocuments(result.data as PostResult<Path>, options.workspaceId);
     return result.data as PostResult<Path>;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();

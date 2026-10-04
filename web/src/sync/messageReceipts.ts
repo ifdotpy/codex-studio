@@ -5,47 +5,17 @@ import type { OutgoingMessage } from "./send";
 type MessageReceiptResponse = GetResult<"/api/messages/receipts">;
 export type MessageReceipt = MessageReceiptResponse["items"][number];
 
-const statuses = {
-  queued: true,
-  pending: true,
-  reserved: true,
-  dispatching: true,
-  delivered: true,
-  accepted: true,
-  sent: true,
-  uncertain: true,
-  failed: true,
-  cancelled: true,
-  stored_only: true,
-} satisfies Record<MessageReceipt["status"], true>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
-}
-
-function isMessageReceipt(value: unknown): value is MessageReceipt {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.status === "string" &&
-    Object.hasOwn(statuses, value.status) &&
-    (value.error === undefined ||
-      value.error === null ||
-      typeof value.error === "string")
-  );
-}
-
 export function checkedMessageReceipts(
-  value: unknown,
+  value: MessageReceiptResponse,
   room: string,
   ids: string[],
 ): MessageReceipt[] {
   const requested = new Set(ids);
-  if (!isRecord(value) || value.agent !== room || !Array.isArray(value.items))
+  if (value.agent !== room)
     throw new Error("The delivery receipts belong to another chat.");
   const receipts: MessageReceipt[] = [];
   for (const item of value.items) {
-    if (!isMessageReceipt(item) || !requested.has(item.id))
+    if (!requested.has(item.id))
       throw new Error(
         "The delivery receipts do not match the requested messages.",
       );
