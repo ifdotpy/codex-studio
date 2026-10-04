@@ -78,6 +78,7 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                                          rt.agent(worker_id).get('threadId') for method, params in rt.server.calls))
                     first = [params for method, params in rt.server.calls if method == 'turn/start' and
                              params.get('threadId') == rt.agent(worker_id).get('threadId')][-1]
+                    self.assertEqual(first['approvalPolicy'], 'never')
                     self.assertEqual(first['sandboxPolicy'], {'type': 'readOnly'})
                     self.assertIn('read-only until Studio sends a workspace-ready notice',
                                   first['input'][0]['text'])
