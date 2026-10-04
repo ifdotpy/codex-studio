@@ -592,14 +592,17 @@ def _tree_paths(repo: Path, commit: str, pathspecs, *, view=False):
     return result
 
 
-def _existing_paths(repo: Path, paths, *, view=False):
-    values = [Path(value).as_posix() for value in paths]
-    code = ('import json,pathlib,sys; root=pathlib.Path(sys.argv[1]); '
-            'paths=json.loads(sys.argv[2]); sys.stdout.write(chr(0).join(p for p in paths '
-            'if (root/p).exists() or (root/p).is_symlink()))')
-    output = _command([sys.executable, '-c', code, str(repo), json.dumps(values)],
-                      view=view, check=True, timeout=30).stdout.decode()
-    return [Path(value) for value in output.split('\0') if value]
+def _stageable_paths(repo: Path, paths, *, view=False):
+    if not paths:
+        return []
+    pathspecs = [f':(literal){Path(value).as_posix()}' for value in paths]
+    candidates = set()
+    for offset in range(0, len(pathspecs), 256):
+        output = _git(repo, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
+                      '--', *pathspecs[offset:offset + 256], view=view)
+        candidates.update(Path(value) for value in output.split('\0') if value)
+    return sorted(candidates,
+                  key=lambda path: path.as_posix())
 
 
 def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
@@ -634,6 +637,7 @@ def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
     if staged_remove:
         _git(target, 'rm', '-r', '-f', '--cached', '--ignore-unmatch', '--',
              *staged_remove, view=view)
+        _git(target, 'clean', '-f', '-d', '--', *staged_remove, view=view)
 
 
 def _sync_refs(target: Path, source: Path, agent_id: str, *, view=False):
@@ -689,12 +693,12 @@ def _repo_state_list(root: Path, mount_repo: Path, known_paths, delta):
             continue
         target = mount_repo / rel
         source = root / rel
-        if (source / '.git').exists():
-            _prepare_repo(target, source, view=True)
-        if _is_git_repo(target, view=True):
-            _copy_index(source, target, view=True)
-            items.append({'path': str(rel), 'startCommit': _git(target, 'rev-parse', 'HEAD', view=True).strip(),
-                          'snapshotCommit': None, 'branch': None})
+        if not (source / '.git').exists():
+            continue
+        _prepare_repo(target, source, view=True)
+        _copy_index(source, target, view=True)
+        items.append({'path': str(rel), 'startCommit': _git(source, 'rev-parse', 'HEAD').strip(),
+                      'snapshotCommit': None, 'branch': None})
     return items
 
 
@@ -828,7 +832,7 @@ def create_workspace(repo_root, agent_id, *, start_commit=None,
                 target = mount_repo / rel
                 source = root / rel
                 restore_head = restore_heads.get(item['path']) if restore_heads is not None else None
-                source_head = _git(source, 'rev-parse', 'HEAD').strip()
+                source_head = item['startCommit']
                 start = (restore_head or (start_commit if rel == Path('.') and start_commit else source_head))
                 item['startCommit'] = start
                 item['branch'] = 'codex-agent/' + agent_id
@@ -854,10 +858,9 @@ def create_workspace(repo_root, agent_id, *, start_commit=None,
                 if restore_mode:
                     item['snapshotCommit'] = None
                     continue
-                if start_commit and rel == Path('.') and start != source_head:
-                    paths = _existing_paths(target, paths, view=True)
                 if prior_snapshot:
                     item['snapshotCommit'] = prior_snapshot
+                paths = _stageable_paths(target, paths, view=True)
                 if paths:
                     pathspecs = [f':(literal){path.as_posix()}' for path in paths]
                     _git(target, 'add', '-A', '--', *pathspecs, view=True)

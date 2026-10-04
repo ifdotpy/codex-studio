@@ -18,6 +18,14 @@ import codex_workspace_images as images
 from codex_workspace_macos import Backend
 
 
+def _rounded(value):
+    if isinstance(value, dict):
+        return {key: _rounded(item) for key, item in value.items()}
+    if isinstance(value, float):
+        return round(value, 3)
+    return value
+
+
 class WorkspaceImagesMacTests(unittest.TestCase):
     def setUp(self):
         if sys.platform != 'darwin' or not shutil.which('diskutil'):
@@ -90,8 +98,10 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         backend = images._get_backend()
         done = threading.Event()
         result = []
-        steps = {'open': 0.0, 'copy': 0.0, 'seal': 0.0, 'repoSetup': 0.0,
-                 'protectionRefs': 0.0}
+        steps = {'repositoryDiscovery': 0.0, 'open': 0.0, 'copy': 0.0,
+                 'seal': 0.0, 'repoSetup': 0.0, 'protectionRefs': 0.0}
+        git_calls = {}
+        direct_commands = {}
         saved_methods = {}
         for method, key in (('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
                             ('seal_base', 'seal')):
@@ -116,6 +126,16 @@ class WorkspaceImagesMacTests(unittest.TestCase):
                 steps['repoSetup'] += time.monotonic() - tick
 
         images._prepare_repo = timed_prepare
+        original_discovery = images._git_repositories
+
+        def timed_discovery(*args, **kwargs):
+            tick = time.monotonic()
+            try:
+                return original_discovery(*args, **kwargs)
+            finally:
+                steps['repositoryDiscovery'] += time.monotonic() - tick
+
+        images._git_repositories = timed_discovery
         original_git = images._git
 
         def timed_git(repo, *args, **kwargs):
@@ -123,10 +143,29 @@ class WorkspaceImagesMacTests(unittest.TestCase):
             try:
                 return original_git(repo, *args, **kwargs)
             finally:
+                command = str(args[0]) if args else '(empty)'
+                row = git_calls.setdefault(command, {'count': 0, 'seconds': 0.0})
+                row['count'] += 1
+                row['seconds'] += time.monotonic() - tick
                 if len(args) > 1 and args[0] == 'update-ref' and str(args[1]).startswith('refs/studio/base/'):
                     steps['protectionRefs'] += time.monotonic() - tick
 
         images._git = timed_git
+        original_command = images._command
+
+        def timed_command(args, **kwargs):
+            caller = sys._getframe(1).f_code.co_name
+            tick = time.monotonic()
+            try:
+                return original_command(args, **kwargs)
+            finally:
+                if caller != '_git':
+                    key = caller + ':' + str(args[0])
+                    row = direct_commands.setdefault(key, {'count': 0, 'seconds': 0.0})
+                    row['count'] += 1
+                    row['seconds'] += time.monotonic() - tick
+
+        images._command = timed_command
         started = time.monotonic()
         try:
             state = images.start_base_build(self.repo, lambda value: (result.append(value), done.set()))
@@ -135,12 +174,15 @@ class WorkspaceImagesMacTests(unittest.TestCase):
             self.timings['base'] = time.monotonic() - started
         finally:
             images._git = original_git
+            images._command = original_command
             images._prepare_repo = original_prepare
+            images._git_repositories = original_discovery
             for method, original in saved_methods.items():
                 setattr(backend, method, original)
         self.assertEqual(result[-1]['state'], 'ready', result[-1])
         steps['other'] = max(0.0, self.timings['base'] - sum(steps.values()))
-        self.timings['baseSteps'] = steps
+        self.timings['baseSteps'] = {**steps, 'gitCalls': git_calls,
+                                     'directCommands': direct_commands}
         self.base = json.loads(next((self.store / 'bases').glob('*/base.json')).read_text())
         self.assertIn('.git/modules/sub/objects', self.base['excludes'])
 
@@ -237,9 +279,15 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.assertEqual(self.git('rev-parse', 'HEAD', cwd=clean_after_repo).stdout.strip(), refreshed_head)
         self.assertEqual(self.git('status', '--porcelain', cwd=clean_after_repo).stdout, '')
         images.remove_workspace('agent-clean-after-refresh', force=True)
+        custom_untracked = self.repo / 'custom-start-untracked.txt'
+        custom_untracked.write_text('parent untracked edit\n')
+        custom_status = self.git('status', '--porcelain').stdout
         custom_start = self._create('agent-custom-start', start_commit=self.base['head'])
         self.assertEqual(custom_start['startCommit'], self.base['head'])
+        self.assertFalse((pathlib.Path(custom_start['repoPath']) / custom_untracked.name).exists())
+        self.assertEqual(self.git('status', '--porcelain').stdout, custom_status)
         images.remove_workspace('agent-custom-start', force=True)
+        custom_untracked.unlink()
         excluded = subprocess.run(['tmutil', 'isexcluded', str(self.store)],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(excluded.returncode, 0, excluded.stderr)
@@ -378,10 +426,10 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self._crash_retry()
         print('workspace timings seconds:', json.dumps({
             'base': round(self.timings['base'], 3),
-            'baseSteps': {key: round(value, 3) for key, value in self.timings['baseSteps'].items()},
+            'baseSteps': _rounded(self.timings['baseSteps']),
             'refresh': round(self.timings['refresh'], 3),
             'create': [round(value, 3) for value in self.timings['create']],
-            'createSteps': [{key: round(value, 3) for key, value in row.items()}
+            'createSteps': [_rounded(row)
                             for row in self.timings['createSteps']],
         }))
 

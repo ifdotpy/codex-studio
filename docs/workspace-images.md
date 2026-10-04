@@ -81,10 +81,10 @@ or repo key, so a retry after a crash or a lost response adopts or completes the
   `repoPath` (`<mount>/repo`), `branch` (`codex-agent/<id>`), `startCommit`, `snapshotCommit`
   (None when the user tree was clean). The default start commit is the user's current HEAD.
   It syncs the user's current refs into private Git metadata, updates only paths committed since
-  the base in the private index, then applies fresh edits.
-  Steps: clone or overlay, mount, fresh user edits, reset or create the agent branch, snapshot commit.
-  With `start_commit` different from the user's HEAD, the tree
-  is reset to that commit instead (ignored build output stays).
+  the base in the private index, then applies fresh edits. It copies the user's index, updates the
+  agent branch ref and `HEAD`, then stages only changed paths before a snapshot commit.
+  With `start_commit` different from the user's HEAD, it updates only changed paths to that commit
+  (ignored build output stays).
   `restore_heads` maps repository paths from `agent.json` (for example `.` or `packages/lib`)
   to commits collected from those repositories. Restore checks out each commit without a snapshot.
 - `ensure_mounted(agent_id) -> dict` : mount again after a restart or reboot.
