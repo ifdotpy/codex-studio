@@ -10,6 +10,7 @@ from studio_api.sync.resources.models import (
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
     ResourceRef,
+    TranscriptResource,
 )
 
 
@@ -17,6 +18,8 @@ class ResourceContractTests(unittest.TestCase):
     def test_resource_ref_is_a_closed_discriminated_union(self) -> None:
         parsed = ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a"})
         self.assertEqual(parsed.model_dump(), {"kind": "panel", "agentId": "agent-a"})
+        transcript = ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
+        self.assertEqual(transcript.model_dump(), {"kind": "transcript", "agentId": "agent-a"})
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "unknown"})
         with self.assertRaises(ValidationError):

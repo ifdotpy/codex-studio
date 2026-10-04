@@ -104,6 +104,11 @@ class TranscriptsResource(ContractModel):
     kind: Literal["transcripts"]
 
 
+class TranscriptResource(ContractModel):
+    kind: Literal["transcript"]
+    agentId: StrictStr
+
+
 ResourceRefValue = Annotated[
     PanelResource
     | QueueResource
@@ -124,7 +129,8 @@ ResourceRefValue = Annotated[
     | RoomResource
     | StateResource
     | DraftsResource
-    | TranscriptsResource,
+    | TranscriptsResource
+    | TranscriptResource,
     Field(discriminator="kind"),
 ]
 
@@ -151,4 +157,3 @@ class ResourceHeartbeatEvent(ContractModel):
     workspaceId: StrictStr
     epoch: StrictStr
     revision: ResourceRevision
-
