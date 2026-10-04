@@ -100,6 +100,15 @@ export function projectDisplayName(
     ? project.name
     : project.path || "Project";
 }
+export function projectSearchLabel(
+  projectName: string | null | undefined,
+  legacyProjectName: unknown,
+): string {
+  return (
+    projectName ||
+    (typeof legacyProjectName === "string" ? legacyProjectName : "")
+  );
+}
 export default function Sidebar(p: Props) {
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
@@ -421,13 +430,14 @@ export default function Sidebar(p: Props) {
     .filter((row) => !!row.archived === archive)
     .filter((a) => {
       const project = projects.find((item) => item.path === a.cwd);
+      const legacyProjectName = "project" in a ? a.project : undefined;
       if (a.id === p.opened && grouped.has(a.id)) return true;
       const teamName =
         peerTeams.find(
           (team) =>
             (team.members ?? []).includes(a.id) && team.projectPath === a.cwd,
         )?.name || "";
-      return `${teamName} ${a.name || ""} ${a.cwd || ""} ${project?.name || ""} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
+      return `${teamName} ${a.name || ""} ${a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
         .toLowerCase()
         .includes(query.toLowerCase());
     });
