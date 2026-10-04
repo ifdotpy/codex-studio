@@ -4271,6 +4271,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for a in agents:
                 if a.get("liveSteerAttempt") or a.get("liveSteerRejectedTurnId") or a.get("queueNotice"):
                     self.retire_legacy_steer(db, a)
+                if (a.get("status") == "running" and a.get("inFlight") and a.get("turnId")
+                        and a.get("error") == "turn/start response timed out; outcome unknown"):
+                    a["error"] = None
+                    self.put(db, "agents", a)
             if agent_id is None:
                 self.release_failed_work(db, agents)
                 self.queue_turn_recovery(agents)
@@ -4318,6 +4322,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if fast_event_ids:
                 fast_marks["fastCandidatesAt"] = time.monotonic_ns()
             global_limit = global_concurrency_limit()
+            # Keep one busy account from filling its native reply stream with
+            # starts. Old unknown receipts do not consume a slot forever.
+            from codex_turn_recovery import START_PACE_LIMIT, recent_account_starts
+            recent_starts = recent_account_starts(agents)
             for a in candidates:
                 # The root owns the setting. Resolve it from the current DB
                 # record instead of trusting a cached descendant projection.
@@ -4330,6 +4338,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if fast_event_ids:
                     fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
                 if not busy and len(active) >= global_limit:
+                    continue
+                account_key = a.get("accountKey", "default")
+                if (not busy and a.get("provider", "codex") == "codex"
+                        and recent_starts.get(account_key, 0) >= START_PACE_LIMIT):
                     continue
                 if (not busy and a["id"] != a["rootId"]
                         and sum(t["rootId"] == a["rootId"] and t["id"] != t["rootId"]
@@ -4473,6 +4485,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 if not busy:
                     active.append(a)
+                    if a.get("provider", "codex") == "codex":
+                        recent_starts[account_key] = recent_starts.get(account_key, 0) + 1
                 self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
             if fast_event_ids:
                 fast_marks["fastDispatchDoneAt"] = time.monotonic_ns()
@@ -4702,6 +4716,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(nativeOperationId=native_operation_id, accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
+                from codex_connection_recovery import supervisor_identity
+                current["startAttempt"]["supervisorIdentity"] = supervisor_identity(server)
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
                 db.commit()
@@ -4723,7 +4739,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             except ResponseTimeout as error:
                 self.start_error(a["id"], attempt_id, error, unknown=True)
                 # Do not occupy a worker while waiting for a late response.
-                server.on_result(submitted, lambda future: self.pool.submit(
+                getattr(server, 'on_result_now', server.on_result)(submitted, lambda future: self.recovery_pool.submit(
                     self.start_result, a["id"], dispatch_attempt, future
                 ) if not self.closed else None)
                 return
@@ -4822,6 +4838,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.changed.set()
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
                 return
+            a.pop("startOutcomeHold", None)
             self.capacity_started(db, a, attempt, turn)
             completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
             if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
@@ -4917,9 +4934,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             if unknown:
                 if current_epoch and a["autoWake"]:
-                    attempt["responseError"] = str(error)
-                    a.update(status="running" if attempt.get("activeAtReservation") else "starting",
-                             inFlight=True, error=str(error))
+                    waiting = ("The native start result is unknown. Studio is checking the original input "
+                               "in native history.")
+                    attempt["responseError"] = waiting
+                    a.update(status="running" if attempt.get("activeAtReservation") else "waiting",
+                             inFlight=True, error=waiting)
             else:
                 # Native rejects this request before submitting a turn. A cached
                 # load is no longer valid, even when the rollout still exists.
@@ -4935,6 +4954,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if current_epoch and a["autoWake"]:
                     a.update(status="running" if attempt.get("activeAtReservation") else "failed",
                              error=str(error))
+                a.pop("startOutcomeHold", None)
             attempt["executionOutcome"] = "unknown" if unknown else "unsent" if not attempt.get("submitted") else "rejected"
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
@@ -5357,6 +5377,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 else:
                     self.capacity_reset(db, a, "A new native turn replaces this retry.")
                 a["turnId"] = p["turn"]["id"]
+                if (a.get("error") == "turn/start response timed out; outcome unknown"
+                        and a.get("autoWake") and a.get("turnEpoch", a["epoch"]) == a["epoch"]):
+                    a["error"] = None
+                if (a.get("startOutcomeHold") or {}).get("attemptId") == attempt.get("id"):
+                    a.pop("startOutcomeHold", None)
                 a["lastAnswer"] = ""
                 a["activity"] = {"phase": "thinking", "at": time.time()}
                 a["activeTools"] = []

@@ -6,16 +6,19 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import queue
 import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
+from codex_turn_recovery import START_PACE_LIMIT, recent_account_starts
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
@@ -73,6 +76,7 @@ class TurnRecoveryContract(unittest.TestCase):
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = a['id']
         fixture.eventually(lambda: bool(self.runtime.agent(self.key).get('turnId')))
+        fixture.eventually(lambda: bool((self.runtime.agent(self.key).get('startAttempt') or {}).get('turnId')))
         self.a = self.runtime.agent(self.key)
         self.turn = self.a['turnId']
         self.server.native = {'id': self.a['threadId'], 'status': {'type': 'idle'}, 'turns': [
@@ -116,6 +120,32 @@ class TurnRecoveryContract(unittest.TestCase):
                                        (a['startAttempt']['events'][0],)).fetchone()[:], ('delivered', self.turn))
         self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
+    def test_late_start_reply_clears_timeout_and_binds_input(self):
+        a = self.lose_start_receipt()
+        before = sum(method == 'turn/start' for method, _ in self.server.calls)
+        self.runtime.start_accepted(self.key, a['startAttempt'], {'turn': {'id': self.turn}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['turnId'], current['error']),
+                         ('running', self.turn, None))
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+
+    def test_observed_turn_clears_stale_timeout_error(self):
+        self.lose_start_receipt()
+        self.server.notify({'method': 'turn/started', 'params': {
+            'threadId': self.a['threadId'], 'turn': {'id': self.turn, 'status': 'inProgress'}}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['turnId'], current['error']),
+                         ('running', self.turn, None))
+
+    def test_dispatch_clears_saved_timeout_after_turn_was_observed(self):
+        self.lose_start_receipt()
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current.update(status='running', turnId=self.turn, startAttempt=None)
+            self.runtime.put(db, 'agents', current)
+        self.runtime.dispatch()
+        self.assertIsNone(self.runtime.agent(self.key)['error'])
+
     def test_unknown_start_preparing_receipt_does_not_confirm_delivery(self):
         a = self.lose_start_receipt()
         self.server.native['turns'][0]['startOutcome'] = 'preparing'
@@ -143,6 +173,120 @@ class TurnRecoveryContract(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
                                        (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+
+    def test_absent_input_after_native_child_replacement_restores_exact_batch(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['supervisorIdentity'] = {
+                'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
+            current['startAttempt']['connectionId'] = 'old-connection'
+            self.runtime.put(db, 'agents', current)
+        before = sum(method == 'turn/start' for method, _ in self.server.calls)
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'input_restored')
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['inFlight'], current['error']), ('queued', False, None))
+        self.assertNotIn('startAttempt', current)
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'pending')
+
+    def test_absent_input_does_not_restore_when_native_child_is_active(self):
+        self.lose_start_receipt()
+        self.server.native.update(turns=[], status={'type': 'active'})
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['supervisorIdentity'] = {
+                'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'starting')
+
+    def test_absent_input_stays_reserved_when_native_evidence_is_unavailable(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.read_error = TimeoutError('thread/read response timed out; outcome unknown')
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['supervisorIdentity'] = {
+                'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key)['startAttempt']['id'], a['startAttempt']['id'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+
+    def test_old_unknown_start_becomes_a_hold_and_late_reply_still_binds(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['created'] = time.time() - 700
+            self.runtime.put(db, 'agents', current)
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'held')
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['inFlight']), ('interrupted', False))
+        self.assertEqual(current['startOutcomeHold']['stage'], 'held')
+        self.assertIn('Start outcome unknown', current['error'])
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+        self.runtime.start_accepted(self.key, current['startAttempt'], {'turn': {'id': self.turn}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['inFlight'], current['error']), ('running', True, None))
+        self.assertNotIn('startOutcomeHold', current)
+
+    def test_old_unknown_start_waits_for_callback_backlog(self):
+        self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.callbacks = queue.Queue()
+        self.server.callbacks.put('older notification')
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['created'] = time.time() - 700
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
+
+    def test_start_pace_counts_only_recent_unresolved_codex_starts(self):
+        now = time.time()
+        attempts = [{'accountKey': 'same', 'provider': 'codex', 'autoWake': True,
+                     'inFlight': True, 'startAttempt': {'id': str(i), 'created': now - 5}}
+                    for i in range(START_PACE_LIMIT)]
+        self.assertEqual(recent_account_starts(attempts, now), {'same': START_PACE_LIMIT})
+        attempts[0]['startAttempt']['observedTurnId'] = 'turn'
+        attempts[1]['startAttempt']['created'] = now - 100
+        attempts[2]['provider'] = 'claude'
+        self.assertEqual(recent_account_starts(attempts, now), {'same': 1})
+
+    def test_dispatch_keeps_new_input_queued_when_account_start_cap_is_full(self):
+        with self.runtime.lock:
+            with self.runtime.db() as db:
+                current = self.runtime.agent(self.key, db)
+                current.update(status='queued', inFlight=False, turnId=None, startAttempt=None)
+                self.runtime.put(db, 'agents', current)
+                self.runtime.enqueue(db, current, 'user', 'Next instruction', 'paced-input')
+            before = sum(method == 'turn/start' for method, _ in self.server.calls)
+            with patch('codex_turn_recovery.recent_account_starts', return_value={'default': START_PACE_LIMIT}):
+                self.runtime.dispatch()
+            current = self.runtime.agent(self.key)
+            self.assertIsNone(current.get('startAttempt'))
+            self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='paced-input'").fetchone()[0],
+                                 'pending')
 
     def test_unknown_start_read_cannot_restore_an_agent_stopped_during_the_probe(self):
         self.lose_start_receipt()

@@ -507,8 +507,9 @@ class Supervisor:
                 db.execute("DELETE FROM events WHERE handle=? AND sequence<=?", (handle, sequence))
                 db.execute("UPDATE handles SET acknowledged=? WHERE id=?", (sequence, handle))
                 db.commit()
-            with self.journal.db() as db:
-                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # SQLite checkpoints the WAL automatically. A synchronous TRUNCATE
+            # after every event makes the single replay stream wait for disk I/O
+            # before it can deliver later RPC replies.
             return {"acknowledged": sequence}
         if action == "replay":
             cursor = request.get("cursor")

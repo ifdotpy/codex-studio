@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import argparse
+from contextlib import contextmanager
 import io
 import json
 from pathlib import Path
@@ -32,7 +33,7 @@ def percentile(values, fraction):
     return round(values[int((len(values) - 1) * fraction)], 3) if values else 0
 
 
-def measure(count=320, agents=24):
+def measure(count=320, agents=24, storm=False, legacy_checkpoint=False):
     with tempfile.TemporaryDirectory(prefix="studio-notification-load-") as temporary:
         root = Path(temporary)
         runtime = QuietRuntime(root / "state", server_factory=lambda *args: None)
@@ -47,17 +48,53 @@ def measure(count=320, agents=24):
                     runtime.put(db, "agents", agent)
             traced = MeasuredRLock(runtime.lock)
             runtime.lock = traced
+            db_durations = []
+            original_notification_db = runtime.notification_db
+            @contextmanager
+            def measured_notification_db():
+                began = time.perf_counter()
+                with original_notification_db() as db:
+                    yield db
+                db_durations.append((time.perf_counter() - began) * 1000)
+            runtime.notification_db = measured_notification_db
             server = AppServer.__new__(AppServer)
-            server.supervisor_mode = False
+            server.supervisor_mode = storm
             server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
             server.callback_lock = threading.RLock()
             server.dispatch_stopped = False
             server.reader_done = threading.Event()
             server.dispatcher_done = threading.Event()
             server.log = io.BytesIO()
+            if storm:
+                from codex_process_supervisor import Journal as SupervisorJournal
+                journal = SupervisorJournal(root / 'supervisor')
+                with journal.db() as db:
+                    db.execute("INSERT INTO handles(id,signature,pid,sequence,created,generation) "
+                               "VALUES ('fixture','fixture',1,?,?,1)", (count, time.time()))
+                    db.executemany("INSERT INTO events(handle,sequence,kind,payload,size,generation) "
+                                   "VALUES ('fixture',?,'stdout','{}',2,1)",
+                                   ((i + 1,) for i in range(count)))
+                class Journal:
+                    def ack(self, sequence):
+                        with journal.db() as db:
+                            db.execute("DELETE FROM events WHERE handle='fixture' AND sequence<=?", (sequence,))
+                            db.execute("UPDATE handles SET acknowledged=? WHERE id='fixture'", (sequence,))
+                            db.commit()
+                        if legacy_checkpoint:
+                            with journal.db() as db:
+                                db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                        self.cursor = sequence
+                    def ack_applied_deltas(self, applied):
+                        return 0
+                    def register_event_batch(self, sequences):
+                        pass
+                server.proc = Journal()
+                server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied('fixture', sequence)
+                server.supervisor_commit = lambda message, sequence: runtime.commit_supervisor_event(
+                    'fixture', message, sequence, 'default', None)
             server.closed = True
             server.died = lambda: None
-            delays, durations, connections = [], [], set()
+            delays, durations, connections, callback_kinds = [], [], set(), {}
             blocker, release = threading.Event(), threading.Event()
 
             def notify(message):
@@ -71,6 +108,7 @@ def measure(count=320, agents=24):
                 if connection is not None:
                     connections.add(id(connection))
                 durations.append((time.perf_counter() - start) * 1000)
+                callback_kinds.setdefault(message['method'], []).append(durations[-1])
                 delays.append((message["_studioDispatchedAt"] - message["_studioReceivedAt"]) * 1000)
 
             server.notification = notify
@@ -79,10 +117,24 @@ def measure(count=320, agents=24):
             dispatch.start()
             server.enqueue(notify, {"method": "fixture/block"})
             assert blocker.wait(2)
+            input_started = time.perf_counter()
             for i in range(count):
                 index = i % agents
                 common = {"threadId": f"fixture-thread-{index}", "turnId": f"fixture-turn-{index}"}
-                if i % 10 < 2:
+                if storm:
+                    phase = (i // agents) % 20
+                    item_id = f"message-{i // (agents * 20)}-{index}"
+                    if phase == 0:
+                        method = 'item/started'
+                        params = {**common, 'item': {'id': item_id, 'type': 'agentMessage'}}
+                    elif phase == 19:
+                        method = 'item/completed'
+                        params = {**common, 'item': {'id': item_id, 'type': 'agentMessage',
+                                                   'text': 'complete response'}}
+                    else:
+                        method = 'item/agentMessage/delta'
+                        params = {**common, 'itemId': item_id, 'delta': 'response fragment\n'}
+                elif i % 10 < 2:
                     method = "account/rateLimits/updated"
                     params = {"rateLimits": {"limitId": "codex", "primary": {"usedPercent": i % 100}}}
                 elif i % 10 < 4:
@@ -98,7 +150,11 @@ def measure(count=320, agents=24):
                 else:
                     method = "thread/status/changed"
                     params = {**common, "status": {"type": "active"}}
-                server.enqueue(notify, {"method": method, "params": params, "_studioReceivedAt": time.time()})
+                message = {"method": method, "params": params, "_studioReceivedAt": time.time()}
+                if storm:
+                    message['_studioSupervisorSequence'] = i + 1
+                server.enqueue(notify, message)
+            input_ended = time.perf_counter()
             queued = server.callbacks.qsize()
             workload_errors = []
             def workload(name, calls):
@@ -123,9 +179,11 @@ def measure(count=320, agents=24):
                     [lambda: runtime.dispatch() for _ in range(2)])),
             ]
             release.set()
+            processing_started = time.perf_counter()
             for worker in workloads:
                 worker.start()
             server.callbacks.join()
+            processing_ended = time.perf_counter()
             for worker in workloads:
                 worker.join(10)
                 assert not worker.is_alive()
@@ -138,12 +196,21 @@ def measure(count=320, agents=24):
             metrics = traced.runtime_lock_metrics()
             by_wait = sorted(metrics, key=lambda row: row["totalWaitMs"], reverse=True)
             return {"input": count, "callbacks": len(delays), "queuedBeforeRelease": queued,
+                    "stormAgents": agents if storm else None,
+                    "inputEventsPerSecond": round(count / max(.001, input_ended - input_started), 1),
+                    "processedCallbacksPerSecond": round(len(delays) / max(.001, processing_ended - processing_started), 1),
                     "dispatcherConnections": len(connections),
                     "queueDelayMs": {"p50": percentile(delays, .5), "p95": percentile(delays, .95),
                                      "max": percentile(delays, 1)},
                     "callbackDurationMs": {"p50": percentile(durations, .5), "p95": percentile(durations, .95)},
                     "lockWaitTotalMs": round(sum(row["totalWaitMs"] for row in metrics), 3),
                     "lockHoldTotalMs": round(sum(row["totalHoldMs"] for row in metrics), 3),
+                    "notificationDbMs": {"p50": percentile(db_durations, .5),
+                                         "p95": percentile(db_durations, .95),
+                                         "total": round(sum(db_durations), 3)},
+                    "callbackKinds": {kind: {"count": len(values), "p50Ms": percentile(values, .5),
+                                            "p95Ms": percentile(values, .95), "totalMs": round(sum(values), 3)}
+                                      for kind, values in callback_kinds.items()},
                     "lock": by_wait[:20]}
         finally:
             runtime.servers.clear()
@@ -156,8 +223,10 @@ def main():
     parser.add_argument("--baseline", type=Path, default=Path(__file__).resolve().parents[1] /
                         "docs/verification/2026-09-28-notification-baseline.json")
     parser.add_argument("--count", type=int, default=320)
+    parser.add_argument("--agents", type=int, default=24)
+    parser.add_argument("--storm", action="store_true")
     args = parser.parse_args()
-    result = measure(args.count)
+    result = measure(args.count, args.agents, args.storm)
     if args.baseline:
         before = json.loads(args.baseline.read_text())
         result = {"before": before, "after": result}
