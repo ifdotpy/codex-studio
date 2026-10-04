@@ -1,3 +1,5 @@
+import type { ResourceVersion } from "../sync/resourceEvents";
+
 export function foregroundTranscriptPending(
   foregroundId: string | null,
   foregroundReady: boolean,
@@ -5,19 +7,17 @@ export function foregroundTranscriptPending(
   return foregroundId !== null && !foregroundReady;
 }
 
-export type TranscriptVersion = { epoch: string; revision: number };
-
 /** Tracks duplicate recovery signals only while a transcript pull is active. */
 export class TranscriptRefreshGate {
-  private running = new Map<string, TranscriptVersion>();
+  private running = new Map<string, ResourceVersion>();
   private retryAfterFailure = new Set<string>();
 
-  start(agentId: string, version?: TranscriptVersion) {
+  start(agentId: string, version?: ResourceVersion) {
     if (version) this.running.set(agentId, version);
     else this.running.delete(agentId);
   }
 
-  shouldSuppress(agentId: string, version?: TranscriptVersion) {
+  shouldSuppress(agentId: string, version?: ResourceVersion) {
     const current = this.running.get(agentId);
     if (
       !version ||
