@@ -5916,6 +5916,15 @@ export interface components {
      * @enum {string}
      */
     NativeAction: "compact" | "review";
+    /** NativeActionIdentityDto */
+    NativeActionIdentityDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** Epoch */
+      epoch: number;
+      /** Threadid */
+      threadId: string;
+    };
     /** NativeActionOutcome */
     NativeActionOutcome: {
       /** Syncentities */
@@ -7852,6 +7861,38 @@ export interface components {
       /** Waits */
       waits?: number | null;
     };
+    /** ReviewBaseBranchTargetDto */
+    ReviewBaseBranchTargetDto: {
+      /** Branch */
+      branch: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "baseBranch";
+    };
+    /** ReviewCommitTargetDto */
+    ReviewCommitTargetDto: {
+      /** Sha */
+      sha: string;
+      /** Title */
+      title?: string | null;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "commit";
+    };
+    /** ReviewCustomTargetDto */
+    ReviewCustomTargetDto: {
+      /** Instructions */
+      instructions: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "custom";
+    };
     /** ReviewDefaults */
     ReviewDefaults: {
       /** Effort */
@@ -7865,6 +7906,14 @@ export interface components {
       effort: string | null;
       /** Model */
       model: string | null;
+    };
+    /** ReviewUncommittedTargetDto */
+    ReviewUncommittedTargetDto: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: "uncommittedChanges";
     };
     /** RevokePeerRequest */
     RevokePeerRequest: {
@@ -8925,8 +8974,11 @@ export interface components {
       interactive?: boolean | null;
       /** Islead */
       isLead?: boolean | null;
-      /** Kind */
-      kind?: "agent" | null;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "agent";
       /** Lastanswer */
       lastAnswer?: string | null;
       /** Lastcompletedturn */
@@ -8976,6 +9028,9 @@ export interface components {
       nativeFailureHold?: components["schemas"]["JsonValue"] | null;
       /** Nativelimiterrorat */
       nativeLimitErrorAt?: number | null;
+      nativeNameFailure?:
+        | components["schemas"]["SnapshotNativeNameFailureDto"]
+        | null;
       /** Nativenamesynced */
       nativeNameSynced?: boolean | null;
       nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
@@ -8990,6 +9045,9 @@ export interface components {
         | components["schemas"]["AgentNativeStatusValue"]
         | null;
       nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeToolCatalog?:
+        | components["schemas"]["SnapshotNativeToolCatalogDto"]
+        | null;
       /** Nativetoolrefreshid */
       nativeToolRefreshId?: string | null;
       nativeToolUpdate?: components["schemas"]["JsonValue"] | null;
@@ -9134,8 +9192,8 @@ export interface components {
       /** Id */
       id: string;
       /**
-       * Kind
-       * @constant
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
        */
       kind: "chat";
       /** Lastmessageat */
@@ -9196,6 +9254,44 @@ export interface components {
       /** Target */
       target?: string | null;
     };
+    /** SnapshotModelSettingsDto */
+    SnapshotModelSettingsDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** Connectionid */
+      connectionId: string;
+      /** Epoch */
+      epoch: number;
+      /** Id */
+      id: string;
+      settings: components["schemas"]["CapacityRetrySettingsDto"];
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "submitted" | "acknowledged";
+      /** Threadid */
+      threadId: string;
+    };
+    /** SnapshotNativeNameFailureDto */
+    SnapshotNativeNameFailureDto: {
+      /** Attempts */
+      attempts: number;
+      /** Error */
+      error: string;
+      identity: components["schemas"]["SnapshotNativeNameIdentityDto"];
+      /** Retryat */
+      retryAt: number;
+    };
+    /** SnapshotNativeNameIdentityDto */
+    SnapshotNativeNameIdentityDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** Name */
+      name: string;
+      /** Threadid */
+      threadId: string;
+    };
     /** SnapshotNativeRelease */
     SnapshotNativeRelease: {
       /** Accountkey */
@@ -9224,6 +9320,13 @@ export interface components {
       resumedAt?: number | null;
       /** Submittedat */
       submittedAt?: number | null;
+      /** Threadid */
+      threadId?: string | null;
+    };
+    /** SnapshotNativeToolCatalogDto */
+    SnapshotNativeToolCatalogDto: {
+      /** Digest */
+      digest: string;
       /** Threadid */
       threadId?: string | null;
     };
@@ -9297,23 +9400,29 @@ export interface components {
       /** Accountkey */
       accountKey?: string | null;
       /** Action */
-      action?: string | null;
-      /** Actionidentity */
-      actionIdentity?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      action?: ("review" | "capacity" | "compact" | "safety") | null;
+      actionIdentity?: components["schemas"]["NativeActionIdentityDto"] | null;
       /** Actionrequestid */
       actionRequestId?: string | null;
       /** Activeatreservation */
       activeAtReservation?: boolean | null;
+      /** Capacityretryid */
+      capacityRetryId?: string | null;
       /** Completedat */
       completedAt?: number | null;
+      /** Connectionid */
+      connectionId?: string | null;
+      /** Created */
+      created?: number | null;
       /** Epoch */
       epoch?: number | null;
       /** Events */
       events?: string[] | null;
+      /** Executionoutcome */
+      executionOutcome?: ("unknown" | "unsent" | "rejected") | null;
       /** Id */
       id?: string | null;
+      modelSettings?: components["schemas"]["SnapshotModelSettingsDto"] | null;
       /** Nativeoperationid */
       nativeOperationId?: string | null;
       /** Notsubmittedreason */
@@ -9324,8 +9433,23 @@ export interface components {
       prepareError?: string | null;
       /** Responseerror */
       responseError?: string | null;
+      /** Retiredevents */
+      retiredEvents?: string[] | null;
+      /** Reviewtarget */
+      reviewTarget?:
+        | (
+            | components["schemas"]["ReviewUncommittedTargetDto"]
+            | components["schemas"]["ReviewBaseBranchTargetDto"]
+            | components["schemas"]["ReviewCommitTargetDto"]
+            | components["schemas"]["ReviewCustomTargetDto"]
+          )
+        | null;
+      /** Settingsfixed */
+      settingsFixed?: boolean | null;
       /** Submitted */
       submitted?: boolean | null;
+      /** Threadid */
+      threadId?: string | null;
       /** Turnid */
       turnId?: string | null;
     };
@@ -10199,7 +10323,7 @@ export interface components {
       /** Compactions */
       compactions?: number | null;
       /** Compactionsobservedonly */
-      compactionsObservedOnly?: number | null;
+      compactionsObservedOnly?: boolean | null;
       contextUsage?: components["schemas"]["TranscriptContextUsage"] | null;
       /** Id */
       id: string;
