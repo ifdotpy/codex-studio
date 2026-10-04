@@ -61,7 +61,7 @@ export function ClaudeSettings({
     agent.accountKey || "default",
     !account || account.status === "ready",
   );
-  const thinkingRequired = requiresThinking(agent.model, catalog.models);
+  const thinkingRequired = requiresThinking(agent.model || "", catalog.models);
   const [state, setState] = useState<ClaudeSessionState>({
     settings: {},
     turns: [],
@@ -218,7 +218,7 @@ export function ClaudeSettings({
   const locked =
     !stateLoaded ||
     (!!account && account.status !== "ready") ||
-    busy.has(agent.status) ||
+    (typeof agent.status === "string" && busy.has(agent.status)) ||
     busyAction ||
     !!savingField;
 
@@ -432,7 +432,13 @@ export function ClaudeSettings({
       {onSignIn && (
         <AccountSignInNotice
           account={account}
-          errors={[error, agent.error, agent.nativeStatus?.error]}
+          errors={[
+            error,
+            typeof agent.error === "string" ? agent.error : undefined,
+            typeof agent.nativeStatus?.error === "string"
+              ? agent.nativeStatus.error
+              : undefined,
+          ]}
           onSignIn={onSignIn}
         />
       )}
