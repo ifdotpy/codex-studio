@@ -6507,7 +6507,7 @@ export interface components {
       /** Renderer */
       renderer: string;
       /** Revision */
-      revision: string;
+      revision?: string | null;
       /** Sequence */
       sequence: number;
       /** Sha256 */
