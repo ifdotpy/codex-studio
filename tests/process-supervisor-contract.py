@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 import uuid
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from test_isolation import isolate_supervisor_environment
@@ -127,6 +128,228 @@ def wait_for(fn, timeout=5):
         if result: return result
         time.sleep(.02)
     raise AssertionError('timed out waiting for private process fixture')
+
+
+class StdoutPersistenceContract(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-', dir='/tmp')
+        self.root = Path(self.temp.name)
+        self.supervisor = process_supervisor.Supervisor(self.root)
+        self.supervisor.journal = process_supervisor.Journal(self.root)
+        self.journal = self.supervisor.journal
+        self.release = threading.Event()
+        self.failed = threading.Event()
+        self.attempts = []
+        self.process = subprocess.Popen([sys.executable, '-u', '-c',
+            'import os,sys\nfor line in sys.stdin:\n'
+            ' if line == ":close-stdout\\n": os.close(1)\n'
+            ' else: print(line, end="", flush=True)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.process.supervisor = self.supervisor
+        self.handle = 'account:private-storage-fixture'
+        with self.journal.db() as db:
+            db.execute('INSERT INTO handles(id,signature,pid,created,generation) VALUES (?,?,?,?,1)',
+                       (self.handle, 'exact-signature', self.process.pid, time.time()))
+            db.execute('INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) '
+                       'VALUES (?,?,?,?,?,1)', (self.handle, 'monitor:exact-request', 'exact-digest', 1, time.time()))
+        self.original_db = self.journal.db
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        self.release.set()
+        if self.process.stdin and not self.process.stdin.closed:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=3)
+        if hasattr(self, 'child'):
+            self.child.reader.join(timeout=3)
+            self.child.stopping.set()
+            self.child.stderr.join(timeout=3)
+        for stream in (self.process.stdout, self.process.stderr):
+            stream.close()
+        self.temp.cleanup()
+
+    def inject(self, error, *, statement='INSERT INTO events', after_commit=False):
+        fixture = self
+        class Connection:
+            def __init__(self, db):
+                self.db = db
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+            def execute(self, sql, params=()):
+                if after_commit and fixture.failed.is_set() and not fixture.release.is_set():
+                    raise error
+                if sql.startswith('INSERT INTO events') and params[2] == 'stdout':
+                    fixture.attempts.append(params[3])
+                if sql.startswith(statement) and not fixture.release.is_set() and not after_commit:
+                    if not sql.startswith('INSERT INTO events') or params[2] == 'stdout':
+                        fixture.failed.set()
+                        raise error
+                return self.db.execute(sql, params)
+            def commit(self):
+                self.db.commit()
+                if after_commit and not fixture.release.is_set():
+                    fixture.failed.set()
+                    raise error
+        @contextmanager
+        def database():
+            with self.original_db() as db:
+                yield Connection(db)
+        self.journal.db = database
+        self.child = process_supervisor.Child(self.handle, self.process, 'exact-signature')
+        self.supervisor.children[self.handle] = self.child
+
+    def send_frames(self):
+        self.frames = [{'id':1, 'result':{'userAgent':'private-model'}},
+                       {'method':'item/completed', 'params':{'itemId':'exact-next-item'}}]
+        self.process.stdin.write(''.join(json.dumps(frame) + '\n' for frame in self.frames))
+        self.process.stdin.flush()
+
+    def saved(self):
+        with self.original_db() as db:
+            handle = dict(db.execute('SELECT * FROM handles WHERE id=?', (self.handle,)).fetchone())
+            events = [dict(row) for row in db.execute('SELECT * FROM events WHERE handle=? ORDER BY sequence',
+                                                     (self.handle,))]
+            operation = dict(db.execute('SELECT * FROM operations WHERE handle=?', (self.handle,)).fetchone())
+        return handle, events, operation
+
+    def assert_paused_without_exit(self):
+        self.assertTrue(self.failed.wait(2))
+        wait_for(self.child.paused.is_set)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertIsNone(self.process.poll())
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 0)
+        self.assertIsNone(handle['init_result'])
+        self.assertEqual(events, [])
+        self.assertIsNone(operation['response'])
+        health = self.supervisor.handle({'action':'health'})['handles'][0]
+        self.assertTrue(health['stdoutReaderAlive'])
+        self.assertTrue(health['backpressure'])
+        self.assertIn('stdout', health['persistenceErrors'])
+        self.assertIsNone(health['stdoutReaderError'])
+        # Storage waits release the output and journal locks.
+        self.assertTrue(self.child.lock.acquire(timeout=.5))
+        self.child.lock.release()
+        self.assertTrue(self.journal.lock.acquire(timeout=.5))
+        self.journal.lock.release()
+
+    def assert_recovered_once(self):
+        self.release.set()
+        wait_for(lambda:len(self.saved()[1]) == 2)
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 2)
+        self.assertEqual([event['sequence'] for event in events], [1, 2])
+        self.assertTrue(all(event['kind'] == 'stdout' for event in events))
+        payloads = [json.loads(event['payload']) for event in events]
+        self.assertEqual(payloads[0], self.frames[0])
+        payloads[1].pop('_studioSupervisorReceivedAt')
+        self.assertEqual(payloads[1], self.frames[1])
+        self.assertEqual(json.loads(handle['init_result']), self.frames[0]['result'])
+        self.assertEqual(json.loads(operation['response']), self.frames[0])
+        self.assertEqual(operation['response_sequence'], 1)
+        first_attempts = [raw for raw in self.attempts if json.loads(raw).get('id') == 1]
+        self.assertTrue(first_attempts)
+        self.assertEqual(len(set(first_attempts)), 1)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertFalse(self.child.paused.is_set())
+        self.assertEqual(self.child.persistence_errors, {})
+        self.process.stdin.close()
+        self.process.wait(timeout=2)
+        self.child.reader.join(timeout=2)
+        self.assertFalse(self.child.reader.is_alive())
+        exit_events = [event for event in self.saved()[1] if event['kind'] == 'exit']
+        self.assertEqual(len(exit_events), 1)
+        self.assertEqual(json.loads(exit_events[0]['payload']), {'returnCode':0})
+
+    def test_full_insert_rolls_back_and_keeps_stdout_reader(self):
+        error = sqlite3.OperationalError('database or disk is full')
+        error.sqlite_errorcode = sqlite3.SQLITE_FULL
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_init_result_failure_retries_the_same_transaction(self):
+        error = sqlite3.OperationalError('disk I/O error')
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR_WRITE
+        self.inject(error, statement='UPDATE handles SET init_result')
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_busy_insert_keeps_the_same_frame_until_storage_recovers(self):
+        error = sqlite3.OperationalError('database is locked')
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY_RECOVERY
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_locked_insert_keeps_the_same_frame_until_storage_recovers(self):
+        error = sqlite3.OperationalError('database table is locked')
+        error.sqlite_errorcode = sqlite3.SQLITE_LOCKED_SHAREDCACHE
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_disk_oserror_keeps_the_same_frame_until_storage_recovers(self):
+        self.inject(OSError('injected disk failure'))
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_successful_commit_with_lost_confirmation_does_not_duplicate_frame(self):
+        error = sqlite3.OperationalError('disk I/O error')
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+        self.inject(error, after_commit=True)
+        self.send_frames()
+        self.assertTrue(self.failed.wait(2))
+        wait_for(self.child.paused.is_set)
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(operation['response_sequence'], 1)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assert_recovered_once()
+
+    def test_stdout_end_does_not_report_exit_while_native_child_is_alive(self):
+        error = sqlite3.OperationalError('database or disk is full')
+        error.sqlite_errorcode = sqlite3.SQLITE_FULL
+        waiting = threading.Event()
+        original_wait = self.process.wait
+        def wait(*args, **kwargs):
+            waiting.set()
+            return original_wait(*args, **kwargs)
+        self.process.wait = wait
+        self.inject(error)
+        self.process.stdin.write(':close-stdout\n')
+        self.process.stdin.flush()
+        self.assertTrue(waiting.wait(2))
+        self.assertIsNone(self.process.poll())
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertEqual(self.saved()[1], [])
+        self.process.stdin.close()
+        original_wait(timeout=2)
+        self.child.reader.join(timeout=2)
+        events = self.saved()[1]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['kind'], 'exit')
+        self.assertEqual(json.loads(events[0]['payload']), {'returnCode':0})
+
+    def test_retryable_storage_codes_and_disk_errors(self):
+        for code in (sqlite3.SQLITE_FULL, sqlite3.SQLITE_BUSY_RECOVERY,
+                     sqlite3.SQLITE_LOCKED_SHAREDCACHE, sqlite3.SQLITE_IOERR_WRITE):
+            with self.subTest(code=code):
+                error = sqlite3.OperationalError('injected storage failure')
+                error.sqlite_errorcode = code
+                self.assertTrue(process_supervisor._retryable_storage_error(error))
+        self.assertTrue(process_supervisor._retryable_storage_error(OSError('disk failure')))
+        self.assertFalse(process_supervisor._retryable_storage_error(sqlite3.OperationalError('syntax error')))
 
 
 class ProcessSupervisorContract(unittest.TestCase):
