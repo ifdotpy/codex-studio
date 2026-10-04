@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+from types import FunctionType, ModuleType
 import unittest
 from unittest.mock import patch
 
@@ -52,6 +53,9 @@ class TurnScopeIndexUpdate(unittest.TestCase):
         with self.runtime.db() as db:
             row = db.execute('SELECT sql FROM sqlite_master WHERE name=?', (update.INDEX,)).fetchone()
             return row[0] if row else None
+
+    def failure_details(self, error):
+        return json.loads(str(error).split(': ', 1)[1])
 
     @contextmanager
     def trace(self):
@@ -120,12 +124,44 @@ class TurnScopeIndexUpdate(unittest.TestCase):
             self.assertEqual(failed.exception.__cause__.sqlite_errorname, 'SQLITE_INTERRUPT')
             self.assertIsNone(self.index_sql())
             self.assertEqual(self.rows(), before)
-            self.assertEqual(vars(self.runtime)[update.ATTEMPT_KEY]['status'], 'failed')
-            with self.assertRaisesRegex(RuntimeError, 'pending manual review'):
-                update.apply(self.runtime)
+            saved = dict(vars(self.runtime)[update.ATTEMPT_KEY])
+            self.assertEqual(saved['status'], 'failed')
+            self.assertEqual(saved['error'], 'OperationalError')
+            self.assertEqual(saved['sqlite_errorname'], 'SQLITE_INTERRUPT')
+            self.assertEqual(saved['sqlite_errorcode'], 9)
+            self.assertEqual(saved['message'], 'interrupted')
+            self.assertEqual(saved['elapsedSeconds'], 13)
+            self.assertGreaterEqual(saved['failedAt'], saved['startedAt'])
+            first_details = self.failure_details(failed.exception)
+            self.assertEqual(first_details, {key: value for key, value in saved.items()
+                                           if key != 'database'})
+            # LiveUpdates creates a new module for each retry.
+            retry = ModuleType('turn_scope_index_retry')
+            retry.__file__ = update.__file__
+            exec(compile(Path(update.__file__).read_bytes(), update.__file__, 'exec'), vars(retry))
+            with self.assertRaisesRegex(RuntimeError, 'pending manual review') as pending:
+                retry.apply(self.runtime)
+            self.assertEqual(self.failure_details(pending.exception), first_details)
+            self.assertEqual(vars(self.runtime)[update.ATTEMPT_KEY], saved)
         self.assertEqual(sum(query == update.SQL for query in queries), 1)
         self.assertEqual(sum(query == 'BEGIN IMMEDIATE' for query in queries), 1)
         self.assertIsNone(self.index_sql())
+
+    def test_legacy_failure_details_survive_reload_without_another_attempt(self):
+        saved = {'status': 'failed', 'error': 'OperationalError',
+                 'startedAt': 100, 'failedAt': 112.5}
+        self.runtime.__dict__[update.ATTEMPT_KEY] = dict(saved)
+        retry = ModuleType('turn_scope_index_legacy_retry')
+        retry.__file__ = update.__file__
+        exec(compile(Path(update.__file__).read_bytes(), update.__file__, 'exec'), vars(retry))
+        with self.trace() as queries:
+            with self.assertRaisesRegex(RuntimeError, 'pending manual review') as pending:
+                retry.apply(self.runtime)
+        self.assertEqual(self.failure_details(pending.exception),
+                         {**saved, 'elapsedSeconds': 12.5})
+        self.assertEqual(vars(self.runtime)[update.ATTEMPT_KEY], saved)
+        self.assertNotIn('BEGIN IMMEDIATE', queries)
+        self.assertNotIn(update.SQL, queries)
 
     def test_failed_attempt_can_confirm_an_exact_manual_index(self):
         self.runtime.__dict__[update.ATTEMPT_KEY] = {'status': 'failed'}
@@ -150,6 +186,21 @@ class TurnScopeIndexUpdate(unittest.TestCase):
                 update.apply(self.runtime)
         self.assertEqual(queries, [])
         self.assertNotIn(update.ATTEMPT_KEY, vars(self.runtime))
+
+    def test_changed_database_closure_cannot_hide_behind_the_wrapped_fingerprint(self):
+        called = []
+        def other_database(runtime, **options):
+            called.append(options)
+            yield None
+        original = codex_runtime.Runtime.db
+        cell = (lambda value: lambda: value)(other_database).__closure__
+        replacement = FunctionType(original.__code__, original.__globals__,
+                                   original.__name__, original.__defaults__, cell)
+        replacement.__wrapped__ = original.__wrapped__
+        with self.trace() as queries, patch.object(codex_runtime.Runtime, 'db', replacement):
+            with self.assertRaisesRegex(RuntimeError, 'database guard differs'):
+                update.apply(self.runtime)
+        self.assertEqual((called, queries), ([], []))
 
     def test_changed_state_path_rejects_before_sql(self):
         with self.trace() as queries, patch.object(self.runtime, 'db_path',

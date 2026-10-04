@@ -1,5 +1,6 @@
 """Create the reviewed turn index once, within a bounded server transaction."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -34,6 +35,15 @@ def _existing_index(db):
     return True
 
 
+def _pending_error(message, attempt):
+    keys = ('status', 'error', 'message', 'sqlite_errorname', 'sqlite_errorcode',
+            'startedAt', 'failedAt', 'elapsedSeconds')
+    details = {key: attempt[key] for key in keys if key in attempt}
+    if ('elapsedSeconds' not in details and 'startedAt' in details and 'failedAt' in details):
+        details['elapsedSeconds'] = max(0, details['failedAt'] - details['startedAt'])
+    return RuntimeError(message + ': ' + json.dumps(details, sort_keys=True))
+
+
 def apply(runtime):
     scripts = Path(__file__).resolve().parent
     module = sys.modules.get('codex_runtime')
@@ -50,9 +60,12 @@ def apply(runtime):
         reviewed, _ = source_function(raw, ['Runtime', 'db'], vars(module), str(path),
                                      allow_contextmanager=True)
         current = runtime.db
+        wrapped = getattr(module.Runtime.db, '__wrapped__', None)
+        closure = getattr(module.Runtime.db, '__closure__', None) or ()
         if ('db' in vars(runtime) or getattr(current, '__func__', None) is not module.Runtime.db
                 or signature(module.Runtime.db) != DB_WRAPPER
-                or signature(getattr(module.Runtime.db, '__wrapped__', None)) != DB_FUNCTION
+                or len(closure) != 1 or closure[0].cell_contents is not wrapped
+                or signature(wrapped) != DB_FUNCTION
                 or signature(reviewed) != DB_FUNCTION):
             raise RuntimeError('The running runtime database guard differs')
         root = Path(runtime.root).resolve()
@@ -75,10 +88,12 @@ def apply(runtime):
                 if _existing_index(db):
                     return {'status': 'already_applied'}
                 if ATTEMPT_KEY in vars(runtime):
-                    raise RuntimeError('The turn-scope index remains pending manual review')
+                    raise _pending_error('The turn-scope index remains pending manual review',
+                                         vars(runtime)[ATTEMPT_KEY])
+                started_clock = _clock()
                 attempt = {'status': 'started', 'database': str(database), 'startedAt': time.time()}
                 runtime.__dict__[ATTEMPT_KEY] = attempt
-                deadline = _clock() + BUDGET_SECONDS
+                deadline = started_clock + BUDGET_SECONDS
                 db.set_progress_handler(lambda: int(runtime.closed or _clock() >= deadline), 1000)
                 try:
                     db.execute('BEGIN IMMEDIATE')
@@ -96,6 +111,11 @@ def apply(runtime):
             return {'status': 'already_applied' if existing else 'applied'}
         except Exception as error:
             if attempt is not None:
-                attempt.update(status='failed', error=type(error).__name__, failedAt=time.time())
-                raise RuntimeError('The turn-scope index attempt failed; pending manual review') from error
+                attempt.update(status='failed', error=type(error).__name__, message=str(error),
+                               failedAt=time.time(), elapsedSeconds=max(0, _clock() - started_clock))
+                for key in ('sqlite_errorname', 'sqlite_errorcode'):
+                    if hasattr(error, key):
+                        attempt[key] = getattr(error, key)
+                raise _pending_error('The turn-scope index attempt failed; pending manual review',
+                                     attempt) from error
             raise
