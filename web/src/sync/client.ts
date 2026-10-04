@@ -5,7 +5,8 @@ import { replicateRxCollection } from "rxdb/plugins/replication";
 import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
 import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
-import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
+import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
+import type { GetOptions } from "../api";
 
 import { onResume } from "./resume";
 import {
@@ -22,6 +23,9 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
+const syncStreamQuery = {
+  protocol: "2",
+} satisfies NonNullable<GetOptions<"/api/sync/stream">["query"]>;
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -53,18 +57,17 @@ let pending: ReturnType<typeof open> | undefined;
 async function open() {
   const cached = saved<string>("codex-sync-workspace", "");
   const hasCache = /^[a-f0-9]{32}$/.test(cached);
-  type Identity = { workspaceId: string };
   const identify = async () => {
     if (navigator.onLine === false)
       throw new TypeError("The device is offline.");
-    const identity = await api<Identity>("/api/sync/identity");
+    const identity = await syncGet("/api/sync/identity");
     if (!/^[a-f0-9]{32}$/.test(identity.workspaceId))
       throw new Error("Invalid workspace identity");
     return identity;
   };
   const initialIdentity = identify();
   let grace: ReturnType<typeof setTimeout> | undefined;
-  let identity: Identity | null = null;
+  let identity: Awaited<ReturnType<typeof identify>> | null = null;
   try {
     identity = await (hasCache
       ? Promise.race([
@@ -88,7 +91,7 @@ async function open() {
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
-  let firstCheck: Promise<Identity> | undefined = initialIdentity;
+  let firstCheck: ReturnType<typeof identify> | undefined = initialIdentity;
   let checking: Promise<void> | undefined;
   const verifyWorkspace = () => {
     if (verified) return Promise.resolve();
@@ -178,15 +181,16 @@ async function pull(
   priorityId?: string | null,
 ) {
   await verifyWorkspace();
-  const fresh =
-    initialHigh !== undefined ? `&fresh=1&initialHigh=${initialHigh}` : "";
-  const reset = scope === "state:entities:v1" ? "&reset=1" : "";
-  const priority = priorityId
-    ? `&priorityId=${encodeURIComponent(priorityId)}`
-    : "";
-  const result = await api(
-    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}${reset}${priority}`,
-  );
+  const result = await syncGet("/api/sync/pull", {
+    query: {
+      scope,
+      after,
+      limit,
+      ...(initialHigh !== undefined ? { fresh: "1", initialHigh } : {}),
+      ...(scope === "state:entities:v1" ? { reset: "1" } : {}),
+      ...(priorityId ? { priorityId } : {}),
+    },
+  });
   if (result.workspaceId !== workspaceId) throw new WorkspaceMismatchError();
   return result;
 }
@@ -378,11 +382,7 @@ export function watchSyncInvalidations(
       };
       const pollGenerations = () => {
         if (!available()) return;
-        void api<{
-          protocol: number;
-          workspaceId: string;
-          generations: Record<string, number>;
-        }>("/api/sync/generations")
+        void syncGet("/api/sync/generations")
           .then((value) => {
             if (stopped) return;
             const accepted = applyGenerationState(value);
@@ -435,7 +435,9 @@ export function watchSyncInvalidations(
         if (!available() || !isOwner || source) return;
         let connectedSource: EventSource;
         try {
-          connectedSource = new EventSource("/api/sync/stream?protocol=2");
+          connectedSource = new EventSource(
+            `/api/sync/stream?${new URLSearchParams(syncStreamQuery)}`,
+          );
           source = connectedSource;
         } catch {
           // The elected lock holder already polls the compact generation row.
@@ -1528,7 +1530,7 @@ export async function startDraftReplication(
       handler: (rows) =>
         attempt("push", async () => {
           await verifyWorkspace();
-          return api("/api/sync/drafts", { rows }, { workspaceId });
+          return syncPost("/api/sync/drafts", { rows }, { workspaceId });
         }),
       batchSize: 100,
     },

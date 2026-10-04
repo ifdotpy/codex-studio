@@ -31,6 +31,7 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     "uncertain",
     "failed",
     "cancelled",
+    "stored_only",
   ])
     assert.deepEqual(
       checkedMessageReceipts(

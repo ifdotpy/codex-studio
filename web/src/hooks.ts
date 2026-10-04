@@ -5,7 +5,7 @@ import {
 } from "./transcriptPageBounds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  syncApi as api,
+  syncGet,
   ApiError,
   errorText,
   refreshSession,
@@ -19,9 +19,11 @@ import {
 } from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
-import type { Snapshot, Message, Agent, Json } from "./types";
+import type { GetResult } from "./api";
+import type { Message, Agent, Json } from "./types";
+type StateSnapshot = GetResult<"/api/state">;
 export function useSnapshot() {
-  const [data, setData] = useState<Snapshot | null>(null),
+  const [data, setData] = useState<StateSnapshot | null>(null),
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
@@ -90,18 +92,23 @@ export function useSnapshot() {
       (a) => !data.threads.some((row) => row.id === a.id),
     );
     if (!missing.length) return data;
+    const runtime = data.runtime;
     return {
       ...data,
       threads: [...data.threads, ...missing],
-      runtime: {
-        ...data.runtime,
-        agents: [
-          ...data.runtime.agents.filter(
-            (a) => !missing.some((row) => row.id === a.id),
-          ),
-          ...missing,
-        ],
-      },
+      ...(runtime
+        ? {
+            runtime: {
+              ...runtime,
+              agents: [
+                ...runtime.agents.filter(
+                  (a) => !missing.some((row) => row.id === a.id),
+                ),
+                ...missing,
+              ],
+            },
+          }
+        : {}),
     };
   }, [data, created, scope]);
   const generation = useRef(0);
@@ -133,7 +140,9 @@ export function useSnapshot() {
             // A renderer can update before the server patch. Keep the previous
             // snapshot route as a first-load fallback until entity sync exists.
             if (replicated.current) throw projectionError;
-            const legacy = await api<Snapshot>("/api/state?view=chat");
+            const legacy = await syncGet("/api/state", {
+              query: { view: "chat" },
+            });
             if (request !== generation.current) return;
             setData({ ...legacy, token: session.token });
           }
@@ -230,7 +239,7 @@ export function useSnapshot() {
             !legacyFallback.current
           ) {
             legacyFallback.current = true;
-            void api<Snapshot>("/api/state?view=chat")
+            void syncGet("/api/state", { query: { view: "chat" } })
               .then((legacy) => {
                 sessionToken.current = legacy.token || sessionToken.current;
                 setData({ ...legacy, token: sessionToken.current });
@@ -609,9 +618,13 @@ export function useMessages(
         if (kind === "room") {
           const page = roomPages.current.get(scope);
           const cursor = page?.pollAfter ?? null;
-          const params = new URLSearchParams({ room: id, limit: "100" });
-          if (cursor != null) params.set("after", String(cursor));
-          const d = await api(`/api/agent-chat?${params}`);
+          const d = await syncGet("/api/agent-chat", {
+            query: {
+              room: id,
+              limit: 100,
+              ...(cursor != null ? { after: cursor } : {}),
+            },
+          });
           if (!current()) return;
           setNotice("");
           setLoadedId(scope);
@@ -659,7 +672,7 @@ export function useMessages(
             setItems(next.items);
           }
         } else if (kind === "legacy") {
-          const d = await api(`/api/messages?room=${encodeURIComponent(id)}`);
+          const d = await syncGet("/api/messages", { query: { room: id } });
           if (!current()) return;
           setNotice("");
           setLoadedId(scope);
@@ -670,7 +683,7 @@ export function useMessages(
             })),
           );
         } else {
-          const d = await api(`/api/transcript?id=${encodeURIComponent(id)}`);
+          const d = await syncGet("/api/transcript", { query: { id } });
           if (!current()) return;
           accept(d);
         }
@@ -803,11 +816,14 @@ export function useMessages(
     pageBusy.current = true;
     setPageLoading(true);
     try {
-      const params = new URLSearchParams({ id });
-      if (query.before) params.set("before", query.before);
-      if (query.after) params.set("after", query.after);
-      if (query.around) params.set("around", query.around);
-      const result = await api(`/api/transcript/page?${params}`);
+      const result = await syncGet("/api/transcript/page", {
+        query: {
+          id,
+          ...(query.before ? { before: query.before } : {}),
+          ...(query.after ? { after: query.after } : {}),
+          ...(query.around ? { around: query.around } : {}),
+        },
+      });
       if (active.current !== scope || attempt !== pageAttempt.current)
         return false;
       const source = transcriptMessages(result.items || [], id);
@@ -919,12 +935,9 @@ export function useMessages(
     if (kind === "room" && id) {
       const page = roomPages.current.get(scope);
       if (!page?.after) return;
-      const params = new URLSearchParams({
-        room: id,
-        after: String(page.after),
-        limit: "100",
+      const d = await syncGet("/api/agent-chat", {
+        query: { room: id, after: page.after, limit: 100 },
       });
-      const d = await api(`/api/agent-chat?${params}`);
       if (active.current !== scope) return;
       const later = (d.messages || []).map((m: Message) => ({
         ...m,
@@ -968,12 +981,9 @@ export function useMessages(
     if (kind === "room") {
       const page = roomPages.current.get(scope);
       if (!page) return;
-      const params = new URLSearchParams({
-        room: id,
-        before: String(page.before ?? before),
-        limit: "100",
+      const d = await syncGet("/api/agent-chat", {
+        query: { room: id, before: page.before ?? before, limit: 100 },
       });
-      const d = await api(`/api/agent-chat?${params}`);
       if (active.current !== scope) return;
       const olderItems = (d.messages || []).map((m: Message) => ({
         ...m,
@@ -1015,9 +1025,9 @@ export function useMessages(
       });
       return;
     }
-    const d = await api(
-      `/api/agent-chat?room=${encodeURIComponent(id)}&before=${before}`,
-    );
+    const d = await syncGet("/api/agent-chat", {
+      query: { room: id, before },
+    });
     if (active.current !== scope) return;
     expanded.current = true;
     setBefore(d.nextBefore);

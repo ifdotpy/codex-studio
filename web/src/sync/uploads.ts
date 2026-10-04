@@ -1,4 +1,4 @@
-import { syncApi, refreshSession } from "../api";
+import { syncGet, syncPost, refreshSession } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
 import type { Attachment } from "../components/ComposerAttachments";
@@ -186,9 +186,7 @@ export function deliverUpload(row: PendingUpload): Promise<Attachment | null> {
       (store) => store.get(row.id),
     );
     if (!current || uploadCancelled(row.id)) return null;
-    const identity = await syncApi<{ workspaceId: string }>(
-      "/api/sync/identity",
-    );
+    const identity = await syncGet("/api/sync/identity");
     const storage = await syncDatabase();
     if (
       identity.workspaceId !== row.workspace ||
@@ -218,7 +216,7 @@ export function deliverUpload(row: PendingUpload): Promise<Attachment | null> {
       reader.onload = () => resolve(String(reader.result).split(",")[1]);
       reader.readAsDataURL(new Blob([bytes], { type: row.mime }));
     });
-    const response = await syncApi(
+    const response = await syncPost(
       "/api/assets",
       {
         agent: row.agent,
@@ -228,7 +226,7 @@ export function deliverUpload(row: PendingUpload): Promise<Attachment | null> {
       },
       { workspaceId: row.workspace, sessionToken: session.token },
     );
-    const asset: Attachment = response.asset || response;
+    const asset: Attachment = response;
     if (asset.id !== row.id)
       throw new Error("The upload response does not match the saved file.");
     // A removed upload can finish late. Never recreate its attachment.

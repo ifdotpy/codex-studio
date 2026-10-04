@@ -31,7 +31,7 @@ export function useDesktopNotifications(
       current.initialized = true;
       return;
     }
-    const openedShared = data.runtime.rooms.find(
+    const openedShared = data.runtime?.rooms.find(
       (room) => room.id === opened && room.radio,
     );
     for (const alert of added) {

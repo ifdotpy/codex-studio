@@ -58,7 +58,7 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import { api, ApiError, errorText, save, saved } from "./api";
+import { get, post, ApiError, errorText, save, saved } from "./api";
 import { useSnapshot } from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import {
@@ -392,8 +392,8 @@ export default function App() {
   }, [data?.stateDir]);
   const receipts = useMemo(
     () =>
-      new Map((data?.runtime.events || []).map((event) => [event.id, event])),
-    [data?.runtime.events],
+      new Map((data?.runtime?.events || []).map((event) => [event.id, event])),
+    [data?.runtime?.events],
   );
   const prepareChat = useChatPrefetch(data, opened, workspaceId);
   useEffect(() => {
@@ -487,7 +487,7 @@ export default function App() {
       (a) => a.source === "managed" && a.isLead && !a.sharedRoomId,
     ),
     agent = agents.find((a) => a.id === opened),
-    room = data?.runtime.rooms?.find((r) => r.id === opened),
+    room = data?.runtime?.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
     roomRoots = room ? roomLeadIds(room, agents) : [],
     lead = room?.radio
@@ -564,8 +564,8 @@ export default function App() {
     accountId,
   );
   const snapshotLimits =
-    data?.runtime.rateLimitsByAccount?.[accountKey] ||
-    (accountKey === "default" ? data?.runtime.rateLimits : null);
+    data?.runtime?.rateLimitsByAccount?.[accountKey] ||
+    (accountKey === "default" ? data?.runtime?.rateLimits : null);
   const matchingSnapshot = accountLimits(snapshotLimits, accountKey, accountId);
   const visibleLimits =
     matchingSnapshot &&
@@ -606,7 +606,7 @@ export default function App() {
     if (!data) return;
     if (
       agent?.sharedRoomId &&
-      data.runtime.rooms.some(
+      data.runtime?.rooms.some(
         (room) => room.id === agent.sharedRoomId && !room.userHidden,
       )
     ) {
@@ -623,7 +623,7 @@ export default function App() {
       if (
         selected &&
         (data.threads.some((item) => item.id === selected) ||
-          data.runtime.rooms.some((item) => item.id === selected) ||
+          data.runtime?.rooms.some((item) => item.id === selected) ||
           data.chats.some((item) => item.id === selected))
       ) {
         setOpened(selected);
@@ -641,7 +641,7 @@ export default function App() {
     if (!opened || (!agent && !room && !legacy))
       setOpened(
         leads.at(-1)?.id ||
-          data.runtime.rooms
+          data.runtime?.rooms
             .filter((room) => room.radio?.direct && !room.userHidden)
             .at(-1)?.id ||
           null,
@@ -713,10 +713,9 @@ export default function App() {
         Date.now() / 1000 - (cached.at || 0) < 60
       )
         return Promise.resolve();
-      const query =
-        key === "default" ? "" : `?account_key=${encodeURIComponent(key)}`;
       setLimitsLoading((old) => ({ ...old, [key]: true }));
-      const request = api("/api/limits" + query, undefined, {
+      const request = get("/api/limits", {
+        query: key === "default" ? undefined : { account_key: key },
         timeoutMs: 25000,
       })
         .then((result) => {
@@ -786,8 +785,8 @@ export default function App() {
           account?.accountId,
         );
         const snapshot =
-          data?.runtime.rateLimitsByAccount?.[key] ||
-          (key === "default" ? data?.runtime.rateLimits : null);
+          data?.runtime?.rateLimitsByAccount?.[key] ||
+          (key === "default" ? data?.runtime?.rateLimits : null);
         const matching = accountLimits(snapshot, key, account?.accountId);
         const limits =
           matching && (!cached || (matching.at || 0) > (cached.at || 0))
@@ -810,8 +809,8 @@ export default function App() {
     agents,
     accounts.data.accounts,
     limitsByAccount,
-    data?.runtime.rateLimitsByAccount,
-    data?.runtime.rateLimits,
+    data?.runtime?.rateLimitsByAccount,
+    data?.runtime?.rateLimits,
     limitsLoading,
     reloadLimitsFor,
   ]);
@@ -822,7 +821,7 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accounts.data.accounts.find((item) => item.id === key);
       if (account?.disconnected) continue;
-      void api(`/api/limits?account_key=${encodeURIComponent(key)}&cached=1`)
+      void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
           if (!accountLimits(result, key, account?.accountId) || !result.data)
             return;
@@ -861,8 +860,8 @@ export default function App() {
   }, [accountKey, visibleLimits?.error, reloadLimits]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
-    const incoming = { ...data?.runtime.rateLimitsByAccount };
-    if (data?.runtime.rateLimits && !incoming.default)
+    const incoming = { ...data?.runtime?.rateLimitsByAccount };
+    if (data?.runtime?.rateLimits && !incoming.default)
       incoming.default = data.runtime.rateLimits;
     setLimitsByAccount((old) => {
       let next = old;
@@ -874,7 +873,7 @@ export default function App() {
       }
       return next;
     });
-  }, [data?.runtime.rateLimits, data?.runtime.rateLimitsByAccount]);
+  }, [data?.runtime?.rateLimits, data?.runtime?.rateLimitsByAccount]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -909,7 +908,7 @@ export default function App() {
       cwd =
         lead?.cwd ||
         (mobileClient
-          ? data?.runtime.projects?.[0]?.path ||
+          ? data?.runtime?.projects?.[0]?.path ||
             leads.find((item) => item.cwd)?.cwd
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
@@ -937,7 +936,7 @@ export default function App() {
     if (mobileClient && !cwd) {
       cwd =
         lead?.cwd ||
-        data?.runtime.projects?.[0]?.path ||
+        data?.runtime?.projects?.[0]?.path ||
         leads.find((item) => item.cwd)?.cwd;
       if (!cwd) {
         setSidebar(false);
@@ -946,7 +945,7 @@ export default function App() {
           body: (
             <ProjectDirectoryPicker
               onSelect={async (path) => {
-                await api("/api/projects", { path });
+                await post("/api/projects", { path });
                 setModal(null);
                 await refresh();
                 await newChat(path);
@@ -968,10 +967,10 @@ export default function App() {
       ...(cwd ? { cwd } : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
       ...(cwd &&
-      data?.runtime.projects?.find((project) => project.path === cwd)
+      data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
         ? {
-            account_key: data.runtime.projects.find(
+            account_key: data.runtime?.projects?.find(
               (project) => project.path === cwd,
             )!.accountKey,
           }
@@ -983,7 +982,9 @@ export default function App() {
       // Save the exact request before sending it. A lost response must retain this identity.
       saveChatCreation(creationKey, creation.current);
       setPendingCreations(pendingChatCreations(creationKey));
-      const a = await api("/api/leads", creation.current, { timeoutMs: 15000 });
+      const a = await post("/api/leads", creation.current, {
+        timeoutMs: 15000,
+      });
       if (a.id !== creation.current.id)
         throw new Error("The server returned another chat identity.");
       rememberCreated(a, creationScope);
@@ -1002,7 +1003,7 @@ export default function App() {
         setTeamOpen(false);
       }
       void refresh();
-      return a.id as string;
+      return a.id;
     } catch (e) {
       notify(errorText(e));
       return null;
@@ -1045,7 +1046,7 @@ export default function App() {
             "Use the command without additional text, or send a normal message.",
           );
         if (command === "/stop" || command === "/stop-team")
-          await api("/api/stop", {
+          await post("/api/stop", {
             id: command === "/stop-team" ? agent.rootId : id,
             descendants: command === "/stop-team",
           });
@@ -1195,7 +1196,7 @@ export default function App() {
   };
   const rename = async (id: string, name: string) => {
     try {
-      await api("/api/rename", { id, name });
+      await post("/api/rename", { id, name });
       await refresh();
     } catch (e) {
       notify(errorText(e));
@@ -1218,7 +1219,7 @@ export default function App() {
             data-delete-chat={id}
             onClick={() =>
               void run(async () => {
-                const r = await api(
+                const r = await post(
                   isRoom ? "/api/room/delete" : "/api/conversation/delete",
                   { id },
                 );
@@ -1249,7 +1250,7 @@ export default function App() {
         <ProjectDirectoryPicker
           initialPath={target.cwd}
           onSelect={async (cwd) => {
-            await api("/api/conversation", { id: target.id, cwd });
+            await post("/api/conversation", { id: target.id, cwd });
             setModal(null);
             await refresh();
           }}
@@ -1287,11 +1288,11 @@ export default function App() {
     );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
-    data.runtime.projects?.find((item) => item.path === agent?.cwd)?.name ||
+    data.runtime?.projects?.find((item) => item.path === agent?.cwd)?.name ||
     agent?.cwd?.split("/").filter(Boolean).at(-1);
-  const answerIds = awaitingAnswerIds(chatData?.runtime.requests || []);
+  const answerIds = awaitingAnswerIds(chatData?.runtime?.requests || []);
   const deferredIds = new Set<string>(
-    (chatData?.runtime.requests || [])
+    (chatData?.runtime?.requests || [])
       .filter((request) => request.deferred && request.status === "pending")
       .map((request) => request.agent),
   );
@@ -1486,7 +1487,7 @@ export default function App() {
             body: (
               <ProjectDirectoryPicker
                 onSelect={async (path) => {
-                  await api("/api/projects", { path });
+                  await post("/api/projects", { path });
                   setModal(null);
                   await refresh();
                 }}
@@ -1502,12 +1503,12 @@ export default function App() {
             body: (
               <ProjectAccount
                 path={path}
-                project={data.runtime.projects?.find(
+                project={data.runtime?.projects?.find(
                   (item) => item.path === path,
                 )}
                 accounts={accounts.data}
                 defaultAccountKey={
-                  data.runtime.projects
+                  data.runtime?.projects
                     ?.filter(
                       (item) =>
                         path === item.path ||
@@ -1787,7 +1788,7 @@ export default function App() {
                         leftSection={<Square size={14} />}
                         onClick={() => {
                           void run(() =>
-                            api("/api/stop", {
+                            post("/api/stop", {
                               id: agent.rootId,
                               descendants: true,
                             }),
@@ -2041,7 +2042,7 @@ export default function App() {
       {(workspaceRendered || workspaceOpen) && (
         <Suspense fallback={null}>
           <Workspace
-            allRequests={data.runtime.requests}
+            allRequests={data.runtime?.requests || []}
             key={`workspace:${lead?.id || "none"}`}
             initialSection={workspaceSection}
             initialFocus={workspaceFocus}
@@ -2319,7 +2320,7 @@ export default function App() {
                 <FederationSettings
                   active={studioSettingsOpen}
                   leadId={lead.id}
-                  agents={data?.runtime.agents || []}
+                  agents={data?.runtime?.agents || []}
                   refresh={refresh}
                   notify={notify}
                 />
@@ -2425,7 +2426,7 @@ export default function App() {
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
-                  data.runtime.projects
+                  data.runtime?.projects
                     ?.filter(
                       (project) =>
                         (agent || lead)?.cwd === project.path ||
@@ -2441,7 +2442,7 @@ export default function App() {
                 changeAccount={async (key) => {
                   const selectedAgent = agent || lead;
                   if (selectedAgent?.isLead) {
-                    const selected = await api("/api/agents/account", {
+                    const selected = await post("/api/agents/account", {
                       id: selectedAgent.id,
                       account_key: key,
                     });
@@ -2449,7 +2450,7 @@ export default function App() {
                     await refresh();
                   } else {
                     accounts.setData(
-                      await api("/api/accounts/default", {
+                      await post("/api/accounts/default", {
                         account_key: key,
                       }),
                     );
@@ -2497,7 +2498,7 @@ export default function App() {
                 agent={lead}
                 catalog={workerModels}
                 accounts={accounts.data.accounts}
-                team={data?.runtime.agents || []}
+                team={data?.runtime?.agents || []}
                 refresh={refresh}
                 teamDefaults
               />

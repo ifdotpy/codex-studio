@@ -1,14 +1,42 @@
 import { useState } from "react";
-import { api, ApiError } from "./api";
+import { post, ApiError } from "./api";
+import type { PostBody } from "./api";
 import type { Agent } from "./types";
+type Request = PostBody<"/api/action">;
+type Action = Request["action"];
 
-type Action = "compact" | "review";
-type Request = {
-  id: string;
-  action: Action;
-  request_id: string;
-  context: { accountKey: string; threadId?: string; epoch?: number };
-};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function isActionRequest(value: unknown): value is Request {
+  if (!isRecord(value)) return false;
+  const request = value;
+  if (
+    typeof request.id !== "string" ||
+    typeof request.request_id !== "string" ||
+    !request.request_id ||
+    (request.action !== "compact" && request.action !== "review") ||
+    !isRecord(request.context)
+  )
+    return false;
+  const context = request.context;
+  return (
+    typeof context.accountKey === "string" &&
+    (context.threadId === undefined || typeof context.threadId === "string") &&
+    (context.epoch === undefined || typeof context.epoch === "number")
+  );
+}
+
+export function isDefinitivelyNotApplied(error: unknown): boolean {
+  if (
+    !(error instanceof ApiError) ||
+    !error.details ||
+    typeof error.details !== "object"
+  )
+    return false;
+  return "outcome" in error.details && error.details.outcome === "not_applied";
+}
 
 export function useNativeAction(
   workspace: string | undefined,
@@ -22,12 +50,8 @@ export function useNativeAction(
     if (!workspace) return null;
     const raw = localStorage.getItem(key(id));
     if (!raw) return null;
-    const request = JSON.parse(raw);
-    if (
-      request.id !== id ||
-      !request.request_id ||
-      !["review", "compact"].includes(request.action)
-    )
+    const request: unknown = JSON.parse(raw);
+    if (!isActionRequest(request) || request.id !== id)
       throw new Error(
         "The saved action request is invalid. Restore browser storage before this action.",
       );
@@ -38,7 +62,7 @@ export function useNativeAction(
     const existing = read(agent.id);
     if (existing && existing.action !== action)
       throw new Error("Check the saved action request before another action.");
-    const request = existing || {
+    const request: Request = existing || {
       id: agent.id,
       action,
       request_id: crypto.randomUUID(),
@@ -58,7 +82,7 @@ export function useNativeAction(
       changed((value) => value + 1);
     };
     try {
-      const response = await api("/api/action", request, {
+      const response = await post("/api/action", request, {
         workspaceId,
         timeoutMs: 15000,
       });
@@ -75,11 +99,7 @@ export function useNativeAction(
         notify("This action request was already saved. No new action starts.");
       return response;
     } catch (error) {
-      if (
-        error instanceof ApiError &&
-        (error.details as { outcome?: string })?.outcome === "not_applied"
-      )
-        acknowledge();
+      if (isDefinitivelyNotApplied(error)) acknowledge();
       throw error;
     } finally {
       setActive(false);
