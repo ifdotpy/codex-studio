@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from typing import Protocol
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
@@ -40,6 +41,26 @@ from studio_api.sync.resources.models import (
     TerminalResource,
     TerminalsResource,
 )
+
+
+class LockContract(Protocol):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: ...
+    def release(self) -> None: ...
+
+
+def available_to_independent_thread(lock: LockContract) -> bool:
+    acquired: list[bool] = []
+
+    def probe() -> None:
+        result = lock.acquire(timeout=0.5)
+        acquired.append(result)
+        if result:
+            lock.release()
+
+    thread = threading.Thread(target=probe, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+    return not thread.is_alive() and acquired == [True]
 
 
 class TerminalContext:
@@ -86,16 +107,13 @@ class TerminalResourceEvents(unittest.TestCase):
         published = threading.Event()
         release = threading.Event()
         observed = []
+        lock_results = []
 
         def publish(*resources):
-            acquired = self.manager.lock.acquire(blocking=False)
-            self.assertTrue(acquired, "resource publication ran while the terminal lock was held")
-            if acquired:
-                self.manager.lock.release()
-            output_lock_acquired = self.owned["output_lock"].acquire(blocking=False)
-            self.assertTrue(output_lock_acquired, "output publication ran while its terminal lock was held")
-            if output_lock_acquired:
-                self.owned["output_lock"].release()
+            lock_results.append((
+                available_to_independent_thread(self.manager.lock),
+                available_to_independent_thread(self.owned["output_lock"]),
+            ))
             observed.append(self.client.get(
                 "/api/terminals/output", params={"id": self.key, "offset": "0"}
             ).json())
@@ -109,29 +127,33 @@ class TerminalResourceEvents(unittest.TestCase):
                 "params": {"processHandle": self.key,
                            "deltaBase64": base64.b64encode("hello🙂".encode()).decode()},
             },))
-            worker.start()
-            self.assertTrue(published.wait(2), "terminal output did not publish an event")
-            self.assertEqual(observed[0]["text"], "hello🙂")
-            self.assertEqual(observed[0]["offset"], len("hello🙂"))
-            self.assertEqual(len(observed[1]), 1)
-            self.assertIsInstance(observed[1][0].root, TerminalResource)
-            self.assertEqual(observed[1][0].root.terminalId, self.key)
-            release.set()
-            worker.join(2)
+            try:
+                worker.start()
+                self.assertTrue(published.wait(2), "terminal output did not publish an event")
+                self.assertEqual(observed[0]["text"], "hello🙂")
+                self.assertEqual(observed[0]["offset"], len("hello🙂"))
+                self.assertEqual(len(observed[1]), 1)
+                self.assertIsInstance(observed[1][0].root, TerminalResource)
+                self.assertEqual(observed[1][0].root.terminalId, self.key)
+            finally:
+                release.set()
+                worker.join(2)
             self.assertFalse(worker.is_alive())
+            self.assertEqual(lock_results, [(True, True)])
 
     def test_close_publishes_list_and_targeted_terminal_resources_after_commit(self):
         events = []
+        lock_results = []
 
         def publish(*resources):
-            self.assertTrue(self.manager.lock.acquire(blocking=False))
-            self.manager.lock.release()
+            lock_results.append(available_to_independent_thread(self.manager.lock))
             events.append((self.client.get("/api/terminals").json(), resources))
 
         with patch.object(self.manager, "_publish", side_effect=publish):
             result = self.manager.action("close", {"id": self.key})
 
         self.assertEqual(result["status"], "closed")
+        self.assertEqual(lock_results, [True])
         self.assertEqual(events[0][0]["items"], [])
         roots = [resource.root for resource in events[0][1]]
         self.assertTrue(any(isinstance(resource, TerminalsResource) for resource in roots))
@@ -264,11 +286,8 @@ class TerminalHubIntegration(unittest.IsolatedAsyncioTestCase):
         self.manager = TerminalManager(self.canvas.root)
 
     def tearDown(self):
-        hub = getattr(self.context, "_resource_hub", None)
-        if hub is not None:
-            unregister_resource_hub(self.canvas.root, hub)
-            hub.close()
         self.manager.close()
+        self.context.close()
         self.temp.cleanup()
 
     async def test_startup_registration_delivers_actual_terminal_producer_event(self):
