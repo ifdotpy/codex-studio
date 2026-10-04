@@ -15,6 +15,7 @@ from studio_api.schema import (
     entity_schema_names,
     normalize_json_value_schema,
     openapi_document,
+    remove_orphan_fastapi_validation_schemas,
     require_json_value_schema,
     validate_contract_schemas,
     validate_error_responses,
@@ -37,6 +38,7 @@ def _entity_aliases(names: list[str]) -> str:
 
 
 def render(document: dict[str, JsonValue]) -> str:
+    remove_orphan_fastapi_validation_schemas(document)
     normalize_json_value_schema(document)
     validate_contract_schemas(document)
     validate_error_responses(document)

@@ -9,6 +9,7 @@ from studio_api.generate_types import render
 from studio_api.schema import (
     entity_schema_names,
     normalize_json_value_schema,
+    remove_orphan_fastapi_validation_schemas,
     require_json_value_schema,
     validate_error_responses,
     validate_contract_schemas,
@@ -158,6 +159,58 @@ class SchemaContractTests(unittest.TestCase):
         schemas["AliasA"] = {"$ref": "#/components/schemas/AliasB"}
         schemas["AliasB"] = {"$ref": "#/components/schemas/AliasA"}
         with self.assertRaisesRegex(ValueError, "reference cycle has no concrete schema"):
+            validate_contract_schemas(document)
+
+    def test_drops_unreferenced_fastapi_validation_components(self) -> None:
+        document = sample_document({"type": "string"})
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        schemas["HTTPValidationError"] = {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/ValidationError"},
+                }
+            },
+        }
+        schemas["ValidationError"] = {
+            "type": "object",
+            "properties": {"ctx": {"type": "object", "additionalProperties": True}},
+        }
+
+        remove_orphan_fastapi_validation_schemas(document)
+        validate_contract_schemas(document)
+
+        self.assertNotIn("HTTPValidationError", schemas)
+        self.assertNotIn("ValidationError", schemas)
+
+    def test_keeps_referenced_fastapi_validation_component_for_strict_check(self) -> None:
+        document = sample_document(
+            {"$ref": "#/components/schemas/HTTPValidationError"}
+        )
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        schemas["HTTPValidationError"] = {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/ValidationError"},
+                }
+            },
+        }
+        schemas["ValidationError"] = {
+            "type": "object",
+            "properties": {"ctx": {"type": "object", "additionalProperties": True}},
+        }
+
+        remove_orphan_fastapi_validation_schemas(document)
+        with self.assertRaisesRegex(ValueError, "unconstrained additionalProperties"):
             validate_contract_schemas(document)
 
     def test_entity_exports_are_named_and_sorted(self) -> None:

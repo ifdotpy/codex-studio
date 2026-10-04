@@ -47,6 +47,7 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    remove_orphan_fastapi_validation_schemas(document)
     normalize_json_value_schema(document)
     return document
 
@@ -105,6 +106,47 @@ def normalize_json_value_schema(document: dict[str, JsonValue]) -> None:
     if schemas is None or "JsonValue" not in schemas:
         raise ValueError("OpenAPI document does not expose the shared JsonValue component")
     schemas["JsonValue"] = JSON_VALUE_SCHEMA
+
+
+def remove_orphan_fastapi_validation_schemas(document: dict[str, JsonValue]) -> None:
+    """Drop FastAPI's unused default-422 models after routes document legacy 400s.
+
+    FastAPI may leave these component definitions behind after the app removes
+    its generated 422 response declarations. They are not part of the wire
+    contract when no path references them, and Pydantic's validation-error
+    context is intentionally an unconstrained framework payload.
+    """
+    components = _object(document.get("components"))
+    schemas = _object(components.get("schemas")) if components else None
+    paths = _object(document.get("paths"))
+    if schemas is None or paths is None:
+        return
+
+    reachable: set[str] = set()
+    traversed_references: set[str] = set()
+
+    def visit(value: JsonValue) -> None:
+        if isinstance(value, dict):
+            reference = value.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/components/schemas/"):
+                encoded_name = reference[len("#/components/schemas/") :].split("/", 1)[0]
+                name = encoded_name.replace("~1", "/").replace("~0", "~")
+                reachable.add(name)
+                if reference not in traversed_references:
+                    traversed_references.add(reference)
+                    target = _resolve_pointer(document, reference)
+                    if target is not None:
+                        visit(target)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(paths)
+    for name in ("HTTPValidationError", "ValidationError"):
+        if name not in reachable:
+            schemas.pop(name, None)
 
 
 def _schema_errors(
