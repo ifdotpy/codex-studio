@@ -404,16 +404,10 @@ class CoreResponseTests(unittest.TestCase):
             def create_router(_context: object, selected: str = domain) -> APIRouter:
                 router = APIRouter()
                 if selected == "agents":
-                    class WriteRequest(ContractModel):
-                        request_id: str
-
-                    class WriteResponse(ResponseModel):
-                        ok: bool
-
-                    @router.post("/api/action", response_model=WriteResponse)
-                    def write_action(body: WriteRequest) -> WriteResponse:
+                    @router.post("/api/action", response_model=NativeActionResponse)
+                    def write_action(body: NativeActionRequest) -> NativeActionResponse:
                         calls.append(True)
-                        return WriteResponse(ok=True)
+                        return NativeActionResponse(ok=True)
 
                 return router
 
@@ -460,16 +454,28 @@ class CoreResponseTests(unittest.TestCase):
                         "/api/action", json={"request_id": "req-1"},
                         headers={"X-Canvas-Token": session.json()["token"], "X-Canvas-Workspace": "other"},
                     )
+                    tcp_write = client.post(
+                        "/api/action", json={"request_id": "tcp-write"},
+                        headers={"X-Canvas-Token": session.json()["token"]},
+                    )
+                    denied_write = client.post("/api/action", json={"request_id": "denied"})
                 uds_transport = httpx.HTTPTransport(uds=str(socket_path))
                 with httpx.Client(transport=uds_transport, base_url="http://localhost", timeout=5) as unix_client:
                     unix_session = unix_client.get("/api/session")
+                    unix_write = unix_client.post(
+                        "/api/action", json={"request_id": "unix-write"},
+                        headers={"X-Canvas-Token": unix_session.json()["token"]},
+                    )
                 self.assertEqual(session.status_code, 200)
                 self.assertEqual(state.status_code, 200)
                 self.assertEqual(mismatch.status_code, 409)
                 self.assertEqual(mismatch.json()["error"], "The server workspace changed. Reload before sending.")
+                self.assertEqual(tcp_write.status_code, 200, tcp_write.text)
+                self.assertEqual(denied_write.status_code, 403)
                 self.assertEqual(unix_session.status_code, 200)
                 self.assertEqual(unix_session.json()["token"], session.json()["token"])
-                self.assertEqual(calls, [])
+                self.assertEqual(unix_write.status_code, 200)
+                self.assertEqual(calls, [True, True])
                 self.assertEqual(os.stat(socket_path).st_mode & 0o777, 0o600)
             finally:
                 server.shutdown()
