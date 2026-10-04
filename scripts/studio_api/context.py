@@ -127,18 +127,15 @@ class ApiContext:
                                 return None
                             try:
                                 connected = bool(set(runtime.servers) - runtime.offline_accounts) and not runtime.closed
-                                rate_limits = json.loads(json.dumps(runtime.rate_limits, sort_keys=True))
-                                by_account = {
-                                    key: json.loads(json.dumps(runtime.rate_limits_for(key), sort_keys=True))  # type: ignore[no-untyped-call]
-                                    for key in runtime.rate_limits_by_account
-                                }
-                                connection_ids = dict(runtime.connection_ids)
                                 monitor = getattr(runtime, "provider_version_monitor", None)
                                 warnings = monitor.status()["warnings"] if monitor else []
                                 volatile = json.dumps({
-                                    "rateLimits": rate_limits,
-                                    "rateLimitsByAccount": by_account,
-                                    "connectionIds": connection_ids,
+                                    "rateLimits": runtime.rate_limits,
+                                    "rateLimitsByAccount": {
+                                        key: runtime.rate_limits_for(key)  # type: ignore[no-untyped-call]
+                                        for key in runtime.rate_limits_by_account
+                                    },
+                                    "connectionIds": runtime.connection_ids,
                                     "providerWarnings": warnings,
                                 }, sort_keys=True, separators=(",", ":"))
                             finally:
