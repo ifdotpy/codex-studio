@@ -77,6 +77,7 @@ from .models import (
 
 ModelT = TypeVar("ModelT", bound=ContractModel)
 Body = dict[str, JsonValue]
+_RECEIPT_IDS_ADAPTER: TypeAdapter[list[StrictStr]] = TypeAdapter(list[StrictStr])
 
 
 class FederationPort(Protocol):
@@ -228,7 +229,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def message_receipts(request: Request, documented: ReceiptQuery = Depends()) -> Response:
         query = _query(ReceiptQuery, request)
         try:
-            ids = TypeAdapter(list[StrictStr]).validate_json(query.ids)
+            ids = _RECEIPT_IDS_ADAPTER.validate_json(query.ids)
         except ValidationError:
             raise ValueError("Invalid receipt ID list") from None
         return context.send(request, _runtime(context).user_delivery_receipts(query.agent, ids))

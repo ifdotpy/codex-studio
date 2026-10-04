@@ -1404,6 +1404,9 @@ class DraftPayload(ContractModel):
     updated: int | float | None = None
 
 
+_DRAFT_ASSUMED_PAYLOAD_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+
+
 class DraftPushRow(ContractModel):
     newDocumentState: DraftDocumentInput
     assumedMasterState: DraftDocumentInput | None = None
@@ -1418,7 +1421,7 @@ class DraftPushRow(ContractModel):
     @classmethod
     def validate_assumed_payload(cls, document: DraftDocumentInput | None) -> DraftDocumentInput | None:
         if document is not None:
-            TypeAdapter(JsonValue).validate_json(document.payload)
+            _DRAFT_ASSUMED_PAYLOAD_ADAPTER.validate_json(document.payload)
         return document
 
 

@@ -20,6 +20,7 @@ from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
     AgentNativeStatus,
+    DraftPushRow,
     DraftPushRequest,
     EntityCollection,
     NativeProviderError,
@@ -559,6 +560,54 @@ class SyncEntityContractTests(unittest.TestCase):
         invalid = {"rows": [row, {"newDocumentState": {"id": "wrong", "payload": "null"}}]}
         with self.assertRaises(ValidationError):
             DraftPushRequest.model_validate(invalid)
+
+    def test_draft_row_standalone_validation_stays_scoped_to_payloads(self) -> None:
+        row = {
+            "newDocumentState": {
+                "id": "device:tab:lead",
+                "payload": json.dumps({
+                    "id": "device:tab:lead", "device": "device", "session": "lead", "text": "draft"
+                }),
+            },
+            "assumedMasterState": {"id": "device:tab:lead", "payload": "null"},
+        }
+        self.assertEqual(DraftPushRow.model_validate(row).newDocumentState.id, "device:tab:lead")
+        with self.assertRaises(ValidationError):
+            DraftPushRow.model_validate({
+                **row, "assumedMasterState": {"id": "device:tab:lead", "payload": "{"},
+            })
+
+        mismatched = {
+            **row,
+            "newDocumentState": {
+                **row["newDocumentState"], "id": "device:other",
+            },
+        }
+        self.assertEqual(DraftPushRow.model_validate(mismatched).newDocumentState.id, "device:other")
+        with self.assertRaises(ValidationError):
+            DraftPushRequest.model_validate({"rows": [mismatched]})
+
+    def test_draft_validation_error_locations_match_public_contract(self) -> None:
+        valid_payload = json.dumps({
+            "id": "device:lead", "device": "device", "session": "lead", "text": "draft",
+        })
+        invalid_cases = (
+            ({"rows": [{"newDocumentState": {"id": "device:lead", "payload": "{"}}]},
+             ("rows", 0, "newDocumentState")),
+            ({"rows": [{
+                "newDocumentState": {"id": "device:lead", "payload": valid_payload},
+                "assumedMasterState": {"id": "device:lead", "payload": "{"},
+            }]}, ("rows", 0, "assumedMasterState")),
+            ({"rows": [{"newDocumentState": {"id": "wrong", "payload": valid_payload}}]}, ()),
+        )
+        for body, expected_location in invalid_cases:
+            with self.subTest(expected_location=expected_location):
+                with self.assertRaises(ValidationError) as raised:
+                    DraftPushRequest.model_validate(body)
+                self.assertEqual(
+                    [error["loc"] for error in raised.exception.errors(include_url=False)],
+                    [expected_location],
+                )
 
     def test_chat_and_full_snapshot_models_share_runtime_contract(self) -> None:
         active_agent = {

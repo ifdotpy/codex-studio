@@ -250,12 +250,27 @@ class SyncRouterTests(unittest.TestCase):
 
     def test_invalid_draft_batch_is_rejected_before_sync_service_or_write(self) -> None:
         context = ContextStub()
-        response = make_client(context).post(
-            "/api/sync/drafts",
-            headers={"X-Canvas-Workspace": "workspace-a"},
-            json={"rows": [{"newDocumentState": {"id": "wrong", "payload": "null"}}]},
+        client = make_client(context)
+        valid_payload = json.dumps({
+            "id": "device:lead", "device": "device", "session": "lead", "text": "draft",
+        })
+        invalid_batches = (
+            {"rows": [{"newDocumentState": {"id": "device:lead", "payload": "{"}}]},
+            {"rows": [{
+                "newDocumentState": {"id": "device:lead", "payload": valid_payload},
+                "assumedMasterState": {"id": "device:lead", "payload": "{"},
+            }]},
+            {"rows": [{
+                "newDocumentState": {"id": "wrong", "payload": valid_payload},
+            }]},
         )
-        self.assertEqual(response.status_code, 400)
+        for body in invalid_batches:
+            with self.subTest(body=body):
+                response = client.post(
+                    "/api/sync/drafts",
+                    headers={"X-Canvas-Workspace": "workspace-a"}, json=body,
+                )
+                self.assertEqual(response.status_code, 400)
         self.assertEqual(context.store.push_calls, [])
 
     def test_valid_draft_payload_reaches_store_once_after_workspace_check(self) -> None:

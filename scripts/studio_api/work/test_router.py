@@ -163,6 +163,19 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.work_action.assert_called_once_with("agent-1", work_body, "operation-1")
         context.runtime.queue_action.assert_called_once_with("agent-1", queue_body)
 
+    def test_receipt_ids_remain_strict_json_strings(self) -> None:
+        context = FakeContext()
+        context.runtime.user_delivery_receipts = Mock(return_value={"agent": "agent-1", "items": []})
+        client = make_client(context)
+
+        accepted = client.get('/api/messages/receipts?agent=agent-1&ids=%5B%22message-1%22%5D')
+        rejected = client.get('/api/messages/receipts?agent=agent-1&ids=%5B%22message-1%22%2C1%5D')
+
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        context.runtime.user_delivery_receipts.assert_called_once_with("agent-1", ["message-1"])
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(context.runtime.user_delivery_receipts.call_count, 1)
+
     def test_queue_request_schema_is_discriminated_and_requires_action_fields(self) -> None:
         schema = make_client(FakeContext()).get("/openapi.json").json()
         request = schema["paths"]["/api/queue"]["post"]["requestBody"]["content"]["application/json"]["schema"]
