@@ -50,6 +50,7 @@ import { useDisplayPhase } from "./useDisplayPhase";
 import {
   outgoingTranscript,
   deliveryLabel,
+  applySendingOverlay,
   messageRenderKey,
   explicitQueue,
   dispatchedMessage,
@@ -1051,9 +1052,7 @@ export default function Conversation(p: {
         ...items
           .filter((item) => !queueEntry(item))
           .map((item): Message =>
-            sendingEntry(item)
-              ? { ...item, pending: true, deliveryStatus: "sending" }
-              : item,
+            applySendingOverlay(item, Boolean(sendingEntry(item))),
           ),
         ...sending
           .filter(

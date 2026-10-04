@@ -34,6 +34,17 @@ export function dispatchedMessage(item: Message) {
   );
 }
 
+export function applySendingOverlay(
+  item: Message,
+  hasSendingReceipt: boolean,
+): Message {
+  // A restored display copy is already materialized and deliberately marked
+  // uncertain. A stale outbox receipt must not make it actionable again.
+  return hasSendingReceipt && item.materialized !== true
+    ? { ...item, pending: true, deliveryStatus: "sending" }
+    : item;
+}
+
 // Hidden scheduler inputs keep their original slots and the full queue revision.
 export function mergeQueueOrder(
   raw: string[],
