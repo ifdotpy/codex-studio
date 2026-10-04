@@ -128,6 +128,20 @@ class HistoricalInputWait(f.ContextWait):
         self.assert_preserved_new_input()
         self.assertEqual(self.server.calls, [])
 
+    def test_historical_fallback_requests_the_turn_summary(self):
+        self.make_wait()
+        original = self.server.call
+
+        def bounded(method, params, timeout=10):
+            if method == 'thread/turns/list' and params.get('itemsView') != 'summary':
+                raise TimeoutError('Full tool output blocks the native pipe')
+            return original(method, params, timeout)
+
+        self.server.call = bounded
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['status'], 'resolved')
+        self.assert_preserved_new_input()
+
     def test_dispatch_schedules_one_check_then_sends_only_new_input_once(self):
         self.make_wait()
         self.runtime.dispatch()

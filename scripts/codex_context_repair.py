@@ -264,7 +264,8 @@ def recover_unconfirmed_inputs(rt, agent_id):
             turns, cursor, seen = [], None, set()
             for _ in range(16 if historical_wait else 100):
                 params = {'threadId': identity[1], 'limit': 100,
-                          'sortDirection': 'desc' if historical_wait else 'asc', 'itemsView': 'full'}
+                          'sortDirection': 'desc' if historical_wait else 'asc',
+                          'itemsView': 'summary' if historical_wait else 'full'}
                 if cursor:
                     params['cursor'] = cursor
                 page = read('thread/turns/list', params)
