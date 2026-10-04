@@ -550,7 +550,7 @@ function Changes(c: Context) {
       {!!annotations.length && (
         <section className="workspace-result">
           <h3>Comments sent to this agent</h3>
-          {annotations.map((entry: Json) => (
+          {annotations.map((entry) => (
             <article key={entry.id}>
               <small>
                 {entry.path}:{entry.line}
@@ -738,10 +738,8 @@ function Plan(c: Context) {
   const state = useResource("/api/plan", c.revision, {
     query: c.selected ? { agent: c.selected.id } : {},
   });
-  const native = state.data?.native;
-  const steps: Json[] = Array.isArray(native?.plan) ? native.plan : [];
-  const explanation =
-    typeof native?.explanation === "string" ? native.explanation : "";
+  const steps = state.data?.steps ?? [];
+  const explanation = state.data?.text ?? "";
   return (
     <>
       <ResourceState state={state} />
@@ -762,12 +760,21 @@ function Plan(c: Context) {
         <section className="workspace-result">
           <h3>Agent plan</h3>
           {explanation && <p className="workspace-prose">{explanation}</p>}
-          {steps.map((step: Json, i: number) => (
-            <div className="workspace-plan-step" key={i}>
-              <Status value={step.status || "pending"} />
-              <span>{step.step}</span>
-            </div>
-          ))}
+          {steps.map((step, i) => {
+            const detail = isRecord(step) ? step : null;
+            const status =
+              typeof detail?.status === "string" ? detail.status : "pending";
+            const text =
+              typeof detail?.step === "string"
+                ? detail.step
+                : JSON.stringify(step);
+            return (
+              <div className="workspace-plan-step" key={i}>
+                <Status value={status} />
+                <span>{text}</span>
+              </div>
+            );
+          })}
         </section>
       ) : (
         state.data !== null && (
@@ -908,6 +915,10 @@ function Tools(c: Context) {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
     [query, setQuery] = useState("");
+  const managedTools = (state.data?.managed ?? []).filter(isRecord);
+  const observedNative = (state.data?.observedNative ?? []).filter(
+    (name): name is string => typeof name === "string",
+  );
   return (
     <>
       <ResourceState state={state} />
@@ -925,22 +936,31 @@ function Tools(c: Context) {
         <>
           <h3 className="workspace-section-title">Orchestration tools</h3>
           <div className="workspace-tools">
-            {(state.data.managed || [])
-              .filter((tool: Json) =>
+            {managedTools
+              .filter((tool) =>
                 JSON.stringify(tool)
                   .toLowerCase()
                   .includes(query.toLowerCase()),
               )
-              .map((tool: Json) => (
-                <details key={tool.name} className="workspace-tool">
+              .map((tool, index) => (
+                <details
+                  key={`${inventoryName(tool) || "tool"}:${index}`}
+                  className="workspace-tool"
+                >
                   <summary>
                     <Wrench size={14} />
-                    <strong>{tool.name}</strong>
+                    <strong>
+                      {inventoryName(tool) || `Tool ${index + 1}`}
+                    </strong>
                   </summary>
-                  <p>{tool.description}</p>
+                  <p>
+                    {typeof tool.description === "string"
+                      ? tool.description
+                      : JSON.stringify(tool.description ?? "")}
+                  </p>
                   <pre className="workspace-code">
                     {JSON.stringify(
-                      tool.inputSchema || tool.parameters,
+                      tool.inputSchema ?? tool.parameters,
                       null,
                       2,
                     )}
@@ -949,10 +969,12 @@ function Tools(c: Context) {
               ))}
           </div>
           <h3 className="workspace-section-title">Observed native tools</h3>
-          <p className="workspace-muted">{state.data.nativeInventory}</p>
+          <p className="workspace-muted">
+            {JSON.stringify(state.data.nativeInventory)}
+          </p>
           <div className="workspace-actions">
-            {(state.data.observedNative || [])
-              .filter((name: string) =>
+            {observedNative
+              .filter((name) =>
                 name.toLowerCase().includes(query.toLowerCase()),
               )
               .map((name: string) => (

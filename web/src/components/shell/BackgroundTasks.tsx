@@ -716,14 +716,16 @@ function ProcessInput({
   const native = task.kind === "command";
   const send = async () => {
     const sent = input;
-    const ok = await act(
-      native ? "/api/native-command" : "/api/monitor/input",
-      {
-        id: task.id,
-        text: sent + "\n",
-        ...(native ? { action: "input" } : {}),
-      },
-    );
+    const ok = native
+      ? await act("/api/native-command", {
+          id: task.id,
+          action: "input",
+          text: sent + "\n",
+        })
+      : await act("/api/monitor/input", {
+          id: task.id,
+          text: sent + "\n",
+        });
     if (ok) setInput((current) => (current === sent ? "" : current));
   };
   return (
