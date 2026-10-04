@@ -32,7 +32,8 @@ from studio_api.io.models import (
     TerminalResize,
     TerminalOutputQuery,
 )
-from studio_api.models import ContractModel, ErrorResponse, JsonValue
+from studio_api.models import ErrorResponse, JsonValue
+from studio_api.request_helpers import body_data, first_nonempty_query
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -97,21 +98,10 @@ class ClosingFileResponse(StreamingResponse):
             self._stream.close()
 
 
-def _first_query(request: Request, name: str, default: str | None = None) -> str | None:
-    # urllib.parse.parse_qs (used by the legacy handler) omits blank values.
-    values = [value for value in request.query_params.getlist(name) if value]
-    return values[0] if values else default
-
-
 def _runtime(runtime: IORuntimeService | None) -> IORuntimeService:
     if runtime is None:
         raise HTTPException(status_code=404, detail="Not found")
     return runtime
-
-
-def _request_data(model: ContractModel) -> dict[str, JsonValue]:
-    """Pydantic JSON-mode dump, preserving only supplied request fields."""
-    return cast(dict[str, JsonValue], model.model_dump(mode="json", exclude_unset=True))
 
 
 def _monitor_log_response(context: IOContext, request: Request, monitor_id: str) -> Response:
@@ -192,10 +182,10 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/terminals/output", response_model=TerminalOutput, responses={400: {"model": ErrorResponse}})
     def terminal_output(request: Request, _query: Annotated[TerminalOutputQuery, Query()]) -> Response:
         manager = io_context.terminals()
-        key = _first_query(request, "id")
-        offset = _first_query(request, "offset", "0")
+        key = first_nonempty_query(request, "id")
+        offset = first_nonempty_query(request, "offset", "0")
         if [value for value in request.query_params.getlist("history") if value] == ["1"]:
-            result = manager.history_output(key, offset, _first_query(request, "limit", "65536"))
+            result = manager.history_output(key, offset, first_nonempty_query(request, "limit", "65536"))
         else:
             result = manager.output(key, offset)
         return io_context.send(request, result)
@@ -210,7 +200,7 @@ def create_router(context: ApiContext) -> APIRouter:
         },
     )
     def monitor_log(request: Request, query: Annotated[MonitorLogQuery, Query()]) -> Response:
-        monitor_id = _first_query(request, "id")
+        monitor_id = first_nonempty_query(request, "id")
         if monitor_id is None:
             raise ValueError("Unknown monitor")
         return _monitor_log_response(io_context, request, monitor_id)
@@ -218,18 +208,18 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/file-info", response_model=FileInfo, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
     def file_info(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
         query = FileQuery.model_validate({
-            "agent": _first_query(request, "agent"),
-            "path": _first_query(request, "path"),
-            "asset": _first_query(request, "asset"),
+            "agent": first_nonempty_query(request, "agent"),
+            "path": first_nonempty_query(request, "path"),
+            "asset": first_nonempty_query(request, "asset"),
         })
         return io_context.send(request, _runtime(io_context.runtime).file_info(query.agent, query.path, query.asset))
 
     @router.get("/api/file", response_model=FileContent, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
     def file_content(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
         query = FileQuery.model_validate({
-            "agent": _first_query(request, "agent"),
-            "path": _first_query(request, "path"),
-            "asset": _first_query(request, "asset"),
+            "agent": first_nonempty_query(request, "agent"),
+            "path": first_nonempty_query(request, "path"),
+            "asset": first_nonempty_query(request, "asset"),
         })
         content, mime, name = _runtime(io_context.runtime).file_content(query.agent, query.path, query.asset)
         return io_context.send(request, {"name": name, "mime": mime, "base64": base64.b64encode(content).decode()})
@@ -240,28 +230,28 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = io_context.runtime
         if runtime is None:
             raise ValueError("The agent runtime is unavailable")
-        result = manager.create(runtime, _request_data(body))
+        result = manager.create(runtime, body_data(body))
         return io_context.send(request, result)
 
     @router.post("/api/terminals/input", response_model=TerminalInputResult, responses={400: {"model": ErrorResponse}})
     def terminal_input(request: Request, body: TerminalInput) -> Response:
-        return io_context.send(request, io_context.terminals().action("input", _request_data(body)))
+        return io_context.send(request, io_context.terminals().action("input", body_data(body)))
 
     @router.post("/api/terminals/resize", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
     def resize_terminal(request: Request, body: TerminalResize) -> Response:
-        return io_context.send(request, io_context.terminals().action("resize", _request_data(body)))
+        return io_context.send(request, io_context.terminals().action("resize", body_data(body)))
 
     @router.post("/api/terminals/rename", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
     def rename_terminal(request: Request, body: TerminalRename) -> Response:
-        return io_context.send(request, io_context.terminals().action("rename", _request_data(body)))
+        return io_context.send(request, io_context.terminals().action("rename", body_data(body)))
 
     @router.post("/api/terminals/close", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
     def close_terminal(request: Request, body: TerminalClose) -> Response:
-        return io_context.send(request, io_context.terminals().action("close", _request_data(body)))
+        return io_context.send(request, io_context.terminals().action("close", body_data(body)))
 
     @router.post("/api/monitor/input", response_model=JsonValue, responses={400: {"model": ErrorResponse}})
     def monitor_input(request: Request, body: MonitorInput) -> Response:
-        return io_context.send(request, _runtime(io_context.runtime).monitor_input(body.id, _request_data(body)))
+        return io_context.send(request, _runtime(io_context.runtime).monitor_input(body.id, body_data(body)))
 
     @router.post("/api/monitor/cancel", response_model=MonitorActionResult, responses={400: {"model": ErrorResponse}})
     def cancel_monitor(request: Request, body: MonitorId) -> Response:
@@ -269,6 +259,6 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post("/api/assets", response_model=AssetRecord, responses={400: {"model": ErrorResponse}})
     def upload_asset(request: Request, body: AssetUpload) -> Response:
-        return io_context.send(request, _runtime(io_context.runtime).upload_asset(_request_data(body)))
+        return io_context.send(request, _runtime(io_context.runtime).upload_asset(body_data(body)))
 
     return router

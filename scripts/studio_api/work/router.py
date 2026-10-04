@@ -13,6 +13,7 @@ from pydantic import StrictStr, TypeAdapter, ValidationError
 from starlette.responses import Response
 
 from studio_api.models import ContractModel, ErrorResponse, JsonValue
+from studio_api.request_helpers import body_data
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -142,10 +143,6 @@ def _query(model: type[ModelT], request: Request) -> ModelT:
         raise ValueError("Invalid query parameters") from None
 
 
-def _body(body: ContractModel) -> dict[str, JsonValue]:
-    return cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
-
-
 def _runtime(context: ApiContext) -> WorkRuntime:
     runtime = context.runtime
     if runtime is None:
@@ -212,7 +209,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/work", response_model=WorkItem | WorkList,
                  responses={400: {"model": ErrorResponse}})
     def work_action(request: Request, body: WorkBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         return context.send(request, _runtime(context).work_action(body.agent, values, body.id))
 
     @router.get("/api/queue", response_model=QueueView, responses={400: {"model": ErrorResponse}})
@@ -222,7 +219,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post("/api/queue", response_model=MutationReceipt, responses={400: {"model": ErrorResponse}})
     def queue_action(request: Request, body: QueueBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         return context.send(request, _runtime(context).queue_action(body.agent, values))
 
     @router.get("/api/messages/receipts", response_model=MessageReceipts, responses={400: {"model": ErrorResponse}})
@@ -246,7 +243,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post("/api/plan", response_model=PlanView, responses={400: {"model": ErrorResponse}})
     def save_plan(request: Request, body: PlanBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         return context.send(request, _runtime(context).plan_action(body.agent, values))
 
     @router.get("/api/panel", response_model=ProgressPanel, responses={400: {"model": ErrorResponse}})
@@ -261,7 +258,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/profiles", response_model=ProfileMutation,
                  responses={400: {"model": ErrorResponse}})
     def update_profiles(request: Request, body: ProfileBody) -> Response:
-        return context.send(request, _runtime(context).profiles(_body(body)))
+        return context.send(request, _runtime(context).profiles(body_data(body)))
 
     @router.get("/api/rules", response_model=RuleList, responses={400: {"model": ErrorResponse}})
     def rules(request: Request, documented: RulesQuery = Depends()) -> Response:
@@ -270,7 +267,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post("/api/rules", response_model=RuleMutation, responses={400: {"model": ErrorResponse}})
     def update_rules(request: Request, body: RuleBody) -> Response:
-        return context.send(request, _runtime(context).rules(_body(body)))
+        return context.send(request, _runtime(context).rules(body_data(body)))
 
     @router.get("/api/task", response_model=TaskDetailResponse,
                 responses={400: {"model": ErrorResponse}})
@@ -298,13 +295,13 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/annotation", response_model=AnnotationReceipt,
                  responses={400: {"model": ErrorResponse}})
     def annotation(request: Request, body: AnnotationBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         return context.send(request, _runtime(context).annotate(body.agent, values))
 
     @router.post("/api/organization", response_model=VersionedRuntimeRecord,
                  responses={400: {"model": ErrorResponse}})
     def organization(request: Request, body: OrganizationBody) -> Response:
-        return context.send(request, _runtime(context).chat_organization(body.id, _body(body)))
+        return context.send(request, _runtime(context).chat_organization(body.id, body_data(body)))
 
     @router.post("/api/panel/layout", response_model=PanelLayoutResult,
                  responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
@@ -313,13 +310,13 @@ def create_router(context: ApiContext) -> APIRouter:
 
         try:
             layout_writer = cast(Callable[[WorkRuntime, Body], object], record_layout)
-            return context.send(request, layout_writer(_runtime(context), _body(body)))
+            return context.send(request, layout_writer(_runtime(context), body_data(body)))
         except LayoutConflict as error:
             return context.send(request, {"error": str(error)}, status=409)
 
     @router.post("/api/messages", response_model=MessageReceipt, responses={400: {"model": ErrorResponse}})
     def post_message(request: Request, body: ManagedMessageBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         runtime = _runtime(context)
         canvas = _canvas(context)
         room, message_id = body.room, body.id
@@ -347,7 +344,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/complaints", response_model=VersionedRuntimeRecord,
                  responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
     def complaints(request: Request, body: ComplaintBody) -> Response:
-        values = _body(body)
+        values = body_data(body)
         key = body.id
         if body.action == "respond":
             from codex_runtime import ComplaintConflict
@@ -372,7 +369,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/answer", response_model=AnswerResult,
                  responses={400: {"model": ErrorResponse}})
     def answer(request: Request, body: AnswerBody) -> Response:
-        return context.send(request, _runtime(context).answer(body.id, _body(body)))
+        return context.send(request, _runtime(context).answer(body.id, body_data(body)))
 
     @router.post("/api/chats", response_model=ChatCreated,
                  responses={400: {"model": ErrorResponse}})

@@ -8,7 +8,8 @@ from typing import Annotated, Any, TYPE_CHECKING, Protocol, cast
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from starlette.responses import Response
 
-from studio_api.models import ContractModel, ErrorResponse, JsonValue
+from studio_api.models import ErrorResponse, JsonValue
+from studio_api.request_helpers import body_data, first_nonempty_query
 from .models import (
     AccountsResponse,
     AccountDiscoverRequest,
@@ -111,17 +112,6 @@ def _claude_login(runtime: RuntimePort) -> ClaudeLoginService:
     return manager_factory(runtime)
 
 
-def _dump(value: ContractModel) -> dict[str, JsonValue]:
-    # Request models expose only declared wire keys. exclude_unset retains an
-    # explicitly supplied null, which several project update operations use.
-    return cast(dict[str, JsonValue], value.model_dump(mode="json", exclude_unset=True))
-
-
-def _first_query(request: Request, name: str, default: str | None = None) -> str | None:
-    values = [value for value in request.query_params.getlist(name) if value]
-    return values[0] if values else default
-
-
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
@@ -144,7 +134,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
         display = DISPLAY_READ.set(True)
         try:
-            account_key = _first_query(request, "account_key", query.account_key) or "default"
+            account_key = first_nonempty_query(request, "account_key", query.account_key) or "default"
             workers = [value for value in request.query_params.getlist("workers") if value]
             if workers == ["1"]:
                 from codex_worker_accounts import catalog
@@ -169,7 +159,7 @@ def create_router(context: ApiContext) -> APIRouter:
         query: Annotated[LimitsQuery, Query()],
     ) -> Response:
         runtime = _runtime(context)
-        account_key = _first_query(request, "account_key", query.account_key) or "default"
+        account_key = first_nonempty_query(request, "account_key", query.account_key) or "default"
         cached = [value for value in request.query_params.getlist("cached") if value]
         current = runtime.rate_limits_for(account_key)
         if cached == ["1"] and (current.get("data") is not None or current.get("error")):
@@ -181,7 +171,7 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[ClaudeLoginQuery, Query()],
     ) -> Response:
-        selected = _first_query(request, "request_id", query.request_id)
+        selected = first_nonempty_query(request, "request_id", query.request_id)
         return context.send(request, _claude_login(_runtime(context)).status(selected))
 
     @router.post("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
@@ -258,7 +248,7 @@ def create_router(context: ApiContext) -> APIRouter:
         from codex_claude_controls import profile
 
         profile_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], profile)
-        return context.send(request, profile_service(_runtime(context), _dump(body)))
+        return context.send(request, profile_service(_runtime(context), body_data(body)))
 
     @router.post("/api/claude/session", response_model=ClaudeSessionResponse, responses=_ERROR_RESPONSES)
     def claude_session(
@@ -275,28 +265,28 @@ def create_router(context: ApiContext) -> APIRouter:
         from codex_claude_controls import action
 
         session_action = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], action)
-        return context.send(request, session_action(_runtime(context), _dump(body)))
+        return context.send(request, session_action(_runtime(context), body_data(body)))
 
     @router.post("/api/peer-teams", response_model=PeerTeamsResponse, responses=_ERROR_RESPONSES)
     def peer_teams(request: Request, body: Annotated[PeerTeamRequest, Body()]) -> Response:
         from codex_peer_teams import manage
 
         peer_team_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], manage)
-        return context.send(request, peer_team_service(_runtime(context), _dump(body)))
+        return context.send(request, peer_team_service(_runtime(context), body_data(body)))
 
     @router.post("/api/limits/reset", response_model=LimitResetResponse, responses=_ERROR_RESPONSES)
     def reset_limits(request: Request, body: Annotated[ResetRequest, Body()]) -> Response:
         from codex_limit_resets import consume_reset
 
         reset_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], consume_reset)
-        return context.send(request, reset_service(_runtime(context), _dump(body)))
+        return context.send(request, reset_service(_runtime(context), body_data(body)))
 
     @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_ERROR_RESPONSES)
     def project_write(request: Request, body: Annotated[ProjectWriteRequest | SidebarReorderRequest, Body()]) -> Response:
         from codex_project_folders import SidebarOrderConflict
 
         try:
-            result = _runtime(context).projects(_dump(body))
+            result = _runtime(context).projects(body_data(body))
         except SidebarOrderConflict as error:
             return context.send(request, {"error": str(error)}, status=409)
         return context.send(request, result)

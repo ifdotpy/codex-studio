@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
 from studio_api.context import ApiContext
+from studio_api.request_helpers import body_data, first_nonempty_query
 from codex_sync_entities import project
 
 from .models import (
@@ -134,7 +135,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/leads", response_model=AgentResponse)
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         created = runtime.new_lead(request)
         # Preserve the original receipt-before-snapshot behavior.
         with runtime.lock, runtime.db() as db:
@@ -145,14 +146,14 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/agents", response_model=AgentResponse)
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, project("agent", created))
 
     @router.post("/api/conversation", response_model=AgentResponse)
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         try:
             result = runtime.conversation_settings(body.id, request)
         except ValueError as error:
@@ -164,13 +165,13 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/configure", response_model=ConfigureResponse)
     def configure(http_request: Request, body: ConfigureRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         return context.send(http_request, runtime.configure(body.id, request))
 
     @router.post("/api/agents/account", response_model=AgentResponse)
     def select_account(http_request: Request, body: AccountSelectionRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         selected = runtime.set_account(body.id, body.account_key, body.cwd)
         with runtime.lock, runtime.db() as db:
             selected = runtime.agent(cast(str, selected["id"]), db)
@@ -198,12 +199,9 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/action", response_model=NativeActionResponse)
     def native_action(http_request: Request, body: NativeActionRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         if not isinstance(body.action, str):
-            safety_action = cast(
-                dict[str, JsonValue],
-                body.action.model_dump(mode="json", exclude_unset=True),
-            )
+            safety_action = body_data(body.action)
             return context.send(http_request, runtime.native_action(body.id, safety_action))
         action = body.action.value
         request_id = body.request_id
@@ -228,13 +226,13 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/native-command", response_model=NativeCommandResponse | None)
     def native_command(http_request: Request, body: NativeCommandRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         return context.send(http_request, runtime.native_command_action(request))
 
     @router.post("/api/import", response_model=AgentResponse)
     def import_thread(http_request: Request, body: ImportRequest) -> Response:
         runtime = current_runtime()
-        request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
+        request = body_data(body)
         imported = runtime.import_thread(request)
         return context.send(http_request, project("agent", imported))
 
@@ -284,29 +282,23 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/import", response_model=ImportListResponse)
     def import_list(request: Request, query: ImportListQuery = Depends()) -> Response:
         runtime = current_runtime()
-        cursor = _first_query(request, "cursor")
-        account_key = _first_query(request, "account_key") or "default"
+        cursor = first_nonempty_query(request, "cursor")
+        account_key = first_nonempty_query(request, "account_key") or "default"
         return context.send(request, runtime.import_list(cursor, account_key=account_key))
 
     @router.get("/api/capabilities", response_model=CapabilitiesResponse)
     def capabilities(request: Request, query: CapabilitiesQuery = Depends()) -> Response:
         runtime = current_runtime()
-        agent = _first_query(request, "agent")
+        agent = first_nonempty_query(request, "agent")
         return context.send(request, runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
 
     @router.get("/api/skills", response_model=SkillsResponse)
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:
         runtime = current_runtime()
-        agent = _first_query(request, "agent")
+        agent = first_nonempty_query(request, "agent")
         return context.send(request, runtime.skill_catalog(agent))
 
     return router
-
-
-def _first_query(request: Request, key: str) -> str | None:
-    """Match parse_qs defaults: first value, with empty values omitted."""
-    values = request.query_params.getlist(key)
-    return next((value for value in values if value != ""), None)
 
 
 _TRANSFER_FIELDS = (
