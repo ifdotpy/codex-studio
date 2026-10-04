@@ -87,7 +87,7 @@ function status(item: Message, p: Json) {
       ? "running"
       : statusValue === "failed" ||
           p.success === false ||
-          (typeof p.exitCode === "number" && p.exitCode !== 0)
+          (p.exitCode != null && p.exitCode !== 0)
         ? "failed"
         : ["declined", "cancelled", "interrupted"].includes(statusValue || "")
           ? statusValue
@@ -143,14 +143,20 @@ function readActivity(p: Json): { targets: ReadTarget[]; onlyReads: boolean } {
     };
   };
   if (p.type === "commandExecution") {
-    const actions: Json[] = Array.isArray(p.commandActions)
-      ? p.commandActions.filter(isJsonObject)
-      : [];
+    const actions = Array.isArray(p.commandActions) ? p.commandActions : [];
     return {
-      targets: actions
-        .filter((a) => a.type === "read" && typeof a.path === "string")
-        .map((a) => target(stringValue(a.path) || "", stringValue(a.name))),
-      onlyReads: actions.length > 0 && actions.every((a) => a?.type === "read"),
+      targets: actions.flatMap((action) =>
+        isJsonObject(action) &&
+        action.type === "read" &&
+        typeof action.path === "string"
+          ? [target(action.path, stringValue(action.name))]
+          : [],
+      ),
+      onlyReads:
+        actions.length > 0 &&
+        actions.every(
+          (action) => isJsonObject(action) && action.type === "read",
+        ),
     };
   }
   const tool = stringValue(p.tool) || stringValue(p.type) || "";
@@ -390,9 +396,9 @@ export const ToolCard = memo(function ToolCard({
               <pre className="tool-output">{output}</pre>
             </div>
           )}
-          {typeof p.exitCode === "number" && (
+          {p.exitCode != null && (
             <div className={`tool-exit ${p.exitCode !== 0 ? "danger" : ""}`}>
-              Exit code {p.exitCode}
+              Exit code {pretty(p.exitCode)}
             </div>
           )}
           {p.error && (
