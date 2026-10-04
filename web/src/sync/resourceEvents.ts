@@ -220,15 +220,20 @@ function hasTokenRateInterest() {
 }
 
 function dispatchResource(resource: ResourceRef, version: Version) {
+  if (!rememberResourceVersion(resource, version)) return;
+  pendingResources.add(resourceKey(resource));
+}
+
+function rememberResourceVersion(resource: ResourceRef, version: Version) {
   const key = resourceKey(resource);
   const previous = resourceValues.get(key);
   if (
     previous?.epoch === version.epoch &&
     previous.revision >= version.revision
   )
-    return;
+    return false;
   resourceValues.set(key, version);
-  pendingResources.add(key);
+  return true;
 }
 
 function dispatchEvent(event: ResourceChangeEvent) {
@@ -252,11 +257,12 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
-    if (!active.has(resourceKey(resource))) continue;
-    dispatchResource(resource, {
+    const version = {
       epoch: event.epoch,
       revision: event.revision,
-    });
+    };
+    if (active.has(resourceKey(resource))) dispatchResource(resource, version);
+    else rememberResourceVersion(resource, version);
   }
   const local = localResources().map(resourceKey);
   if (
