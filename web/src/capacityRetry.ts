@@ -1,20 +1,18 @@
-import type { Agent, JsonValue } from "./types";
+import type { Agent } from "./types";
 
-function jsonRecord(
-  value: JsonValue | null | undefined,
-): Record<string, JsonValue> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : null;
+type CapacityRetry = NonNullable<Agent["capacityRetry"]> & { id: string };
+
+function hasRetryId(
+  retry: NonNullable<Agent["capacityRetry"]>,
+): retry is CapacityRetry {
+  return typeof retry.id === "string";
 }
 
-export function currentCapacityRetry(
-  agent: Agent,
-): Record<string, JsonValue> | null {
-  const retry = jsonRecord(agent.capacityRetry);
+export function currentCapacityRetry(agent: Agent): CapacityRetry | null {
+  const retry = agent.capacityRetry;
   if (
     !retry ||
-    typeof retry.id !== "string" ||
+    !hasRetryId(retry) ||
     retry.threadId !== agent.threadId ||
     retry.epoch !== agent.epoch ||
     (retry.accountKey || "default") !== (agent.accountKey || "default") ||

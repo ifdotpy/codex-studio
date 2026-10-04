@@ -116,17 +116,17 @@ export default function WorkerCard({
         >
           <ChatStatus
             status={indicator}
-            provider={agent.provider}
-            model={agent.model}
+            provider={agent.provider ?? undefined}
+            model={agent.model ?? undefined}
           />
           <span className="worker-text">
             <strong>{agent.name}</strong>
             <span className="worker-meta">
               <small>
                 {indicator?.kind === "answer" ||
-                ["waiting", "parked"].includes(agent.status) ||
+                ["waiting", "parked"].includes(agent.status ?? "") ||
                 (indicator?.kind === "working" && !agent.inFlight)
-                  ? indicator?.label || statusLabel(agent.status)
+                  ? indicator?.label || statusLabel(agent.status ?? "")
                   : awaitingAnswer
                     ? "Needs your answer"
                     : deferred && agent.status === "approval"
@@ -137,9 +137,9 @@ export default function WorkerCard({
                         ? "Waiting for Codex"
                         : [
                             statusLabel(
-                              agent.status,
+                              agent.status ?? "",
                               undefined,
-                              agent.parkedEvent,
+                              agent.parkedEvent ?? undefined,
                             ),
                             nativeReleaseLabel(agent),
                           ]
@@ -149,12 +149,12 @@ export default function WorkerCard({
               <span
                 className="worker-model-summary"
                 title={[
-                  agent.model,
+                  agent.model ?? "",
                   agent.effort || "default reasoning",
                   agent.fastMode ? "Fast" : "Standard",
                 ].join(" · ")}
               >
-                {shortModel(agent.model)}
+                {shortModel(agent.model ?? "")}
                 {agent.fastMode ? " · Fast" : ""}
               </span>
               <TokenRate agent={agent} variant="worker" />
@@ -200,7 +200,7 @@ export default function WorkerCard({
           agentId={agent.id}
           label="Task"
           text={overview.task}
-          truncated={overview.taskTruncated}
+          truncated={overview.taskTruncated ?? undefined}
           open={open}
         />
       ) : (
@@ -211,7 +211,7 @@ export default function WorkerCard({
           agentId={agent.id}
           label="Last report"
           text={overview.result}
-          truncated={overview.resultTruncated}
+          truncated={overview.resultTruncated ?? undefined}
           open={open}
         />
       ) : agent.status === "completed" ? (

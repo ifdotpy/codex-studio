@@ -6,7 +6,7 @@ import type { Agent } from "../../types";
 const lead = {
   id: "lead-1",
   name: "Main agent",
-  source: "legacy",
+  source: "managed",
   status: "running",
 } as Agent;
 
