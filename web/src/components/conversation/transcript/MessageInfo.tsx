@@ -113,7 +113,7 @@ export default function MessageInfo({
   const cost = open && rootId ? peekSessionCost(stateDir, rootId) : null;
   const rows: [string, string][] = [];
   const identifiers: Array<[string, string | undefined]> = [
-    ["Turn ID", message.turnId],
+    ["Turn ID", message.turnId ?? undefined],
     ["Item ID", itemId],
   ];
   if (date && Number.isFinite(date.getTime()) && date.getTime() > 0)
