@@ -956,7 +956,9 @@ export default function App() {
         (mobileClient
           ? (typeof data?.runtime?.projects?.[0]?.path === "string"
               ? data.runtime.projects[0].path
-              : undefined) || leads.find((item) => item.cwd)?.cwd
+              : undefined) ||
+            leads.find((item) => item.cwd)?.cwd ||
+            undefined
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
@@ -990,7 +992,7 @@ export default function App() {
         (typeof data?.runtime?.projects?.[0]?.path === "string"
           ? data.runtime.projects[0].path
           : undefined) ||
-        leads.find((item) => item.cwd)?.cwd;
+        (leads.find((item) => item.cwd)?.cwd ?? undefined);
       if (!cwd) {
         setSidebar(false);
         setModal({

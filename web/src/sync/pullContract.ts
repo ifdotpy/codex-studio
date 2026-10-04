@@ -5,7 +5,7 @@ export type SyncPullResponse = GetResult<"/api/sync/pull">;
 export function isEntityResetResponse(
   response: SyncPullResponse,
   scope: string,
-): boolean {
+): response is Extract<SyncPullResponse, { reset: true }> {
   if (response.reset !== true) return false;
   if (scope !== "state:entities:v1")
     throw new Error("The server reset an unsupported sync scope.");

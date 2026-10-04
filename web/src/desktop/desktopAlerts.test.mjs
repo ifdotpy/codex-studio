@@ -257,6 +257,14 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       version: 0,
     },
     {
+      id: "empty-title",
+      leadId: "lead",
+      recipient: "user",
+      needsResponse: true,
+      title: "",
+      version: 3,
+    },
+    {
       id: "other-author",
       leadId: "lead",
       author: "worker",
@@ -316,6 +324,25 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       title: "Main: Message for you",
       body: "Zero version.",
       target: { agentId: "lead", section: "messages", itemId: "version-zero" },
+    },
+    {
+      id: "complaint:empty-title:3",
+      title: "Main: Message for you",
+      body: "Open the message to read it.",
+      target: { agentId: "lead", section: "messages", itemId: "empty-title" },
+    },
+  ]);
+});
+
+it("keeps completed-thread alerts when the optional runtime snapshot is absent", () => {
+  const data = snapshot();
+  data.runtime = null;
+  assert.deepEqual(desktopAlerts(data), [
+    {
+      id: "completed:lead:turn-1",
+      title: "Main: Reply ready",
+      body: "The checks pass.",
+      target: { agentId: "lead", section: "messages" },
     },
   ]);
 });
