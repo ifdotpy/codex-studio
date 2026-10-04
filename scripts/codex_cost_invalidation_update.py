@@ -5,13 +5,14 @@ import sys
 
 from codex_source import signature, source_function
 
-SOURCE_HASH = 'ba3a71a6624917d80019cb5d4d8de408dfb03c4bce4e9d975dcb6514ecdb061a'
+SOURCE_HASH = '7f074100ab4594bc37d87185a23d71f81dc76244811c2f6034c351467a89bd7f'
 RUNTIME_HASHES = frozenset({
     '7e2f7a03acdf9c6a1c8876f022b70c14821ef37a7119f33ed910845e18ba7450',
     '9b7fcf91543d2e469bc8581ec8d4c1cd868afe64a4b035a15fe0f5fd1beac7e7',
 })
 BEFORE = '6278ad43b71a2a2ba34c86c8ee3c7fdcf634a0fa5043f2232965c0c0da2e46e6'
-AFTER = '974cdbc5ccda9713aab3e3d08c2440bcf38b9f7eedc7fddf700cd1e17f883a05'
+INTERMEDIATE = '974cdbc5ccda9713aab3e3d08c2440bcf38b9f7eedc7fddf700cd1e17f883a05'
+AFTER = 'abbd61ea5c82d3fb43dad19c15b28f82203ffb1d5e0ae1d140fa08e6348293c5'
 DEPENDENCIES = {
     'analytics_agent': 'fb1b9c9fe1326c6934471f9d7c9938a9cd8129a8e56a29cb362cce5cd9427939',
     'analytics_budget_capture': '7024ae782e0013bc6f60d31d02badcf8a25ebf1d3b4ea351b050f0e92a0f6ba7',
@@ -49,11 +50,11 @@ def apply(runtime):
                 or getattr(runtime.analytics_event, '__func__', None) is not current):
             raise RuntimeError('The running analytics callback identity differs')
         current_signature = signature(current)
-        if current_signature not in {BEFORE, AFTER}:
+        if current_signature not in {BEFORE, INTERMEDIATE, AFTER}:
             raise RuntimeError('The running analytics function differs')
         if current_signature == AFTER:
             return {'status': 'already_applied'}
-        current.__code__ = desired.__code__
         current.__defaults__ = desired.__defaults__
         current.__kwdefaults__ = desired.__kwdefaults__
+        current.__code__ = desired.__code__
     return {'status': 'applied'}
