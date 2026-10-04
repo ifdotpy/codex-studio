@@ -528,6 +528,7 @@ class RuleRecord(ContractModel):
     agent: StrictStr | None = None
     rootId: StrictStr | None = None
     name: StrictStr | None = None
+    description: StrictStr | None = None
     enabled: StrictBool | None = None
     epoch: StrictInt | None = None
     kind: RuleKind | None = None

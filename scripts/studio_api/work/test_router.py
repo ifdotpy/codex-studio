@@ -313,7 +313,8 @@ class WorkRouterTests(unittest.TestCase):
         })
         context.runtime.rules = Mock(return_value={"rules": [{
             "id": "rule-1", "agent": "agent-1", "rootId": "agent-1", "epoch": 2,
-            "name": "Check", "kind": "event", "status": "active", "created": 1.0,
+            "name": "Check", "description": "Rule description", "kind": "event",
+            "status": "active", "created": 1.0,
             "intervalSeconds": 60, "nextAt": 2.0, "event": "worker_completed",
             "command": "", "text": "Continue.", "inFlight": False, "checks": 3,
             "wakes": 1, "lastOutput": "ok", "lastExitCode": 0, "lastFinished": 2.0,
@@ -327,6 +328,7 @@ class WorkRouterTests(unittest.TestCase):
         rule_response = client.get("/api/rules")
         self.assertEqual(rule_response.status_code, 200, rule_response.text)
         self.assertEqual(rule_response.json()["rules"][0]["lastOutput"], "ok")
+        self.assertEqual(rule_response.json()["rules"][0]["description"], "Rule description")
         self.assertEqual(rule_response.json()["rules"][0]["error"], "Previous check failed")
         self.assertEqual(rule_response.json()["rules"][0]["restartCheck"]["monitorId"], "monitor-1")
 
