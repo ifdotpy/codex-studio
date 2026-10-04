@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from studio_api.models import (
@@ -370,23 +370,6 @@ class SnapshotNativeRelease(AgentNativeRelease):
     resetBy: str | None = None
 
 
-class SnapshotStartAttempt(AgentStartAttempt):
-    id: str | None = None
-    epoch: int | None = None
-    events: list[str] | None = None
-    action: str | None = None
-    submitted: bool | None = None
-    activeAtReservation: bool | None = None
-    turnId: str | None = None
-    observedTurnId: str | None = None
-    nativeOperationId: str | None = None
-    accountKey: str | None = None
-    actionRequestId: str | None = None
-    actionIdentity: dict[str, JsonValue] | None = None
-    notSubmittedReason: str | None = None
-    completedAt: float | None = None
-
-
 class WorkerDefaultsDto(ContractModel):
     model: str
     effort: str | None
@@ -472,6 +455,94 @@ class CapacityRetrySettingsDto(ExecutionSettingsDto):
     yoloMode: bool | None = None
     profileInstructions: str | None = None
     role: AgentRole | None = None
+
+
+class NativeActionIdentityDto(ContractModel):
+    accountKey: str
+    threadId: str
+    epoch: int
+
+
+class SnapshotModelSettingsDto(ContractModel):
+    id: str
+    epoch: int
+    accountKey: str
+    threadId: str
+    connectionId: str
+    settings: CapacityRetrySettingsDto
+    status: Literal["submitted", "acknowledged"]
+
+
+class ReviewUncommittedTargetDto(ContractModel):
+    type: Literal["uncommittedChanges"]
+
+
+class ReviewBaseBranchTargetDto(ContractModel):
+    type: Literal["baseBranch"]
+    branch: str
+
+
+class ReviewCommitTargetDto(ContractModel):
+    type: Literal["commit"]
+    sha: str
+    title: str | None = None
+
+
+class ReviewCustomTargetDto(ContractModel):
+    type: Literal["custom"]
+    instructions: str
+
+
+ReviewTargetDto = Annotated[
+    ReviewUncommittedTargetDto
+    | ReviewBaseBranchTargetDto
+    | ReviewCommitTargetDto
+    | ReviewCustomTargetDto,
+    Field(discriminator="type"),
+]
+
+
+class SnapshotStartAttempt(AgentStartAttempt):
+    id: str | None = None
+    epoch: int | None = None
+    events: list[str] | None = None
+    action: Literal["review", "capacity", "compact", "safety"] | None = None
+    submitted: bool | None = None
+    activeAtReservation: bool | None = None
+    turnId: str | None = None
+    observedTurnId: str | None = None
+    nativeOperationId: str | None = None
+    accountKey: str | None = None
+    connectionId: str | None = None
+    threadId: str | None = None
+    created: float | None = None
+    settingsFixed: bool | None = None
+    capacityRetryId: str | None = None
+    actionRequestId: str | None = None
+    actionIdentity: NativeActionIdentityDto | None = None
+    reviewTarget: ReviewTargetDto | None = None
+    modelSettings: SnapshotModelSettingsDto | None = None
+    executionOutcome: Literal["unknown", "unsent", "rejected"] | None = None
+    notSubmittedReason: str | None = None
+    completedAt: float | None = None
+
+
+class SnapshotNativeToolCatalogDto(ContractModel):
+    threadId: str | None = None
+    digest: str
+
+
+class SnapshotNativeNameIdentityDto(ContractModel):
+    accountKey: str
+    threadId: str
+    name: str
+
+
+class SnapshotNativeNameFailureDto(ContractModel):
+    identity: SnapshotNativeNameIdentityDto
+    error: str
+    attempts: int
+    retryAt: float
 
 
 class AgentOverview(ContractModel):
@@ -572,6 +643,7 @@ class AgentEntityDto(ContractModel):
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
+    kind: Literal["agent"]
     wave: str | None = None
     runId: str | None = None
     launcherPid: int | None = None
@@ -609,6 +681,8 @@ class SnapshotAgentDto(AgentEntityDto):
     supervisorRestore: JsonValue | None = None
     lastCompletedTurnStatus: AgentStatus | None = None
     activityPhase: str | None = None
+    nativeToolCatalog: SnapshotNativeToolCatalogDto | None = None
+    nativeNameFailure: SnapshotNativeNameFailureDto | None = None
     executionSettingsAccountKey: str | None = None
     accountTransferId: str | None = None
     accountId: str | None = None
@@ -1193,12 +1267,18 @@ class SnapshotChatGroupDto(ContractModel):
     lastMessageAt: float | None
 
 
+SnapshotNodeDto = Annotated[
+    SnapshotAgentDto | SnapshotChatGroupDto,
+    Field(discriminator="kind"),
+]
+
+
 class StateSnapshot(ResponseModel):
     token: str
     stateDir: str
     threads: list[SnapshotAgentDto]
     chats: list[SnapshotChatGroupDto]
-    nodes: list[SnapshotAgentDto | SnapshotChatGroupDto]
+    nodes: list[SnapshotNodeDto]
     edges: list[SnapshotEdgeDto]
     at: float
     runtime: RuntimeSnapshot | None

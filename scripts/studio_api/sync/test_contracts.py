@@ -27,6 +27,7 @@ from studio_api.sync.models import (
     RequestEntityDto,
     RoomRadioSeen,
     SnapshotAgentDto,
+    SnapshotChatGroupDto,
     StateSnapshot,
     SyncDocument,
     SyncEntityPayload,
@@ -244,8 +245,23 @@ class SyncEntityContractTests(unittest.TestCase):
             "providerDetail": {"phase": "policy"},
         }
         source: dict[str, JsonValue] = {
-            "id": "agent-a", "status": "interrupted", "threadId": "thread-a",
+            "id": "agent-a", "kind": "agent", "status": "interrupted", "threadId": "thread-a",
             "turnId": "turn-a", "epoch": 4, "accountKey": "default",
+            "startAttempt": {
+                "id": "start-a", "epoch": 4, "events": ["event-a"], "created": 9.0,
+                "settingsFixed": True, "accountKey": "default", "connectionId": "conn-a",
+                "threadId": "thread-a", "modelSettings": {
+                    "id": "start-a", "epoch": 4, "accountKey": "default",
+                    "threadId": "thread-a", "connectionId": "conn-a",
+                    "settings": {"model": "gpt-6-mini", "effort": "medium", "fastMode": False},
+                    "status": "acknowledged",
+                },
+            },
+            "nativeToolCatalog": {"threadId": "thread-a", "digest": "sha256-digest"},
+            "nativeNameFailure": {
+                "identity": {"accountKey": "default", "threadId": "thread-a", "name": "Worker"},
+                "error": "Native thread name update failed", "attempts": 2, "retryAt": 15.0,
+            },
             "contextUsage": {"tokens": 120, "window": None, "at": 10.5},
             "nativeThreadBlock": {"threadId": "thread-a", "error": provider_error},
             "nativeTurnError": {"turnId": "turn-a", "error": provider_error},
@@ -321,6 +337,11 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertFalse(parsed.capacityRetry.settings.yoloMode)
         self.assertEqual(parsed.usageResume.cause, "usage_limit")
         self.assertEqual(parsed.lastEvent, "2026-10-04T03:00:00Z")
+        self.assertIsNotNone(parsed.nativeNameFailure)
+        assert parsed.nativeNameFailure is not None
+        self.assertEqual(parsed.nativeNameFailure.attempts, 2)
+        assert parsed.startAttempt is not None
+        self.assertTrue(parsed.startAttempt.settingsFixed)
 
         request_source: dict[str, JsonValue] = {
             "id": "request-a", "method": "mcpServer/elicitation/request", "agent": "agent-a",
@@ -371,11 +392,19 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertEqual(runtime_snapshot.nativeNotices[0].provider, "codex")
         state = StateSnapshot.model_validate({
             "token": "session", "stateDir": "/state", "threads": [snapshot_source],
-            "chats": [], "nodes": [snapshot_source], "edges": [], "at": 15.0,
+            "chats": [{
+                "id": "chat-a", "name": "Chat", "members": ["agent-a"], "kind": "chat",
+                "messageCount": 1, "tail": "Hello", "lastMessageAt": 14.0,
+            }], "nodes": [snapshot_source, {
+                "id": "chat-a", "name": "Chat", "members": ["agent-a"], "kind": "chat",
+                "messageCount": 1, "tail": "Hello", "lastMessageAt": 14.0,
+            }], "edges": [], "at": 15.0,
             "runtime": runtime_snapshot.model_dump(mode="json"),
         })
         self.assertIsNotNone(state.runtime)
         self.assertEqual(state.threads[0].project, "Studio")
+        self.assertIsInstance(state.nodes[0], SnapshotAgentDto)
+        self.assertIsInstance(state.nodes[1], SnapshotChatGroupDto)
 
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
         with self.assertRaises(ValidationError):
@@ -436,7 +465,7 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_chat_and_full_snapshot_models_share_runtime_contract(self) -> None:
         active_agent = {
-            "id": "agent-a", "status": "running", "activity": {
+            "id": "agent-a", "kind": "agent", "status": "running", "activity": {
                 "phase": "tool", "at": 1.5,
                 "tools": [{"id": "tool-a", "type": "commandExecution", "name": "exec"}],
             },
@@ -448,7 +477,7 @@ class SyncEntityContractTests(unittest.TestCase):
             "nativeStatus": "notLoaded",
             "startAttempt": {
                 "id": "attempt-a", "epoch": 4, "events": ["event-a"],
-                "action": "resume", "submitted": True, "activeAtReservation": True,
+                "action": "compact", "submitted": True, "activeAtReservation": True,
                 "observedTurnId": "turn-a", "nativeOperationId": "native-a",
                 "prepareError": "prepare details", "responseError": "response details",
             },
