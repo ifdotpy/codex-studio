@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, confloat, conint
+from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from studio_api.models import ContractModel
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
 ResourceRevision = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_REVISION)]
 NonEmptyIdentifier = Annotated[StrictStr, Field(min_length=1)]
-NonNegativeFiniteNumber = conint(strict=True, ge=0) | confloat(strict=True, ge=0, allow_inf_nan=False)
+NonNegativeFiniteNumber = Annotated[StrictInt, Field(ge=0)] | Annotated[
+    StrictFloat, Field(ge=0, allow_inf_nan=False)
+]
 
 
 class PanelResource(ContractModel):
