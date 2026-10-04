@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_worktree_creation import WorktreeNeedsReview, _run_checkout, create_worker_worktree
 import codex_worktree_disk
 from codex_worktree_disk import (
+    CACHE_TTL,
     WorktreeDiskScanner,
     _allocated_bytes,
     _apfs_private_bytes,
@@ -261,6 +262,18 @@ class WorktreeContracts(unittest.TestCase):
             by_agent, scoped = management_view(SimpleNamespace(root=state), [{'id': 'worker'}])
         self.assertEqual(scoped['totalBytes'], by_agent['worker']['bytes'])
         self.assertLess(scoped['totalBytes'], scoped['allWorkersBytes'])
+
+    def test_stale_full_snapshot_refreshes_only_when_read_is_requested(self):
+        now = [0.0]
+        scanner = WorktreeDiskScanner(self.root / 'manual-refresh', clock=lambda: now[0])
+        scanner.started = True
+        scanner.last_scan_at = 0.0
+
+        scanner.request()
+        self.assertFalse(scanner.wake.is_set(), 'fresh snapshots do not trigger background scans')
+        now[0] = CACHE_TTL
+        scanner.request()
+        self.assertTrue(scanner.wake.is_set(), 'an explicit stale read requests a refresh')
 
     def test_apfs_private_measure_excludes_a_clone_fixture(self):
         if sys.platform != 'darwin':

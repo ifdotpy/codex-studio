@@ -30,19 +30,6 @@ HANDLE_LIMIT = 256 * 1024 * 1024
 SOCKET_TIMEOUT = 10
 
 
-def _publish_desktop(state_dir: str | Path) -> None:
-    """Invalidate desktop/supervisor status after a lifecycle transition."""
-    try:
-        from studio_api.sync.resources.hub import publish_resources
-    except ModuleNotFoundError as error:
-        if error.name != "studio_api.sync.resources.hub":
-            raise
-        return
-    from studio_api.sync.resources.models import DesktopResource, ResourceRef
-
-    publish_resources(state_dir, ResourceRef(DesktopResource(kind="desktop")))
-
-
 def _retryable_storage_error(error):
     if isinstance(error, OSError):
         return True
@@ -269,8 +256,6 @@ class Child:
         # and request handling use other locks and can continue during a retry.
         with self.append_lock:
             self._append_frame(kind, payload, raw, size)
-        if kind == "exit":
-            _publish_desktop(self.process.supervisor.root)
 
     def _append_frame(self, kind, payload, raw, size):
         pending = None
@@ -515,7 +500,6 @@ class Supervisor:
             with self.journal.db() as db:
                 db.execute("INSERT INTO supervisor_state VALUES ('recovery',?) "
                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(self.recovery),))
-            _publish_desktop(self.root)
             return {"finished": True}
         if request.get("action") == "adminCloseHandle":
             if (not isinstance(request.get("expectedPid"), int)
@@ -558,7 +542,6 @@ class Supervisor:
                            (now, "Closed by operator after verified test/unknown-client ownership", handle))
                 db.commit()
             result = {"closed": True, "handle": handle, "pid": request["expectedPid"]}
-            _publish_desktop(self.root)
             return result
         handle = request.get("handle")
         if not isinstance(handle, str) or not handle or len(handle) > 180:
@@ -568,8 +551,6 @@ class Supervisor:
             with self.journal.db() as db:
                 row = db.execute("SELECT init_result,acknowledged,sequence,generation FROM handles WHERE id=?",
                                  (handle,)).fetchone()
-            if not resumed:
-                _publish_desktop(self.root)
             return {"resumed": resumed, "initResult": json.loads(row[0]) if row[0] else None,
                     "acknowledged": row[1], "sequence": row[2], "generation": row[3],
                     "returnCode": child.process.poll()}

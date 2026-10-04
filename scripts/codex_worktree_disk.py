@@ -27,12 +27,7 @@ _apfs_api = None
 def _publish_worktree_disk(state_dir: str | Path, agent_ids: Iterable[str]) -> None:
     if not agent_ids:
         return
-    try:
-        from studio_api.sync.resources.hub import publish_resources
-    except ModuleNotFoundError as error:
-        if error.name != 'studio_api.sync.resources.hub':
-            raise
-        return
+    from studio_api.sync.resources.hub import publish_resources
     from studio_api.sync.resources.models import ResourceRef, WorktreeDiskResource
 
     resources = tuple(
@@ -176,6 +171,7 @@ class WorktreeDiskScanner:
         self.sizes = {}
         self.cache = {}  # Canonical worktree path -> measured row and root signature.
         self.scanning = False
+        self.last_scan_at = None
         self.error = None
         self.started = False
         self.priority = set()
@@ -201,8 +197,13 @@ class WorktreeDiskScanner:
             if new_priority:
                 self.error = None
             first_start = not self.started
+            full_scan_due = (
+                not requested
+                and self.started
+                and (self.last_scan_at is None or now - self.last_scan_at >= CACHE_TTL)
+            )
         self.start()
-        if first_start or new_priority:
+        if first_start or new_priority or full_scan_due:
             self.wake.set()
 
     def _take_priority(self):
@@ -283,6 +284,7 @@ class WorktreeDiskScanner:
                         self.sizes[agent_id] = dict(row)
         with self.lock:
             self.scanning = False
+            self.last_scan_at = self.clock()
             changed_ids = {
                 agent_id
                 for agent_id in previous_sizes.keys() | self.sizes.keys()
@@ -301,6 +303,7 @@ class WorktreeDiskScanner:
                 with self.lock:
                     self.error = str(error)[:160]
                     self.scanning = False
+                    self.last_scan_at = self.clock()
                     affected = set(self.sizes)
                 _publish_worktree_disk(self.state_dir, affected)
 

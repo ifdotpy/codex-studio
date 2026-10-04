@@ -85,6 +85,17 @@ class SessionCostRefreshContract(unittest.TestCase):
 
         self.assertEqual(observations, [(self.db_path.parent, "lead", True, False)])
 
+    def test_persistent_refresh_failure_publishes_once_and_cools_down(self):
+        with patch.object(self.reader, "_compute_shared", side_effect=ValueError("persistent source error")), \
+                patch("codex_session_costs._publish_session_cost") as publish:
+            self.reader._background_refresh("lead", "lead")
+            self.assertEqual(publish.call_count, 1)
+            with self.assertRaisesRegex(ValueError, "persistent source error"):
+                self.reader.snapshot("lead")
+            self.reader._background_refresh("lead", "lead")
+            self.assertEqual(publish.call_count, 1)
+            self.assertEqual(self.reader.refresh_checks["lead"], self.clock[0])
+
     def test_append_decodes_only_new_rows_and_keeps_exact_usage(self):
         self.write_rows(*({"type": "user", "text": "x" * 100} for _ in range(1000)))
         self.reader._log_rows(self.log)

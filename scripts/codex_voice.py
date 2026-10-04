@@ -44,12 +44,7 @@ class VoiceStore(NativeVoice):
             with self._pending_voice_lock:
                 self._pending_voice_agents.add(agent)
             return
-        try:
-            from studio_api.sync.resources.hub import publish_resources
-        except ModuleNotFoundError as error:
-            if error.name != "studio_api.sync.resources.hub":
-                raise
-            return
+        from studio_api.sync.resources.hub import publish_resources
         from studio_api.sync.resources.models import ResourceRef, VoiceResource
 
         publish_resources(

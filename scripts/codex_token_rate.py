@@ -192,33 +192,39 @@ class TokenRates:
         self.pending_response_rates = OrderedDict()
         self.expiry_lock = threading.Lock()
         self.expiry_timers = OrderedDict()
+        self._publication_lock = threading.Lock()
+        self._last_published_snapshot = None
 
     def _publish_if_changed(self, previous):
         if self.state_dir is None:
             return
-        current = self.workspace_snapshot()
-        if current == previous:
-            return
-        try:
-            from studio_api.sync.resources.hub import publish_token_rates
-        except ModuleNotFoundError as error:
-            if error.name != 'studio_api.sync.resources.hub':
-                raise
-            return
-        from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
+        # Mutators release self.lock before calling this method. The serializer
+        # then takes a coherent state snapshot briefly and releases self.lock
+        # before synchronous hub publication. Hub code must never call back into
+        # TokenRates or acquire this publication lock.
+        with self._publication_lock:
+            with self.lock:
+                current = self.workspace_snapshot()
+            if current == previous or current == self._last_published_snapshot:
+                return
+            from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
 
-        rates = {
-            agent_id: TokenRateValue(**value)
-            for agent_id, value in current['rates'].items()
-        }
-        teams = {
-            root_id: {
+            rates = {
                 agent_id: TokenRateValue(**value)
-                for agent_id, value in team.items()
+                for agent_id, value in current['rates'].items()
             }
-            for root_id, team in current['teams'].items()
-        }
-        publish_token_rates(self.state_dir, TokenRateSnapshot(rates=rates, teams=teams))
+            teams = {
+                root_id: {
+                    agent_id: TokenRateValue(**value)
+                    for agent_id, value in team.items()
+                }
+                for root_id, team in current['teams'].items()
+            }
+            snapshot = TokenRateSnapshot(rates=rates, teams=teams)
+            from studio_api.sync.resources.hub import publish_token_rates
+
+            publish_token_rates(self.state_dir, snapshot)
+            self._last_published_snapshot = current
 
     def _schedule_expiry(self, key, agent_id, turn):
         timer = threading.Timer(TOKEN_RATE_EXPIRY_SECONDS, self._expire, (key, agent_id, turn))

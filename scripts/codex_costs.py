@@ -144,12 +144,7 @@ def report_fingerprint(data):
 
 def _publish_costs(state_dir: str | Path) -> None:
     """Invalidate cost snapshots after a completed refresh is visible."""
-    try:
-        from studio_api.sync.resources.hub import publish_resources
-    except ModuleNotFoundError as error:
-        if error.name != "studio_api.sync.resources.hub":
-            raise
-        return
+    from studio_api.sync.resources.hub import publish_resources
     from studio_api.sync.resources.models import CostsResource, ResourceRef
 
     publish_resources(state_dir, ResourceRef(CostsResource(kind="costs")))
