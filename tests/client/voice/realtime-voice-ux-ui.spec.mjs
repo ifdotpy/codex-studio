@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
-test("Realtime voice ux", async ({ context }) => {
+test("Realtime voice ux", async ({ context }, testInfo) => {
   test.setTimeout(180_000);
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
@@ -164,7 +164,9 @@ test("Realtime voice ux", async ({ context }) => {
     );
     await page.getByRole("button", { name: "Mute", exact: true }).click();
     await page.getByRole("button", { name: "Unmute", exact: true }).waitFor();
-    await page.screenshot({ path: "/tmp/studio-native-voice-ui.png" });
+    await page.screenshot({
+      path: testInfo.outputPath("studio-native-voice-ui.png"),
+    });
     await page.getByRole("button", { name: "End voice", exact: true }).click();
     await page.waitForFunction(
       () => window.stops === 1 && window.calls.some((c) => c[0] === "end"),
