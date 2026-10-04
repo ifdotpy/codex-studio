@@ -39,7 +39,7 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import type { Agent, Json, Snapshot } from "../../types";
+import type { Agent, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
@@ -54,7 +54,7 @@ type Props = {
   onClose: () => void;
   agent?: Agent;
   data: Snapshot;
-  allRequests: Json[];
+  allRequests: NonNullable<Snapshot["runtime"]>["requests"];
   onSelect: (id: string, messageId?: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
