@@ -172,6 +172,15 @@ class SystemApiTests(unittest.TestCase):
         app.add_middleware(RequestBoundary, context=context)
         app.include_router(create_router(context))
         client = TestClient(app)
+
+        startup = client.get("/api/desktop")
+        self.assertEqual(startup.status_code, 200)
+        self.assertIsNone(startup.json()["nativeRuntime"])
+        self.assertIsNone(startup.json()["browser"])
+        self.assertEqual(startup.json()["providerVersions"], {
+            "checkedAt": None, "providers": [], "warnings": [],
+        })
+
         runtime = SimpleNamespace(
             live_updates=None,
             lock=threading.RLock(),

@@ -73,13 +73,17 @@ def create_router(context: ApiContext) -> APIRouter:
         account_keys = request.query_params.getlist("account_key")
         browser_account = next((value for value in account_keys if value), "default")
         runtime = canvas.runtime
+        provider_versions = (
+            {"checkedAt": None, "providers": [], "warnings": []}
+            if runtime is None else provider_version_status(runtime)
+        )
         result = {
             "application": "codex-agents",
             "protocol": 1,
             "mobileProtocol": 1,
             "backendBuild": BACKEND_BUILD,
             "nativeRuntime": native_runtime_status(runtime),
-            "providerVersions": provider_version_status(runtime),
+            "providerVersions": provider_versions,
             "browser": browser_diagnostics(runtime, browser_account),
             "liveUpdate": (
                 runtime.live_updates.status()
