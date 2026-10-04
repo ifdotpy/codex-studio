@@ -270,6 +270,10 @@ class Bridge(unittest.TestCase):
             self.completed()
             samples = [row['params'] for row in self.notifications
                        if row.get('params', {}).get('tokenRateUsage')]
+            starts = [row['params'] for row in self.notifications
+                      if row.get('method') == 'provider/generationStarted']
+            self.assertEqual([start['responseId'] for start in starts], ['rate-1'])
+            self.assertEqual(starts[0]['turnId'], turn['turn']['id'])
             self.assertEqual([sample['tokenRateUsage']['outputTokens'] for sample in samples], [6, 6, 8, 12])
             final = [row['params'] for row in self.notifications
                      if row.get('method') == 'thread/tokenUsage/updated'][-1]

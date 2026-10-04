@@ -105,7 +105,7 @@ export default function TokenRate({
       }
       title={
         visible
-          ? `${rate?.estimated ? "Estimate from streamed text. " : "Provider output tokens, including reasoning. "}Rate over model generation time. Tool time and user wait are excluded.${active ? "" : " Last turn."}`
+          ? `${rate?.estimated ? "Estimate from recent text. Hidden reasoning can change the provider rate." : "Provider output tokens, including reasoning, over the observed response interval. Tool time is excluded."}${active ? "" : " Last turn."}`
           : undefined
       }
     >

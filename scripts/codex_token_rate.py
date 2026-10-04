@@ -1,5 +1,5 @@
 """Volatile per-response output-token rates. Never enters agents or sync projections."""
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import logging
 import math
 import threading
@@ -54,20 +54,36 @@ class TurnRate:
         self.generation_started = now if timing_valid else None
         self.generation_elapsed = 0.0
         self.tools = set()
+        self.text_samples = deque()
+        self.text_window_tokens = 0.0
+        self.response_durations = deque(maxlen=1024)
+        self.generation_response_id = None
 
     def text(self, text, now):
         if not self.active or not text:
             return
         self.pending += len(text) / 4.0
         self.estimated = True
+        self.text_samples.append((now, len(text) / 4.0))
+        self.text_window_tokens += len(text) / 4.0
+        while self.text_samples and now - self.text_samples[0][0] > 4:
+            self.text_window_tokens -= self.text_samples.popleft()[1]
         if self.timing_valid:
-            self.rate = round(min(MAX_RATE, self.pending / max(MIN_DURATION, self.generation_time(now))), 2)
+            window = max(1.0, now - self.text_samples[0][0])
+            self.rate = round(min(MAX_RATE, self.text_window_tokens / window), 2)
 
     def start_tool(self, item_id, now):
         if not self.active or item_id in self.tools:
             return
         if not self.tools and self.generation_started is not None:
             self.generation_elapsed += max(0.0, now - self.generation_started)
+            # Native usage can arrive after this tool, or after later responses.
+            self.response_durations.append((self.generation_elapsed, self.pending))
+            self.generation_elapsed = 0.0
+            self.generation_started = None
+            self.pending = 0.0
+            self.text_samples.clear()
+            self.text_window_tokens = 0.0
         self.tools.add(item_id)
 
     def finish_tool(self, item_id, now):
@@ -85,13 +101,24 @@ class TurnRate:
             return None
         return self.generation_elapsed + max(0.0, now - self.generation_started)
 
+    def generation_started_at(self, now, response_id=None):
+        if (self.active and not self.tools and
+                (not response_id or response_id != self.generation_response_id)):
+            self.generation_started = now
+            self.generation_elapsed = 0.0
+            self.timing_valid = True
+            self.generation_response_id = response_id
+
     def response(self, output, now, identity=None):
         if not self.active or output is None:
             return False
         prior = self.messages.get(identity) if identity is not None else None
         if prior and output <= prior[0]:
             return False
-        duration = prior[1] if prior and prior[1] is not None else self.generation_time(now)
+        queued = bool(self.response_durations) and not prior
+        current_estimate = (self.rate, self.estimated)
+        duration = (prior[1] if prior and prior[1] is not None else
+                    self.response_durations[0][0] if queued else self.generation_time(now))
         global _logged_implausible_correction
         if duration is not None and output / max(MIN_DURATION, duration) > MAX_RATE:
             if not _logged_implausible_correction:
@@ -103,12 +130,26 @@ class TurnRate:
         self.actual += output - current
         if identity is not None:
             self.messages[identity] = (output, duration, self.rate)
-        self.pending = 0.0
-        self.estimated = False
-        if not prior and duration is not None:
+        if queued:
+            self.response_durations.popleft()
+        if queued or prior:
+            if self.pending:
+                self.rate, self.estimated = current_estimate
+            else:
+                self.estimated = False
+        elif duration is not None:
+            self.pending = 0.0
+            self.estimated = False
+            self.text_samples.clear()
+            self.text_window_tokens = 0.0
             self.generation_elapsed = 0.0
-            self.generation_started = now
+            self.generation_started = None if self.tools else now
             self.timing_valid = True
+        else:
+            self.pending = 0.0
+            self.estimated = False
+            self.text_samples.clear()
+            self.text_window_tokens = 0.0
         return True
 
     def correct(self, total, now):
@@ -127,7 +168,9 @@ class TurnRate:
         if not self.active:
             return self.last
         return {'turnId': self.turn, 'active': True, 'estimated': self.estimated,
-                'rate': self.rate, 'outputTokens': round(self.actual + self.pending, 2)}
+                'rate': self.rate,
+                'outputTokens': round(self.actual + self.pending +
+                                      sum(pending for _, pending in self.response_durations), 2)}
 
     def finish(self, now):
         self.last = {**self.snapshot(now), 'active': False}
@@ -296,7 +339,9 @@ class TokenRates:
             if not rate or not rate.active or params.get('turnId') != rate.turn:
                 return
             now = at if count(at) is not None else self.clock()
-            if method in {'item/agentMessage/delta', 'item/reasoning/textDelta'}:
+            if method == 'provider/generationStarted':
+                rate.generation_started_at(now, params.get('responseId'))
+            elif method in {'item/agentMessage/delta', 'item/reasoning/textDelta'}:
                 delta = params.get('delta')
                 if isinstance(delta, str):
                     rate.text(delta, now)

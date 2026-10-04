@@ -5131,8 +5131,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_token_rate import token_rates
         from codex_token_rate import event_time as token_rate_event_time
         token_rate_at = token_rate_event_time(message, method) or token_rate_received_at
-        if method in {'item/agentMessage/delta', 'item/reasoning/textDelta'}:
+        if method in {'item/agentMessage/delta', 'item/reasoning/textDelta',
+                      'provider/generationStarted'}:
             token_rates(self).stream(method, p, account_key, connection_id, token_rate_at)
+            if method == 'provider/generationStarted':
+                return
         if method in {'item/agentMessage/delta', 'item/commandExecution/outputDelta'}:
             from codex_streaming import StreamBuffer
             stream = getattr(self, '_stream_buffer', None)
