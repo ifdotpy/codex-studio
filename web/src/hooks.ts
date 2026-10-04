@@ -11,6 +11,7 @@ import {
   refreshSession,
   saved,
   save,
+  type PostResult,
 } from "./api";
 import {
   refreshProjection,
@@ -20,6 +21,7 @@ import {
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
+import { snapshotAgentFromMutation } from "./hooks/snapshotAgentFromMutation";
 import type { GetResult } from "./api";
 import type { Message, Agent, Json } from "./types";
 type StateSnapshot = GetResult<"/api/state">;
@@ -46,26 +48,24 @@ export function useSnapshot() {
   const scope = data?.stateDir || "";
   const currentScope = useRef(scope);
   currentScope.current = scope;
-  const rememberCreated = useCallback((agent: Agent, expectedScope: string) => {
-    if (currentScope.current !== expectedScope)
-      throw new Error("The workspace changed before the new chat opened.");
-    // A fresh draft has no native thread. Existing-thread retries await its projection.
-    const confirmed: Agent = {
-      ...agent,
-      source: "managed",
-      kind: "agent",
-      canSend: agent.canSend ?? !agent.threadId,
-    };
-    setCreated((old) => ({
-      scope: expectedScope,
-      agents: [
-        ...(old.scope === expectedScope ? old.agents : []).filter(
-          (a) => a.id !== agent.id,
-        ),
-        confirmed,
-      ],
-    }));
-  }, []);
+  const rememberCreated = useCallback(
+    (agent: PostResult<"/api/leads">, expectedScope: string) => {
+      if (currentScope.current !== expectedScope)
+        throw new Error("The workspace changed before the new chat opened.");
+      // A fresh draft has no native thread. Existing-thread retries await its projection.
+      const confirmed = snapshotAgentFromMutation(agent);
+      setCreated((old) => ({
+        scope: expectedScope,
+        agents: [
+          ...(old.scope === expectedScope ? old.agents : []).filter(
+            (a) => a.id !== agent.id,
+          ),
+          confirmed,
+        ],
+      }));
+    },
+    [],
+  );
   const forgetCreated = useCallback((ids: string[]) => {
     setCreated((old) => ({
       ...old,
