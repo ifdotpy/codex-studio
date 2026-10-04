@@ -9,6 +9,7 @@ import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
 import type { GetOptions } from "../api";
 
 import { onResume } from "./resume";
+import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
   clearWorkspaceTokenRates,
   receiveWorkspaceTokenRates,
@@ -25,11 +26,6 @@ import {
 addRxPlugin(RxDBLeaderElectionPlugin);
 function isGenerationCounter(value: number | undefined): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function requiredSyncNumber(value: number | null | undefined, field: string) {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
-    throw new Error(`The server returned an invalid ${field} sync value.`);
-  return value;
 }
 const syncStreamQuery = {
   protocol: "2",
@@ -1172,9 +1168,7 @@ async function acquireProjection(
                 : null,
             );
             if (stopped) return;
-            if (result.reset === true) {
-              if (remoteScope !== "state:entities:v1")
-                throw new Error("The server reset an unsupported sync scope.");
+            if (isEntityResetResponse(result, remoteScope)) {
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
