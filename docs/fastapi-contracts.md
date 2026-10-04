@@ -559,6 +559,35 @@ remain. No live backend, occupied state directory, model invocation, or reset
 credit was used. Independent source review found no remaining issue after the
 weak-ETag oversized-integer correction and reuse of the existing adapter cache.
 
+## Subsequent simplification audit
+
+The audit at `d78152e` → `effe925` removed duplicate request helpers,
+inherited queue fields, repeated offline schema normalization, and identical
+exception handlers. Strict validation, request identities, query selection,
+null/omission behavior, and generated TypeScript remain unchanged. Production
+source is 31 lines shorter; tests add 41 lines, so code plus tests grows by ten
+lines before documentation. New model inheritance for a few shared fields was
+rejected as extra complexity. No material contract/dependency pivot was adopted.
+
+All 292 API tests, strict mypy on 66 files, API freshness, frontend contract-type
+checks, and pre-commit fixtures pass; independent source review has no findings.
+Sequential local TCP ABBA runs (300 samples per variant/route across the four
+fixtures above) measured populated state p50 14.5930 → 14.5252 ms. Results across
+routes are mixed: populated full pull is 1.4088 → 1.4752 ms. An eight-block ASGI
+fixture confirmation (1,600 samples per variant) measured GET capabilities
+p50/p95 0.4070/0.4727 → 0.4052/0.4553 ms and POST agents
+0.3326/0.4117 → 0.3346/0.4032 ms. These are not live-user latency measurements.
+
+Empty-state TCP medians initially rose by about 0.053 ms with flat p95; a
+same-source control had a flat median but p95 moved 0.5499 → 0.5694 ms.
+Exporting both compared revisions changed
+the result to 0.4867 → 0.3893 ms. No changed success-path code was identified.
+This does not establish a stable code-induced regression or speedup; all runs
+are retained, without selecting only favorable results. Local scripts and raw
+artifacts are in the earlier cache directory under `simplify-round-http.py`,
+`simplify-final-http.json`, `simplify-requests-abba.py`, and
+`simplify-{requests-confirmation,empty-confirmation,empty-identical-control,empty-export-pair}.json`.
+
 ## Implementation evidence ledger
 
 | Area                                              | Evidence state                                                                                                                                                                                                                                                                                            |
