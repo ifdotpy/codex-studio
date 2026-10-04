@@ -2614,6 +2614,8 @@ export interface components {
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
       /** Worktree */
       worktree?: boolean | string | null;
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
       yoloMode?: boolean | null;
     };
@@ -3928,6 +3930,8 @@ export interface components {
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
       /** Worktree */
       worktree?: boolean | string | null;
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
       yoloMode?: boolean | null;
     };
@@ -5201,6 +5205,7 @@ export interface components {
       submission?: components["schemas"]["ExecutionStatus"] | null;
       /** Submitted */
       submitted?: boolean | null;
+      supervisorIdentity?: components["schemas"]["SupervisorIdentity"] | null;
       /** Threadid */
       threadId?: string | null;
       /** Turnid */
@@ -8998,6 +9003,8 @@ export interface components {
       /** Capacityretries */
       capacityRetries?: number | null;
       capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
+      /** Checkpointerror */
+      checkpointError?: string | null;
       claudeOptions?: components["schemas"]["JsonValue"] | null;
       /** Command */
       command?: string | null;
@@ -9234,6 +9241,7 @@ export interface components {
       signedIn?: boolean | null;
       source?: components["schemas"]["AgentSource"] | null;
       startAttempt?: components["schemas"]["SnapshotStartAttempt"] | null;
+      startOutcomeHold?: components["schemas"]["StartOutcomeHoldDto"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
       /** Statusdetail */
       statusDetail?: string | null;
@@ -9250,6 +9258,8 @@ export interface components {
       tokenBudget?: number | null;
       /** Tokensused */
       tokensUsed?: number | null;
+      /** Tokenusageaccounting */
+      tokenUsageAccounting?: ("provisional" | "responseRecords") | null;
       /** Transcriptitemid */
       transcriptItemId?: string | null;
       transfer?: components["schemas"]["JsonValue"] | null;
@@ -9257,6 +9267,7 @@ export interface components {
       turnEpoch?: number | null;
       /** Turnid */
       turnId?: string | null;
+      turnRecovery?: components["schemas"]["TurnRecoveryDto"] | null;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
       /** Unreadcount */
       unreadCount?: number | null;
@@ -9282,6 +9293,8 @@ export interface components {
       workspaceOperation?: components["schemas"]["JsonValue"] | null;
       /** Worktree */
       worktree?: boolean | string | null;
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
       /** Worktreeready */
       worktreeReady?: boolean | null;
       /** Worktreewarning */
@@ -9554,6 +9567,7 @@ export interface components {
       settingsFixed?: boolean | null;
       /** Submitted */
       submitted?: boolean | null;
+      supervisorIdentity?: components["schemas"]["SupervisorIdentity"] | null;
       /** Threadid */
       threadId?: string | null;
       /** Turnid */
@@ -9801,6 +9815,27 @@ export interface components {
      * @enum {string}
      */
     SqliteTransactionState: "active" | "committed" | "rolledBack";
+    /** StartOutcomeHoldDto */
+    StartOutcomeHoldDto: {
+      /** At */
+      at: number;
+      /** Attemptid */
+      attemptId: string;
+      /** Connectionid */
+      connectionId: string;
+      /**
+       * Evidence
+       * @constant
+       */
+      evidence: "complete_history_absent_idle_twice_journal_drained";
+      /**
+       * Stage
+       * @constant
+       */
+      stage: "held";
+      /** Threadid */
+      threadId: string;
+    };
     /** StateSnapshot */
     StateSnapshot: {
       /** Syncentities */
@@ -10912,6 +10947,27 @@ export interface components {
      * @enum {string}
      */
     TransferStatus: "pending" | "completed" | "cancelled";
+    /** TurnRecoveryDto */
+    TurnRecoveryDto: {
+      /** At */
+      at: number;
+      /** Attemptid */
+      attemptId?: string | null;
+      /** Latestturnid */
+      latestTurnId?: string | null;
+      /**
+       * Outcome
+       * @enum {string}
+       */
+      outcome: "input_absent" | "idle" | "completed" | "failed" | "interrupted";
+      /**
+       * Source
+       * @enum {string}
+       */
+      source: "replaced_native_child" | "native_thread_read";
+      /** Turnid */
+      turnId: string | null;
+    };
     /** UnavailableAccount */
     UnavailableAccount: {
       /** Accountkey */

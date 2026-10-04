@@ -507,8 +507,9 @@ class Supervisor:
                 db.execute("DELETE FROM events WHERE handle=? AND sequence<=?", (handle, sequence))
                 db.execute("UPDATE handles SET acknowledged=? WHERE id=?", (sequence, handle))
                 db.commit()
-            with self.journal.db() as db:
-                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # SQLite checkpoints the WAL automatically. A synchronous TRUNCATE
+            # after every event makes the single replay stream wait for disk I/O
+            # before it can deliver later RPC replies.
             return {"acknowledged": sequence}
         if action == "replay":
             cursor = request.get("cursor")
@@ -813,10 +814,17 @@ def process_launch_environment(pid):
     return environment
 
 
+# Backend diagnostics and ownership. A native child neither reads nor needs
+# them, so they must not change its launch identity.
+BACKEND_ONLY_ENVIRONMENT = ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS',
+                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE')
+
+
 def native_launch_environment(root, handle, command, env, cwd):
-    """Backend ownership is transport metadata, not a native launch setting."""
+    """Exclude backend ownership and diagnostics from native launch settings."""
     clean = dict(env)
-    clean.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in BACKEND_ONLY_ENVIRONMENT:
+        clean.pop(key, None)
     path = Path(root) / 'supervisor.sqlite3'
     db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True)
     try:
@@ -844,7 +852,8 @@ def native_launch_environment(root, handle, command, env, cwd):
         # A macOS Python launcher can add this marker after a script's exec.
         original.pop('__PYVENV_LAUNCHER__', None)
     comparable = dict(original)
-    comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in BACKEND_ONLY_ENVIRONMENT:
+        comparable.pop(key, None)
     # Reattachment keeps the child's accepted launch, including its PATH and
     # locale. A backend launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,

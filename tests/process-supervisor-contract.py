@@ -231,6 +231,22 @@ class ProcessSupervisorContract(unittest.TestCase):
                           executable=str(other), supervisor_handle='account:default')
         self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
 
+    def test_supervisor_rpc_reply_passes_a_blocked_notification(self):
+        entered, release = threading.Event(), threading.Event()
+        def notification(message):
+            if message.get('method') == 'command/exec/outputDelta':
+                entered.set()
+                release.wait(3)
+        server = AppServer(self.root, notification, lambda _: None, lambda: None,
+                           executable=str(self.binary), supervisor_handle='account:reply-lane')
+        self.servers.append(server)
+        try:
+            submitted = server.submit('command/exec', {'processId': 'reply-lane'})
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(server.wait(submitted, 1)['exitCode'], 0)
+        finally:
+            release.set()
+
     def test_exited_child_is_replaced_in_the_same_supervisor_generation(self):
         first = self.server()
         old_pid = int(self.pid_file.read_text())
@@ -917,6 +933,20 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_backend_diagnostics_do_not_change_native_launch(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1',
+                                    'CODEX_AGENTS_PROVIDER_CAPTURE': '1'}):
+            second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        second.close()
+        # A child launched while a diagnostic was set reattaches after it is removed.
+        self.assertEqual(self.server().call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
     def test_reattach_still_rejects_changed_credentials_options_and_command(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
@@ -931,6 +961,40 @@ class ProcessSupervisorContract(unittest.TestCase):
                 process_supervisor.native_launch_environment(self.root, 'account:default',
                     [str(self.binary), 'different-command'], dict(os.environ), None)
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
+    def test_backend_lock_metrics_do_not_change_native_launch_or_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        self.assertFalse('CODEX_RUNTIME_LOCK_METRICS' in
+                         process_supervisor.process_launch_environment(native_pid))
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_child_lock_metrics_preserve_exact_launch_on_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}), \
+                patch.object(process_supervisor, 'native_launch_environment',
+                             side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.assertEqual(process_supervisor.process_launch_environment(native_pid)
+                         ['CODEX_RUNTIME_LOCK_METRICS'], '1')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
 
     def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
         with patch.object(process_supervisor, 'native_launch_environment',

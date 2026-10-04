@@ -609,8 +609,15 @@ class ExecutionActionIdentity(ContractModel):
     epoch: int
 
 
+class SupervisorIdentity(ContractModel):
+    stateDir: str
+    handle: str
+    generation: int
+
+
 class ExecutionAttempt(ContractModel):
     id: str
+    supervisorIdentity: SupervisorIdentity | None = None
     runId: str | None = None
     epoch: int | None = None
     activeAtReservation: bool | None = None
@@ -686,12 +693,6 @@ class RecoveryStage(ContractStrEnum):
     CONTINUED = "continued"
     REATTACHED = "reattached"
     HELD = "held"
-
-
-class SupervisorIdentity(ContractModel):
-    stateDir: str
-    handle: str
-    generation: int
 
 
 class ExecutionRecovery(ContractModel):

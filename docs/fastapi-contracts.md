@@ -368,6 +368,37 @@ API generation freshness, strict frontend build, generated type fixtures, and
 staged-content hook fixtures. Independent review covers all three changes and
 their validation-error and event-loop corrections.
 
+## Compatibility with main `10f2048`
+
+The subsequent main integration retains worktree preparation states in the typed
+agent projection and UI. Snapshot-only models now describe start holds, recovery
+outcomes, checkpoint errors, budget accounting modes, and supervisor identity; diagnostics attempts reuse
+the same supervisor identity model. These explicit fields preserve the raw
+snapshot/diagnostics producer shapes without broadening the durable sync payload
+or disabling strict validation. The active-account UI uses the producer's
+`archived` flag and handles nullable statuses.
+
+The integrated tree passes 285 API tests, strict mypy for 64 files, generated API
+freshness, the frontend build/type fixtures, and 233 frontend unit tests (one
+skipped). Runtime (65), read-lock (7), worktree-disk (17, one skipped), preparation
+(21), recovery (35), token-rate (28), lock-owner (2), scheduler (1), and startup
+receipt selection (3) contracts also pass. Account-limit dots, team token rates,
+and the individual token-rate browser scenarios pass. The latter waits for the
+new SSE sample and matching conversation meter before checking tool-gap stability.
+The benchmark values above remain
+measurements of `645cea8`, before this main integration.
+
+The supervisor suite required a local harness to relocate its hardcoded `/tmp`
+fixtures to a private short `/var/tmp` directory because the original location
+exceeded its user quota. The relocated run had 40 passes, one platform skip, and
+two failures. Both failing tests also fail individually on clean main `10f2048`:
+`test_legacy_launch_rejects_account_changes_and_unverified_pid` mocks the primary
+identity probe but the legacy `ps` fallback still verifies the process;
+`test_runtime_restart_reattaches_turn_and_replays_buffered_events_once` expects a
+synthetic monitor to remain running although restart marks its unreconstructable
+RPC future lost. These are recorded as existing-main fixture failures; the
+supervisor suite is not claimed to pass.
+
 ## Implementation evidence ledger
 
 | Area                                              | Evidence state                                                                                                                                                                                                                                                                    |

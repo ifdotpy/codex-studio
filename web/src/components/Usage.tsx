@@ -187,6 +187,9 @@ export default function Usage({
     usageAccounts.find((item) => item.key === activeAccountKey) ||
     usageAccounts[0];
   const selectedAccountKey = activeAccount?.key || fallbackKey;
+  const activeAccountReload = useRef(activeAccount?.reload);
+  activeAccountReload.current = activeAccount?.reload;
+  const autoReloadedAccounts = useRef(new Set<string>());
   const limits = accountLimits(
     activeAccount?.limits,
     selectedAccountKey,
@@ -447,10 +450,15 @@ export default function Usage({
   const recovered = useRecoveredLimit(accountAgent, limits, now);
   const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
   useEffect(() => {
+    autoReloadedAccounts.current.clear();
+  }, [agent.id]);
+  useEffect(() => {
     if (!limitsOpened || !activeAccount || selectedAccountKey === fallbackKey)
       return;
-    void activeAccount.reload(false);
-  }, [limitsOpened, selectedAccountKey, activeAccount?.reload, fallbackKey]);
+    if (autoReloadedAccounts.current.has(selectedAccountKey)) return;
+    autoReloadedAccounts.current.add(selectedAccountKey);
+    void activeAccountReload.current?.(false);
+  }, [limitsOpened, selectedAccountKey, fallbackKey]);
   const accountIsLow = (item: UsageAccount) =>
     readBuckets(accountLimits(item.limits, item.key, item.accountId), now).some(
       (bucket) =>

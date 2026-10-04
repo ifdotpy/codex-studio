@@ -879,7 +879,14 @@ async function startSession(s, active, p) {
           });
       } else if (m.type === "stream_event") {
         const e = m.event;
-        if (e.type === "message_start") active.messageId = e.message.id;
+        if (e.type === "message_start") {
+          active.messageId = e.message.id;
+          emit("provider/generationStarted", {
+            threadId: s.id,
+            turnId: turn.id,
+            responseId: e.message.id,
+          });
+        }
         if (
           e.type === "content_block_delta" &&
           ["text_delta", "thinking_delta"].includes(e.delta.type)

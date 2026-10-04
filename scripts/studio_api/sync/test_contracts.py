@@ -561,6 +561,66 @@ class SyncEntityContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             DraftPushRequest.model_validate(invalid)
 
+    def test_worktree_preparation_survives_projection_and_snapshot(self) -> None:
+        for phase in ("waiting", "preparing"):
+            with self.subTest(phase=phase):
+                record: dict[str, JsonValue] = {"id": "worker", "kind": "agent", "status": "starting", "worktreePreparation": phase}
+                projected = project("agent", record)
+                self.assertEqual(projected, record)
+                self.assertEqual(SnapshotAgentDto.model_validate(record).worktreePreparation, phase)
+        self.assertEqual(project("agent", {"id": "worker"}), {"id": "worker"})
+
+    def test_snapshot_preserves_unknown_start_identity_and_hold(self) -> None:
+        record: dict[str, JsonValue] = {
+            "id": "worker", "kind": "agent", "status": "interrupted",
+            "startAttempt": {"id": "attempt", "supervisorIdentity": {
+                "stateDir": "/fixture", "handle": "native", "generation": 2,
+            }},
+            "startOutcomeHold": {
+                "stage": "held", "at": 1.5, "attemptId": "attempt",
+                "threadId": "thread", "connectionId": "connection",
+                "evidence": "complete_history_absent_idle_twice_journal_drained",
+            },
+        }
+        self.assertEqual(
+            SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
+        )
+        projected = project("agent", record)
+        assert isinstance(projected, dict)
+        self.assertNotIn("startOutcomeHold", projected)
+        self.assertEqual(projected["startAttempt"], {})
+
+    def test_snapshot_preserves_recovery_outcomes_without_sync_expansion(self) -> None:
+        recoveries: list[dict[str, JsonValue]] = [
+            {"at": 1.5, "turnId": None, "outcome": "input_absent",
+             "source": "replaced_native_child", "attemptId": "attempt"},
+            {"at": 1.5, "turnId": None, "latestTurnId": "last", "outcome": "idle",
+             "source": "native_thread_read"},
+        ]
+        for outcome in ("completed", "failed", "interrupted"):
+            recoveries.append({"at": 1.5, "turnId": "turn", "outcome": outcome,
+                               "source": "native_thread_read"})
+        for recovery in recoveries:
+            record: dict[str, JsonValue] = {
+                "id": "worker", "kind": "agent", "turnRecovery": recovery,
+                "checkpointError": "fixture checkout failure",
+            }
+            self.assertEqual(
+                SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
+            )
+            projected = project("agent", record)
+            assert isinstance(projected, dict)
+            self.assertNotIn("turnRecovery", projected)
+            self.assertNotIn("checkpointError", projected)
+
+    def test_snapshot_accepts_budget_accounting_modes(self) -> None:
+        for mode in ("provisional", "responseRecords"):
+            record: dict[str, JsonValue] = {"id": "worker", "kind": "agent", "tokenUsageAccounting": mode}
+            self.assertEqual(SnapshotAgentDto.model_validate(record).tokenUsageAccounting, mode)
+            projected = project("agent", record)
+            assert isinstance(projected, dict)
+            self.assertNotIn("tokenUsageAccounting", projected)
+
     def test_draft_row_standalone_validation_stays_scoped_to_payloads(self) -> None:
         row = {
             "newDocumentState": {

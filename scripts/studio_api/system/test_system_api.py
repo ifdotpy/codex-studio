@@ -348,6 +348,7 @@ class SystemApiTests(unittest.TestCase):
         attempt: dict[str, object] = {
             "id": "attempt:fixture", "runId": "run:fixture", "submission": "unsent",
             "epoch": 1, "events": [], "submitted": False,
+            "supervisorIdentity": {"stateDir": "/fixture", "handle": "native", "generation": 2},
         }
         db.execute("INSERT INTO runtime_execution_attempts VALUES (?,?,?)",
                    (attempt["id"], run["id"], json.dumps(attempt)))
@@ -382,7 +383,11 @@ class SystemApiTests(unittest.TestCase):
             result = snapshot(runtime, 10, "10 1 1024 0.0 codex-canvas")
         result["supervisor"] = {"mode": False, "fallback": False, "notice": None}
 
-        DiagnosticsResponse.model_validate_json(json.dumps(result))
+        validated = DiagnosticsResponse.model_validate_json(json.dumps(result))
+        identity = validated.executions.runs[0].attempts[0].supervisorIdentity
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(identity.generation, 2)
 
     def test_openapi_declares_json_success_models_for_owned_paths(self) -> None:
         schemas = self.app.openapi()["components"]["schemas"]

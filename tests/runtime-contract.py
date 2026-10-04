@@ -1352,8 +1352,8 @@ class RuntimeContract(unittest.TestCase):
     def test_timeout_does_not_retry_model_call(self):
         self.runtime.connect().fail_start = True
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Finish'})
-        eventually(lambda: 'outcome unknown' in str(self.runtime.agent(a['id']).get('error')))
-        self.assertEqual(self.runtime.agent(a['id'])['status'], 'starting')
+        eventually(lambda: 'start result is unknown' in str(self.runtime.agent(a['id']).get('error')))
+        self.assertEqual(self.runtime.agent(a['id'])['status'], 'waiting')
         self.assertTrue(self.runtime.agent(a['id'])['inFlight'])
         self.runtime.send(a['id'], 'Additional work must wait')
         time.sleep(.15)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from studio_api.system.models import SupervisorIdentity
+
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -513,6 +515,7 @@ ReviewTargetDto = Annotated[
 
 
 class SnapshotStartAttempt(AgentStartAttempt):
+    supervisorIdentity: SupervisorIdentity | None = None
     id: str | None = None
     epoch: int | None = None
     events: list[str] | None = None
@@ -589,6 +592,7 @@ class AgentEntityDto(ContractModel):
     accountKey: str | None = None
     cwd: str | None = None
     worktree: bool | str | None = None
+    worktreePreparation: Literal["waiting", "preparing"] | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None
@@ -653,8 +657,29 @@ class AgentEntityDto(ContractModel):
     project: str | None = None
 
 
+class StartOutcomeHoldDto(ContractModel):
+    stage: Literal["held"]
+    at: float
+    attemptId: str
+    threadId: str
+    connectionId: str
+    evidence: Literal["complete_history_absent_idle_twice_journal_drained"]
+
+
+class TurnRecoveryDto(ContractModel):
+    at: float
+    turnId: str | None
+    outcome: Literal["input_absent", "idle", "completed", "failed", "interrupted"]
+    source: Literal["replaced_native_child", "native_thread_read"]
+    attemptId: str | None = None
+    latestTurnId: str | None = None
+
+
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
+
+    startOutcomeHold: StartOutcomeHoldDto | None = None
+    turnRecovery: TurnRecoveryDto | None = None
 
     kind: Literal["agent"]
     wave: str | None = None
@@ -675,6 +700,8 @@ class SnapshotAgentDto(AgentEntityDto):
     profileInstructions: str | None = None
     worktreeReady: bool | None = None
     worktreeWarning: str | None = None
+    checkpointError: str | None = None
+    tokenUsageAccounting: Literal["provisional", "responseRecords"] | None = None
     workerBaseRef: str | None = None
     workerBaseCommit: str | None = None
     workerBaseBehindMain: bool | None = None

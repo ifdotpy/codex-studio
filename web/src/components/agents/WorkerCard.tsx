@@ -129,22 +129,26 @@ export default function WorkerCard({
                   ? indicator?.label || statusLabel(agent.status ?? "")
                   : awaitingAnswer
                     ? "Needs your answer"
-                    : deferred && agent.status === "approval"
-                      ? "Question deferred"
-                      : agent.status === "starting" &&
-                          (agent.startAttempt?.prepareError ||
-                            agent.startAttempt?.responseError)
-                        ? "Waiting for Codex"
-                        : [
-                            statusLabel(
-                              agent.status ?? "",
-                              undefined,
-                              agent.parkedEvent ?? undefined,
-                            ),
-                            nativeReleaseLabel(agent),
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
+                    : agent.status === "starting" && agent.worktreePreparation
+                      ? agent.worktreePreparation === "waiting"
+                        ? "Waiting to prepare folder"
+                        : "Preparing folder"
+                      : deferred && agent.status === "approval"
+                        ? "Question deferred"
+                        : agent.status === "starting" &&
+                            (agent.startAttempt?.prepareError ||
+                              agent.startAttempt?.responseError)
+                          ? "Waiting for Codex"
+                          : [
+                              statusLabel(
+                                agent.status ?? "",
+                                undefined,
+                                agent.parkedEvent ?? undefined,
+                              ),
+                              nativeReleaseLabel(agent),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
               </small>
               <span
                 className="worker-model-summary"

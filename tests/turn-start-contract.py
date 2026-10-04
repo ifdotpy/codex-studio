@@ -212,7 +212,7 @@ class TurnStartContract(unittest.TestCase):
 
     def test_unknown_holds_reservation_until_definitive_rejection(self):
         key = self.start("silent")
-        self.assertEqual(self.runtime.agent(key)["status"], "starting")
+        self.assertEqual(self.runtime.agent(key)["status"], "waiting")
         self.assertTrue(self.runtime.agent(key)["inFlight"])
         self.assertEqual(self.events()[0]["status"], "uncertain")
         self.runtime.send(key, "Second input")
@@ -242,7 +242,7 @@ class TurnStartContract(unittest.TestCase):
     def test_notification_after_timeout_clears_only_dispatch_error(self):
         key = self.start("silent")
         entry = self.server.deferred[0]
-        self.assertIn("outcome unknown", self.runtime.agent(key)["error"])
+        self.assertIn("checking the original input", self.runtime.agent(key)["error"])
         self.server.notify({"method": "turn/started", "params": {
             "threadId": entry["params"]["threadId"], "turn": entry["turn"]}})
         self.assertEqual(self.runtime.agent(key)["status"], "running")

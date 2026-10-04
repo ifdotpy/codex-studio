@@ -58,11 +58,15 @@ export default function AgentPhase({
     ? "blocked"
     : currentCapacityRetry(agent)?.status === "scheduled"
       ? "capacity-retry"
-      : awaitingResponse
-        ? "acknowledgement"
-        : active
-          ? agent.activity?.phase || status
-          : status;
+      : agent.status === "starting" && agent.worktreePreparation
+        ? agent.worktreePreparation === "waiting"
+          ? "folder-wait"
+          : "folder-prepare"
+        : awaitingResponse
+          ? "acknowledgement"
+          : active
+            ? agent.activity?.phase || status
+            : status;
   const phase =
     wait?.live && ["idle", "completed"].includes(currentPhase)
       ? "waiting"
@@ -73,6 +77,8 @@ export default function AgentPhase({
     tool: "Using tools",
     running: "Working",
     starting: "Starting",
+    "folder-wait": "Waiting to prepare folder",
+    "folder-prepare": "Preparing folder",
     acknowledgement: "Waiting for Codex",
     retrying: "Codex is retrying",
     "capacity-retry": "Waiting to retry model",
@@ -96,6 +102,8 @@ export default function AgentPhase({
     writing: PenLine,
     tool: Wrench,
     starting: LoaderCircle,
+    "folder-wait": Clock3,
+    "folder-prepare": LoaderCircle,
     running: LoaderCircle,
     queued: Clock3,
     waiting: Circle,

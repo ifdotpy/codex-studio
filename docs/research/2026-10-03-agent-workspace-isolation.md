@@ -233,10 +233,9 @@ sleep infinity`. Mount and unmount with `nsenter -t <pid> -U -m --preserve-crede
 
 ### Open items for the implementation
 
-- **Claude provider and a changed working folder (not verified).** Claude Code keeps sessions per
-  project path. `getcwd()` returns the resolved path, so a symbolic link does not keep the path
-  stable. Test `resume` after the switch with one live session, or start a new session at the switch.
-- **Codex `turn/start` with a new `cwd` (verified in the schema of codex-cli 0.160.0, not live).**
+- **Provider switch from the read-only folder to the image: verified live** (see "Readiness checks").
+  Codex takes `cwd` and `sandboxPolicy` in `turn/start`. Claude resumes the same session with a new
+  `cwd`. No symbolic link trick is needed.
 - **`MustScanSubDirs` in real use.** The fallback works; the event did not occur in the tests.
 - **Linux on ext4 or XFS**: no btrfs snapshots; the base is a full copy. Not tested.
 - **Xcode and SwiftPM build output** is not reused at another path. Rust `target/` is.
@@ -703,6 +702,14 @@ edit, untracked file and delete.
 | symbolic link switch from the user folder to the mount                                                                            | pass                                                                                                                           |
 | Time Machine exclusion without root                                                                                               | pass                                                                                                                           |
 
+Live provider checks (2026-10-04, cheap models, test folders A and B in the scratchpad):
+
+| Check                                                                                        | Result                                                                                                          |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Codex (codex-cli 0.160.0, `gpt-5.5`, effort low): turn 1 in A with `sandboxPolicy: readOnly` | `pwd` = A, `touch` refused ("Operation not permitted"), no file in A                                            |
+| Codex: turn 2 on the same thread with `cwd` = B and `workspaceWrite` for B                   | the model kept the code word from turn 1, the command ran in B, the file was written in B                       |
+| Claude Agent SDK 0.3.285 (`claude-haiku-4-5`): session in A, then `resume` with `cwd` = B    | same session id, the model kept the code word, `pwd` = B. The session file stayed under the project folder of A |
+
 Linux (OrbStack, Ubuntu 26.04, kernel 7.0, btrfs, git 2.53), normal user, 200,000 files plus a
 submodule:
 
@@ -795,8 +802,6 @@ submodule:
 - Base update with a real FSEvents delta of a large repository (the small update took 2.44 s).
 - Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
-- Claude `resume` after the working folder changes, and Codex `turn/start` with a new `cwd`, with a
-  live model.
 - Linux on bare metal and on ext4 or XFS.
 - More than 30 agents.
 - Windows (not supported for now).
