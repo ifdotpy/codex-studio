@@ -417,6 +417,13 @@ def test_transfer_openapi_keeps_action_body_scope_optional() -> None:
     start_schema = schema["components"]["schemas"]["TransferStartRequest"]
     assert start_schema["required"] == ["request_id"]
     assert "scope" not in start_schema["required"]
+    scope_schema = start_schema["properties"]["scope"]
+    assert scope_schema["default"] == "team"
+    assert scope_schema["$ref"] == "#/components/schemas/TransferScope"
+    assert schema["components"]["schemas"]["TransferScope"]["enum"] == [
+        "team",
+        "subagents",
+    ]
 
 
 class AgentRouterTests(unittest.TestCase):

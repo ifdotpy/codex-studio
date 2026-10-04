@@ -18,8 +18,8 @@ from .models import (
     StopRequest,
     TransferResponse,
     TransferActionRequest,
+    TransferScope,
     TransferStartRequest,
-    AccountTransferRequest,
     UsageResumeResponse,
 )
 
@@ -79,7 +79,6 @@ class AgentRequestModelTests(unittest.TestCase):
         self.assertTrue(stop.descendants)
         self.assertIsInstance(transfer, TransferStartRequest)
         assert isinstance(transfer, TransferStartRequest)
-        assert transfer.scope is not None
         self.assertEqual(transfer.scope.value, "subagents")
         self.assertEqual(transfer.request_id, "durable")
 
@@ -91,7 +90,7 @@ class AgentRequestModelTests(unittest.TestCase):
         self.assertIsInstance(action, TransferActionRequest)
         self.assertIsInstance(start, TransferStartRequest)
         assert isinstance(start, TransferStartRequest)
-        self.assertIsNone(start.scope)
+        self.assertEqual(start.scope, TransferScope.TEAM)
         with self.assertRaises(ValidationError):
             adapter.validate_json('{"request_id":"durable","action":"replay"}')
         with self.assertRaises(ValidationError):

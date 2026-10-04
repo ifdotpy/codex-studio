@@ -191,7 +191,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 body.id,
                 body.account_key,
                 body.request_id,
-                body.scope.value if body.scope is not None else TransferScope.TEAM.value,
+                body.scope.value,
             )
         return context.send(http_request, _public_transfer(operation))
 

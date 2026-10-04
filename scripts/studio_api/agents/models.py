@@ -354,14 +354,7 @@ class TransferStartRequest(ContractModel):
     id: str | None = Field(default=None, min_length=1, max_length=200)
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
     request_id: str = Field(min_length=1, max_length=200)
-    scope: TransferScope | None = None
-
-    @field_validator("scope", mode="before")
-    @classmethod
-    def explicit_scope_must_not_be_null(cls, value: object) -> object:
-        if value is None:
-            raise ValueError("A transfer scope must be selected")
-        return value
+    scope: TransferScope = TransferScope.TEAM
 
 
 class TransferActionRequest(ContractModel):
