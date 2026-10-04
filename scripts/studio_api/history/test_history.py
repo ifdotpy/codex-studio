@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import sqlite3
 import sys
+import threading
 import unittest
-from typing import TYPE_CHECKING, cast
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Callable, Iterator, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
 
@@ -16,6 +21,7 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
 
 from studio_api.history.router import create_router
+from studio_api.history.models import CheckpointCaptureResponse, TranscriptRecord
 from studio_api.models import ErrorResponse, ResponseModel
 
 if TYPE_CHECKING:
@@ -30,7 +36,8 @@ class FakeRuntime:
         self.calls.append(("transcript", {"key": key, **kwargs}))
         return {
             "items": [{"id": "m-1", "role": "user", "text": "hello", "at": 1.0,
-                       "providerPayload": {"parts": ["hello", 3, None]}}],
+                       "inputs": [{"kind": "user", "text": "hello", "truncated": False,
+                                   "assets": []}]}],
             "truncated": False,
             "nextCursor": None,
             "nextAfterCursor": None,
@@ -53,7 +60,24 @@ class FakeRuntime:
 
     def branch_conversation(self, agent: str, value: dict[str, object]) -> dict[str, object]:
         self.calls.append(("branch", {"agent": agent, **value}))
-        return {"id": "branch-1", "draft": {"text": "hello", "prefixText": ""}}
+        from codex_runtime import Runtime
+
+        class EntityProducer:
+            closed = False
+
+            @staticmethod
+            def empty_lead(_db: object, _agent: dict[str, object]) -> bool:
+                return False
+
+        record: dict[str, object] = {
+            "id": "branch-1", "name": "Branch", "status": "idle", "isLead": True,
+            "cwd": "/workspace", "model": "gpt-6-luna", "accountKey": "default",
+            "threadId": "thread-branch", "providerSecret": "never-public",
+        }
+        agent_view = cast(Callable[..., dict[str, object]], Runtime.agent_entity_view)
+        result = agent_view(EntityProducer(), None, record)
+        result["draft"] = {"text": "hello", "prefixText": "", "assets": []}
+        return result
 
     def checkpoint_capture(self, agent: str, label: str) -> dict[str, object]:
         self.calls.append(("checkpoint_capture", {"agent": agent, "label": label}))
@@ -99,10 +123,12 @@ class FakeContext:
     def __init__(self) -> None:
         self.canvas = FakeCanvas()
         self.runtime = FakeRuntime()
+        self.send_options: list[dict[str, object]] = []
 
     def send(
         self, request: Request, value: object, status: int = 200, **kwargs: object
     ) -> JSONResponse:
+        self.send_options.append(kwargs)
         if status >= 400:
             value = ErrorResponse.model_validate(value).model_dump(
                 mode="json", exclude_unset=True
@@ -123,6 +149,11 @@ class HistoryRouteTests(unittest.TestCase):
         self.context = FakeContext()
         self.app = FastAPI()
         self.app.include_router(create_router(cast("ApiContext", self.context)))
+
+        @self.app.exception_handler(RequestValidationError)
+        async def request_error(_request: Request, _error: RequestValidationError) -> JSONResponse:
+            return JSONResponse({"error": "Invalid request"}, status_code=400)
+
         self.client = TestClient(self.app)
 
     def test_transcript_query_uses_first_value_and_preserves_pagination_contract(self) -> None:
@@ -131,10 +162,7 @@ class HistoryRouteTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["historyVersion"], "thread:checkpoint")
-        self.assertEqual(
-            response.json()["items"][0]["providerPayload"],
-            {"parts": ["hello", 3, None]},
-        )
+        self.assertEqual(response.json()["items"][0]["inputs"][0]["text"], "hello")
         self.assertEqual(
             self.context.runtime.calls[-1],
             ("transcript", {"key": "agent-1", "before": None, "around": None,
@@ -152,6 +180,8 @@ class HistoryRouteTests(unittest.TestCase):
             },
             {"q", "limit"},
         )
+        self.assertIn("400", self.app.openapi()["paths"]["/api/transcript/page"]["get"]["responses"])
+        self.assertIn("404", self.app.openapi()["paths"]["/api/transcript/page"]["get"]["responses"])
 
     def test_search_routes_keep_search_query_and_item_wire_shapes(self) -> None:
         search = self.client.get("/api/search?q=hello&limit=8")
@@ -189,6 +219,7 @@ class HistoryRouteTests(unittest.TestCase):
 
     def test_checkpoint_reads_and_writes_use_explicit_responses(self) -> None:
         checkpoints = self.client.get("/api/checkpoints?agent=agent-1")
+        self.assertTrue(self.context.send_options[-1]["etag"])
         capture = self.client.post("/api/checkpoint", json={"agent": "agent-1"})
         preview = self.client.post(
             "/api/checkpoint/preview", json={"agent": "agent-1", "checkpoint": "cp-1"}
@@ -218,6 +249,8 @@ class HistoryRouteTests(unittest.TestCase):
             json={"agent": "agent-1", "message_id": "m-1", "id": "request-1", "before": True},
         )
         self.assertEqual(response.json()["draft"]["text"], "hello")
+        self.assertEqual(response.json()["id"], "branch-1")
+        self.assertNotIn("providerSecret", response.json())
         self.assertEqual(
             self.context.runtime.calls[-1],
             (
@@ -225,6 +258,89 @@ class HistoryRouteTests(unittest.TestCase):
                 {"agent": "agent-1", "message_id": "m-1", "id": "request-1", "before": True},
             ),
         )
+
+    def test_transcript_contract_accepts_runtime_item_producer_record(self) -> None:
+        from codex_runtime import Runtime
+
+        connection = sqlite3.connect(":memory:")
+        connection.executescript(
+            "CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT, record TEXT, created REAL);"
+            "CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT);"
+            "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY, record TEXT);"
+            "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT);"
+        )
+
+        class ItemProducer:
+            @staticmethod
+            def index_item(*_args: object) -> None:
+                return None
+
+            @staticmethod
+            def touch_ui(_agent: str) -> None:
+                return None
+
+        producer = ItemProducer()
+        item = cast(Callable[..., object], Runtime.item)
+        item(producer, connection, "agent-1", "turn-1", "user", "hello", turnId="turn-9")
+        record = connection.execute("SELECT record FROM runtime_items").fetchone()[0]
+        parsed = TranscriptRecord.model_validate(json.loads(record))
+        self.assertEqual(parsed.id, "agent-1:turn-1")
+        self.assertEqual(parsed.role, "user")
+        self.assertEqual(parsed.turnId, "turn-9")
+        connection.close()
+
+    def test_checkpoint_contract_accepts_capture_and_summary_producer_output(self) -> None:
+        from codex_workspace import WorkspaceMixin
+
+        class CheckpointProducer:
+            def __init__(self) -> None:
+                self.lock = threading.RLock()
+                self.root = "/state"
+                self.connection = sqlite3.connect(":memory:")
+                self.connection.execute(
+                    "CREATE TABLE runtime_items(agent TEXT, id TEXT, record TEXT, created REAL)"
+                )
+                self.connection.execute(
+                    "INSERT INTO runtime_items VALUES ('agent-1','agent-1:item','{}',1.0)"
+                )
+                self.current = {
+                    "id": "agent-1", "rootId": "root-1", "cwd": "/workspace",
+                    "checkpointHistoryHead": None, "lastCompletedTurn": "turn-1",
+                }
+
+            @staticmethod
+            def checked_actor_in_own_db(_agent: str) -> dict[str, object]:
+                return {"id": "agent-1", "rootId": "root-1", "cwd": "/workspace"}
+
+            @staticmethod
+            def snapshot_tree(_actor: dict[str, object]) -> str:
+                return "tree-1"
+
+            @staticmethod
+            def git(*_args: object) -> bytes:
+                return b"commit-1"
+
+            @contextmanager
+            def db(self) -> Iterator[sqlite3.Connection]:
+                yield self.connection
+
+            def agent(self, _agent: str, _db: sqlite3.Connection) -> dict[str, object]:
+                return cast(dict[str, object], self.current)
+
+            @staticmethod
+            def put(_db: sqlite3.Connection, _table: str, _record: dict[str, object]) -> None:
+                return None
+
+        producer = CheckpointProducer()
+        capture = cast(Callable[..., object], WorkspaceMixin.capture_checkpoint)
+        summarize = cast(Callable[..., dict[str, object]], WorkspaceMixin.checkpoint_summary)
+        captured = cast(dict[str, object], capture(producer, "agent-1", "Saved", tree="tree-1"))
+        summary = summarize(captured)
+        parsed = CheckpointCaptureResponse.model_validate(summary)
+        self.assertEqual(parsed.agent, "agent-1")
+        self.assertEqual(parsed.historyBoundary, 1)
+        self.assertNotIn("historyDelta", summary)
+        producer.connection.close()
 
 
 if __name__ == "__main__":

@@ -1,45 +1,98 @@
-"""Typed wire contracts for transcript history, search, and checkpoints."""
+"""Explicit wire contracts for transcript history, search, and checkpoints.
+
+Transcript records mirror the fields emitted by ``Runtime.item`` and enriched
+by ``Runtime.transcript`` / ``codex_transcript_history``. Native provider data
+is represented in the transcript text (or as typed input records), not passed
+through as unvalidated top-level fields.
+"""
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
+from pydantic import Field, StrictBool, StrictStr, model_validator
 
+from studio_api.sync.models import AgentActivity
 from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.sync.models import (
+    AgentEntityDto,
+    ComplaintResponseDto,
+    WorkDecisionDto,
+    WorkResultDto,
+)
 
 
-class TranscriptItem(ContractModel):
-    """A saved transcript record; extra typed fields carry provider metadata."""
+class TranscriptAsset(ContractModel):
+    """Path-free attachment projection returned by the workspace service."""
 
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    id: StrictStr
+    agent: StrictStr
+    name: StrictStr
+    mime: StrictStr
+    image: StrictBool
+    size: int
+    hash: StrictStr
+    created: float
+
+
+class TranscriptInput(ContractModel):
+    """One native/runtime input batch entry shown inside a transcript item."""
+
+    id: StrictStr | None = None
+    at: float | None = None
+    kind: StrictStr
+    text: StrictStr
+    truncated: StrictBool
+    assets: list[TranscriptAsset] = Field(default_factory=list)
+
+
+class TranscriptRecord(ContractModel):
+    """One persisted or synthesized transcript row with named UI fields."""
 
     id: StrictStr
     role: StrictStr | None = None
     title: StrictStr | None = None
-    text: StrictStr | None = None
-    at: int | float | StrictStr | None = None
+    text: StrictStr
+    at: float | StrictStr | None = None
+    truncated: StrictBool | None = None
     turnId: StrictStr | None = None
     turnStatus: StrictStr | None = None
-    agent: StrictStr | None = None
+    phase: StrictStr | None = None
+    streaming: StrictBool | None = None
+    toolStatus: StrictStr | None = None
+    inputs: list[TranscriptInput] | None = None
+    assets: list[TranscriptAsset] | None = None
     sourceId: StrictStr | None = None
     clientMessageId: StrictStr | None = None
-    truncated: StrictBool | None = None
+    agent: StrictStr | None = None
+    materialized: StrictBool | None = None
+    pending: StrictBool | None = None
+    deliveryStatus: StrictStr | None = None
+    requestedDelivery: StrictStr | None = None
+    deliveryError: StrictStr | None = None
+    turnError: StrictStr | None = None
+    turnErrorResolved: StrictBool | None = None
+    reasoningMs: float | None = None
+    reasoningSince: float | None = None
+    reasoningObservedAt: float | None = None
+    observedWait: StrictBool | None = None
 
 
 class TranscriptAgent(ContractModel):
     id: StrictStr
     status: StrictStr | None = None
-    activity: StrictStr | None = None
+    activity: AgentActivity | None = None
     inFlight: StrictBool | None = None
-    contextUsage: JsonValue = None
+    contextUsage: JsonValue = Field(
+        default=None,
+        description="Provider-specific token-window and usage measurements for this turn.",
+    )
     compactions: int | None = None
     compactionsObservedOnly: int | None = None
 
 
 class TranscriptPageResponse(ResponseModel):
-    items: list[TranscriptItem]
+    items: list[TranscriptRecord]
     truncated: StrictBool
     nextCursor: StrictStr | None = None
     nextAfterCursor: StrictStr | None = None
@@ -65,21 +118,8 @@ class TranscriptSearchResponse(ResponseModel):
     truncated: StrictBool
 
 
-class TranscriptItemResponse(ResponseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-
-    id: StrictStr
-    agent: StrictStr
-    sourceId: StrictStr
-    role: StrictStr | None = None
-    title: StrictStr | None = None
-    text: StrictStr | None = None
-    at: int | float | StrictStr | None = None
-    turnId: StrictStr | None = None
-    turnStatus: StrictStr | None = None
-    clientMessageId: StrictStr | None = None
-    truncated: StrictBool | None = None
+class TranscriptItemResponse(TranscriptRecord, ResponseModel):
+    """Full transcript item projection, including its canonical sync envelope."""
 
 
 class SearchResult(ContractModel):
@@ -99,29 +139,61 @@ class SearchResponse(ResponseModel):
     limit: int
 
 
-class SearchItemResponse(ResponseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+class SearchItemResponse(TranscriptRecord, ResponseModel):
+    """Named producer fields for message, room, work, plan, and complaint items.
 
-    id: StrictStr
+    ``native`` is the provider protocol's extensible plan update payload; all
+    other returned fields have explicit application-owned types.
+    """
+
     kind: Literal["message", "room", "work", "plan", "complaint"]
     agent: StrictStr
     text: StrictStr
-    role: StrictStr | None = None
+    room: StrictStr | None = None
+    sender: StrictStr | None = None
+    seq: int | None = None
+    name: StrictStr | None = None
+    status: StrictStr | None = None
+    created: float | None = None
+    updated: float | None = None
+    rootId: StrictStr | None = None
+    leadId: StrictStr | None = None
+    author: StrictStr | None = None
     title: StrictStr | None = None
-    at: int | float | StrictStr | None = None
-    turnId: StrictStr | None = None
-    turnStatus: StrictStr | None = None
-    sourceId: StrictStr | None = None
-    clientMessageId: StrictStr | None = None
-    truncated: StrictBool | None = None
+    sourceType: StrictStr | None = None
+    responses: list[ComplaintResponseDto] | None = None
+    needsResponse: StrictBool | None = None
+    readAt: float | None = None
+    leadName: StrictStr | None = None
+    authorName: StrictStr | None = None
+    leadStopped: StrictBool | None = None
+    leadDeleted: StrictBool | None = None
+    recipient: Literal["user", "lead"] | None = None
+    description: StrictStr | None = None
+    owner: StrictStr | None = None
+    dependencies: list[StrictStr] | None = None
+    version: int | None = None
+    results: list[WorkResultDto] | None = None
+    decisions: list[WorkDecisionDto] | None = None
+    createdBy: StrictStr | None = None
+    blockedBy: list[StrictStr] | None = None
+    displayStatus: StrictStr | None = None
+    native: JsonValue = Field(
+        default=None,
+        description="Provider-native plan update fields retained for plan display.",
+    )
+    steps: list[JsonValue] | None = None
+    userHidden: StrictBool | None = None
+    members: list[StrictStr] | None = None
+    projectPath: StrictStr | None = None
+    radio: JsonValue = Field(
+        default=None,
+        description="Extensible room radio configuration from the room producer.",
+    )
 
 
-class Checkpoint(ContractModel):
-    """Checkpoint summary fields; payload/lineage extensions remain JSON typed."""
-
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+class CheckpointSummary(ContractModel):
+    """Public checkpoint record produced by ``capture_checkpoint`` summary."""
 
     id: StrictStr
     agent: StrictStr | None = None
@@ -132,16 +204,18 @@ class Checkpoint(ContractModel):
     ref: StrictStr | None = None
     threadId: StrictStr | None = None
     turnId: StrictStr | None = None
-    created: int | float
+    created: float
     cwd: StrictStr | None = None
+    historyParent: StrictStr | None = None
+    historyBoundary: int | None = None
 
 
 class CheckpointsResponse(ResponseModel):
-    checkpoints: list[Checkpoint]
+    checkpoints: list[CheckpointSummary]
 
 
 class CheckpointPreviewResponse(ResponseModel):
-    checkpoint: Checkpoint
+    checkpoint: CheckpointSummary
     expectedTree: StrictStr
     diff: StrictStr
     patch: StrictStr
@@ -149,36 +223,8 @@ class CheckpointPreviewResponse(ResponseModel):
     canRestore: StrictBool
 
 
-class CheckpointCaptureResponse(ResponseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-
-    id: StrictStr
-    agent: StrictStr | None = None
-    rootId: StrictStr | None = None
-    label: StrictStr
-    tree: StrictStr | None = None
-    commit: StrictStr | None = None
-    ref: StrictStr | None = None
-    threadId: StrictStr | None = None
-    turnId: StrictStr | None = None
-    created: int | float
-    cwd: StrictStr | None = None
-
-
-class BranchAgent(ContractModel):
-    """Common branch identity fields plus typed runtime-specific metadata."""
-
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-
-    id: StrictStr
-    name: StrictStr | None = None
-    status: StrictStr | None = None
-    cwd: StrictStr | None = None
-    model: StrictStr | None = None
-    accountKey: StrictStr | None = None
-    threadId: StrictStr | None = None
+class CheckpointCaptureResponse(CheckpointSummary, ResponseModel):
+    """Flat checkpoint summary returned by the legacy capture endpoint."""
 
 
 class CheckpointRestoreResponse(ResponseModel):
@@ -189,15 +235,12 @@ class CheckpointRestoreResponse(ResponseModel):
 class BranchDraft(ContractModel):
     text: StrictStr | None = None
     prefixText: StrictStr | None = None
-    assets: list[JsonValue] | None = None
+    assets: list[TranscriptAsset] | None = None
 
 
-class BranchResponse(ResponseModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+class BranchResponse(AgentEntityDto, ResponseModel):
+    """Canonical public agent projection plus the branch draft payload."""
 
-    id: StrictStr | None = None
-    agent: BranchAgent | None = None
     draft: BranchDraft | None = None
 
 
