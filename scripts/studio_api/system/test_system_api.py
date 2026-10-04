@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from studio_api.middleware import RequestBoundary
 from studio_api.models import ContractModel, JsonValue
 from .models import (
     DesktopResponse,
@@ -31,7 +32,8 @@ from .models import (
 from .router import create_router
 
 if TYPE_CHECKING:
-    from studio_api.context import ApiContext
+    from codex_canvas import Canvas
+    from studio_api.context import ApiContext, RemoteAccessContract
 
 
 class FakeContext:
@@ -61,6 +63,14 @@ class FakeCanvas:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.runtime: object | None = None
+
+
+class FakeRemote:
+    def origin(self) -> str | None:
+        return None
+
+    def request_origin(self, _headers: object, _peer: str, _port: int) -> str | None:
+        return "http://testserver"
 
 
 class SystemApiTests(unittest.TestCase):
@@ -144,6 +154,42 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(body["liveUpdate"], {"status": "idle", "pid": 3})
         native.assert_called_once_with(runtime)
         browser.assert_called_once_with(runtime, "fixture-account")
+
+    def test_actual_context_sender_validates_system_route_output(self) -> None:
+        from studio_api.context import ApiContext
+
+        context = ApiContext(
+            cast("Canvas", FakeCanvas(self.root)),
+            token="fixture-token",
+            remote=cast("RemoteAccessContract", FakeRemote()),
+            schema_only=True,
+        )
+        app = FastAPI()
+        app.add_middleware(RequestBoundary, context=context)
+        app.include_router(create_router(context))
+        client = TestClient(app)
+        runtime = SimpleNamespace(live_updates=None)
+        context.canvas.runtime = runtime
+        valid_native_status: dict[str, JsonValue] = {
+            "status": "checking", "selected": None, "candidates": [], "accounts": {},
+        }
+        with patch("codex_native_runtime.status", return_value=valid_native_status), \
+                patch("codex_browser.diagnostics", return_value=None):
+            accepted = client.get("/api/desktop")
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["nativeRuntime"], valid_native_status)
+        self.assertNotIn("outcome", accepted.json())
+
+        invalid_native_status: dict[str, JsonValue] = {
+            "status": "unknown", "selected": None, "candidates": [], "accounts": {},
+        }
+        with patch("codex_native_runtime.status", return_value=invalid_native_status), \
+                patch("codex_browser.diagnostics", return_value=None):
+            rejected = client.get("/api/desktop")
+
+        self.assertEqual(rejected.status_code, 500)
+        self.assertEqual(rejected.json(), {"error": "The server could not validate its response"})
 
     def test_diagnostics_without_runtime_remains_not_found(self) -> None:
         response = self.client.get("/api/diagnostics")
