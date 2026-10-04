@@ -107,6 +107,15 @@ function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function nativeStatusMessage(status: Agent["nativeStatus"] | undefined) {
+  if (!isJsonObject(status)) return undefined;
+  const error = status.error;
+  if (typeof error === "string") return error;
+  if (isJsonObject(error) && typeof error.message === "string")
+    return error.message;
+  return typeof status.message === "string" ? status.message : undefined;
+}
+
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -650,8 +659,7 @@ export default function Conversation(p: {
           ? "Chat stopped as a precaution"
           : capacityRetry?.status === "scheduled"
             ? "Waiting to retry model"
-            : displayError(agent?.nativeStatus?.error?.message) ||
-              displayError(agent?.nativeStatus?.message) ||
+            : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"
                 : ["waiting", "parked"].includes(agent?.status || "")
@@ -663,8 +671,7 @@ export default function Conversation(p: {
     agent?.status,
     wait?.label,
     agent?.activity?.phase,
-    agent?.nativeStatus?.error?.message,
-    agent?.nativeStatus?.message,
+    agent?.nativeStatus,
     threadBlock,
     capacityRetry?.status,
     connection,
