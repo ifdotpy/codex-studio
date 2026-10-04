@@ -11536,7 +11536,7 @@ export interface components {
       /** Fastmode */
       fastMode: boolean;
       /** Model */
-      model: string;
+      model: string | null;
     };
     /** WorkItem */
     WorkItem: {

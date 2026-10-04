@@ -93,6 +93,30 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_worker_model_inheritance_survives_projection_and_snapshot(self) -> None:
+        for model in (None, "gpt-6-luna"):
+            with self.subTest(model=model):
+                record: dict[str, JsonValue] = {
+                    "id": "agent-a",
+                    "kind": "agent",
+                    "workerDefaults": {
+                        "model": model, "effort": None, "fastMode": False,
+                    },
+                }
+                projected = project("agent", record)
+                agent = AgentEntityDto.model_validate(projected)
+                snapshot = SnapshotAgentDto.model_validate(record)
+                for parsed in (agent, snapshot):
+                    if parsed.workerDefaults is None:
+                        self.fail("worker defaults were omitted")
+                    self.assertEqual(parsed.workerDefaults.model, model)
+                    self.assertIn("model", parsed.workerDefaults.model_dump(exclude_unset=True))
+        with self.assertRaises(ValidationError):
+            project("agent", {
+                "id": "agent-a",
+                "workerDefaults": {"model": 42, "effort": None, "fastMode": False},
+            })
+
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")

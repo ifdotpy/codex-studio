@@ -373,7 +373,7 @@ class SnapshotNativeRelease(AgentNativeRelease):
 
 
 class WorkerDefaultsDto(ContractModel):
-    model: str
+    model: str | None
     effort: str | None
     fastMode: bool
     daybreakEnabled: bool = False
