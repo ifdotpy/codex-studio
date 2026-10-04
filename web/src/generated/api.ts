@@ -2220,6 +2220,14 @@ export interface components {
       /** Id */
       id: string;
     };
+    /** AccountsResource */
+    AccountsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "accounts";
+    };
     /** AccountsResponse */
     AccountsResponse: {
       /** Syncentities */
@@ -4840,6 +4848,14 @@ export interface components {
         [key: string]: number;
       };
     };
+    /** CostsResource */
+    CostsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "costs";
+    };
     /** CreateAgentRequest */
     CreateAgentRequest: {
       /** Account Key */
@@ -4951,6 +4967,14 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Deleted */
       deleted: string[];
+    };
+    /** DesktopResource */
+    DesktopResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "desktop";
     };
     /** DesktopResponse */
     DesktopResponse: {
@@ -5086,6 +5110,14 @@ export interface components {
     DraftPushRow: {
       assumedMasterState?: components["schemas"]["DraftDocumentInput"] | null;
       newDocumentState: components["schemas"]["DraftDocumentInput"];
+    };
+    /** DraftsResource */
+    DraftsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "drafts";
     };
     /**
      * ErrorResponse
@@ -5654,6 +5686,16 @@ export interface components {
       /** Request Id */
       request_id: string;
     };
+    /** LimitsResource */
+    LimitsResource: {
+      /** Accountkey */
+      accountKey: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "limits";
+    };
     /**
      * LiveUpdateState
      * @enum {string}
@@ -5797,6 +5839,14 @@ export interface components {
       nextCursor?: string | null;
       /** Unavailableaccounts */
       unavailableAccounts?: components["schemas"]["UnavailableAccount"][];
+    };
+    /** ModelsResource */
+    ModelsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "models";
     };
     /** MonitorActionResult */
     MonitorActionResult: {
@@ -6490,6 +6540,16 @@ export interface components {
       updatedAt?: number | null;
       /** Version */
       version: number;
+    };
+    /** PanelResource */
+    PanelResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "panel";
     };
     /**
      * ParticipantRole
@@ -7441,6 +7501,16 @@ export interface components {
       /** Request Id */
       request_id?: string | null;
     };
+    /** QueueResource */
+    QueueResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "queue";
+    };
     /**
      * QueueSizes
      * @description Queue labels include generated account aliases and queue names.
@@ -7588,6 +7658,16 @@ export interface components {
       threadId: string;
       /** Turnid */
       turnId: string;
+    };
+    /** ReceiptsResource */
+    ReceiptsResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "receipts";
     };
     /**
      * RecoveryOutcome
@@ -7863,6 +7943,73 @@ export interface components {
       residentBytes?: number | null;
     };
     /**
+     * ResourceChangeEvent
+     * @description Named `resources` SSE payload. A change invalidates the listed refs.
+     */
+    ResourceChangeEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 3;
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: "initial" | "change" | "reconnect" | "overflow" | "workspace";
+      /** Resources */
+      resources: components["schemas"]["ResourceRef"][];
+      /** Revision */
+      revision: number;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
+     * ResourceHeartbeatEvent
+     * @description Named `heartbeat` SSE payload; it never requests a resource read.
+     */
+    ResourceHeartbeatEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 3;
+      /** Revision */
+      revision: number;
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
+     * ResourceRef
+     * @description Closed discriminated union of all typed UI resource identities.
+     */
+    ResourceRef:
+      | components["schemas"]["PanelResource"]
+      | components["schemas"]["QueueResource"]
+      | components["schemas"]["ReceiptsResource"]
+      | components["schemas"]["TerminalResource"]
+      | components["schemas"]["TerminalsResource"]
+      | components["schemas"]["AccountsResource"]
+      | components["schemas"]["LimitsResource"]
+      | components["schemas"]["ModelsResource"]
+      | components["schemas"]["TasksResource"]
+      | components["schemas"]["TaskResource"]
+      | components["schemas"]["WorkspaceResource"]
+      | components["schemas"]["VoiceResource"]
+      | components["schemas"]["SessionCostResource"]
+      | components["schemas"]["CostsResource"]
+      | components["schemas"]["DesktopResource"]
+      | components["schemas"]["WorktreeDiskResource"]
+      | components["schemas"]["RoomResource"]
+      | components["schemas"]["StateResource"]
+      | components["schemas"]["DraftsResource"]
+      | components["schemas"]["TranscriptsResource"]
+      | components["schemas"]["TranscriptResource"];
+    /**
      * RestartEnvironmentKey
      * @enum {string}
      */
@@ -8077,6 +8224,16 @@ export interface components {
       identity: [string | null, number | null, number];
       /** Seq */
       seq: number;
+    };
+    /** RoomResource */
+    RoomResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "room";
+      /** Roomid */
+      roomId: string;
     };
     /**
      * RoomStatus
@@ -8729,6 +8886,16 @@ export interface components {
       pendingWrites: number;
       /** Retainedbytes */
       retainedBytes: number;
+    };
+    /** SessionCostResource */
+    SessionCostResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "session-cost";
     };
     /** SessionCostResponse */
     SessionCostResponse: {
@@ -9844,6 +10011,14 @@ export interface components {
       /** Threadid */
       threadId: string;
     };
+    /** StateResource */
+    StateResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "state";
+    };
     /** StateSnapshot */
     StateSnapshot: {
       /** Syncentities */
@@ -10288,6 +10463,26 @@ export interface components {
      * @enum {string}
      */
     TaskKind: "monitor" | "command" | "tool";
+    /** TaskResource */
+    TaskResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "task";
+      /** Taskid */
+      taskId: string;
+    };
+    /** TasksResource */
+    TasksResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "tasks";
+    };
     /**
      * TaskStatus
      * @enum {string}
@@ -10422,6 +10617,24 @@ export interface components {
        * @default 28
        */
       rows?: number;
+    };
+    /** TerminalResource */
+    TerminalResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "terminal";
+      /** Terminalid */
+      terminalId: string;
+    };
+    /** TerminalsResource */
+    TerminalsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "terminals";
     };
     /**
      * TerminalState
@@ -10758,6 +10971,16 @@ export interface components {
       /** Unavailable */
       unavailable?: string | null;
     };
+    /** TranscriptResource */
+    TranscriptResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "transcript";
+    };
     /** TranscriptSearchResponse */
     TranscriptSearchResponse: {
       /** Syncentities */
@@ -10785,6 +11008,14 @@ export interface components {
       text: string;
       /** Turnid */
       turnId?: string | null;
+    };
+    /** TranscriptsResource */
+    TranscriptsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "transcripts";
     };
     /**
      * TransferAction
@@ -11338,6 +11569,16 @@ export interface components {
       records: components["schemas"]["VoiceRecordResponse"][];
       session: components["schemas"]["VoiceSessionResponse"] | null;
     };
+    /** VoiceResource */
+    VoiceResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "voice";
+    };
     /** VoiceSessionResponse */
     VoiceSessionResponse: {
       /** Syncentities */
@@ -11667,6 +11908,16 @@ export interface components {
       /** Version */
       version?: number | null;
     };
+    /** WorkspaceResource */
+    WorkspaceResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "workspace";
+    };
     /** WorkspaceTaskFeed */
     WorkspaceTaskFeed: {
       /** Syncentities */
@@ -11761,6 +12012,16 @@ export interface components {
       tasksHistoryLimit?: number | null;
       /** Work */
       work?: components["schemas"]["WorkItem"][] | null;
+    };
+    /** WorktreeDiskResource */
+    WorktreeDiskResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "worktree-disk";
     };
     /** WorktreeDiskResponse */
     WorktreeDiskResponse: {
@@ -18456,6 +18717,7 @@ export interface operations {
       query?: {
         after?: number | null;
         protocol?: string | null;
+        resources?: string | null;
         scope?: string | null;
       };
       header?: never;
@@ -18470,7 +18732,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "text/event-stream": string;
+          "text/event-stream":
+            | components["schemas"]["ResourceChangeEvent"]
+            | components["schemas"]["ResourceHeartbeatEvent"];
         };
       };
       /** @description Bad Request */
