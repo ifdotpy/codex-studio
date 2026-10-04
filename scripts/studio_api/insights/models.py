@@ -87,6 +87,26 @@ class AnalyticsTokens(ContractModel):
     totalTokens: int | float | None = None
 
 
+class AnalyticsProviderTokens(AnalyticsTokens):
+    """Known token fields plus versioned keys from provider usage payloads."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue]
+
+
+class AnalyticsPendingUsage(ContractModel):
+    responseId: str | None
+    turnId: str | None
+    usage: AnalyticsProviderTokens
+
+
+class AnalyticsUsageAssociation(ContractModel):
+    responseId: str | None
+    turnId: str | None
+    total: AnalyticsProviderTokens
+    last: AnalyticsProviderTokens
+
+
 class AnalyticsSummary(ContractModel):
     agents: int
     turns: int
@@ -133,16 +153,23 @@ class AnalyticsPage(ContractModel):
     turns: AnalyticsPagination
 
 
+class AnalyticsCaptureErrorRecord(ContractModel):
+    at: int | float
+    operation: str
+    error: str
+    code: str | None = None
+    errorType: str | None = None
+
+
 class AnalyticsCaptureErrors(ContractModel):
     count: int
-    last: JsonValue
+    last: AnalyticsCaptureErrorRecord | None
 
 
 class AnalyticsCoverage(ContractModel):
     trackingSince: float
     captureErrors: AnalyticsCaptureErrors
-    # Historical provider error records retain their upstream extensible fields.
-    historyErrors: list[JsonValue]
+    historyErrors: list[AnalyticsHistoryRecord]
     provisionalUsageSamples: int
     tokenAttribution: Literal["provider_usage_only"]
     payloadMeasurement: Literal["observed_protocol_payload"]
@@ -157,6 +184,219 @@ class AnalyticsDuration(ContractModel):
     mean: int | float | None
     p50: int | float | None
     p95: int | float | None
+
+
+class AnalyticsAgentRecord(ContractModel):
+    id: str
+    name: str | None = None
+    rootId: str | None = None
+    parentId: str | None = None
+    accountKey: str | None = None
+    # Account history is provider/profile metadata with versioned fields.
+    accountHistory: list[JsonValue] | None = None
+    provider: str | None = None
+    threadId: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    fastMode: bool | None = None
+    daybreakEnabled: bool | None = None
+    cyberAccessProgram: str | None = None
+    cwd: str | None = None
+    deletedAt: int | float | None = None
+
+
+class AnalyticsAgentTotal(AnalyticsAgentRecord):
+    tokens: AnalyticsTokens
+    usageSamples: int
+    toolCalls: int
+    modelToolCalls: int
+    protocolToolCalls: int
+    failedToolCalls: int
+    protocolFailedToolCalls: int
+    compactions: int
+    duration: AnalyticsDuration
+    protocolDuration: AnalyticsDuration
+
+
+class AnalyticsEventMetadata(ContractModel):
+    agentId: str
+    agentName: str | None = None
+    rootId: str | None = None
+    accountKey: str | None = None
+    # Historical profile metadata has provider-specific additions.
+    accountHistory: list[JsonValue] | None = None
+    provider: str | None = None
+    threadId: str | None = None
+    turnId: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    fastMode: bool | None = None
+    daybreakEnabled: bool | None = None
+    cyberAccessProgram: str | None = None
+
+
+class AnalyticsUsageRecord(AnalyticsEventMetadata):
+    rootId: str
+    accountKey: str
+    accountHistory: list[JsonValue]
+    id: str
+    at: int | float
+    recordedAt: int | float
+    source: str
+    timestampSource: str
+    last: AnalyticsProviderTokens
+    total: AnalyticsProviderTokens
+    delta: AnalyticsProviderTokens
+    cumulativeDelta: AnalyticsProviderTokens
+    # `raw` and the raw token record preserve provider-defined wire metadata.
+    raw: JsonValue | None = None
+    counterDomain: Literal["response", "nativeNotice"]
+    modelContextWindow: int | float | None
+    reset: bool | None
+    baselineMissing: bool
+    fingerprint: str | None = None
+    responseId: str | None = None
+    inputTokensAreUncached: bool | None = None
+    rawTokenUsageRecord: JsonValue | None = None
+    turnUsage: AnalyticsProviderTokens | None = None
+    requestUsage: AnalyticsProviderTokens | None = None
+    usageSource: str | None = None
+
+
+class AnalyticsTurnRecord(AnalyticsEventMetadata):
+    id: str | None = None
+    at: int | float | None = None
+    startedAt: int | float | None = None
+    finishedAt: int | float | None = None
+    firstOutputAt: int | float | None = None
+    durationMs: int | float | None = None
+    firstOutputDelayMs: int | float | None = None
+    status: str
+    source: str | None = None
+    error: JsonValue | None = None
+    terminalSource: str | None = None
+    nativeDurationMs: int | float | None = None
+    nativeTimeToFirstTokenMs: int | float | None = None
+
+
+class AnalyticsPayloadImage(ContractModel):
+    bytes: int | None
+    width: int | None
+    height: int | None
+
+
+class AnalyticsPayloadMeasure(ContractModel):
+    bytes: int
+    chars: int
+    lines: int
+    imageCount: int
+    imageBytes: int | None
+    images: list[AnalyticsPayloadImage]
+    format: Literal["text", "json"]
+
+
+class AnalyticsStreamMeasure(ContractModel):
+    bytes: int
+    chars: int
+    lines: int
+    deltas: int
+
+
+class AnalyticsItemRecord(AnalyticsEventMetadata):
+    rootId: str
+    accountKey: str
+    accountHistory: list[JsonValue]
+    id: str
+    itemId: str | None = None
+    at: int | float
+    recordedAt: int | float
+    firstRecordedAt: int | float | None = None
+    firstSourceAt: int | float | None = None
+    startedAt: int | float | None = None
+    finishedAt: int | float | None = None
+    source: str
+    timestampSource: str
+    type: str
+    name: str
+    isTool: bool
+    status: str
+    input: AnalyticsPayloadMeasure | None = None
+    output: AnalyticsPayloadMeasure | None = None
+    modelInput: AnalyticsPayloadMeasure | None = None
+    modelOutput: AnalyticsPayloadMeasure | None = None
+    payloadBoundary: Literal["model", "protocol"]
+    category: str | None = None
+    role: str | None = None
+    callId: str | None = None
+    snapshotItemId: str | None = None
+    namespace: str | None = None
+    command: str | None = None
+    cwd: str | None = None
+    server: str | None = None
+    exitCode: int | None = None
+    processId: str | int | None = None
+    compactionMetadata: JsonValue | None = None
+    error: str | None = None
+    durationMs: int | float | None = None
+    durationSource: str | None = None
+    coverage: str | None = None
+    payloadTruncated: bool | None = None
+    stream: AnalyticsStreamMeasure | None = None
+
+
+class AnalyticsRateLimitRecord(ContractModel):
+    accountKey: str
+    at: int | float
+    # Raw provider allowance schemas vary by account/provider version.
+    data: JsonValue
+
+
+class AnalyticsHistoryContext(ContractModel):
+    threadId: str | None = None
+    window: int | float | None = None
+    turnId: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    allowedSourceThreadIds: list[str] | None = None
+    pendingUsage: AnalyticsPendingUsage | None = None
+    requestUsageAvailable: bool | None = None
+    noticeAssociation: AnalyticsUsageAssociation | None = None
+
+
+class AnalyticsFilesystemRemap(ContractModel):
+    previous: list[int]
+    current: list[int]
+    offset: int
+    at: int | float
+    proof: Literal["samePathInodeHeaderAnchor"]
+
+
+class AnalyticsHistoryRecord(ContractModel):
+    id: str | None = None
+    agent: str | None = None
+    accountKey: str | None = None
+    threadId: str | None = None
+    deletedAt: int | float | None = None
+    offset: int | None = None
+    importedRecords: int | None = None
+    malformedLines: int | None = None
+    status: str | None = None
+    error: str | None = None
+    updated: int | float | None = None
+    path: str | None = None
+    fileBytes: int | None = None
+    identity: list[int] | None = None
+    filesystemIdentity: list[int] | None = None
+    filesystemRemap: AnalyticsFilesystemRemap | None = None
+    filesystemRemapCount: int | None = None
+    anchor: str | None = None
+    validated: bool | None = None
+    context: AnalyticsHistoryContext | None = None
+    coverage: str | None = None
+    wrongThreadRecord: int | None = None
+    consecutiveFailures: int | None = None
+    errorPersisted: bool | None = None
+    errorPersistenceError: str | None = None
 
 
 class AnalyticsTool(ContractModel):
@@ -205,6 +445,7 @@ class AnalyticsGroupTotal(ContractModel):
 class AnalyticsNotification(ContractModel):
     id: str
     agent: str
+    root: str | None = None
     method: str
     hour: int | float
     count: int
@@ -229,36 +470,39 @@ class AnalyticsOperationCounts(ContractModel):
     approvalCounts: dict[str, int]
 
 
+class AnalyticsResponseRate(ContractModel):
+    rate: int | float
+    outputTokens: int | float
+    durationSeconds: int | float
+
+
 class AnalyticsResponse(ResponseModel):
     version: Literal[1] | None = None
     generatedAt: float | None = None
     filters: AnalyticsFilters | None = None
     coverage: AnalyticsCoverage | None = None
     summary: AnalyticsSummary | None = None
-    # These are serialized provider/protocol records with evolving fields, kept
-    # as JSON values so known numbers/strings/containers still validate strictly.
-    # Agent records are deliberately extensible and carry provider metadata.
-    agents: list[JsonValue] | None = None
-    agentTotals: list[JsonValue] | None = None
+    agents: list[AnalyticsAgentRecord] | None = None
+    agentTotals: list[AnalyticsAgentTotal] | None = None
     tools: list[AnalyticsTool] | None = None
     modelTotals: list[AnalyticsGroupTotal] | None = None
     accountTotals: list[AnalyticsGroupTotal] | None = None
     operations: AnalyticsOperationCounts | None = None
     notifications: list[AnalyticsNotification] | None = None
-    history: list[JsonValue] | None = None
-    rateLimits: list[JsonValue] | None = None
-    turns: list[JsonValue] | None = None
-    timeline: list[JsonValue] | None = None
-    chartBuckets: list[JsonValue] | None = None
+    history: list[AnalyticsHistoryRecord] | None = None
+    rateLimits: list[AnalyticsRateLimitRecord] | None = None
+    turns: list[AnalyticsTurnRecord] | None = None
+    timeline: list[AnalyticsUsageRecord] | None = None
+    chartBuckets: list[AnalyticsUsageRecord] | None = None
     timelineTotal: int | None = None
-    provisionalUsage: list[JsonValue] | None = None
-    calls: list[JsonValue] | None = None
+    provisionalUsage: list[AnalyticsUsageRecord] | None = None
+    calls: list[AnalyticsItemRecord] | None = None
     items: list[AnalyticsItemCount] | None = None
-    itemRecords: list[JsonValue] | None = None
+    itemRecords: list[AnalyticsItemRecord] | None = None
     itemRecordsTotal: int | None = None
     itemBreakdown: list[AnalyticsItemBreakdown] | None = None
-    compactions: list[JsonValue] | None = None
-    compactionSnapshots: list[JsonValue] | None = None
+    compactions: list[AnalyticsItemRecord] | None = None
+    compactionSnapshots: list[AnalyticsItemRecord] | None = None
     pagination: AnalyticsPagination | None = None
     detailPagination: AnalyticsPage | None = None
     at: int | float | None = None
@@ -274,8 +518,8 @@ class AnalyticsResponse(ResponseModel):
     accountLabel: str | None = None
     provider: str | None = None
     turnDurationMs: int | float | None = None
-    responseRate: JsonValue | None = None
-    tokens: JsonValue | None = None
+    responseRate: AnalyticsResponseRate | None = None
+    tokens: AnalyticsProviderTokens | None = None
 
 class AccountCostData(ContractModel):
     source: str | None = None

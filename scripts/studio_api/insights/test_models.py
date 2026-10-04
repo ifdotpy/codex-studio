@@ -128,8 +128,40 @@ class InsightsModelTests(unittest.TestCase):
                     "peakContextPercent": None,
                     "baselineMissingSamples": 0,
                 },
-                "agents": [{"id": "agent-a", "providerMetadata": {"provider": "test"}}],
-                "agentTotals": [{"id": "agent-a", "tokens": {"inputTokens": 10}}],
+                "agents": [{
+                    "id": "agent-a",
+                    "name": "Agent A",
+                    "rootId": "root-a",
+                    "parentId": None,
+                    "accountKey": "default",
+                    "accountHistory": [],
+                    "provider": "codex",
+                    "threadId": "thread-a",
+                    "model": "model-a",
+                    "effort": None,
+                    "fastMode": False,
+                    "daybreakEnabled": False,
+                    "cyberAccessProgram": None,
+                    "cwd": "/workspace",
+                    "deletedAt": None,
+                }],
+                "agentTotals": [{
+                    "id": "agent-a",
+                    "name": "Agent A",
+                    "rootId": "root-a",
+                    "accountKey": "default",
+                    "accountHistory": [],
+                    "tokens": {"inputTokens": 10},
+                    "usageSamples": 1,
+                    "toolCalls": 0,
+                    "modelToolCalls": 0,
+                    "protocolToolCalls": 0,
+                    "failedToolCalls": 0,
+                    "protocolFailedToolCalls": 0,
+                    "compactions": 0,
+                    "duration": {"count": 0, "min": None, "max": None, "mean": None, "p50": None, "p95": None},
+                    "protocolDuration": {"count": 0, "min": None, "max": None, "mean": None, "p50": None, "p95": None},
+                }],
                 "tools": [
                     {
                         "name": "search",
@@ -188,6 +220,136 @@ class InsightsModelTests(unittest.TestCase):
         self.assertIsNotNone(response.summary)
         assert response.summary is not None
         self.assertEqual(response.summary.tokens.inputTokens, 10)
+
+    def test_analytics_record_dtos_match_known_producer_shapes(self) -> None:
+        payload = {
+            "at": 123.0,
+            "responseRate": {"rate": 40.0, "outputTokens": 80, "durationSeconds": 2.0},
+            "tokens": {"outputTokens": 8, "reasoningOutputTokens": 2},
+            "timeline": [{
+                "id": "usage-a",
+                "agentId": "agent-a",
+                "agentName": "Agent A",
+                "rootId": "root-a",
+                "accountKey": "default",
+                "accountHistory": [],
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "at": 123.0,
+                "recordedAt": 123.1,
+                "source": "rollout",
+                "timestampSource": "record",
+                "last": {"totalTokens": 42},
+                "total": {"totalTokens": 42},
+                "delta": {"totalTokens": 42},
+                "cumulativeDelta": {"totalTokens": None},
+                "counterDomain": "response",
+                "modelContextWindow": 1000,
+                "reset": False,
+                "baselineMissing": True,
+                "model": "model-a",
+            }],
+            "chartBuckets": [{
+                "id": "usage-a",
+                "agentId": "agent-a",
+                "agentName": "Agent A",
+                "rootId": "root-a",
+                "accountKey": "default",
+                "accountHistory": [],
+                "at": 123.0,
+                "recordedAt": 123.1,
+                "source": "rollout",
+                "timestampSource": "record",
+                "last": {"totalTokens": 42},
+                "total": {},
+                "delta": {},
+                "cumulativeDelta": {},
+                "counterDomain": "response",
+                "modelContextWindow": 1000,
+                "reset": False,
+                "baselineMissing": True,
+            }],
+            "provisionalUsage": [],
+            "calls": [{
+                "id": "call-a",
+                "agentId": "agent-a",
+                "agentName": "Agent A",
+                "rootId": "root-a",
+                "accountKey": "default",
+                "accountHistory": [],
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "at": 123.0,
+                "recordedAt": 123.1,
+                "startedAt": 122.0,
+                "finishedAt": 123.0,
+                "source": "rollout",
+                "timestampSource": "record",
+                "type": "modelToolCall",
+                "name": "search",
+                "isTool": True,
+                "status": "completed",
+                "payloadBoundary": "model",
+                "input": {"bytes": 4, "chars": 4, "lines": 1, "imageCount": 0, "imageBytes": 0, "images": [], "format": "text"},
+                "output": {"bytes": 5, "chars": 5, "lines": 1, "imageCount": 0, "imageBytes": 0, "images": [], "format": "text"},
+                "modelInput": {"bytes": 4, "chars": 4, "lines": 1, "imageCount": 0, "imageBytes": 0, "images": [], "format": "text"},
+                "modelOutput": {"bytes": 5, "chars": 5, "lines": 1, "imageCount": 0, "imageBytes": 0, "images": [], "format": "text"},
+                "durationMs": 1000,
+                "command": "codex search",
+                "error": None,
+            }],
+            "itemRecords": [],
+            "compactions": [{
+                "id": "compact-a",
+                "agentId": "agent-a",
+                "agentName": "Agent A",
+                "rootId": "root-a",
+                "accountKey": "default",
+                "accountHistory": [],
+                "at": 123.0,
+                "recordedAt": 123.1,
+                "source": "rollout",
+                "timestampSource": "record",
+                "type": "contextCompaction",
+                "name": "contextCompaction",
+                "isTool": False,
+                "status": "completed",
+                "payloadBoundary": "protocol",
+                "input": None,
+                "output": None,
+                "compactionMetadata": {"window_number": 1},
+            }],
+            "turns": [{
+                "agentId": "agent-a",
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "agentName": "Agent A",
+                "startedAt": 122.0,
+                "status": "completed",
+                "durationMs": 1000,
+                "firstOutputDelayMs": 200,
+            }],
+            "rateLimits": [{
+                "accountKey": "default",
+                "at": 123.0,
+                "data": {"rateLimits": {"primary": {"usedPercent": 25}}},
+            }],
+            "history": [{"id": "importer", "status": "error", "error": "read failed", "updated": 123.0}],
+        }
+
+        response = AnalyticsResponse.model_validate(payload)
+
+        assert response.timeline is not None
+        assert response.calls is not None
+        assert response.turns is not None
+        assert response.rateLimits is not None
+        self.assertEqual(response.timeline[0].last.totalTokens, 42)
+        assert response.calls[0].modelOutput is not None
+        self.assertEqual(response.calls[0].modelOutput.bytes, 5)
+        self.assertEqual(response.turns[0].firstOutputDelayMs, 200)
+        rate_limit_data = response.rateLimits[0].data
+        assert isinstance(rate_limit_data, dict)
+        self.assertEqual(rate_limit_data["rateLimits"], {"primary": {"usedPercent": 25}})
 
     def test_worktree_response_uses_closed_states_and_measures(self) -> None:
         result = WorktreeDiskResponse.model_validate(

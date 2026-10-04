@@ -146,7 +146,8 @@ class InsightsRouterTests(unittest.TestCase):
         self.client = TestClient(self.app, raise_server_exceptions=False)
 
     def test_openapi_uses_the_typed_query_models(self) -> None:
-        paths = self.client.get("/openapi.json").json()["paths"]
+        openapi = self.client.get("/openapi.json").json()
+        paths = openapi["paths"]
         params = {
             (parameter["name"], parameter["in"])
             for parameter in paths["/api/analytics"]["get"]["parameters"]
@@ -164,6 +165,29 @@ class InsightsRouterTests(unittest.TestCase):
             (parameter["name"], parameter["in"])
             for parameter in paths["/api/session-cost"]["get"]["parameters"]
         })
+
+    def test_openapi_uses_producer_backed_analytics_record_dtos(self) -> None:
+        openapi = self.client.get("/openapi.json").json()
+        response_schema = openapi["paths"]["/api/analytics"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(response_schema["$ref"], "#/components/schemas/AnalyticsResponse")
+        response_model = openapi["components"]["schemas"]["AnalyticsResponse"]
+
+        def item_model(name: str) -> str:
+            field = response_model["properties"][name]
+            array_schema = next(variant for variant in field["anyOf"] if variant.get("type") == "array")
+            items = array_schema.get("items")
+            if not isinstance(items, dict):
+                raise AssertionError(f"{name} schema has no typed array item")
+            reference = items.get("$ref")
+            if not isinstance(reference, str):
+                raise AssertionError(f"{name} schema has no model reference")
+            return reference.rsplit("/", 1)[-1]
+
+        self.assertEqual(item_model("timeline"), "AnalyticsUsageRecord")
+        self.assertEqual(item_model("chartBuckets"), "AnalyticsUsageRecord")
+        self.assertEqual(item_model("calls"), "AnalyticsItemRecord")
+        self.assertEqual(item_model("turns"), "AnalyticsTurnRecord")
+        self.assertEqual(item_model("rateLimits"), "AnalyticsRateLimitRecord")
 
     def test_routes_validate_through_the_real_api_context_sender(self) -> None:
         context = ApiContext.for_schema()
