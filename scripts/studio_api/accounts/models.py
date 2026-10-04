@@ -175,6 +175,7 @@ class PeerRoomRadio(RoomRadio):
 
 
 class PeerRoomResponse(RoomEntityDto):
+    members: list[str]
     customName: str | None = None
     created: float | None = None
     radio: PeerRoomRadio
@@ -203,9 +204,61 @@ class ModelCatalogResponse(ResponseModel):
     unavailableAccounts: list[UnavailableAccount] = Field(default_factory=list)
 
 
+class RateLimitWindow(ContractModel):
+    usedPercent: int | float | None = None
+    resetsAt: int | float | None = None
+    windowDurationMins: int | float | None = None
+
+
+class RateLimitIndividualLimit(ContractModel):
+    remainingPercent: int | float | None = None
+
+
+class RateLimitBucket(ContractModel):
+    limitId: str | None = None
+    limitName: str | None = None
+    primary: RateLimitWindow | None = None
+    secondary: RateLimitWindow | None = None
+    spendControlReached: bool | None = None
+    individualLimit: RateLimitIndividualLimit | None = None
+    rateLimitReachedType: str | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class RateLimitResetCredit(ContractModel):
+    id: str
+    status: str
+    resetType: str
+    grantedAt: int | float | None = None
+    expiresAt: int | float | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class RateLimitResetCredits(ContractModel):
+    availableCount: int | None = None
+    credits: list[RateLimitResetCredit] = Field(default_factory=list)
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class UsageLimitsData(ContractModel):
+    accountId: str | None = None
+    rateLimits: RateLimitBucket | None = None
+    rateLimitsByLimitId: dict[str, RateLimitBucket] | None = None
+    rateLimitResetCredits: RateLimitResetCredits | None = None
+    ordinaryUsageAllowed: bool | None = None
+    status: str | None = None
+    signedIn: bool | None = None
+    source: str | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
 class UsageLimitsResponse(ResponseModel):
     accountKey: str
-    data: JsonValue | None = None
+    data: UsageLimitsData | None = None
     at: float | None = None
     error: str | None = None
     readAt: float | None = None
@@ -327,6 +380,10 @@ class ClaudeSessionStopTaskRequest(ContractModel):
     task_id: str
 
 
+class AccountDiscoverRequest(ContractModel):
+    """The legacy discover operation accepts an empty JSON object or no body."""
+
+
 class ClaudeSessionSettings(ClaudeSettings):
     binaryPath: str | None = None
     configDir: str | None = None
@@ -356,7 +413,7 @@ class ClaudeBackgroundTask(ContractModel):
 
 class ClaudeSessionStateResponse(ResponseModel):
     settings: ClaudeSessionSettings = Field(default_factory=ClaudeSessionSettings)
-    turns: list[ClaudeTurn] = Field(default_factory=list)
+    turns: list[ClaudeTurn]
     tasks: list[ClaudeBackgroundTask] = Field(default_factory=list)
     controlOperation: ClaudeControlOperation | None = None
     version: str | None = None

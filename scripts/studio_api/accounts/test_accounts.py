@@ -40,6 +40,7 @@ from .models import (
     ProjectWriteRequest,
     ResetRequest,
     UsageLimitsResponse,
+    RateLimitBucket,
 )
 
 
@@ -91,12 +92,35 @@ class AccountsModelTests(unittest.TestCase):
             self.fail("catalog omitted its data list")
         self.assertEqual(catalog.data[0].model, "vendor/new-model")
 
-    def test_usage_payload_is_explicitly_provider_owned(self) -> None:
+    def test_usage_payload_has_explicit_internal_shape_and_provider_extensions(self) -> None:
         limits = UsageLimitsResponse.model_validate({
-            "accountKey": "default", "data": {"accountId": "acct-1", "newField": [True, 1]},
+            "accountKey": "default", "data": {
+                "accountId": "acct-1", "ordinaryUsageAllowed": True,
+                "rateLimits": {
+                    "limitId": "codex", "limitName": "Codex",
+                    "primary": {"usedPercent": 42, "resetsAt": 2000000000, "windowDurationMins": 300},
+                    "individualLimit": {"remainingPercent": 15}, "spendControlReached": False,
+                },
+                "rateLimitsByLimitId": {"codex": {"limitId": "codex"}},
+                "rateLimitResetCredits": {
+                    "availableCount": 1,
+                    "credits": [{"id": "credit-1", "status": "available", "resetType": "codexRateLimits", "expiresAt": 2000000000}],
+                },
+                "providerExtension": {"newField": [True, 1]},
+            },
             "at": 10.5, "error": None,
         })
-        self.assertIsInstance(limits.data, dict)
+        if (limits.data is None or limits.data.rateLimits is None
+                or limits.data.rateLimits.primary is None
+                or limits.data.rateLimits.individualLimit is None
+                or limits.data.rateLimitResetCredits is None):
+            self.fail("limits omitted a typed rate bucket")
+        self.assertEqual(limits.data.rateLimits.primary.usedPercent, 42)
+        self.assertEqual(limits.data.rateLimits.individualLimit.remainingPercent, 15)
+        self.assertEqual(limits.data.rateLimitResetCredits.credits[0].status, "available")
+        self.assertIn("providerExtension", limits.data.__pydantic_extra__ or {})
+        with self.assertRaises(ValidationError):
+            RateLimitBucket.model_validate({"limitId": "codex", "primary": {"usedPercent": "100"}})
 
     def test_claude_options_and_session_outputs_have_typed_shapes(self) -> None:
         options = ClaudeOptions.model_validate({
@@ -113,10 +137,22 @@ class AccountsModelTests(unittest.TestCase):
             "version": "2.0", "contextWindow": 100000, "totalTokens": 30,
         })
         self.assertEqual(state.turns[0].id, "turn-1")
+        state_schema = ClaudeSessionStateResponse.model_json_schema()
+        self.assertIn("turns", state_schema.get("required", []))
         command_list: list[ClaudeCommand] = TypeAdapter(list[ClaudeCommand]).validate_python([
             {"name": "review", "description": "Review changes", "argumentHint": "<path>", "builtin": False, "aliases": []},
         ])
         self.assertEqual(command_list[0].name, "review")
+
+    def test_openapi_exposes_typed_session_and_limits_success_contracts(self) -> None:
+        app = FastAPI()
+        app.include_router(create_router(ApiContext.for_schema()))
+        schemas = app.openapi()["components"]["schemas"]
+        state = schemas["ClaudeSessionStateResponse"]
+        self.assertIn("turns", state["required"])
+        limits_data = schemas["UsageLimitsResponse"]["properties"]["data"]
+        self.assertIn("UsageLimitsData", json.dumps(limits_data))
+        self.assertIn("RateLimitBucket", json.dumps(schemas["UsageLimitsData"]))
 
     def test_peer_team_radio_union_accepts_legacy_callers_and_types_room(self) -> None:
         for body in (
@@ -255,6 +291,8 @@ class _AccountStore(Protocol):
 
     def register(self, home: str) -> str: ...
 
+    def discover(self) -> dict[str, JsonValue]: ...
+
 
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -317,6 +355,20 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["defaultAccountKey"], "default")
         self.assertNotIn("_syncEntities", response.json())
+
+    def test_discover_keeps_optional_empty_body_in_openapi_and_runtime(self) -> None:
+        operation = self.app.openapi()["paths"]["/api/accounts/discover"]["post"]
+        self.assertIn("requestBody", operation)
+        self.assertFalse(operation["requestBody"].get("required", False))
+        self.assertEqual(operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1], "AccountDiscoverRequest")
+        self.assertEqual(self.client.post("/api/accounts/discover").status_code, 200)
+        self.assertEqual(self.client.post("/api/accounts/discover", json={}).status_code, 200)
+
+    def test_discover_rejects_unknown_body_before_account_scan(self) -> None:
+        with patch.object(self.store, "discover", wraps=self.store.discover) as discover:
+            response = self.client.post("/api/accounts/discover", json={"unexpected": True})
+        self.assertEqual(response.status_code, 400)
+        discover.assert_not_called()
 
     def test_delete_route_preserves_exact_durable_request_id(self) -> None:
         second = self.root / "second-profile"

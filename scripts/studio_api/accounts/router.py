@@ -11,6 +11,7 @@ from starlette.responses import Response
 from studio_api.models import ContractModel, ErrorResponse, JsonValue
 from .models import (
     AccountsResponse,
+    AccountDiscoverRequest,
     AccountLoginResponse,
     AccountKeyRequest,
     RequiredAccountKeyRequest,
@@ -200,7 +201,11 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, _claude_login(_runtime(context)).cancel(body.request_id))
 
     @router.post("/api/accounts/discover", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
-    def account_discover(request: Request) -> Response:
+    def account_discover(
+        request: Request,
+        body: Annotated[AccountDiscoverRequest, Body()] = AccountDiscoverRequest(),
+    ) -> Response:
+        del body
         return context.send(request, _runtime(context).accounts.discover())
 
     @router.post("/api/accounts/register", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
