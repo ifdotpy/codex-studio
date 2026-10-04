@@ -6270,22 +6270,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          "complaint-review:" + completion)
         a["status"] = "queued"
 
-    def rename(self, key, name):
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-            raise ValueError("A name must have 1 to 80 characters")
-        with self.lock, self.db() as db:
-            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (key,)).fetchone()
-            if row:
-                room = json.loads(row[0])
-                room["customName"] = name.strip()
-                self.put(db, "rooms", room)
-            else:
-                a = self.agent(key, db)
-                if a.get("deletedAt"):
-                    raise ValueError("This conversation was deleted")
-                a.update(name=name.strip(), manualName=True, needsTitle=False)
-                self.put(db, "agents", a)
-            return {"id": key, "name": name.strip()}
+    def rename(self, key, name, request_id=None):
+        from codex_rename import rename
+        return rename(self, key, name, request_id)
 
     def hide_room(self, key):
         with self.lock, self.db() as db:

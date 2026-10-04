@@ -61,6 +61,9 @@ class SettingsRuntime(Runtime):
 
 runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') or os.environ.get('TOKEN_RATE_WORKER_COUNT') else Runtime
 c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
+if os.environ.get('RENAME_UI_FIXTURE'):
+    import codex_rename
+    codex_rename._generate = lambda *_: 'Release review and blockers'
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
     c.runtime.catalog = lambda account='default': {'data': fixture_catalog}

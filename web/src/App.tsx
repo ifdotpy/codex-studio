@@ -1,4 +1,4 @@
-import { menuActions, studioCommand } from "./nativeCommands";
+import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
@@ -434,11 +434,16 @@ export default function App() {
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
+    renameRequests = useRef<Record<string, { text: string; id: string }>>({}),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
+  const pendingRenameKey = `studio-pending-renames:${data?.stateDir || ""}`;
   useEffect(() => {
     if (data?.stateDir) sends.current = saved(pendingSendKey, {});
   }, [pendingSendKey, data?.stateDir]);
+  useEffect(() => {
+    if (data?.stateDir) renameRequests.current = saved(pendingRenameKey, {});
+  }, [pendingRenameKey, data?.stateDir]);
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -1031,6 +1036,8 @@ export default function App() {
     };
     let request: Json | undefined;
     try {
+      if (renameCommand(text) !== undefined && !opened)
+        throw new Error("Open a chat before using /rename.");
       const id = opened || (await newChat());
       if (!id) return;
       latestSend.current[id] = attempt;
@@ -1040,11 +1047,56 @@ export default function App() {
           throw new Error(
             "Commands cannot include files. Remove the attachments or send a normal message.",
           );
-        if (text !== command)
+        if (command !== "/rename" && text !== command)
           throw new Error(
             "Use the command without additional text, or send a normal message.",
           );
-        if (command === "/stop" || command === "/stop-team")
+        if (command === "/rename") {
+          const name = renameCommand(text);
+          if (name && name.length > 80)
+            throw new Error("A name must have 1 to 80 characters.");
+          if (renameRequests.current[id]?.text !== text) {
+            renameRequests.current[id] = { text, id: crypto.randomUUID() };
+            save(pendingRenameKey, renameRequests.current);
+          }
+          const request_id = renameRequests.current[id].id;
+          const body = { id, name, request_id };
+          const result = await api<{ status: string; error?: string }>(
+            "/api/rename",
+            body,
+          );
+          const finishRename = async (receipt: typeof result, attempts = 0) => {
+            if (receipt.status === "pending") {
+              if (attempts >= 90) {
+                notify(
+                  "The rename outcome is unknown. Use /rename again to check this request.",
+                );
+                return;
+              }
+              window.setTimeout(async () => {
+                try {
+                  await finishRename(
+                    await api("/api/rename", body),
+                    attempts + 1,
+                  );
+                } catch (error) {
+                  notify(errorText(error));
+                }
+              }, 1000);
+              return;
+            }
+            if (receipt.status === "failed") {
+              delete renameRequests.current[id];
+              save(pendingRenameKey, renameRequests.current);
+              notify(receipt.error || "The title could not be generated.");
+              return;
+            }
+            delete renameRequests.current[id];
+            save(pendingRenameKey, renameRequests.current);
+            await refresh();
+          };
+          void finishRename(result);
+        } else if (command === "/stop" || command === "/stop-team")
           await api("/api/stop", {
             id: command === "/stop-team" ? agent.rootId : id,
             descendants: command === "/stop-team",
@@ -1195,7 +1247,7 @@ export default function App() {
   };
   const rename = async (id: string, name: string) => {
     try {
-      await api("/api/rename", { id, name });
+      await api("/api/rename", { id, name, request_id: crypto.randomUUID() });
       await refresh();
     } catch (e) {
       notify(errorText(e));

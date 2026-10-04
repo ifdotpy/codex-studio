@@ -1,5 +1,10 @@
 import { Textarea } from "@mantine/core";
-import { useCallback, type KeyboardEvent, type RefObject } from "react";
+import {
+  useCallback,
+  useState,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import ComposerAutocomplete from "../ComposerAutocomplete";
 import { useSkillAutocomplete } from "../useSkillAutocomplete";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
@@ -57,24 +62,65 @@ export default function PromptInput(p: {
     input: p.input,
     insert: insertSkill,
   });
+  const commandQuery =
+    p.managed && /^\/[a-z-]*$/i.test(p.value)
+      ? p.value.slice(1).toLowerCase()
+      : null;
+  const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
+  const commandMatches =
+    commandQuery !== null && "rename".includes(commandQuery);
   return (
     <ComposerAutocomplete
-      id="skill-suggestions"
+      id={commandQuery !== null ? "command-suggestions" : "skill-suggestions"}
       loadingMessage="Loading skills…"
       emptyMessage="No matching skills"
-      label="Skills"
-      opened={!!skills.range}
-      resetKey={skills.range?.signature}
-      options={skills.matches.map((skill) => ({
-        value: skill.name,
-        label: skill.name,
-        description: skill.description,
-      }))}
-      loading={skills.loading}
-      error={skills.loadError ? "Could not load skills" : undefined}
-      warning={skills.hasErrors ? "Some skills could not be loaded" : undefined}
-      onDismiss={skills.dismiss}
+      label={commandQuery !== null ? "Commands" : "Skills"}
+      opened={
+        (commandQuery !== null &&
+          commandQuery !== "rename" &&
+          dismissedCommand !== `${p.session}:${p.value}`) ||
+        !!skills.range
+      }
+      resetKey={commandQuery ?? skills.range?.signature}
+      options={
+        commandQuery !== null
+          ? commandMatches
+            ? [
+                {
+                  value: "rename",
+                  label: "/rename",
+                  description:
+                    "Name this chat from its conversation, or add a name.",
+                },
+              ]
+            : []
+          : skills.matches.map((skill) => ({
+              value: skill.name,
+              label: skill.name,
+              description: skill.description,
+            }))
+      }
+      loading={commandQuery === null && skills.loading}
+      error={
+        commandQuery === null && skills.loadError
+          ? "Could not load skills"
+          : undefined
+      }
+      warning={
+        commandQuery === null && skills.hasErrors
+          ? "Some skills could not be loaded"
+          : undefined
+      }
+      onDismiss={() => {
+        if (commandQuery !== null)
+          setDismissedCommand(`${p.session}:${p.value}`);
+        else skills.dismiss();
+      }}
       onSelect={(name) => {
+        if (commandQuery !== null) {
+          if (name === "rename") insertSkill("/rename ", 0, p.value.length);
+          return;
+        }
         const skill = skills.matches.find((item) => item.name === name);
         if (skill) skills.choose(skill);
       }}

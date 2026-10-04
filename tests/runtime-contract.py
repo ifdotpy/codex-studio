@@ -593,13 +593,117 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.rename(a['id'], 'Manual title')
         self.runtime.dynamic({'id':901,'params':{'threadId':a['threadId'],'callId':'late-title','tool':'orchestration_title','arguments':{'title':'LLM title'}}})
         self.assertEqual(self.runtime.agent(a['id'])['name'], 'Manual title')
-        self.runtime.rename(room, 'Review chat')
+        self.runtime.rename(room, 'Review chat', 'room-rename')
+        self.assertEqual(self.runtime.rename(room, 'Review chat', 'room-rename')['name'], 'Review chat')
         self.runtime.hide_room(room)
         self.assertEqual(self.snapshot()['rooms'], [])
         self.assertEqual(len(self.runtime.chat_read(room,a['id'])['messages']), 1)
         self.runtime.chat_message(a['id'], b['id'], 'New message', 'rename-next')
         self.assertEqual(self.snapshot()['rooms'][0]['name'], 'Review chat')
         self.assertEqual(self.snapshot()['rooms'][0]['lastMessage']['text'], 'New message')
+
+    def test_rename_receipt_sets_exact_title_and_generates_once(self):
+        import codex_rename
+        a = self.lead()
+        worker = self.runtime.create({'name': 'Worker', 'prompt': 'Check the UI', 'role': 'reviewer'}, a['id'], defer=True)
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.item(db, a['id'], 'rename-user', 'user', 'Review the release and report blockers.', 'You')
+            self.runtime.item(db, a['id'], 'rename-work', 'assistant', 'The worker found two blockers.', 'Agent')
+        before = len(self.runtime.server.calls)
+        exact = self.runtime.rename(worker['id'], 'Exact worker name', 'rename-exact')
+        self.assertEqual(exact['name'], 'Exact worker name')
+        self.assertEqual(self.runtime.rename(worker['id'], 'Exact worker name', 'rename-exact'), exact)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.runtime.rename(worker['id'], 'Another name', 'rename-exact')
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.runtime.server.calls[before:]))
+        gate = threading.Event()
+        calls = []
+        def title(_runtime, _agent, first, recent):
+            calls.append((first, recent))
+            gate.wait(5)
+            return 'Specific release review'
+        with patch.object(codex_rename, '_generate', side_effect=title):
+            pending = self.runtime.rename(a['id'], None, 'rename-auto')
+            self.assertEqual(pending['status'], 'pending')
+            self.assertEqual(self.runtime.rename(a['id'], None, 'rename-auto'), pending)
+            gate.set()
+            eventually(lambda: self.runtime.rename(a['id'], None, 'rename-auto')['status'] == 'applied')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], 'Coordinate the work')
+        self.assertIn(('User', 'Review the release and report blockers.'), calls[0][1])
+        self.assertIn(('Agent', 'The worker found two blockers.'), calls[0][1])
+        self.assertEqual(self.runtime.agent(a['id'])['name'], 'Specific release review')
+        self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.runtime.server.calls[before:]))
+        interrupted = threading.Event()
+        with patch.object(codex_rename, '_generate', side_effect=lambda *_: (interrupted.wait(5), 'Other title')[1]):
+            self.assertEqual(self.runtime.rename(a['id'], None, 'rename-lost')['status'], 'pending')
+            with self.runtime.lock:
+                self.runtime._rename_jobs.clear()
+            self.assertEqual(self.runtime.rename(a['id'], None, 'rename-lost')['status'], 'failed')
+            interrupted.set()
+            self.assertEqual(self.runtime.rename(a['id'], None, 'rename-lost')['status'], 'failed')
+        self.assertEqual(self.runtime.agent(a['id'])['name'], 'Specific release review')
+
+    def test_rename_model_uses_chat_account_without_a_chat_turn(self):
+        import codex_rename
+        from types import SimpleNamespace
+        profile = self.root / 'profile'
+        profile.mkdir()
+        seen = []
+        def run(command, **options):
+            seen.append((command, options))
+            if '--output-last-message' in command:
+                Path(command[command.index('--output-last-message') + 1]).write_text('Release blocker report')
+            return SimpleNamespace(returncode=0, stdout='Release blocker report')
+        codex_catalog = {'data': [
+            {'model': 'gpt-6-astra', 'supportedReasoningEfforts': [{'reasoningEffort': 'low'}]},
+            {'model': 'gpt-6-luna', 'supportedReasoningEfforts': [{'reasoningEffort': 'low'}]},
+        ]}
+        with patch.object(self.runtime.accounts, 'get', return_value={'provider': 'codex'}), \
+                patch.object(self.runtime.accounts, 'home', return_value=profile), \
+                patch.object(self.runtime, 'catalog', return_value=codex_catalog) as catalog, \
+                patch.object(codex_rename.subprocess, 'run', side_effect=run):
+            self.assertEqual(codex_rename._generate(self.runtime,
+                {'id': 'chat', 'accountKey': 'profile-a', 'provider': 'codex', 'model': 'gpt-6-astra'},
+                'Review release', [('Agent', 'Found blocker')]), 'Release blocker report')
+            catalog.assert_called_once_with('profile-a')
+        self.assertEqual(seen[0][1]['env']['CODEX_HOME'], str(profile))
+        self.assertIn('--ephemeral', seen[0][0])
+        self.assertEqual(seen[0][0][seen[0][0].index('--model') + 1], 'gpt-6-luna')
+        self.assertIn('model_reasoning_effort="low"', seen[0][0])
+        self.assertIn('cli_auth_credentials_store="file"', seen[0][0])
+        seen.clear()
+        with patch.object(self.runtime.accounts, 'get', return_value={'provider': 'codex'}), \
+                patch.object(self.runtime.accounts, 'home', return_value=profile), \
+                patch.object(self.runtime, 'catalog', return_value={'data': [codex_catalog['data'][0], {'model': 'gpt-6-sol'}]}), \
+                patch.object(codex_rename.subprocess, 'run', side_effect=run):
+            codex_rename._generate(self.runtime,
+                {'id': 'chat', 'accountKey': 'profile-a', 'provider': 'codex', 'model': 'gpt-6-astra'},
+                'Review release', [])
+        self.assertEqual(seen[0][0][seen[0][0].index('--model') + 1], 'gpt-6-astra')
+        seen.clear()
+        claude_catalog = {'data': [{'model': 'sonnet'}, {'model': 'haiku', 'resolvedModel': 'claude-haiku-4-5'}]}
+        with patch.object(self.runtime.accounts, 'get', return_value={'claudeOptions': {}}), \
+                patch.object(self.runtime, 'catalog', return_value=claude_catalog), \
+                patch('codex_claude.installed', return_value='/fake/claude'), \
+                patch('codex_claude.subscription_env', return_value={'CLAUDE_CONFIG_DIR': str(profile)}), \
+                patch.object(codex_rename.subprocess, 'run', side_effect=run):
+            self.assertEqual(codex_rename._generate(self.runtime,
+                {'id': 'chat', 'accountKey': 'profile-b', 'provider': 'claude', 'model': 'sonnet'},
+                'Review release', []), 'Release blocker report')
+        self.assertEqual(seen[0][1]['env']['CLAUDE_CONFIG_DIR'], str(profile))
+        self.assertIn('--no-session-persistence', seen[0][0])
+        self.assertEqual(seen[0][0][seen[0][0].index('--model') + 1], 'haiku')
+        seen.clear()
+        with patch.object(self.runtime.accounts, 'get', return_value={'claudeOptions': {}}), \
+                patch.object(self.runtime, 'catalog', return_value={'data': [{'model': 'sonnet'}]}), \
+                patch('codex_claude.installed', return_value='/fake/claude'), \
+                patch('codex_claude.subscription_env', return_value={'CLAUDE_CONFIG_DIR': str(profile)}), \
+                patch.object(codex_rename.subprocess, 'run', side_effect=run):
+            codex_rename._generate(self.runtime,
+                {'id': 'chat', 'accountKey': 'profile-b', 'provider': 'claude', 'model': 'sonnet'},
+                'Review release', [])
+        self.assertEqual(seen[0][0][seen[0][0].index('--model') + 1], 'sonnet')
 
     def test_blank_lead_is_persistent_and_has_no_model_call(self):
         import uuid

@@ -2,14 +2,19 @@
 // /review to Claude as its own commands; native review runs only on Codex.
 export type NativeAction = "compact" | "review";
 
+export function renameCommand(text: string): string | null | undefined {
+  const match = /^\/rename(?:\s+(.*))?$/s.exec(text);
+  return match ? match[1]?.trim() || null : undefined;
+}
+
 export function studioCommand(
   text: string,
   provider: string | undefined,
 ): boolean {
   const commands =
     provider === "claude"
-      ? /^\/(stop|stop-team)(\s|$)/
-      : /^\/(compact|review|stop|stop-team)(\s|$)/;
+      ? /^\/(rename|stop|stop-team)(\s|$)/
+      : /^\/(rename|compact|review|stop|stop-team)(\s|$)/;
   return commands.test(text);
 }
 

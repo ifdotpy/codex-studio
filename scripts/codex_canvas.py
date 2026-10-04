@@ -1613,7 +1613,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                                 db.execute('INSERT OR IGNORE INTO messages VALUES (?,?,?,?,?,?)',(result['id'],body['room'],'user',body.get('text','').strip(),time.time(),json.dumps({body['room']:result['status']})))
                             return self.send(result)
                     if self.path == "/api/rename":
-                        return self.send(canvas.runtime.rename(body.get("id"), body.get("name")))
+                        return self.send(canvas.runtime.rename(body.get("id"), body.get("name"), body.get("request_id")))
                     if self.path == "/api/room/delete":
                         return self.send(canvas.runtime.hide_room(body.get("id")))
                     if self.path == "/api/complaints":
