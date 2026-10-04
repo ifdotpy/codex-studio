@@ -11,13 +11,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
 
-const cyberAccessPrograms = (info?: ModelInfo): string[] | undefined => {
+const cyberAccessPrograms = (info?: ModelInfo): string[] | null | undefined => {
   const access = info?.availableAccessPrograms;
   if (!isRecord(access)) return undefined;
+  if (!("cyber" in access)) return undefined;
   const cyber = access.cyber;
-  return Array.isArray(cyber)
-    ? cyber.filter((program): program is string => typeof program === "string")
-    : undefined;
+  if (!Array.isArray(cyber)) return null;
+  return cyber.filter(
+    (program): program is string => typeof program === "string",
+  );
 };
 
 export function daybreakProgram(info?: ModelInfo): string | null {
@@ -35,7 +37,10 @@ export function supportsDaybreakMode(
   if (!info || isDaybreakAlias(info.model)) return false;
   const programs = cyberAccessPrograms(info);
   if (enabled) return !!daybreakProgram(info);
-  return programs === undefined || programs.includes("standard");
+  return (
+    programs === undefined ||
+    (programs !== null && programs.includes("standard"))
+  );
 }
 
 export function useWorkerModels(

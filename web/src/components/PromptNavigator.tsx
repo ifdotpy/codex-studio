@@ -245,7 +245,7 @@ export default function PromptNavigator({
                   </span>
                   <span>
                     {(searching && "excerpt" in prompt
-                      ? prompt.excerpt
+                      ? prompt.excerpt || prompt.text
                       : prompt.text) || "Attachment"}
                   </span>
                 </button>
