@@ -4255,6 +4255,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if woke or now - last_dispatch >= 5:
                     self.dispatch()
                     last_dispatch = now
+                else:
+                    # Check archive deadlines on each scheduler tick.
+                    self.accepted_archive_tick()
                 if first_tick:
                     startup_memory_mark("scheduler-first-tick")
                     first_tick = False
