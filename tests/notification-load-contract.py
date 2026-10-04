@@ -33,10 +33,12 @@ def percentile(values, fraction):
     return round(values[int((len(values) - 1) * fraction)], 3) if values else 0
 
 
-def measure(count=320, agents=24, storm=False, legacy_checkpoint=False):
+def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
+            live_scheduler=False, idle_roster=0):
     with tempfile.TemporaryDirectory(prefix="studio-notification-load-") as temporary:
         root = Path(temporary)
-        runtime = QuietRuntime(root / "state", server_factory=lambda *args: None)
+        runtime_type = Runtime if live_scheduler else QuietRuntime
+        runtime = runtime_type(root / "state", server_factory=lambda *args: None)
         try:
             lead = runtime.create({"name": "Fixture", "cwd": temporary, "prompt": ""}, draft=True, defer=True)
             with runtime.lock, runtime.db() as db:
@@ -46,6 +48,13 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False):
                              "threadId": f"fixture-thread-{index}", "turnId": f"fixture-turn-{index}",
                              "inFlight": True, "status": "running"}
                     runtime.put(db, "agents", agent)
+                if idle_roster:
+                    db.executemany("INSERT INTO runtime_agents(id,record) VALUES (?,?)",
+                                   ((f"idle-{index}", json.dumps({**original,
+                                     "id": f"idle-{index}", "name": f"Idle {index}",
+                                     "status": "waiting", "autoWake": False,
+                                     "threadId": None, "turnId": None, "inFlight": False}))
+                                    for index in range(idle_roster)))
             traced = MeasuredRLock(runtime.lock)
             runtime.lock = traced
             db_durations = []
@@ -196,7 +205,10 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False):
             metrics = traced.runtime_lock_metrics()
             by_wait = sorted(metrics, key=lambda row: row["totalWaitMs"], reverse=True)
             return {"input": count, "callbacks": len(delays), "queuedBeforeRelease": queued,
+                    "journalAcked": server.proc.cursor if storm else None,
                     "stormAgents": agents if storm else None,
+                    "idleRoster": idle_roster,
+                    "liveScheduler": live_scheduler,
                     "inputEventsPerSecond": round(count / max(.001, input_ended - input_started), 1),
                     "processedCallbacksPerSecond": round(len(delays) / max(.001, processing_ended - processing_started), 1),
                     "dispatcherConnections": len(connections),
@@ -225,8 +237,11 @@ def main():
     parser.add_argument("--count", type=int, default=320)
     parser.add_argument("--agents", type=int, default=24)
     parser.add_argument("--storm", action="store_true")
+    parser.add_argument("--live-scheduler", action="store_true")
+    parser.add_argument("--idle-roster", type=int, default=0)
     args = parser.parse_args()
-    result = measure(args.count, args.agents, args.storm)
+    result = measure(args.count, args.agents, args.storm,
+                     live_scheduler=args.live_scheduler, idle_roster=args.idle_roster)
     if args.baseline:
         before = json.loads(args.baseline.read_text())
         result = {"before": before, "after": result}
