@@ -24,6 +24,7 @@ import {
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
+import { watchResourceReads } from "./watchResourceReads";
 
 type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
@@ -76,22 +77,25 @@ export default function TerminalDock({
     }
   }, []);
   useEffect(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        await load(() => !stopped);
-      } catch (e) {
-        if (!stopped) setError(errorText(e));
-      }
-      if (!stopped) timer = setTimeout(poll, opened ? 1600 : 5000);
-    };
-    void poll();
+    let active = true;
+    const stop = watchResourceReads(
+      { kind: "terminals" },
+      async () => {
+        try {
+          await load(() => active);
+        } catch (failure) {
+          if (active) setError(errorText(failure));
+        }
+      },
+      (failure) => {
+        if (active) setError(errorText(failure));
+      },
+    );
     return () => {
-      stopped = true;
-      clearTimeout(timer);
+      active = false;
+      stop();
     };
-  }, [opened, load]);
+  }, [load]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
     const update = () =>
@@ -636,7 +640,7 @@ function ShellView({
   useEffect(() => {
     const generation = ++inputGeneration.current;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let cleanupOutput: (() => void) | undefined;
     let observer: ResizeObserver | undefined;
     let resizeTimer: ReturnType<typeof setTimeout>;
     let offset = 0;
@@ -693,8 +697,9 @@ function ShellView({
         observer = new ResizeObserver(resize);
         observer.observe(host.current);
         resize();
-        const poll = async () => {
-          try {
+        const stopOutput = watchResourceReads(
+          { kind: "terminal", terminalId: shell.id },
+          async () => {
             const output = await get("/api/terminals/output", {
               query: { id: shell.id, offset: String(offset) },
             });
@@ -708,18 +713,13 @@ function ShellView({
             setStatus(output.status);
             instance!.options.disableStdin =
               inputBlocked.current || !running(output.status);
-            if (output.error) {
-              setFailure(output.error);
-              return;
-            }
-            setFailure("");
-          } catch (e) {
-            if (!disposed) setFailure(errorText(e));
-            return;
-          }
-          if (!disposed) timer = setTimeout(poll, 350);
-        };
-        void poll();
+            setFailure(output.error || "");
+          },
+          (failure) => {
+            if (!disposed) setFailure(errorText(failure));
+          },
+        );
+        cleanupOutput = stopOutput;
       })
       .catch((e) => {
         if (!disposed) setFailure(errorText(e));
@@ -727,7 +727,7 @@ function ShellView({
     return () => {
       disposed = true;
       fenceInput();
-      clearTimeout(timer);
+      cleanupOutput?.();
       clearTimeout(resizeTimer);
       observer?.disconnect();
       instance?.dispose();

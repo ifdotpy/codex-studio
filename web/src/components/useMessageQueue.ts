@@ -5,6 +5,7 @@ import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
+import { watchResourceReads } from "./watchResourceReads";
 
 type QueueView =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
@@ -76,8 +77,6 @@ export function useMessageQueue(p: {
   observed?: (ids: string[]) => void;
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
-  pendingDelivery?: boolean;
-  refreshDelivery?: () => Promise<void>;
 }) {
   const key = `studio-queue-change:${p.scope}:${p.id}`;
   const currentKey = useRef(key);
@@ -129,33 +128,20 @@ export function useMessageQueue(p: {
     setPending({ key, request: readQueueRequest(key) });
     if (!p.enabled || !p.id) return;
     let active = true;
-    let polling = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (!active || polling) return;
-      clearTimeout(timer);
-      if (document.hidden || navigator.onLine === false) return;
-      polling = true;
-      try {
+    const stop = watchResourceReads(
+      { kind: "queue", agentId: p.id },
+      async () => {
         if (!locks.current.has(key)) await reload();
-        // A committed send can outlive a lost stream notification. Reconcile
-        // only while this chat has an unresolved delivery, through shared sync.
-        if (active && p.pendingDelivery) await p.refreshDelivery?.();
-      } catch (error) {
+      },
+      (error) => {
         if (active) setFailure({ key, text: errorText(error) });
-      } finally {
-        polling = false;
-        if (active) timer = setTimeout(poll, 3000);
-      }
-    };
-    void poll();
-    const stop = onResume(() => void poll());
+      },
+    );
     return () => {
       active = false;
-      clearTimeout(timer);
       stop();
     };
-  }, [key, reload, p.enabled, p.id, p.pendingDelivery, p.refreshDelivery]);
+  }, [key, reload, p.enabled, p.id]);
 
   const clearRequest = async (request: QueueMutation) => {
     const next = await updateLocalDraft<unknown>(key, null, (current) =>

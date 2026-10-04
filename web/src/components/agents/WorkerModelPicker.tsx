@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, get, errorText } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
+import { watchResourceReads } from "../watchResourceReads";
 
 export type WorkerModelInfo = {
   model: string;
@@ -15,6 +16,23 @@ export type WorkerModelInfo = {
   serviceTiers: { id: string; description?: string }[];
   supportedReasoningEfforts: { reasoningEffort: string }[];
 };
+
+type ModelRetryTicket = { key: string; attempt: number };
+export function consumeModelRetryTicket(
+  ticket: { current: ModelRetryTicket | null },
+  key: string,
+  attempt: number,
+) {
+  const pending = ticket.current;
+  if (!pending) return false;
+  if (pending.key !== key) {
+    ticket.current = null;
+    return false;
+  }
+  if (pending.attempt !== attempt) return false;
+  ticket.current = null;
+  return true;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -123,21 +141,30 @@ export function useWorkerModels(
     pending?: boolean;
   } | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const retrySequence = useRef(0);
+  const retryTicket = useRef<ModelRetryTicket | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let explicitRetry = consumeModelRetryTicket(
+      retryTicket,
+      catalogKey,
+      attempt,
+    );
     const controller = new AbortController();
     setResult((previous) =>
       previous?.key === catalogKey ? { ...previous, error: "" } : null,
     );
     const load = async () => {
       let pending = false;
+      const retry = explicitRetry;
+      explicitRetry = false;
       try {
         const data = await get("/api/models", {
           query: {
             account_key: accountKey,
             workers: workers ? "1" : undefined,
+            retry: retry ? "1" : undefined,
           },
           signal: controller.signal,
         });
@@ -186,15 +213,20 @@ export function useWorkerModels(
           error: pending ? "" : errorText(error),
           pending,
         }));
-      } finally {
-        if (active && pending) timer = setTimeout(load, 1000);
       }
     };
-    void load();
+    const stop = watchResourceReads({ kind: "models" }, load, (error) => {
+      if (active)
+        setResult((previous) => ({
+          key: catalogKey,
+          models: previous?.key === catalogKey ? previous.models : [],
+          error: errorText(error),
+        }));
+    });
     return () => {
       active = false;
-      clearTimeout(timer);
       controller.abort();
+      stop();
     };
   }, [accountKey, catalogKey, workers, enabled, attempt]);
   const current = result?.key === catalogKey ? result : null;
@@ -216,6 +248,10 @@ export function useWorkerModels(
         })) || [],
     loading: !current || Boolean(current.pending && !current.models.length),
     error: current?.error || "",
-    retry: () => setAttempt((value) => value + 1),
+    retry: () => {
+      const next = ++retrySequence.current;
+      retryTicket.current = { key: catalogKey, attempt: next };
+      setAttempt(next);
+    },
   };
 }
