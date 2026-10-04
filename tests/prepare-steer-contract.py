@@ -7,15 +7,18 @@ import concurrent.futures
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+import urllib.request
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import PreparationPending, ResponseTimeout, Runtime
+from codex_worktree_creation import WorktreeNeedsReview
 
 spec = importlib.util.spec_from_file_location("prepare_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -157,6 +160,181 @@ class PrepareSteerContract(unittest.TestCase):
         text = next(p for m, p in self.server.calls if m == "turn/start")["input"][0]["text"]
         self.assertIn("First", text)
         self.assertIn("Try again", text)
+
+    def test_worktree_review_pauses_worker_and_keeps_initial_input(self):
+        lead = self.lead()
+        worker = self.runtime.create({"name": "Worker", "prompt": "First task", "role": "reviewer"},
+                                     parent=lead["id"], defer=True)
+        error = WorktreeNeedsReview("Inspect and repair the checkout, then resume this worker")
+        with patch.object(self.runtime, "prepare", side_effect=error):
+            self.runtime.send(worker["id"], "Start", "worktree-start")
+            eventually(lambda: self.runtime.agent(worker["id"])["status"] == "paused")
+        current = self.runtime.agent(worker["id"])
+        self.assertFalse(current["autoWake"])
+        self.assertEqual(current["error"], str(error))
+        with self.runtime.db() as db:
+            rows = db.execute("SELECT kind,text,status FROM runtime_events WHERE agent=?", (worker["id"],)).fetchall()
+            self.assertTrue(any(row["status"] == "pending" for row in rows))
+            notice = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                                (lead["id"],)).fetchone()
+            self.assertIn('"next_step": "send"', notice[0])
+        self.runtime.send(worker["id"], "Resume", "worktree-resume")
+        eventually(lambda: self.runtime.agent(worker["id"])["status"] == "running")
+
+    def test_new_worktree_starts_worker_after_checkout(self):
+        repo = (self.root / "real-repo").resolve()
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+        (repo / "tracked.txt").write_text("base")
+        subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
+                        "-c", "user.email=test@example.invalid", "commit", "-m", "Base"],
+                       check=True, capture_output=True)
+        lead = self.lead()
+        worker = self.runtime.create({"name": "Worker", "cwd": str(repo), "prompt": "Task"},
+                                     parent=lead["id"], defer=True)
+        self.runtime.send(worker["id"], "Start")
+        eventually(lambda: self.runtime.agent(worker["id"])["status"] == "running")
+        current = self.runtime.agent(worker["id"])
+        self.assertTrue(current["worktreeReady"])
+        self.assertEqual((Path(current["cwd"]) / "tracked.txt").read_text(), "base")
+        self.assertEqual(current["branch"], "codex-agent/" + worker["id"])
+
+    def test_existing_partial_worktree_pauses_then_resumes_after_repair(self):
+        repo = (self.root / "partial-repo").resolve()
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+        (repo / "tracked.txt").write_text("base")
+        subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
+                        "-c", "user.email=test@example.invalid", "commit", "-m", "Base"],
+                       check=True, capture_output=True)
+        lead = self.lead()
+        worker = self.runtime.create({"name": "Worker", "cwd": str(repo), "prompt": "Task"},
+                                     parent=lead["id"], defer=True)
+        path = repo / ".worktrees" / "codex-agents" / worker["id"]
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "--no-checkout", "-b",
+                        "codex-agent/" + worker["id"], str(path), "HEAD"],
+                       check=True, capture_output=True)
+        (path / "user-file.txt").write_text("keep")
+        self.runtime.send(worker["id"], "Start")
+        eventually(lambda: self.runtime.agent(worker["id"])["status"] == "paused")
+        self.assertFalse(self.runtime.agent(worker["id"])["worktreeReady"])
+        self.assertEqual((path / "user-file.txt").read_text(), "keep")
+        self.assertIn(str(path), self.runtime.agent(worker["id"])["error"])
+        subprocess.run(["git", "-C", str(path), "reset", "--hard", "HEAD"],
+                       check=True, capture_output=True)
+        self.runtime.send(worker["id"], "Resume")
+        eventually(lambda: self.runtime.agent(worker["id"])["status"] == "running")
+        self.assertTrue(self.runtime.agent(worker["id"])["worktreeReady"])
+        self.assertEqual((path / "user-file.txt").read_text(), "keep")
+
+    def test_worktree_checkout_serializes_per_repo_without_blocking_runtime(self):
+        from codex_canvas import Canvas, make_server
+        repos = [(self.root / "repo-one").resolve(), (self.root / "repo-two").resolve()]
+        for repo in repos:
+            repo.mkdir()
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+            (repo / "tracked.txt").write_text("base")
+            subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
+                            "-c", "user.email=test@example.invalid", "commit", "-m", "Base"],
+                           check=True, capture_output=True)
+        lead = self.lead()
+        workers = [self.runtime.create({"name": f"Worker {i}", "cwd": str(repo),
+                                        "prompt": "Task"}, parent=lead["id"], defer=True)
+                   for i, repo in enumerate([repos[0], repos[0], repos[1]])]
+        entered_first = threading.Event()
+        entered_other = threading.Event()
+        release = threading.Event()
+        calls = []
+        calls_lock = threading.Lock()
+
+        def checkout(repo, *_args, **_kwargs):
+            with calls_lock:
+                calls.append(str(repo))
+            if str(repo) == str(repos[0]):
+                entered_first.set()
+                release.wait(timeout=10)
+            else:
+                entered_other.set()
+            return True
+
+        try:
+            with patch("codex_worktree_creation.create_worker_worktree", side_effect=checkout):
+                for worker in workers:
+                    self.runtime.send(worker["id"], "Start")
+                self.assertTrue(entered_first.wait(5),
+                                str([(self.runtime.agent(w["id"])["status"],
+                                      self.runtime.agent(w["id"]).get("error"),
+                                      self.runtime.agent(w["id"]).get("worktree"),
+                                      self.runtime.agent(w["id"]).get("worktreeReady"),
+                                      self.runtime.agent(w["id"]).get("cwd")) for w in workers]))
+                self.assertTrue(entered_other.wait(5), "another repository starts during checkout")
+                eventually(lambda: any(self.runtime.agent(w["id"]).get("worktreePreparation") == "waiting"
+                                       for w in workers[:2]))
+                with calls_lock:
+                    self.assertEqual(calls.count(str(repos[0])), 1)
+                snapshot = self.runtime.snapshot()
+                self.assertIn("waiting", [agent.get("worktreePreparation")
+                                          for agent in snapshot["agents"]])
+                with self.runtime.db() as db:
+                    self.assertIsNotNone(db.execute("SELECT 1").fetchone())
+                canvas = Canvas(self.root)
+                canvas.runtime = self.runtime
+                server = make_server(canvas)
+                http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+                http_thread.start()
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/state",
+                                                timeout=3) as response:
+                        self.assertEqual(response.status, 200)
+                        payload = json.loads(response.read())
+                    self.assertIn("waiting", [agent.get("worktreePreparation")
+                                              for agent in payload["runtime"]["agents"]])
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    http_thread.join(timeout=3)
+                extra = self.runtime.create({"name": "Another repo worker", "cwd": str(repos[1]),
+                                             "prompt": "Task"}, parent=lead["id"], defer=True)
+                self.assertEqual(extra["cwd"], str(repos[1]))
+                release.set()
+                eventually(lambda: len([repo for repo in calls if repo == str(repos[0])]) == 2)
+        finally:
+            release.set()
+
+    def test_seventy_queued_checkouts_do_not_occupy_delivery_threads(self):
+        repo = (self.root / "queued-repo").resolve()
+        repo.mkdir()
+        subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+        lead = self.create(maxAgents=128)
+        eventually(lambda: self.runtime.agent(lead["id"])["status"] == "running")
+        workers = [self.runtime.create({"name": f"Worker {i}", "cwd": str(repo),
+                                        "prompt": "Task"}, parent=lead["id"], defer=True)
+                   for i in range(70)]
+        entered = threading.Event()
+        release = threading.Event()
+        def checkout(*_args):
+            entered.set()
+            release.wait(timeout=60)
+        try:
+            with patch.object(self.runtime, "prepare_worker_worktree", side_effect=checkout):
+                for worker in workers:
+                    with self.assertRaises(PreparationPending):
+                        self.runtime.prepare(worker)
+                self.assertTrue(entered.wait(3))
+                key = str(subprocess.run(
+                    ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                    check=True, capture_output=True, text=True).stdout.strip())
+                executor = self.runtime.worktree_creation_executors[key]
+                self.assertEqual(executor._work_queue.qsize(), 69)
+                delivered = self.runtime.delivery_executor().submit(lambda: "delivered")
+                self.assertEqual(delivered.result(timeout=2), "delivered")
+                other = self.create()
+                eventually(lambda: self.runtime.agent(other["id"])["status"] == "running")
+        finally:
+            release.set()
 
     def test_disconnect_finishes_shared_preparation_without_accepting_late_identity(self):
         self.server.hold.add("thread/start")

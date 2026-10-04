@@ -11,12 +11,13 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_worktree_creation import create_worker_worktree
+from codex_worktree_creation import WorktreeNeedsReview, _run_checkout, create_worker_worktree
 from codex_worktree_disk import (
     WorktreeDiskScanner,
     _allocated_bytes,
@@ -56,8 +57,20 @@ class WorktreeContracts(unittest.TestCase):
         recovered = create_worker_worktree(self.repo, self.path, self.path, 'codex-agent/worker',
                                             run=run, sleep=lambda _: None)
         self.assertFalse(recovered)
-        self.assertEqual(calls, [60, 180])
+        self.assertEqual(calls, [900, 1800])
         self.assertEqual(self.git('worktree', 'list', '--porcelain').count('worktree '), 2)
+
+    def test_checkout_timeout_stops_child_processes(self):
+        marker = self.root / 'late-child.txt'
+        child = ("import time,pathlib; time.sleep(0.5); "
+                 f"pathlib.Path({str(marker)!r}).write_text('late')")
+        parent = ("import subprocess,sys,time; "
+                  f"subprocess.Popen([sys.executable,'-c',{child!r}]); time.sleep(3)")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            _run_checkout([sys.executable, '-c', parent], timeout=0.1,
+                          check=True, capture_output=True, text=True)
+        time.sleep(0.7)
+        self.assertFalse(marker.exists())
 
     def test_timeout_adopts_only_a_verified_checkout(self):
         def run(cmd, **kwargs):
@@ -66,6 +79,100 @@ class WorktreeContracts(unittest.TestCase):
         self.assertTrue(create_worker_worktree(self.repo, self.path, self.path,
                                                'codex-agent/worker', run=run, sleep=lambda _: None))
         self.assertEqual((self.path / 'tracked.txt').read_text(), 'original')
+
+    def test_timeout_finishes_registered_worktree_without_index(self):
+        def run(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            subprocess.run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            raise subprocess.TimeoutExpired(cmd, kwargs['timeout'])
+        self.assertTrue(create_worker_worktree(self.repo, self.path, self.path,
+                                               'codex-agent/worker', run=run, sleep=lambda _: None))
+        self.assertEqual((self.path / 'tracked.txt').read_text(), 'original')
+        index = subprocess.run(['git', '-C', str(self.path), 'ls-files', '-s'],
+                               check=True, capture_output=True, text=True).stdout
+        self.assertEqual(len(index.splitlines()), 1)
+        self.assertEqual(self.git('worktree', 'list', '--porcelain').count('worktree '), 2)
+
+    def test_preexisting_worktree_without_index_needs_review(self):
+        self.git('worktree', 'add', '--no-checkout', '-b', 'codex-agent/worker',
+                 str(self.path), 'HEAD')
+        (self.path / 'user-file.txt').write_text('keep')
+        with self.assertRaisesRegex(ValueError, 'repair the checkout, then resume this worker'):
+            create_worker_worktree(self.repo, self.path, self.path, 'codex-agent/worker')
+        self.assertEqual((self.path / 'user-file.txt').read_text(), 'keep')
+
+    def test_timeout_preserves_staged_changes_from_checkout_hook(self):
+        def run(cmd, **kwargs):
+            subprocess.run(cmd, **kwargs)
+            (self.path / 'tracked.txt').write_text('from hook')
+            subprocess.run(['git', '-C', str(self.path), 'add', 'tracked.txt'], check=True)
+            raise subprocess.TimeoutExpired(cmd, kwargs['timeout'])
+        with self.assertRaisesRegex(ValueError, 'index differs from HEAD'):
+            create_worker_worktree(self.repo, self.path, self.path,
+                                   'codex-agent/worker', run=run, sleep=lambda _: None)
+        self.assertEqual((self.path / 'tracked.txt').read_text(), 'from hook')
+
+    def test_failed_new_checkout_removes_only_its_own_partial_folder(self):
+        def run(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            subprocess.run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            raise subprocess.CalledProcessError(1, cmd)
+        with self.assertRaisesRegex(WorktreeNeedsReview, 'removed its new partial folder'):
+            create_worker_worktree(self.repo, self.path, self.path,
+                                   'codex-agent/worker', run=run)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(subprocess.run(['git', '-C', str(self.repo), 'show-ref', '--verify',
+                                         '--quiet', 'refs/heads/codex-agent/worker']).returncode, 1)
+
+    def test_twice_timed_out_checkout_removes_its_new_partial_folder(self):
+        original_run = subprocess.run
+        original_checkout = _run_checkout
+        def add_timeout(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            original_run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            raise subprocess.TimeoutExpired(cmd, kwargs['timeout'])
+        def reset_timeout(cmd, **kwargs):
+            if 'reset' in cmd:
+                raise subprocess.TimeoutExpired(cmd, kwargs['timeout'])
+            return original_checkout(cmd, **kwargs)
+        with patch('codex_worktree_creation._run_checkout', side_effect=reset_timeout):
+            with self.assertRaisesRegex(WorktreeNeedsReview, 'removed its new partial folder'):
+                create_worker_worktree(self.repo, self.path, self.path,
+                                       'codex-agent/worker', run=add_timeout)
+        self.assertFalse(self.path.exists())
+
+    def test_failed_checkout_preserves_foreign_file(self):
+        def run(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            subprocess.run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            (self.path / 'user-file.txt').write_text('keep')
+            raise subprocess.CalledProcessError(1, cmd)
+        with self.assertRaises(WorktreeNeedsReview):
+            create_worker_worktree(self.repo, self.path, self.path,
+                                   'codex-agent/worker', run=run)
+        self.assertEqual((self.path / 'user-file.txt').read_text(), 'keep')
+
+    def test_failed_checkout_preserves_changed_tracked_file(self):
+        def run(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            subprocess.run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            (self.path / 'tracked.txt').write_text('user change')
+            raise subprocess.CalledProcessError(1, cmd)
+        with self.assertRaises(WorktreeNeedsReview):
+            create_worker_worktree(self.repo, self.path, self.path,
+                                   'codex-agent/worker', run=run)
+        self.assertEqual((self.path / 'tracked.txt').read_text(), 'user change')
+
+    def test_failed_checkout_keeps_preexisting_empty_directory(self):
+        self.path.mkdir(parents=True)
+        def run(cmd, **kwargs):
+            insert = cmd.index('add') + 1
+            subprocess.run([*cmd[:insert], '--no-checkout', *cmd[insert:]], **kwargs)
+            raise subprocess.CalledProcessError(1, cmd)
+        with self.assertRaises(WorktreeNeedsReview):
+            create_worker_worktree(self.repo, self.path, self.path,
+                                   'codex-agent/worker', run=run)
+        self.assertTrue(self.path.exists())
 
     def test_explicit_base_commit_is_used_after_repository_head_moves(self):
         base = self.git('rev-parse', 'HEAD')
