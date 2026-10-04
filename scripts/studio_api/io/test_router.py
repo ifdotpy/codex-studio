@@ -191,6 +191,7 @@ class IORouterTests(unittest.TestCase):
             upload = client.post("/api/assets", json={"agent": "agent-1", "name": "a.txt", "data": "YWJj"})
             self.runtime.cancel_status = "lost"
             cancel = client.post("/api/monitor/cancel", json={"id": "watch-1"})
+            monitor_input = client.post("/api/monitor/input", json={"id": "watch-1", "text": "x"})
         self.assertEqual(output.status_code, 200)
         self.assertEqual(output.json(), {
             "text": "tail", "offset": 4, "truncated": False, "status": "running",
@@ -203,6 +204,8 @@ class IORouterTests(unittest.TestCase):
         })
         self.assertEqual(cancel.status_code, 200)
         self.assertEqual(cancel.json(), {"id": "watch-1", "status": "lost"})
+        self.assertEqual(monitor_input.status_code, 200)
+        self.assertEqual(monitor_input.json(), {"processId": "watch-1"})
 
     def test_terminal_input_keeps_durable_request_identity(self) -> None:
         response = self.client.post("/api/terminals/input", json={"id": "term", "text": "go", "request_id": "durable-1"})
