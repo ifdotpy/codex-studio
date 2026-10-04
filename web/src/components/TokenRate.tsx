@@ -58,10 +58,9 @@ export default function TokenRate({
   const active = Boolean(rate?.active);
   const visible =
     matchesTurn &&
-    active &&
-    rate?.generating === true &&
+    rate !== null &&
     rate.outputTokens > 0 &&
-    rate.rate > 0;
+    (!active || rate.rate > 0);
   const target = visible ? rate.rate : 0;
   const turn = `${agent.id}:${variant === "worker" ? rate?.turnId || "" : agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
@@ -101,14 +100,12 @@ export default function TokenRate({
       data-rate={visible ? target : ""}
       aria-label={
         visible
-          ? `${rate?.estimated ? "Estimated " : ""}output tokens per second`
+          ? `${rate?.estimated ? "Estimated " : ""}output tokens per second${active ? "" : ", last turn"}`
           : undefined
       }
       title={
         visible
-          ? rate?.estimated
-            ? "Estimate from recent text. Hidden reasoning can change the provider rate."
-            : "Provider output tokens, including reasoning, over the observed response interval. Tool time is excluded."
+          ? `${rate?.estimated ? "Estimate from recent text. Hidden reasoning can change the provider rate." : "Provider output tokens, including reasoning, over the observed response interval. Tool time is excluded."}${active ? "" : " Last turn."}`
           : undefined
       }
     >

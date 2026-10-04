@@ -390,6 +390,15 @@ test("team token rate ui", async ({ browser }) => {
           ],
         running[0].id,
       );
+      const beforeSilence = await firstMeter.innerText();
+      const beforeSilenceRate = await firstMeter.getAttribute("data-rate");
+      assert.match(beforeSilence, /tok\/s/);
+      await page.waitForTimeout(10000);
+      assert.equal(await firstMeter.innerText(), beforeSilence);
+      assert.equal(
+        await firstMeter.getAttribute("data-rate"),
+        beforeSilenceRate,
+      );
       notify(running[0], "item/started", {
         item: {
           id: "tool-wait",
@@ -405,14 +414,17 @@ test("team token rate ui", async ({ browser }) => {
           ],
         running[0].id,
       );
-      assert.equal(await firstMeter.getAttribute("data-rate"), "");
+      assert.equal(
+        await firstMeter.getAttribute("data-rate"),
+        beforeSilenceRate,
+      );
       assert.equal(cardSampleAfterGap?.rate, heldCardSample?.rate);
       assert.equal(
         cardSampleAfterGap?.outputTokens,
         heldCardSample?.outputTokens,
       );
       assert.equal(await firstMeter.getAttribute("data-active"), "true");
-      assert.equal(await firstMeter.innerText(), "");
+      assert.equal(await firstMeter.innerText(), beforeSilence);
       timer = setInterval(feed, 700);
       const injectOnBatch = async (rate) =>
         page.evaluate(
@@ -429,7 +441,6 @@ test("team token rate ui", async ({ browser }) => {
                       {
                         turnId: "fixture-turn",
                         active: true,
-                        generating: true,
                         estimated: false,
                         rate: rate * (index + 1),
                         outputTokens: 1000,
@@ -505,12 +516,14 @@ test("team token rate ui", async ({ browser }) => {
           document.querySelector(
             `.token-rate[data-agent="${id}"][data-variant="worker"]`,
           )?.dataset.active === "false" &&
-          document.querySelector(
-            `.token-rate[data-agent="${id}"][data-variant="worker"]`,
-          )?.textContent === "",
+          document
+            .querySelector(
+              `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+            )
+            ?.textContent.includes("tok/s"),
         running[0].id,
       );
-      assert.equal(await meter(running[0].id).textContent(), "");
+      assert.match(await meter(running[0].id).textContent(), /tok\/s/);
       await page.locator("#team-close").click();
       assert.equal(
         await page.evaluate(

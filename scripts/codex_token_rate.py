@@ -7,7 +7,6 @@ import time
 
 MIN_DURATION = .25
 MAX_RATE = 1000.0
-RECENT_OUTPUT_SECONDS = 2.5
 _logged_implausible_correction = False
 NON_TOOLS = {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction', 'compactionSnapshot'}
 
@@ -57,7 +56,6 @@ class TurnRate:
         self.tools = set()
         self.text_samples = deque()
         self.text_window_tokens = 0.0
-        self.last_output_at = None
         self.response_durations = deque(maxlen=1024)
         self.generation_response_id = None
 
@@ -66,7 +64,6 @@ class TurnRate:
             return
         self.pending += len(text) / 4.0
         self.estimated = True
-        self.last_output_at = now
         self.text_samples.append((now, len(text) / 4.0))
         self.text_window_tokens += len(text) / 4.0
         while self.text_samples and now - self.text_samples[0][0] > 4:
@@ -87,9 +84,7 @@ class TurnRate:
             self.pending = 0.0
             self.text_samples.clear()
             self.text_window_tokens = 0.0
-            self.estimated = False
         self.tools.add(item_id)
-        self.last_output_at = None
 
     def finish_tool(self, item_id, now):
         if item_id not in self.tools:
@@ -98,7 +93,6 @@ class TurnRate:
         if not self.tools:
             self.generation_started = now
             self.timing_valid = True
-            self.last_output_at = None
 
     def generation_time(self, now):
         if self.tools:
@@ -122,7 +116,7 @@ class TurnRate:
         if prior and output <= prior[0]:
             return False
         queued = bool(self.response_durations) and not prior
-        current_estimate = (self.rate, self.estimated, self.last_output_at)
+        current_estimate = (self.rate, self.estimated)
         duration = (prior[1] if prior and prior[1] is not None else
                     self.response_durations[0][0] if queued else self.generation_time(now))
         global _logged_implausible_correction
@@ -140,16 +134,14 @@ class TurnRate:
             self.response_durations.popleft()
         if queued or prior:
             if self.pending:
-                self.rate, self.estimated, self.last_output_at = current_estimate
+                self.rate, self.estimated = current_estimate
             else:
                 self.estimated = False
-                self.last_output_at = now
         elif duration is not None:
             self.pending = 0.0
             self.estimated = False
             self.text_samples.clear()
             self.text_window_tokens = 0.0
-            self.last_output_at = now
             self.generation_elapsed = 0.0
             self.generation_started = None if self.tools else now
             self.timing_valid = True
@@ -158,7 +150,6 @@ class TurnRate:
             self.estimated = False
             self.text_samples.clear()
             self.text_window_tokens = 0.0
-            self.last_output_at = now
         return True
 
     def correct(self, total, now):
@@ -176,15 +167,13 @@ class TurnRate:
     def snapshot(self, now):
         if not self.active:
             return self.last
-        generating = (not self.tools and self.last_output_at is not None and
-                      0 <= now - self.last_output_at <= RECENT_OUTPUT_SECONDS and self.rate > 0)
         return {'turnId': self.turn, 'active': True, 'estimated': self.estimated,
-                'generating': generating, 'rate': self.rate,
+                'rate': self.rate,
                 'outputTokens': round(self.actual + self.pending +
                                       sum(pending for _, pending in self.response_durations), 2)}
 
     def finish(self, now):
-        self.last = {**self.snapshot(now), 'active': False, 'generating': False}
+        self.last = {**self.snapshot(now), 'active': False}
         self.active = False
 
 

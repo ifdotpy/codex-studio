@@ -40,7 +40,6 @@ class RateContract(unittest.TestCase):
         sample = rates.snapshot('luna')
         self.assertEqual(sample['rate'], 32)
         self.assertEqual(sample['outputTokens'], 320)
-        self.assertTrue(sample['generating'])
         self.assertFalse(rates.snapshot('luna')['estimated'])
 
     def test_batched_codex_receipts_keep_response_order_and_time(self):
@@ -73,35 +72,39 @@ class RateContract(unittest.TestCase):
         self.assertEqual(sample['outputTokens'], 120)
         self.assertEqual(rate.messages['previous-response'][2], 50)
 
-    def test_tool_wait_silence_and_completion_hide_previous_rate(self):
+    def test_tool_wait_silence_and_completion_freeze_previous_rate(self):
         now = [2]
         rates = TokenRates(lambda: now[0])
         agent = {'id': 'sol', 'threadId': 'native', 'inFlight': True}
         rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
         rates.stream('item/reasoning/textDelta', {'threadId': 'native', 'turnId': 'turn',
             'delta': 'x' * 400}, 'a', 'c', 2)
-        self.assertTrue(rates.snapshot('sol')['generating'])
+        first = rates.snapshot('sol')['rate']
+        self.assertGreater(first, 0)
         rates.observe(agent, 'item/started', {'turnId': 'turn',
             'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 2)
-        self.assertFalse(rates.snapshot('sol')['generating'])
+        self.assertEqual(rates.snapshot('sol')['rate'], first)
+        now[0] = 12
+        self.assertEqual(rates.snapshot('sol')['rate'], first)
         rates.observe(agent, 'item/completed', {'turnId': 'turn',
             'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 20)
         now[0] = 20
-        self.assertFalse(rates.snapshot('sol')['generating'])
+        self.assertEqual(rates.snapshot('sol')['rate'], first)
         rates.stream('item/agentMessage/delta', {'threadId': 'native', 'turnId': 'turn',
             'delta': 'x' * 40}, 'a', 'c', 21)
-        now[0] = 24
-        self.assertFalse(rates.snapshot('sol')['generating'])
-        rates.observe(agent, 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c', 25)
-        self.assertFalse(rates.snapshot('sol')['generating'])
+        updated = rates.snapshot('sol')['rate']
+        now[0] = 31
+        self.assertEqual(rates.snapshot('sol')['rate'], updated)
+        rates.observe(agent, 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c', 32)
+        self.assertEqual(rates.snapshot('sol')['rate'], updated)
+        self.assertFalse(rates.snapshot('sol')['active'])
 
     def test_text_estimate_tracks_recent_stream_not_elapsed_turn(self):
         rate = TurnRate('turn', 0)
         rate.text('x' * 80, 1)
         rate.text('x' * 80, 101)
         self.assertEqual(rate.snapshot(101)['rate'], 20)
-        self.assertTrue(rate.snapshot(101)['generating'])
-        self.assertFalse(rate.snapshot(104)['generating'])
+        self.assertEqual(rate.snapshot(111)['rate'], 20)
 
     def test_claude_response_usage_arrives_at_message_end(self):
         now = [0]
@@ -109,15 +112,14 @@ class RateContract(unittest.TestCase):
         agent = {'id': 'opus', 'threadId': 'claude'}
         rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
         now[0] = 4
-        self.assertFalse(rates.snapshot('opus')['generating'])
+        self.assertEqual(rates.snapshot('opus')['rate'], 0)
         rates.observe(agent, 'item/completed', {'turnId': 'turn',
             'item': {'id': 'msg_1', 'type': 'agentMessage', 'text': 'Done'},
             'tokenRateUsage': {'responseId': 'msg_1', 'outputTokens': 400}}, 'a', 'c', 5)
         now[0] = 5
         self.assertEqual(rates.snapshot('opus')['rate'], 80)
-        self.assertTrue(rates.snapshot('opus')['generating'])
-        now[0] = 8
-        self.assertFalse(rates.snapshot('opus')['generating'])
+        now[0] = 15
+        self.assertEqual(rates.snapshot('opus')['rate'], 80)
 
     def test_claude_message_start_excludes_turn_queue_and_is_deduplicated(self):
         rates = TokenRates(lambda: 105)
