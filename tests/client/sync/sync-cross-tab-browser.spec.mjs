@@ -28,6 +28,7 @@ test("sync-cross-tab-browser @performance", async ({
   const streamWorkspaces = new Map();
   const streamResources = new Map();
   const revisions = new Map();
+  let unchangedReconnectBaseline = false;
   const sendResourceEvent = (response, currentWorkspace, reason, resources) => {
     const revision = (revisions.get(currentWorkspace) || 0) + 1;
     revisions.set(currentWorkspace, revision);
@@ -41,6 +42,34 @@ test("sync-cross-tab-browser @performance", async ({
         resources,
       })}\n\n`,
     );
+  };
+  const sendSameVersionBaseline = (
+    response,
+    currentWorkspace,
+    reason,
+    resources,
+  ) => {
+    response.write(
+      `event: resources\ndata: ${JSON.stringify({
+        protocol: 3,
+        workspaceId: currentWorkspace,
+        epoch: "tab-epoch",
+        revision: revisions.get(currentWorkspace) || 0,
+        reason,
+        resources,
+      })}\n\n`,
+    );
+  };
+  const sendSameVersionBaselineToStreams = (currentWorkspace) => {
+    for (const response of streams) {
+      if (streamWorkspaces.get(response) !== currentWorkspace) continue;
+      sendSameVersionBaseline(
+        response,
+        currentWorkspace,
+        "reconnect",
+        streamResources.get(response) || [],
+      );
+    }
   };
   const sendChange = (currentWorkspace, resource) => {
     for (const response of streams) {
@@ -89,7 +118,10 @@ test("sync-cross-tab-browser @performance", async ({
         ) || "[]",
       );
       streamResources.set(res, resources);
-      sendResourceEvent(res, currentWorkspace, "initial", resources);
+      if (unchangedReconnectBaseline && currentWorkspace === workspaceId) {
+        unchangedReconnectBaseline = false;
+        sendSameVersionBaseline(res, currentWorkspace, "initial", resources);
+      } else sendResourceEvent(res, currentWorkspace, "initial", resources);
       res.on("close", () => {
         streams.delete(res);
         streamWorkspaces.delete(res);
@@ -103,6 +135,7 @@ test("sync-cross-tab-browser @performance", async ({
   const browser = fixtureBrowser;
   const context = await browser.newContext();
   let noCoordination;
+  let otherWorkspaceContext;
   const pages = [];
   const waitFor = async (predicate, message, timeoutMs = 10000) => {
     const end = Date.now() + timeoutMs;
@@ -553,6 +586,11 @@ test("sync-cross-tab-browser @performance", async ({
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitFor(
+      () => streams.size === 1,
+      "a resumed former owner left a duplicate stream after close propagation",
+      1500,
+    );
     const resumedOwnerDiagnostic = await Promise.all(
       pages.map((page, index) =>
         page.evaluate(
@@ -578,11 +616,15 @@ test("sync-cross-tab-browser @performance", async ({
     const beforeOffline = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
     );
+    const hadStateWatch = await Promise.all(
+      pages.map((page) => page.evaluate(() => window.hasStateWatch)),
+    );
     await context.setOffline(true);
     await waitFor(
       () => streams.size === 0,
       "the owner stream remained open after all tabs went offline",
     );
+    unchangedReconnectBaseline = true;
     await context.setOffline(false);
     await waitFor(
       () => streams.size === 1,
@@ -618,6 +660,29 @@ test("sync-cross-tab-browser @performance", async ({
       );
       throw error;
     }
+    const afterRecovery = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    for (let index = 0; index < pages.length; index++) {
+      assert.deepEqual(
+        afterRecovery[index],
+        {
+          state: beforeOffline[index].state + Number(hadStateWatch[index]),
+          transcripts: beforeOffline[index].transcripts + 1,
+        },
+        `tab ${index} reconciles its unchanged same-version resume baseline exactly once`,
+      );
+    }
+    sendSameVersionBaselineToStreams(workspaceId);
+    await pages[0].waitForTimeout(3500);
+    const afterDuplicateAndHeartbeats = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    assert.deepEqual(
+      afterDuplicateAndHeartbeats,
+      afterRecovery,
+      "duplicate unchanged baselines and peer heartbeats do not refetch resources",
+    );
     const streamOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
         (await page.evaluate(() =>
@@ -630,9 +695,23 @@ test("sync-cross-tab-browser @performance", async ({
       ),
     );
     const failoverStarted = Date.now();
+    const streamsOpenedBeforeFailover = streamsOpened;
     await pages[streamOwnerIndex].close();
+    pages.splice(streamOwnerIndex, 1);
+    await pages[0].evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
     await waitFor(
-      () => streams.size === 1 && streamsOpened >= 2,
+      () =>
+        streams.size === 1 &&
+        streamsOpened > streamsOpenedBeforeFailover &&
+        [...streams].every(
+          (response) => streamWorkspaces.get(response) === workspaceId,
+        ),
       "a replacement owner did not open its stream within five seconds",
       5000,
     );
@@ -643,8 +722,28 @@ test("sync-cross-tab-browser @performance", async ({
       1,
       "only one stream should remain after failover",
     );
-    pages.splice(streamOwnerIndex, 1);
-    const isolatedPage = await context.newPage();
+    const workspaceOwnerIndex = await Promise.any(
+      pages.map(async (page, index) => {
+        await page.waitForFunction(
+          () =>
+            window.__syncDiagnostics.sources.some(
+              (source) => source.readyState === EventSource.OPEN,
+            ),
+          undefined,
+          { timeout: 5000 },
+        );
+        return index;
+      }),
+    );
+    await pages[workspaceOwnerIndex].evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    otherWorkspaceContext = await browser.newContext();
+    const isolatedPage = await otherWorkspaceContext.newPage();
     await isolatedPage.goto(
       `http://localhost:${server.httpServer.address().port}/sync-check`,
     );
@@ -653,10 +752,36 @@ test("sync-cross-tab-browser @performance", async ({
       window.identity = (await client.syncDatabase()).workspaceId;
       window.stop = client.watchSyncInvalidations("state", () => {});
     });
-    await waitFor(
-      () => streams.size === 2,
-      "a second workspace did not get its own elected stream",
-    );
+    try {
+      await waitFor(
+        () => streams.size === 2,
+        "a second workspace did not get its own elected stream",
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        [...pages, isolatedPage].map((page, index) =>
+          page.evaluate(
+            (index) => ({
+              index,
+              workspace: window.workspace,
+              identity: window.identity,
+              states: window.states,
+              sources: (window.__syncDiagnostics?.sources || []).map(
+                (source) => ({
+                  readyState: source.readyState,
+                  url: source.url,
+                }),
+              ),
+              received: window.__syncDiagnostics?.received.slice(-5) || [],
+            }),
+            index,
+          ),
+        ),
+      );
+      throw new Error(
+        `${error.message}; workspace stream diagnostic: ${JSON.stringify({ streamsOpened, activeWorkspaces: [...streams].map((response) => streamWorkspaces.get(response)), diagnostics })}`,
+      );
+    }
     assert.equal(
       await isolatedPage.evaluate(() => window.identity),
       otherWorkspaceId,
@@ -699,6 +824,8 @@ test("sync-cross-tab-browser @performance", async ({
       );
       throw error;
     }
+    await otherWorkspaceContext.close();
+    otherWorkspaceContext = undefined;
     await context.close();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(streams.size).toBe(0);
@@ -731,6 +858,7 @@ test("sync-cross-tab-browser @performance", async ({
     );
   } finally {
     await noCoordination?.close();
+    await otherWorkspaceContext?.close().catch(() => {});
     await context.close().catch(() => {});
     await server.close();
   }
