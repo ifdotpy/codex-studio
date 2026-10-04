@@ -22,6 +22,7 @@ class QueueOrderContract(unittest.TestCase):
     setUp = f.WorkspaceContract.setUp
     tearDown = f.WorkspaceContract.tearDown
     lead = f.WorkspaceContract.lead
+    start = f.WorkspaceContract.start
 
     def queue(self, key):
         return self.runtime.queue_action(key)
@@ -43,6 +44,64 @@ class QueueOrderContract(unittest.TestCase):
 
     def order(self, key):
         return [row["id"] for row in self.queue(key)["items"]]
+
+    def test_composer_messages_start_separate_turns_in_order_across_restart(self):
+        key = self.lead()["id"]
+        for index in range(3):
+            self.runtime.send(key, f"Composer {index}", f"composer-{index}", delivery="after_turn")
+        for index in range(3):
+            self.runtime.dispatch()
+            f.eventually(lambda: self.runtime.agent(key).get("turnId") and
+                         self.runtime.delivery_receipt(f"composer-{index}")["status"] == "delivered")
+            starts = [params for method, params in self.runtime.server.calls if method == "turn/start"]
+            self.assertEqual(len(starts), 1 if index == 0 else index)
+            self.assertEqual(starts[-1]["clientUserMessageId"], f"composer-{index}")
+            self.assertNotIn(f"Composer {index + 1}", starts[-1]["input"][0]["text"])
+            turn = self.runtime.agent(key)["turnId"]
+            thread = self.runtime.agent(key)["threadId"]
+            self.runtime.server.complete(thread, turn)
+            f.eventually(lambda: not self.runtime.agent(key).get("inFlight"))
+            if index == 0:
+                self.runtime.close()
+                self.runtime = f.ControlledRuntime(self.state, f.WorkspaceServer)
+                # The fake native service loses its counter on restart. Native
+                # turn identities do not repeat across a real service restart.
+                self.runtime.connect().seq = 100
+        self.assertEqual([self.runtime.delivery_receipt(f"composer-{i}")["status"] for i in range(3)],
+                         ["delivered"] * 3)
+
+    def test_send_now_reuses_receipt_and_steers_one_message(self):
+        lead = self.start(self.lead())
+        key = lead["id"]
+        self.runtime.send(key, "Later", "send-now-id", delivery="after_turn")
+        request = self.request(key, "send_now", message_id="send-now-id", expectedText="Later")
+        receipt = self.runtime.queue_action(key, request)
+        self.assertEqual(self.runtime.queue_action(key, request), receipt)
+        with self.assertRaisesRegex(ValueError, "different content"):
+            self.runtime.queue_action(key, {**request, "message_id": "another-id"})
+        self.runtime.dispatch()
+        f.eventually(lambda: self.runtime.delivery_receipt("send-now-id")["status"] == "delivered")
+        starts = [params for method, params in self.runtime.server.calls if method == "turn/start"]
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[-1]["clientUserMessageId"], "send-now-id")
+        self.assertEqual(self.runtime.agent(key)["turnId"], lead["turnId"])
+
+    def test_rejected_send_now_remains_queued_with_error(self):
+        lead = self.start(self.lead())
+        key = lead["id"]
+        self.runtime.send(key, "Later", "send-now-rejected", delivery="after_turn")
+        request = self.request(key, "send_now", message_id="send-now-rejected")
+        self.runtime.queue_action(key, request)
+        original_call = self.runtime.server.call
+        def reject(method, params, timeout=60):
+            if method == "turn/start" and params.get("clientUserMessageId") == "send-now-rejected":
+                raise ValueError("Native steer rejected")
+            return original_call(method, params, timeout)
+        self.runtime.server.call = reject
+        self.runtime.dispatch()
+        f.eventually(lambda: self.queue(key)["items"] and self.queue(key)["items"][0]["error"])
+        self.assertIn("Native steer rejected", self.queue(key)["items"][0]["error"])
+        self.assertEqual(self.runtime.queue_action(key, request)["status"], "updated")
 
     def test_reorder_survives_restart_and_controls_real_dispatch(self):
         key = self.seed()

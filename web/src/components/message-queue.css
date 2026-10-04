@@ -111,6 +111,15 @@
   overflow-wrap: anywhere;
   text-align: left;
 }
+.message-queue-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  min-height: 24px !important;
+}
 .message-queue-preview.expanded {
   display: block;
   -webkit-line-clamp: unset;
@@ -250,8 +259,4 @@
   .message-queue-editor-actions > span {
     display: none;
   }
-}
-
-.message-queue:has(.message-queue-body:not([hidden])) {
-  min-height: min(160px, 25dvh);
 }

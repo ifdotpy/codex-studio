@@ -4435,6 +4435,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     selected.append(event)
                     asset_count += count
                 rows = selected
+                # Composer after-turn inputs each own a turn. Keep other event
+                # batching, including notifications that precede the next input.
+                composer_input = False
+                one_turn = []
+                for event in rows:
+                    meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event["id"],)).fetchone()
+                    delivery = json.loads(meta[0]).get("delivery") if meta else None
+                    is_composer = event["kind"] == "user" and (delivery == "after_turn" or
+                        bool(meta and json.loads(meta[0]).get("sendNow")))
+                    if is_composer and composer_input:
+                        break
+                    one_turn.append(event)
+                    composer_input |= is_composer
+                rows = one_turn
                 if a.get("provider") == "claude":
                     # Native slash commands must reach the CLI as a separate input.
                     command_index = next((i for i, event in enumerate(rows)
@@ -4887,10 +4901,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a.update(status="running" if a.get("inFlight") else "queued", error=None)
                 a.pop("startAttempt", None)
                 for event_id in attempt["events"]:
-                    db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL "
+                    meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event_id,)).fetchone()
+                    visible_error = str(error) if meta and json.loads(meta[0]).get("sendNow") else None
+                    db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=? "
                                "WHERE id=? AND agent=? AND epoch=? "
                                "AND status IN ('reserved','dispatching','uncertain')",
-                               (event_id, agent_id, attempt["epoch"]))
+                               (visible_error, event_id, agent_id, attempt["epoch"]))
                 if attempt["events"]:
                     item_id = agent_id + ":" + attempt["events"][0]
                     self.delete_search_item(db, item_id)
