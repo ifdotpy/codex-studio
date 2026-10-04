@@ -531,8 +531,12 @@ class WorkspaceMixin:
         return file.read_bytes(), mime, file.name
 
     def git(self, a, args, env=None, input=None):
+        prefix = []
+        if a.get("imageWorkspaceReady"):
+            from codex_workspace_images import exec_prefix
+            prefix = exec_prefix()
         result = subprocess.run(
-            ["git", "-C", a["cwd"], *args],
+            [*prefix, "git", "-C", a["cwd"], *args],
             input=input,
             capture_output=True,
             env=env,
@@ -871,6 +875,31 @@ class WorkspaceMixin:
             # The capture helper persists the exact failure and releases only its
             # own reservation. Automatic capture must not fail the completed turn.
             pass
+        try:
+            with self.lock, self.db() as db:
+                agent = self.agent(key, db)
+                image_ready = agent.get("imageWorkspaceReady")
+            if image_ready:
+                from codex_workspace_images import collect
+                result = collect(key)
+                with self.lock, self.db() as db:
+                    agent = self.agent(key, db)
+                    agent["imageWorkspaceCollect"] = result
+                    if result.get("conflict") or result.get("conflicts"):
+                        conflict = str(result.get("conflict") or result.get("conflicts"))[:1200]
+                        agent["imageWorkspaceError"] = "Collect conflict: " + conflict
+                        raw_ref = result.get("rawRef") or result.get("branch") or "unknown raw branch"
+                        self.parent_event(db, agent, "collect:" + str(turn_id),
+                                          "Image workspace collect conflict after turn "
+                                          + str(turn_id) + ": " + conflict + ". Raw branch: " + str(raw_ref))
+                    self.put(db, "agents", agent)
+                    self.changed.set()
+        except Exception as error:
+            with self.lock, self.db() as db:
+                agent = self.agent(key, db)
+                agent["imageWorkspaceError"] = "Collect failed: " + str(error)[:1200]
+                self.put(db, "agents", agent)
+                self.changed.set()
 
     def checkpoint_preview(self, key, checkpoint_id):
         a = self.checked_actor_in_own_db(key)

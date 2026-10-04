@@ -7,6 +7,9 @@ export interface WorktreeDiskSnapshot {
     { state: string; bytes?: number; scannedAt?: number; measure?: string }
   >;
   totalBytes: number;
+  baseBytes?: number;
+  storageBytes?: number;
+  bases?: Record<string, { state: string; bytes?: number; measure?: string }>;
   limitBytes: number;
   measure?: string;
   warning: boolean;

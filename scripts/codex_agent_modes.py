@@ -107,6 +107,23 @@ def change_mode(runtime, key, data):
                              {'applied': True, 'concurrency': concurrency(canonical),
                               'agentMode': canonical['agentMode'],
                               'agentModeRevision': canonical.get('agentModeRevision', 0)})
+        if limit > 0:
+            from codex_runtime import git_toplevel
+            repo = git_toplevel(canonical.get('cwd', ''))
+            if repo:
+                supported, reason = runtime.image_workspace_support(repo)
+                if supported:
+                    canonical['imageWorkspaceBaseRepo'] = repo
+                    runtime.put(db, 'agents', canonical)
+                    try:
+                        runtime.start_image_base(repo)
+                        canonical.pop('imageWorkspaceBaseError', None)
+                    except Exception as error:
+                        canonical['imageWorkspaceBaseError'] = str(error)[:1200]
+                        runtime.put(db, 'agents', canonical)
+                else:
+                    canonical['imageWorkspaceBaseError'] = reason
+                    runtime.put(db, 'agents', canonical)
         runtime.changed.set()
         return canonical
 

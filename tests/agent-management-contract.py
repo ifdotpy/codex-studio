@@ -124,7 +124,7 @@ class Contract(unittest.TestCase):
     def test_list_and_inspect_include_cached_worktree_disk_use(self):
         disk = {'totalBytes': 4096, 'allWorkersBytes': 8192, 'limitBytes': 8192,
                 'warning': True, 'unmeasured': 0}
-        def view(_runtime, agents):
+        def view(_runtime, agents, **_kwargs):
             return ({a['id']: {'state': 'ready', 'bytes': 4096} for a in agents}, disk)
         with patch('codex_worktree_disk.management_view', side_effect=view):
             listed = self.call('list')

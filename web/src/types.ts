@@ -36,6 +36,9 @@ export interface Agent extends Json, AgentEntityDto {
   inFlight?: boolean;
   parkedEvent?: string;
   worktreeDisk?: { state: string; bytes?: number; scannedAt?: number };
+  imageWorkspace?: boolean;
+  imageWorkspaceReady?: boolean;
+  imageWorkspacePhase?: string;
   compactions?: number;
   panelVersion?: number;
   panelDataVersion?: number;

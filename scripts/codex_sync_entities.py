@@ -14,6 +14,7 @@ ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 AGENT_FIELDS = frozenset("""
     id name status source kind parentId rootId threadId orchestratorId orchestratorName
     isLead role sharedRoomId model provider effort fastMode concurrency accountKey cwd worktree created updated
+    imageWorkspace imageWorkspaceReady imageWorkspacePhase imageWorkspaceError imageWorkspaceRepo imageWorkspaceBaseRepo
     turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
     launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported subagentConcurrencyVersion
     workerDefaults reviewDefaults parkedEvent pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
