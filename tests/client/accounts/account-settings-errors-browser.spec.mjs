@@ -270,6 +270,20 @@ test("Account settings errors", async () => {
       await limits
         .getByText("Provider request failed")
         .waitFor({ state: "attached" });
+      await limits
+        .getByRole("button", { name: "Error details", exact: true })
+        .click();
+      const httpDiagnostic = JSON.parse(
+        await limits
+          .getByRole("button", { name: "Hide error details", exact: true })
+          .locator("..")
+          .locator(":scope > span")
+          .last()
+          .innerText(),
+      );
+      assert.equal(httpDiagnostic.status, 503);
+      assert.equal(httpDiagnostic.message, failure.message);
+      assert.deepEqual(httpDiagnostic.details, limitsFailureBody);
       assert.equal(await page.locator("[data-shell]").count(), 1);
       limitsHttpFailure = false;
       limitsRecovered = true;
@@ -300,6 +314,10 @@ test("Account settings errors", async () => {
         );
       }
       await recoveredRead;
+      await limits
+        .getByText(/80%\s*left/)
+        .first()
+        .waitFor();
       assert.equal(limitsReads, readsBeforeChange + 1);
       assert.equal(
         await limits.getByText(/80%\s*left/).count(),
@@ -321,6 +339,10 @@ test("Account settings errors", async () => {
       for (const stream of resourceStreams)
         writeResourceEvent(stream, "reconnect");
       await reconnectRead;
+      await limits
+        .getByText(/80%\s*left/)
+        .first()
+        .waitFor();
       assert.equal(limitsReads, readsBeforeReconnect + 1);
       assert.equal(await limits.getByText(/80%\s*left/).count(), 2);
       await page.keyboard.press("Escape");

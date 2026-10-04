@@ -721,7 +721,15 @@ test("Terminal dock", async () => {
       viewport: { width: 1280, height: 960 },
     });
     const errors = [];
+    const terminalOutputReads = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (
+        request.method() === "GET" &&
+        new URL(request.url()).pathname === "/api/terminals/output"
+      )
+        terminalOutputReads.push(Date.now());
+    });
     await page.goto(liveOrigin);
     assert.equal(
       await page.locator("#import-chat, #other-sessions").count(),
@@ -733,12 +741,17 @@ test("Terminal dock", async () => {
       .click();
     await dock.locator(".xterm-helper-textarea").waitFor();
     await dock.locator(".xterm-helper-textarea").focus();
+    const readsBeforeAppend = terminalOutputReads.length;
     await page.keyboard.type("printf 'PTY_RESULT:%s\\n' \"$PWD\"");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() =>
       document
         .querySelector(".xterm-accessibility-tree")
         ?.textContent.includes("PTY_RESULT:/"),
+    );
+    assert.ok(
+      terminalOutputReads.length > readsBeforeAppend,
+      "the appended PTY output triggered a targeted output read",
     );
     const sessions = await (await fetch(liveOrigin + "/api/terminals")).json();
     assert.equal(sessions.items.length, 1);
@@ -761,6 +774,7 @@ test("Terminal dock", async () => {
         .querySelector(".xterm-accessibility-tree")
         ?.textContent.includes("PTY_RESULT:/"),
     );
+    const readsBeforeExit = terminalOutputReads.length;
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("exit");
     await page.keyboard.press("Enter");
@@ -773,6 +787,17 @@ test("Terminal dock", async () => {
       document
         .querySelector(".terminal-detail-status")
         ?.textContent?.startsWith("exited"),
+    );
+    assert.ok(
+      terminalOutputReads.length > readsBeforeExit,
+      "the PTY exit notification triggered a targeted output read",
+    );
+    const readsAfterExit = terminalOutputReads.length;
+    await page.waitForTimeout(3200);
+    assert.equal(
+      terminalOutputReads.length,
+      readsAfterExit,
+      "an idle terminal performs no periodic output reads",
     );
     const after = await (await fetch(liveOrigin + "/api/state")).json();
     const ownerBefore = initial.threads.find(

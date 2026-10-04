@@ -218,6 +218,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     await new Promise((resolve) => setTimeout(resolve, 3200));
     assert.equal(
+      reads.costs,
+      costsBeforeChange + 1,
+      "typed cost changes and heartbeats do not cause duplicate or idle reads",
+    );
+    assert.equal(
       reads.sessionCost,
       sessionCostBeforeChange,
       "a costs notification does not refresh per-agent session cost",
@@ -234,9 +239,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       0,
       "one account has no tabs",
     );
-    const ownWeeklyLimit = page.getByText("80% left", { exact: true });
-    await ownWeeklyLimit.waitFor({ state: "attached" });
-    assert.equal(await ownWeeklyLimit.textContent(), "80% left");
+    const ownLimitsPanel = page.locator(".account-limits-panel");
+    await ownLimitsPanel.waitFor();
+    assert.match(await ownLimitsPanel.innerText(), /80%\s*left/);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
       window.reloadCalls.some(([key, force]) => key === "own" && force),
@@ -256,7 +261,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "chat account is selected first",
     );
     const selectedOwnLimit = page.getByText("80% left", { exact: true });
-    await selectedOwnLimit.waitFor({ state: "attached" });
+    await selectedOwnLimit.waitFor();
+    assert.equal(await selectedOwnLimit.isVisible(), true);
     assert.equal(await selectedOwnLimit.textContent(), "80% left");
     await ownTab.press("ArrowRight");
     assert.equal(
@@ -268,10 +274,13 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       window.reloadCalls.some(([key, force]) => key === "team" && !force),
     );
     const selectedTeamLimit = page.getByText("8% left", { exact: false });
-    await selectedTeamLimit.waitFor({ state: "attached" });
-    await page.getByText("Team reset", { exact: false }).first().waitFor({
-      state: "attached",
+    await selectedTeamLimit.waitFor();
+    assert.equal(await selectedTeamLimit.isVisible(), true);
+    const teamResetCredits = page.getByRole("region", {
+      name: "Limit reset credits",
     });
+    await teamResetCredits.waitFor();
+    assert.match(await teamResetCredits.innerText(), /Team reset/);
     await page
       .getByRole("button", { name: "Account limits", exact: true })
       .waitFor();
@@ -292,7 +301,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Use one reset credit", exact: true })
       .click();
     const resetStatus = page.getByText("Reset applied.", { exact: true });
-    await resetStatus.waitFor({ state: "attached" });
+    await resetStatus.waitFor();
     assert.equal(await resetStatus.textContent(), "Reset applied.");
     const reset = resetPayload;
     assert.ok(reset, "reset request reached the fixture server");
