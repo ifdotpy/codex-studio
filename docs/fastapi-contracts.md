@@ -399,15 +399,80 @@ synthetic monitor to remain running although restart marks its unreconstructable
 RPC future lost. These are recorded as existing-main fixture failures; the
 supervisor suite is not claimed to pass.
 
+## State read and assembly measurements
+
+Two state optimizations are integrated at `d4dfeb6`, compared with `29f678d`.
+The existing two-second, generation-invalidated legacy state cache now retains
+canonical encoded JSON and its digest instead of the raw object. Unchanged pulls
+reuse that representation. Snapshot assembly computes agent membership once and
+selects worker result files in one pass; chat snapshots stream histories and keep
+only each worker's winning file. Canvas room metadata uses one SQL statement,
+with correlated per-room subqueries still present. Entity initialization also
+keeps chat nodes out of the agent fallback collection.
+
+The following measurements use isolated localhost TCP servers and temporary
+SQLite databases, fresh connections, uncompressed responses, and before/after/
+after/before blocks. Each route has ten warmups and 150 samples per block,
+300 samples per variant. Runtime scheduling is disabled and native model calls
+are replaced by the existing FakeServer. These are fixture results, not live
+user latency. The proposed direct JSON serializer is not included.
+
+| Fixture and route               | Before p50 / p95 (ms) | After p50 / p95 (ms) |
+| ------------------------------- | --------------------- | -------------------- |
+| Empty `/api/state`              | 0.4973 / 0.5341       | 0.4309 / 0.6520      |
+| Graph `/api/state`              | 3.3933 / 3.6446       | 3.4761 / 3.5656      |
+| Runtime `/api/state`            | 9.2055 / 10.0028      | 8.8563 / 9.3096      |
+| Runtime full legacy pull        | 3.9966 / 4.2124       | 1.5082 / 1.6073      |
+| Runtime unchanged legacy pull   | 3.4829 / 3.5179       | 0.8250 / 0.9628      |
+| Runtime entity reset page       | 3.1558 / 3.1965       | 2.9352 / 3.0576      |
+| Populated `/api/state`          | 18.8643 / 20.1209     | 16.4674 / 19.5320    |
+| Populated full legacy pull      | 5.6642 / 5.8474       | 1.7304 / 1.8815      |
+| Populated unchanged legacy pull | 4.5578 / 4.9502       | 0.8794 / 0.9760      |
+
+Graph contains 100 registered agents and 50 rooms with ten messages each.
+Runtime contains 101 runtime agents. Populated contains 100 runtime agents,
+1,200 tasks, 300 monitors, 120 requests, 300 work records, 120 rules, and 50 rooms
+with ten messages each. Synthetic task records include their required command
+kind, and the populated snapshot is validated before serving requests. Legacy
+pulls use `scope=state`; full pulls request `after=0`, while unchanged pulls use
+the primed checkpoint. The entity route requests `state:entities:v1`, reset
+support and a 100-document page. Graph and populated entity timings are omitted:
+the baseline incorrectly seeds chat nodes as agents and returns 400. The new
+seed regression checks successful chat-only classification and orphan agents.
+
+The main gain is in repeated legacy pulls. Populated `/api/state` median falls
+about 13%, while graph state shows no gain and empty-state p95 increases. The
+results do not establish a uniform improvement across workloads. An independent
+method-only assembly fixture had byte-identical normalized snapshots and a
+6.793 to 4.908 ms median; it excludes HTTP validation and encoding. With 9.8 MB
+of result text and checks, its chat snapshot peak traced allocation increased
+slightly from 591,843 to 648,312 bytes; memory reduction is not claimed.
+
+Scripts and raw samples are local-only in the task cache, unavailable from a
+fresh checkout: `state-round3-populated-http.py`,
+`state-round3-two-iterations-http.json`, and
+`tests-tmp/bench-state-snapshot-populated.py` with `populated-v3-*` reports.
+The standalone store microbenchmark (`state-read-bench.py`,
+`state-read-before.json`, `state-read-after.json`) uses a different synthetic
+6.6 MB payload: unchanged pull median 7.774 to 0.050 ms. That number excludes
+HTTP and must not be substituted for the full-request results above.
+
+At `d4dfeb6`, integrated checks pass 285 API tests, strict mypy for 64 files,
+27 Canvas contracts, seven runtime read-lock contracts, two state-seed/result
+selection regressions, and the sync entity contract. Independent review covers
+cache freshness, read-snapshot coherence, result-file ordering, room projection,
+and bounded history retention. Canvas fixtures still emit existing shutdown
+thread/file-descriptor warnings despite passing their assertions.
+
 ## Implementation evidence ledger
 
-| Area                                              | Evidence state                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| FastAPI app and ten routers                       | `scripts/studio_api/app.py` assembles the ten domain routers; isolated app-route verification passes.                                                                                                                                                                             |
-| Models, OpenAPI, generated TypeScript             | Lead-reported local API checks, strict TypeScript, and generated contract-type checks pass. The initial API model suite and mypy run preceded the numeric analytics-rate correction; the latest 20-test insights suite and full build include that correction.                    |
-| HTTP routes, auth, and caller integration         | Lead-reported API/full-build checks pass. Assigned browser flows pass for workspace/sidebar/project/inbox/task feed (5/5), limits (28 cases), terminal/navigation/worker model (8 fixtures), message metadata, markdown images, skill autocomplete, and draft/sync/message retry. |
-| Exact request identity and retry                  | Isolated service/API and renderer evidence passes same-ID recovery and no-duplicate retry scenarios. A response loss remains an uncertain outcome until the existing receipt surface is read.                                                                                     |
-| Architecture live-update guard                    | `tests/http-timeout-live-update-contract.py`: 6/6 pass. FastAPI without a compatible legacy handler rejects the legacy handler patch before mutation.                                                                                                                             |
-| Isolated performance                              | Initial migration and later optimization fixtures are reported separately above. The latest round improves session, initialized identity, and draft writes; state-pull evidence is mixed. There is no live-user measurement.                                                      |
-| Scoped repository checks                          | Lead-reported changed-file lint/format, hook fixture, API check, and current-revision full build pass. Whole-repository lint had seven existing warnings across two unchanged files; format reported 38 unchanged files.                                                          |
-| Startup against existing state after idle/restart | Not run. Existing occupied state, active work, and restart safety were not inspected or changed; no live-startup claim is made.                                                                                                                                                   |
+| Area                                              | Evidence state                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FastAPI app and ten routers                       | `scripts/studio_api/app.py` assembles the ten domain routers; isolated app-route verification passes.                                                                                                                                                                                                     |
+| Models, OpenAPI, generated TypeScript             | Lead-reported local API checks, strict TypeScript, and generated contract-type checks pass. The initial API model suite and mypy run preceded the numeric analytics-rate correction; the latest 20-test insights suite and full build include that correction.                                            |
+| HTTP routes, auth, and caller integration         | Lead-reported API/full-build checks pass. Assigned browser flows pass for workspace/sidebar/project/inbox/task feed (5/5), limits (28 cases), terminal/navigation/worker model (8 fixtures), message metadata, markdown images, skill autocomplete, and draft/sync/message retry.                         |
+| Exact request identity and retry                  | Isolated service/API and renderer evidence passes same-ID recovery and no-duplicate retry scenarios. A response loss remains an uncertain outcome until the existing receipt surface is read.                                                                                                             |
+| Architecture live-update guard                    | `tests/http-timeout-live-update-contract.py`: 6/6 pass. FastAPI without a compatible legacy handler rejects the legacy handler patch before mutation.                                                                                                                                                     |
+| Isolated performance                              | Initial migration and later optimization fixtures are reported separately above. Session, identity and draft measurements precede the separate state round, which improves repeated legacy pulls and populated snapshots. Workload-specific limits are recorded above; there is no live-user measurement. |
+| Scoped repository checks                          | Lead-reported changed-file lint/format, hook fixture, API check, and current-revision full build pass. Whole-repository lint had seven existing warnings across two unchanged files; format reported 38 unchanged files.                                                                                  |
+| Startup against existing state after idle/restart | Not run. Existing occupied state, active work, and restart safety were not inspected or changed; no live-startup claim is made.                                                                                                                                                                           |
