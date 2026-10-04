@@ -63,6 +63,25 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertTrue(expected.issubset(paths))
         self.assertTrue(all(paths[path] == "component" for path in expected))
 
+    def test_runs_fastapi_component_suites_as_package_modules(self):
+        commands = []
+
+        def execute(command, _cwd, _timeout, _environment):
+            commands.append(command)
+            return 0, None
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            RUNNER.run_suites(
+                [("scripts/studio_api/agents/test_router.py", "component")],
+                set(), 1, 1, root=ROOT, execute=execute,
+            )
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(
+            commands[0][-4:],
+            ["-B", "-m", "unittest", "studio_api.agents.test_router"],
+        )
+
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
         calls = []
 

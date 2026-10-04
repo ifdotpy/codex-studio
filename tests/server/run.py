@@ -468,8 +468,13 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT, execute
     for index, (relative, kind) in enumerate(runnable, start=1):
         deadline = expensive_timeout if kind == "expensive" else timeout
         print(f"[{index}/{len(runnable)}] {relative} (deadline {deadline:g}s)", flush=True)
-        command = (["node", str(root / relative)] if relative.endswith(".mjs") else
-                   [sys.executable, "-B", str(root / relative)])
+        if relative.endswith(".mjs"):
+            command = ["node", str(root / relative)]
+        elif relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
+            module_name = relative[len("scripts/"):-3].replace("/", ".")
+            command = [sys.executable, "-B", "-m", "unittest", module_name]
+        else:
+            command = [sys.executable, "-B", str(root / relative)]
         environment = os.environ.copy()
         scripts_path = str(root / "scripts")
         environment["PYTHONPATH"] = os.pathsep.join(

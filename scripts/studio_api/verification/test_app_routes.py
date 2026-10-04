@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Iterable
 from typing import ClassVar, cast
 
 from fastapi import FastAPI
@@ -9,7 +10,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from studio_api.app import create_app
-from studio_api.context import ApiContext
+from studio_api.context import ApiContext, HeaderCollection
 
 
 GET_PATHS = frozenset(
@@ -161,6 +162,34 @@ STREAM_OR_FILE_ROUTES = frozenset(
 HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
 
 
+class VerifierRemote:
+    """Local-only origin policy for disposable TestClient requests."""
+
+    def origin(self) -> str | None:
+        return "http://testserver"
+
+    def request_origin(self, headers: HeaderCollection, peer: str, port: int) -> str | None:
+        return "http://testserver"
+
+
+def application_api_routes(app: FastAPI) -> tuple[tuple[str, APIRoute], ...]:
+    """Expand FastAPI's lazy included routers into effective API route paths."""
+    expanded: list[tuple[str, APIRoute]] = []
+    for entry in app.routes:
+        if isinstance(entry, APIRoute):
+            expanded.append((entry.path, entry))
+            continue
+        get_contexts = getattr(entry, "effective_route_contexts", None)
+        if not callable(get_contexts):
+            continue
+        for context in cast(Iterable[object], get_contexts()):
+            route = getattr(context, "original_route", None)
+            path = getattr(context, "path_format", None)
+            if isinstance(route, APIRoute) and isinstance(path, str):
+                expanded.append((path, route))
+    return tuple(expanded)
+
+
 def query_parameter_names(document: dict[str, object], path: str) -> set[str]:
     """Read query names from generated OpenAPI's deliberately open schema."""
     paths = cast(dict[str, object], document["paths"])
@@ -181,19 +210,19 @@ class ApplicationRouteContract(unittest.TestCase):
 
     def test_all_legacy_api_method_paths_have_concrete_routes(self) -> None:
         declared: set[tuple[str, str]] = set()
-        for route in self.app.routes:
-            if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+        for path, route in application_api_routes(self.app):
+            if not path.startswith("/api/"):
                 continue
-            declared.update((method, route.path) for method in route.methods or ())
+            declared.update((method, path) for method in route.methods or ())
         expected = {("GET", path) for path in GET_PATHS}
         expected.update(("POST", path) for path in POST_PATHS)
         self.assertEqual(expected - declared, set())
 
     def test_api_routes_are_explicit_component_routes_with_response_models(self) -> None:
-        for route in self.app.routes:
-            if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+        for path, route in application_api_routes(self.app):
+            if not path.startswith("/api/"):
                 continue
-            with self.subTest(path=route.path):
+            with self.subTest(path=path):
                 self.assertTrue(
                     route.endpoint.__module__.startswith("studio_api."),
                     "API endpoint must be owned by a concrete studio_api module",
@@ -201,11 +230,12 @@ class ApplicationRouteContract(unittest.TestCase):
                 self.assertNotIn("{path:path}", route.path)
                 methods = route.methods or set()
                 self.assertTrue(methods.issubset({"GET", "POST", "HEAD", "OPTIONS"}))
-                route_keys = {(method, route.path) for method in methods}
-                if route_keys & HIDDEN_COMPATIBILITY_ROUTES:
-                    self.assertEqual(route_keys, {("POST", "/api/voice/{action:path}")})
+                original_keys = {(method, route.path) for method in methods}
+                effective_keys = {(method, path) for method in methods}
+                if original_keys & HIDDEN_COMPATIBILITY_ROUTES:
+                    self.assertEqual(original_keys, {("POST", "/api/voice/{action:path}")})
                     self.assertFalse(route.include_in_schema)
-                elif not any(key in STREAM_OR_FILE_ROUTES for key in route_keys):
+                elif not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
                     self.assertIsNotNone(route.response_model)
 
     def test_openapi_exposes_existing_query_parameters(self) -> None:
@@ -220,12 +250,11 @@ class ApplicationRouteContract(unittest.TestCase):
 
     def test_application_has_no_generic_api_catchall(self) -> None:
         dynamic_routes: set[tuple[str, str]] = set()
-        for route in self.app.routes:
-            path = getattr(route, "path", "")
+        for path, route in application_api_routes(self.app):
             if path.startswith("/api/"):
                 methods = getattr(route, "methods", None) or set()
-                if "{" in path:
-                    dynamic_routes.update((method, path) for method in methods)
+                if "{" in path or "{" in route.path:
+                    dynamic_routes.update((method, route.path) for method in methods)
         self.assertEqual(dynamic_routes, HIDDEN_COMPATIBILITY_ROUTES)
 
     def test_openapi_has_no_dynamic_api_contracts(self) -> None:
@@ -238,7 +267,15 @@ class ApplicationRouteContract(unittest.TestCase):
         self.assertEqual(dynamic_paths, set())
 
     def test_unknown_api_route_keeps_legacy_not_found_response(self) -> None:
-        with TestClient(self.app) as client:
+        schema_context = ApiContext.for_schema()
+        http_context = ApiContext(
+            schema_context.canvas,
+            token=schema_context.token,
+            remote=VerifierRemote(),
+            schema_only=True,
+        )
+        http_app = create_app(http_context)
+        with TestClient(http_app) as client:
             response = client.get("/api/migration-contract-unknown")
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json(), {"error": "Not found"})
