@@ -2247,6 +2247,90 @@ export interface components {
       | "error"
       | "changed"
       | "duplicate";
+    /** AccountTransferBlockedDto */
+    AccountTransferBlockedDto: {
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Reason */
+      reason?: string | null;
+    };
+    /** AccountTransferInterruptedDto */
+    AccountTransferInterruptedDto: {
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Reason */
+      reason?: string | null;
+    };
+    /** AccountTransferLeftOnSourceDto */
+    AccountTransferLeftOnSourceDto: {
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      provider?: components["schemas"]["AgentProvider"] | null;
+      /** Reason */
+      reason?: string | null;
+    };
+    /**
+     * AccountTransferScope
+     * @enum {string}
+     */
+    AccountTransferScope: "team" | "subagents";
+    /**
+     * AccountTransferStatus
+     * @enum {string}
+     */
+    AccountTransferStatus: "pending" | "completed" | "cancelled";
+    /**
+     * AccountTransferSummaryDto
+     * @description Public summary projected onto an agent by AccountTransfers.save.
+     */
+    AccountTransferSummaryDto: {
+      /** Blocked */
+      blocked?: components["schemas"]["AccountTransferBlockedDto"][] | null;
+      /** Canfinishhistory */
+      canFinishHistory?: boolean | null;
+      /** Canretry */
+      canRetry?: boolean | null;
+      /** Completed */
+      completed?: number | null;
+      /** Finishhistory */
+      finishHistory?: boolean | null;
+      /** Id */
+      id?: string | null;
+      /** Interrupted */
+      interrupted?:
+        | components["schemas"]["AccountTransferInterruptedDto"][]
+        | null;
+      /** Leftonsource */
+      leftOnSource?:
+        | components["schemas"]["AccountTransferLeftOnSourceDto"][]
+        | null;
+      /** Moved */
+      moved?: number | null;
+      /** Movingnow */
+      movingNow?: number | null;
+      /** Nativehistorypending */
+      nativeHistoryPending?: number | null;
+      /** Needsattention */
+      needsAttention?: boolean | null;
+      scope?: components["schemas"]["AccountTransferScope"] | null;
+      status?: components["schemas"]["AccountTransferStatus"] | null;
+      /** Targetaccountkey */
+      targetAccountKey?: string | null;
+      /** Total */
+      total?: number | null;
+      /** Updated */
+      updated?: number | null;
+      /** Waiting */
+      waiting?: string | null;
+      /** Waitingcount */
+      waitingCount?: number | null;
+    };
     /** ActionContext */
     ActionContext: {
       /** Accountkey */
@@ -2380,7 +2464,9 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Accountkey */
       accountKey?: string | null;
-      accountTransfer?: components["schemas"]["JsonValue"] | null;
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryDto"]
+        | null;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -3696,7 +3782,9 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Accountkey */
       accountKey?: string | null;
-      accountTransfer?: components["schemas"]["JsonValue"] | null;
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryDto"]
+        | null;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -8735,7 +8823,9 @@ export interface components {
       accountId?: string | null;
       /** Accountkey */
       accountKey?: string | null;
-      accountTransfer?: components["schemas"]["JsonValue"] | null;
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryDto"]
+        | null;
       /** Accounttransferid */
       accountTransferId?: string | null;
       accountTransferState?: components["schemas"]["JsonValue"] | null;
