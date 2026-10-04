@@ -19,6 +19,7 @@ class MonitorState(ContractStrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    LOST = "lost"
 
 
 class TerminalInputDelivery(ContractStrEnum):
@@ -107,9 +108,9 @@ class MonitorId(ContractModel):
 
 
 class MonitorInput(MonitorId):
-    text: str | None = Field(default=None, max_length=32000)
-    rows: int | None = Field(default=None, ge=1, le=1000)
-    cols: int | None = Field(default=None, ge=1, le=1000)
+    text: str = Field(default="", max_length=32000)
+    rows: int = Field(default=24, ge=1, le=1000)
+    cols: int = Field(default=80, ge=1, le=1000)
     closeStdin: bool = False
 
 

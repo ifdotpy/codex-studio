@@ -1,19 +1,35 @@
 """Unittest coverage for the I/O HTTP contracts and ranged log reads."""
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
+from starlette.requests import ClientDisconnect
+from starlette.types import Message, Scope
 
-from studio_api.io.router import create_router
-from studio_api.models import JsonValue
+from studio_api.io.router import ClosingFileResponse, IOContext, _monitor_log_response, create_router
+from studio_api.models import JsonValue, ResponseModel
+
+if TYPE_CHECKING:
+    from studio_api.context import ApiContext
+
+
+class MonitorDownload(TypedDict):
+    path: Path
+    fallback: bytes | None
+    size: int
+    name: str
+    mime: str
+    truncated: bool
 
 
 class TerminalFixture:
@@ -49,9 +65,12 @@ class RuntimeFixture:
     def __init__(self, log_path: Path) -> None:
         self.log_path = log_path
         self.calls: list[tuple[str, object]] = []
+        self.cancel_status = "running"
 
-    def monitor_log(self, key: str) -> dict[str, JsonValue]:
-        return {"path": self.log_path, "fallback": None, "size": self.log_path.stat().st_size,
+    def monitor_log(self, key: str) -> MonitorDownload:
+        exists = self.log_path.is_file()
+        return {"path": self.log_path, "fallback": None if exists else b"retained tail",
+                "size": self.log_path.stat().st_size if exists else 0,
                 "name": key + ".log", "mime": "text/plain", "truncated": True}
 
     def file_info(self, agent: str | None, path: str | None, asset: str | None) -> dict[str, JsonValue]:
@@ -68,7 +87,9 @@ class RuntimeFixture:
 
     def cancel_monitor(self, key: str) -> dict[str, JsonValue]:
         self.calls.append(("cancel_monitor", key))
-        return {"id": key, "status": "running", "cancelRequested": True}
+        if self.cancel_status != "running":
+            return {"id": key, "status": self.cancel_status}
+        return {"id": key, "status": self.cancel_status, "cancelRequested": True}
 
     def upload_asset(self, data: dict[str, JsonValue]) -> dict[str, JsonValue]:
         self.calls.append(("upload_asset", data))
@@ -93,14 +114,17 @@ class ContextFixture:
         if response_type:
             adapter = TypeAdapter(response_type)
             validated = adapter.validate_json(json.dumps(value))
-            value = adapter.dump_python(validated, mode="json", exclude_none=True)
-        return JSONResponse(value, status_code=int(kwargs.get("status", 200)))
+            value = validated.wire_dump() if isinstance(validated, ResponseModel) else adapter.dump_python(
+                validated, mode="json", by_alias=True, exclude_unset=True
+            )
+        status = kwargs.get("status", 200)
+        return JSONResponse(value, status_code=status if isinstance(status, int) else 200)
 
 
 def make_app(runtime: RuntimeFixture) -> tuple[FastAPI, ContextFixture]:
     context = ContextFixture(runtime)
     app = FastAPI()
-    app.include_router(create_router(context))
+    app.include_router(create_router(cast("ApiContext", context)))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, error: RequestValidationError) -> JSONResponse:
@@ -131,6 +155,8 @@ class IORouterTests(unittest.TestCase):
     def test_terminal_query_modes_preserve_parse_qs_first_value_and_blank_rules(self) -> None:
         live = self.client.get("/api/terminals/output?id=&id=term&offset=&offset=7")
         self.assertEqual(live.status_code, 200)
+        self.assertEqual(live.json(), {"text": "tail", "offset": 4, "truncated": False,
+                                       "status": "running", "exitCode": None, "error": None})
         self.assertEqual(self.context.terminals().calls[-1], ("output", ("term", "7")))
         history = self.client.get("/api/terminals/output?id=term&history=&history=1&offset=3")
         self.assertEqual(history.status_code, 200)
@@ -169,6 +195,55 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 416)
         self.assertEqual(invalid.headers["content-range"], "bytes */10")
 
+    def test_monitor_log_uses_retained_tail_when_file_is_missing(self) -> None:
+        self.log.unlink()
+        response = self.client.get("/api/monitor/log?id=watch-1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"retained tail")
+        self.assertEqual(response.headers["x-log-truncated"], "true")
+
+    def test_monitor_log_fd_closes_when_disconnect_precedes_first_chunk(self) -> None:
+        request = Request(self._monitor_scope("2.3"))
+        response = _monitor_log_response(cast("IOContext", self.context), request, "watch-1")
+        self.assertIsInstance(response, ClosingFileResponse)
+        stream = cast(ClosingFileResponse, response)._stream
+        events: list[str] = []
+
+        async def receive() -> Message:
+            return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            events.append(str(message["type"]))
+
+        asyncio.run(response(self._monitor_scope("2.3"), receive, send))
+        self.assertTrue(stream.closed)
+        self.assertEqual(events, ["http.response.start"])
+
+    def test_monitor_log_fd_closes_when_stream_send_fails(self) -> None:
+        request = Request(self._monitor_scope("2.4"))
+        response = _monitor_log_response(cast("IOContext", self.context), request, "watch-1")
+        self.assertIsInstance(response, ClosingFileResponse)
+        stream = cast(ClosingFileResponse, response)._stream
+
+        async def receive() -> Message:
+            return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            if message["type"] == "http.response.body":
+                raise OSError("client disconnected")
+
+        with self.assertRaises(ClientDisconnect):
+            asyncio.run(response(self._monitor_scope("2.4"), receive, send))
+        self.assertTrue(stream.closed)
+
+    @staticmethod
+    def _monitor_scope(spec_version: str) -> Scope:
+        return {"type": "http", "asgi": {"version": "3.0", "spec_version": spec_version},
+                "http_version": "1.1", "method": "GET", "scheme": "http",
+                "path": "/api/monitor/log", "raw_path": b"/api/monitor/log",
+                "query_string": b"id=watch-1", "headers": [], "client": ("127.0.0.1", 1),
+                "server": ("127.0.0.1", 80)}
+
     def test_file_query_and_base64_wire_shape(self) -> None:
         result = self.client.get("/api/file?agent=first&agent=second&path=&path=notes.txt")
         self.assertEqual(result.status_code, 200)
@@ -186,10 +261,28 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self.runtime.calls)
 
+    def test_null_monitor_input_fields_fail_before_runtime_call(self) -> None:
+        for field in ("text", "rows", "cols"):
+            with self.subTest(field=field):
+                response = self.client.post("/api/monitor/input", json={"id": "watch-1", field: None})
+                self.assertEqual(response.status_code, 400)
+                self.assertFalse(self.runtime.calls)
+
+    def test_omitted_monitor_text_keeps_service_default(self) -> None:
+        response = self.client.post("/api/monitor/input", json={"id": "watch-1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.runtime.calls[-1], ("monitor_input", ("watch-1", {"id": "watch-1"})))
+
     def test_monitor_cancel_response_uses_existing_receipt_shape(self) -> None:
         response = self.client.post("/api/monitor/cancel", json={"id": "watch-1"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"id": "watch-1", "status": "running", "cancelRequested": True})
+
+    def test_monitor_cancel_preserves_lost_status(self) -> None:
+        self.runtime.cancel_status = "lost"
+        response = self.client.post("/api/monitor/cancel", json={"id": "watch-1"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"id": "watch-1", "status": "lost"})
 
     def test_upload_passes_omitted_fields_without_fabricating_request_values(self) -> None:
         response = self.client.post("/api/assets", json={"agent": "agent-1", "name": "a.txt", "data": "YWJj"})
