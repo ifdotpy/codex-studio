@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict, Unpack, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, Unpack, cast
 
 from fastapi import APIRouter, Request
 from starlette.responses import Response
@@ -35,12 +35,6 @@ from .models import (
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
-
-
-# FastAPI's OpenAPI response metadata type is intentionally extensible (`Any`).
-ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    status: {"model": ErrorResponse} for status in (400, 403, 404, 413, 415)
-}
 
 
 class RecordOptionalFields(TypedDict, total=False):
@@ -110,7 +104,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/status",
         response_model=VoiceStatusResponse,
-        responses=ERROR_RESPONSES,
     )
     def status(request: Request, body: VoiceStatusRequest) -> Response:
         voice = _voice(context, request)
@@ -121,7 +114,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/start",
         response_model=VoiceSessionResponse,
-        responses=ERROR_RESPONSES,
     )
     def start(request: Request, body: VoiceStartRequest) -> Response:
         voice = _voice(context, request)
@@ -134,7 +126,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/end",
         response_model=VoiceSessionResponse,
-        responses=ERROR_RESPONSES,
     )
     def end(request: Request, body: VoiceEndRequest) -> Response:
         voice = _voice(context, request)
@@ -145,7 +136,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/record",
         response_model=VoiceRecordResponse,
-        responses=ERROR_RESPONSES,
     )
     def record(request: Request, body: VoiceRecordRequest) -> Response:
         voice = _voice(context, request)
@@ -172,7 +162,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/records",
         response_model=VoiceRecordsResponse,
-        responses=ERROR_RESPONSES,
     )
     def records(request: Request, body: VoiceRecordsRequest) -> Response:
         voice = _voice(context, request)
@@ -188,7 +177,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/speech",
         response_model=VoiceSpeechResponse,
-        responses=ERROR_RESPONSES,
     )
     def speech(request: Request, body: VoiceSpeechRequest) -> Response:
         voice = _voice(context, request)
@@ -203,7 +191,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/submit",
         response_model=VoiceDeliveryResponse,
-        responses=ERROR_RESPONSES,
     )
     def submit(request: Request, body: VoiceSubmitRequest) -> Response:
         voice = _voice(context, request)
@@ -223,7 +210,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/audio",
         response_model=VoiceAudioResponse,
-        responses=ERROR_RESPONSES,
     )
     def audio(request: Request, body: VoiceAudioRequest) -> Response:
         voice = _voice(context, request)
@@ -240,7 +226,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/approvals",
         response_model=VoiceApprovalsResponse,
-        responses=ERROR_RESPONSES,
     )
     def approvals(request: Request, body: VoiceApprovalsRequest) -> Response:
         voice = _voice(context, request)
@@ -251,7 +236,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/approval_speech",
         response_model=VoiceRecordResponse,
-        responses=ERROR_RESPONSES,
     )
     def approval_speech(
         request: Request, body: VoiceApprovalSpeechRequest
@@ -266,7 +250,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/voice/approve",
         response_model=VoiceApprovalResponse,
-        responses=ERROR_RESPONSES,
     )
     def approve(request: Request, body: VoiceApproveRequest) -> Response:
         voice = _voice(context, request)
@@ -284,7 +267,7 @@ def create_router(context: ApiContext) -> APIRouter:
         "/api/voice/{action:path}",
         response_model=ErrorResponse,
         status_code=400,
-        responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+        include_in_schema=False,
     )
     def unknown_action(
         request: Request, action: str, body: UnknownVoiceActionBody

@@ -154,6 +154,7 @@ class VoiceRouterTests(unittest.TestCase):
             for route in self.router.routes
             if (
                 isinstance(route, APIRoute)
+                and route.include_in_schema
                 and route.methods is not None
                 and "POST" in route.methods
             )
@@ -174,7 +175,7 @@ class VoiceRouterTests(unittest.TestCase):
                 "approve",
             )
         }
-        self.assertTrue(expected.issubset(routes))
+        self.assertEqual(expected, routes)
 
     def test_invalid_record_kind_is_rejected_before_service_call(self) -> None:
         response = self.client.post(
@@ -339,10 +340,8 @@ class VoiceRouterTests(unittest.TestCase):
         operation = schema["paths"]["/api/voice/records"]["post"]
         self.assertIn("requestBody", operation)
         self.assertIn("200", operation["responses"])
-        self.assertIn("400", operation["responses"])
-        audio = schema["paths"]["/api/voice/audio"]["post"]
-        self.assertIn("413", audio["responses"])
-        self.assertIn("415", audio["responses"])
+        self.assertNotIn("/api/voice/{action}", schema["paths"])
+        self.assertNotIn("/api/voice/{action:path}", schema["paths"])
 
 
 if __name__ == "__main__":
