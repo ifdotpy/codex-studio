@@ -27,6 +27,7 @@ COMPONENT_ROOTS = (
     "scripts/native_notifications/tests",
     "scripts/transcript_storage/tests",
 )
+STUDIO_API_COMPONENT_ROOT = ROOT / "scripts" / "studio_api"
 LEGACY_SERVER_JS = {
     "tests/portable-smoke.mjs": "safe",
     "tests/state-contract-smoke.mjs": "safe",
@@ -95,6 +96,8 @@ NON_TESTS = {
     "tests/skill-catalog-live-update-contract.py":
         "parameterized helper; requires --patch and --baseline",
     "tests/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
+    "tests/sync-live-patch-http-contract.py":
+        "fixture harness requiring an injected legacy HTTP server and runtime",
     "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
     "scripts/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
@@ -193,6 +196,13 @@ def inventory():
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"
+    # FastAPI domain tests live beside their router/model component. Discover
+    # recursively so nested domains and the application verification package
+    # cannot silently fall out of the default component suite.
+    if STUDIO_API_COMPONENT_ROOT.is_dir():
+        for path in STUDIO_API_COMPONENT_ROOT.rglob("test_*.py"):
+            if path.is_file() and not path.is_symlink():
+                entries[path.relative_to(ROOT).as_posix()] = "component"
     return sorted(entries.items())
 
 
@@ -458,8 +468,13 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT, execute
     for index, (relative, kind) in enumerate(runnable, start=1):
         deadline = expensive_timeout if kind == "expensive" else timeout
         print(f"[{index}/{len(runnable)}] {relative} (deadline {deadline:g}s)", flush=True)
-        command = (["node", str(root / relative)] if relative.endswith(".mjs") else
-                   [sys.executable, "-B", str(root / relative)])
+        if relative.endswith(".mjs"):
+            command = ["node", str(root / relative)]
+        elif relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
+            module_name = relative[len("scripts/"):-3].replace("/", ".")
+            command = [sys.executable, "-B", "-m", "unittest", module_name]
+        else:
+            command = [sys.executable, "-B", str(root / relative)]
         environment = os.environ.copy()
         scripts_path = str(root / "scripts")
         environment["PYTHONPATH"] = os.pathsep.join(

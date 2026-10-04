@@ -1,17 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
-import { api, errorText } from "../api";
+import { errorText, post, type PostResult } from "../api";
 import "./realtime-voice.css";
 
-type VoiceRecord = { id: string; seq: number; kind: string; text: string };
-type Session = {
-  session_id: string;
-  state: string;
-  sdp?: string;
-  error?: string;
-  ended?: number;
-};
+type VoiceRecords = PostResult<"/api/voice/records">;
+type VoiceRecord = VoiceRecords["records"][number];
+type Session = PostResult<"/api/voice/start">;
 type Peer = {
   id: string;
   connection: RTCPeerConnection;
@@ -56,10 +51,10 @@ function NativeVoice({
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const post = <T = any,>(action: string, body: object = {}) =>
-    api<T>(
-      `/api/voice/${action}`,
-      { agent: agentId, ...body },
+  const endSession = (session_id: string) =>
+    post(
+      "/api/voice/end",
+      { agent: agentId, session_id },
       { timeoutMs: 15000 },
     );
   const end = (p: Peer) => {
@@ -71,7 +66,7 @@ function NativeVoice({
     p.audio.pause();
     p.audio.srcObject = null;
     if (p.submitted)
-      void post("end", { session_id: p.id }).catch((e) => {
+      void endSession(p.id).catch((e) => {
         if (mounted.current && peer.current === null)
           setError(
             (previous) => previous || `Microphone stopped. ${errorText(e)}`,
@@ -128,11 +123,11 @@ function NativeVoice({
       if (fetching) return;
       fetching = true;
       try {
-        const data = await post<{
-          records: VoiceRecord[];
-          cursor: number;
-          session?: Session;
-        }>("records", { after: cursor.current });
+        const data = await post(
+          "/api/voice/records",
+          { agent: agentId, after: cursor.current },
+          { timeoutMs: 15000 },
+        );
         if (disposed) return;
         cursor.current = data.cursor;
         setRows((previous) => [
@@ -175,7 +170,7 @@ function NativeVoice({
     setActive(true);
     let p: Peer | null = null;
     try {
-      await post("status");
+      await post("/api/voice/status", { agent: agentId }, { timeoutMs: 15000 });
       if (ticket !== generation.current) return;
       if (!window.isSecureContext || !navigator.mediaDevices)
         throw new Error("Voice needs HTTPS or the desktop app");
@@ -296,11 +291,18 @@ function NativeVoice({
       const offer = await connection.createOffer();
       await connection.setLocalDescription(offer);
       if (current.closed) return;
+      const sdp = offer.sdp;
+      if (!sdp) throw new Error("Voice offer has no session description.");
       current.submitted = true;
-      const result = await post<Session>("start", {
-        session_id: current.id,
-        sdp: offer.sdp,
-      });
+      const result = await post(
+        "/api/voice/start",
+        {
+          agent: agentId,
+          session_id: current.id,
+          sdp,
+        },
+        { timeoutMs: 15000 },
+      );
       current.registered = true;
       if (current.closed) {
         end(current);

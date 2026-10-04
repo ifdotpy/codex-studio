@@ -12,6 +12,7 @@ import time
 TESTED_BASELINES = {"codex": "0.153.4", "claude": "2.1.278"}
 PROVIDER_LABELS = {"codex": "Codex CLI", "claude": "Claude Code"}
 CHECK_INTERVAL = 300
+_MONITOR_CREATION_LOCK = threading.Lock()
 VERSION_PATTERN = re.compile(r"(?<![0-9])([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?")
 
 
@@ -319,11 +320,15 @@ class ProviderVersionMonitor:
 
 
 def monitor(runtime):
-    with runtime.lock:
-        current = getattr(runtime, "provider_version_monitor", None)
-        if current is None:
-            current = runtime.provider_version_monitor = ProviderVersionMonitor()
-        return current
+    # Snapshots consult status while holding no runtime lock; initialization
+    # must not make those lock-free reads wait behind a writer.
+    current = getattr(runtime, "provider_version_monitor", None)
+    if current is None:
+        with _MONITOR_CREATION_LOCK:
+            current = getattr(runtime, "provider_version_monitor", None)
+            if current is None:
+                current = runtime.provider_version_monitor = ProviderVersionMonitor()
+    return current
 
 
 def tick(runtime):

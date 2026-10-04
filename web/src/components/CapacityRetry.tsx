@@ -1,17 +1,22 @@
 import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { api, errorText } from "../api";
-import type { Json } from "../types";
+import { errorText, post, type PostResult } from "../api";
+import type { Agent } from "../types";
+
+type CapacityRetryRecord = NonNullable<Agent["capacityRetry"]> & {
+  id: string;
+};
 
 export default function CapacityRetry({
   agentId,
   retry,
 }: {
   agentId: string;
-  retry: Json;
+  retry: CapacityRetryRecord;
 }) {
-  const [confirmed, setConfirmed] = useState<Json | null>(null);
+  const [confirmed, setConfirmed] =
+    useState<PostResult<"/api/capacity-retry"> | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -35,6 +40,7 @@ export default function CapacityRetry({
       : 0;
   const available =
     !current.claimedAt &&
+    typeof current.status === "string" &&
     ["scheduled", "cancelled", "exhausted"].includes(current.status);
   const action = async (choice: "retry" | "cancel") => {
     if (lock.current) return;
@@ -42,7 +48,7 @@ export default function CapacityRetry({
     setPending(true);
     setError("");
     try {
-      const result = await api<Json>(
+      const result = await post(
         "/api/capacity-retry",
         {
           id: agentId,
@@ -64,7 +70,10 @@ export default function CapacityRetry({
     }
   };
   return (
-    <div className="capacity-retry" data-retry-status={current.status}>
+    <div
+      className="capacity-retry"
+      data-retry-status={current.status || "unknown"}
+    >
       <p role="status">
         {scheduled
           ? seconds > 0

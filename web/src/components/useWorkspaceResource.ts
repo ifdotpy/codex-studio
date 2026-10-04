@@ -1,17 +1,40 @@
 import { useEffect, useRef, useState } from "react";
-import { api, errorText, type ApiReadMetadata } from "../api";
-import type { Json } from "../types";
+import {
+  get,
+  errorText,
+  type ApiGetPath,
+  type ApiReadMetadata,
+  type GetOptions,
+  type GetResult,
+} from "../api";
 
-export function useWorkspaceResource(
-  path: string | null,
+type ResourceOptions<Path extends ApiGetPath> = Pick<
+  GetOptions<Path>,
+  "query"
+> & {
+  cache?: { scope: string; values: Map<string, GetResult<Path>> };
+};
+type ResourceArgs<Path extends ApiGetPath> =
+  {} extends Pick<GetOptions<Path>, "query">
+    ? [options?: ResourceOptions<Path>]
+    : [options: ResourceOptions<Path>];
+
+export function useWorkspaceResource<Path extends ApiGetPath>(
+  path: Path | null,
   revision: string | number,
-  cache?: { scope: string; values: Map<string, Json> },
+  ...resourceArgs: ResourceArgs<Path>
 ) {
-  const key = path && JSON.stringify([cache?.scope || "", path]);
+  const options = resourceArgs[0];
+  const query = options?.query;
+  const queryKey = JSON.stringify(query || {});
+  const cache = options?.cache;
+  const key = path && JSON.stringify([cache?.scope || "", path, queryKey]);
   const values = cache?.values;
+  const queryRef = useRef(query);
+  queryRef.current = query;
   const [state, setState] = useState<{
     key: string | null;
-    data: Json | null;
+    data: GetResult<Path> | null;
     error: string;
     loading: boolean;
   }>({
@@ -47,13 +70,14 @@ export function useWorkspaceResource(
             },
       );
       try {
-        const data = await api(path, undefined, {
+        const data = await get(path, {
+          query: queryRef.current,
           signal: controller.signal,
           etag,
           readMetadata,
         });
         etag = readMetadata.etag;
-        if (readMetadata.notModified) {
+        if (readMetadata.notModified || data === undefined) {
           if (alive)
             setState((old) =>
               old.key === key ? { ...old, error: "", loading: false } : old,
@@ -92,7 +116,7 @@ export function useWorkspaceResource(
       alive = false;
       controller?.abort();
     };
-  }, [path, key, values]);
+  }, [path, key, queryKey, values]);
   // Refresh requests coalesce. They never invalidate an outstanding response.
   useEffect(() => reload.current(), [path, key, revision]);
   return state.key === key

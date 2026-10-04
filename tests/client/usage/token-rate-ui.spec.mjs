@@ -135,7 +135,10 @@ test("Token rate ui", async ({
       delta: "x".repeat(160),
     });
     await page.waitForFunction(
-      () => Number(document.querySelector(".token-rate")?.dataset.rate) > 0,
+      () =>
+        Number(
+          document.querySelector("#conversation .token-rate")?.dataset.rate,
+        ) > 0,
     );
     assert.match(await meter.innerText(), /≈.*tok\/s/);
     assert.doesNotMatch(
@@ -165,7 +168,8 @@ test("Token rate ui", async ({
     });
     await page.waitForFunction(
       () =>
-        document.querySelector(".token-rate")?.dataset.estimated === "false",
+        document.querySelector("#conversation .token-rate")?.dataset
+          .estimated === "false",
     );
     assert.doesNotMatch(await meter.innerText(), /≈/);
     notify(actor, "item/agentMessage/delta", {
@@ -180,7 +184,7 @@ test("Token rate ui", async ({
     let heldFooterSample = await page.evaluate(
       () =>
         window.__lastRateBatch?.rates[
-          document.querySelector(".token-rate")?.dataset.agent
+          document.querySelector("#conversation .token-rate")?.dataset.agent
         ],
     );
     assert.ok(heldFooterSample?.outputTokens > 80);
@@ -198,13 +202,21 @@ test("Token rate ui", async ({
       itemId: "rate-answer",
       delta: "New output after silence.",
     });
-    await page.waitForFunction(() =>
-      document.querySelector(".token-rate")?.textContent.includes("tok/s"),
+    await page.waitForFunction(
+      ({ id, previousTokens }) => {
+        const sample = window.__lastRateBatch?.rates[id];
+        const meter = document.querySelector("#conversation .token-rate");
+        return (
+          sample?.outputTokens > previousTokens &&
+          Number(meter?.dataset.rate) === sample.rate
+        );
+      },
+      { id: other.id, previousTokens: heldFooterSample.outputTokens },
     );
     heldFooterSample = await page.evaluate(
       () =>
         window.__lastRateBatch?.rates[
-          document.querySelector(".token-rate")?.dataset.agent
+          document.querySelector("#conversation .token-rate")?.dataset.agent
         ],
     );
     await page.waitForTimeout(500);
@@ -217,7 +229,7 @@ test("Token rate ui", async ({
     const footerSampleAfterGap = await page.evaluate(
       () =>
         window.__lastRateBatch?.rates[
-          document.querySelector(".token-rate")?.dataset.agent
+          document.querySelector("#conversation .token-rate")?.dataset.agent
         ],
     );
     assert.equal(await meter.getAttribute("data-rate"), beforeToolRate);
@@ -230,7 +242,9 @@ test("Token rate ui", async ({
     assert.equal(await meter.innerText(), beforeTool);
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.waitForFunction(
-      (id) => document.querySelector(".token-rate")?.dataset.agent === id,
+      (id) =>
+        document.querySelector("#conversation .token-rate")?.dataset.agent ===
+        id,
       lead.id,
     );
     await page.locator(`[data-chat="${other.id}"]`).click();
@@ -240,7 +254,9 @@ test("Token rate ui", async ({
       turn: { id: actor.turnId, status: "completed" },
     });
     await page.waitForFunction(
-      () => document.querySelector(".token-rate")?.dataset.active === "false",
+      () =>
+        document.querySelector("#conversation .token-rate")?.dataset.active ===
+        "false",
     );
     assert.equal(await meter.innerText(), beforeTool);
     await page.waitForFunction(
@@ -326,13 +342,15 @@ test("Token rate ui", async ({
     await page.emulateMedia({ reducedMotion: "reduce" });
     await inject(20);
     await page.waitForFunction(
-      () => document.querySelector(".token-rate")?.textContent === "20 tok/s",
+      () =>
+        document.querySelector("#conversation .token-rate")?.textContent ===
+        "20 tok/s",
     );
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.waitForFunction(
       () =>
-        document.querySelector(".token-rate")?.dataset.reducedMotion ===
-        "false",
+        document.querySelector("#conversation .token-rate")?.dataset
+          .reducedMotion === "false",
     );
     await meter.evaluate((node) => {
       window.__footerTweenValues = [];
@@ -370,7 +388,9 @@ test("Token rate ui", async ({
     await page.emulateMedia({ reducedMotion: "reduce" });
     await inject(140);
     await page.waitForFunction(
-      () => document.querySelector(".token-rate")?.textContent === "140 tok/s",
+      () =>
+        document.querySelector("#conversation .token-rate")?.textContent ===
+        "140 tok/s",
     );
     await page.waitForTimeout(100);
     assert.equal(
@@ -384,7 +404,9 @@ test("Token rate ui", async ({
     const before = await meter.boundingBox();
     await inject(123456);
     await page.waitForFunction(
-      () => document.querySelector(".token-rate")?.dataset.rate === "123456",
+      () =>
+        document.querySelector("#conversation .token-rate")?.dataset.rate ===
+        "123456",
     );
     await waitForMobileFooterLayout();
     const after = await meter.boundingBox();
@@ -403,7 +425,8 @@ test("Token rate ui", async ({
     assert.ok(after.x >= 0 && after.x + after.width <= 390);
     await start(other.id);
     await page.waitForFunction(
-      () => document.querySelector(".token-rate")?.textContent === "",
+      () =>
+        document.querySelector("#conversation .token-rate")?.textContent === "",
     );
     await page.setViewportSize({ width: 1200, height: 900 });
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -423,7 +446,9 @@ test("Token rate ui", async ({
     const team = page.getByRole("complementary", { name: "Team", exact: true });
     await team.locator(`[data-worker="${worker.id}"]`).click();
     await page.waitForFunction(
-      (id) => document.querySelector(".token-rate")?.dataset.agent === id,
+      (id) =>
+        document.querySelector("#conversation .token-rate")?.dataset.agent ===
+        id,
       worker.id,
     );
     proc.stdin.write(
@@ -453,7 +478,9 @@ test("Token rate ui", async ({
       delta: "worker answer ".repeat(20),
     });
     await page.waitForFunction(() =>
-      document.querySelector(".token-rate")?.textContent.includes("tok/s"),
+      document
+        .querySelector("#conversation .token-rate")
+        ?.textContent.includes("tok/s"),
     );
     assert.equal(await meter.getAttribute("data-agent"), worker.id);
     assert.equal(await meter.getAttribute("data-active"), "true");
@@ -471,7 +498,9 @@ test("Token rate ui", async ({
     );
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.waitForFunction(
-      (id) => document.querySelector(".token-rate")?.dataset.agent === id,
+      (id) =>
+        document.querySelector("#conversation .token-rate")?.dataset.agent ===
+        id,
       lead.id,
     );
     assert.equal(

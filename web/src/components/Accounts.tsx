@@ -21,10 +21,10 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { api, errorText } from "../api";
-import type { Agent, Json } from "../types";
+import { errorText, get, post, type GetResult } from "../api";
+import type { Agent } from "../types";
 import "./accounts.css";
-import AccountSignIn, { type LoginReceipt } from "./AccountSignIn";
+import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
 import { readBuckets, formatPercent } from "./Usage";
 
@@ -71,32 +71,14 @@ function saveDeleteRequest(
   }
 }
 
-export interface Account {
-  id: string;
-  label: string;
-  email?: string | null;
-  plan?: string | null;
-  accountId?: string | null;
-  source?: string;
-  provider?: string;
-  claudeOptions?: Json;
-  status: string;
-  disconnected?: boolean;
-  error?: unknown;
-  authenticationRecovery?: string;
-}
-export interface AccountsState {
-  accounts: Account[];
-  archivedAccounts?: Account[];
-  defaultAccountKey: string;
-  logins?: LoginReceipt[];
-  supportsDisconnect?: boolean;
-  supportsDelete?: boolean;
-}
+export type AccountsState = GetResult<"/api/accounts">;
+export type Account = AccountsState["accounts"][number];
 export function useAccounts(stateDir?: string) {
   const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
+    archivedAccounts: [],
     defaultAccountKey: "default",
+    logins: [],
   });
   const [error, setError] = useState("");
   const latestRead = useRef(0);
@@ -110,7 +92,7 @@ export function useAccounts(stateDir?: string) {
   const refresh = useCallback(async () => {
     const read = ++latestRead.current;
     try {
-      const result = await api<AccountsState>("/api/accounts");
+      const result = await get("/api/accounts");
       if (read !== latestRead.current || scope.current !== stateDir)
         return null;
       setAccountsData(result);
@@ -143,30 +125,34 @@ function AccountCapacity({
   opened: boolean;
   compact?: boolean;
 }) {
-  const [limits, setLimits] = useState<Json | null>(null);
+  const [limits, setLimits] = useState<GetResult<"/api/limits"> | null>(null);
+  const [limitsError, setLimitsError] = useState<unknown>(null);
   useEffect(() => {
     if (!opened || account.status !== "ready") return;
     let live = true;
     setLimits(null);
-    void api(
-      `/api/limits?account_key=${encodeURIComponent(account.id)}`,
-      undefined,
-      { timeoutMs: 25000 },
-    )
+    setLimitsError(null);
+    void get("/api/limits", {
+      query: { account_key: account.id },
+      timeoutMs: 25000,
+    })
       .then((result) => {
         if (!accountLimits(result, account.id, account.accountId))
           throw new Error("Limits belong to another account.");
         if (live) setLimits(result);
       })
       .catch((error) => {
-        if (live) setLimits({ error });
+        if (live) setLimitsError(error);
       });
     return () => {
       live = false;
     };
   }, [account.id, account.accountId, account.status, account.provider, opened]);
   if (account.status !== "ready") return null;
-  const buckets = readBuckets(limits, Date.now() / 1000);
+  const buckets = readBuckets(
+    accountLimits(limits, account.id, account.accountId),
+    Date.now() / 1000,
+  );
   if (compact) {
     const bucket = buckets.find(
       (bucket) =>
@@ -175,13 +161,14 @@ function AccountCapacity({
           (account.provider === "claude" ? "claude" : "codex"),
     );
     const weekly = bucket?.windows.find((window) => window.label === "7d");
-    const label = !limits
-      ? "Weekly: loading…"
-      : limits.error || !weekly || weekly.remaining === null
-        ? "Weekly: unavailable"
-        : weekly.expired
-          ? "Weekly: awaiting update"
-          : `Weekly: ${formatPercent(weekly.remaining)} left`;
+    const label =
+      !limits && !limitsError
+        ? "Weekly: loading…"
+        : limitsError || limits?.error || !weekly || weekly.remaining === null
+          ? "Weekly: unavailable"
+          : weekly.expired
+            ? "Weekly: awaiting update"
+            : `Weekly: ${formatPercent(weekly.remaining)} left`;
     return <small className="account-weekly-limit">{label}</small>;
   }
 
@@ -190,12 +177,12 @@ function AccountCapacity({
       className="account-capacity"
       aria-label={`Limits for ${account.email || account.label}`}
     >
-      {!limits && <small>Reading limits…</small>}
-      {limits?.error && (
+      {!limits && !limitsError && <small>Reading limits…</small>}
+      {(limitsError || limits?.error) && (
         <ErrorDescription
           className="account-action-error"
           role="status"
-          value={limits.error}
+          value={limitsError || limits?.error}
         />
       )}
       {buckets.map((bucket) => (
@@ -231,7 +218,7 @@ function AccountCapacity({
           </div>
         </div>
       ))}
-      {limits && !limits.error && !buckets.length && (
+      {limits && !limitsError && !limits.error && !buckets.length && (
         <small>Limits unavailable</small>
       )}
     </div>
@@ -245,7 +232,7 @@ export function AccountTransferStatus({
   showCompleted = false,
   onAction,
 }: {
-  transfer?: Json;
+  transfer?: NonNullable<Agent["accountTransfer"]>;
   targetLabel?: string;
   pending?: boolean;
   showCompleted?: boolean;
@@ -285,17 +272,17 @@ export function AccountTransferStatus({
         )}
         {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
         {transfer.waiting && <small>{transfer.waiting}</small>}
-        {interrupted.map((member: Json) => (
+        {interrupted.map((member) => (
           <small key={String(member.id)}>
             {member.name || "Agent"}: {member.reason}
           </small>
         ))}
-        {blocked.map((member: Json) => (
+        {blocked.map((member) => (
           <small key={String(member.id)} role="alert">
             {member.name || "Agent"} blocked: {member.reason}
           </small>
         ))}
-        {left.map((member: Json) => (
+        {left.map((member) => (
           <small key={String(member.id)}>
             {member.name || "Agent"} left on source ({member.provider}):{" "}
             {member.reason}
@@ -553,7 +540,8 @@ export default function Accounts({
               <span className="account-picker-label">{title}</span>
               {transferring && (
                 <span aria-label="Account transfer in progress">
-                  {transfer.moved ?? transfer.completed}/{transfer.total}
+                  {teamTransfer?.moved ?? teamTransfer?.completed}/
+                  {teamTransfer?.total}
                 </span>
               )}
             </Button>
@@ -579,7 +567,7 @@ export default function Accounts({
                   disabled={
                     !!pending ||
                     account.status !== "ready" ||
-                    account.disconnected ||
+                    !!account.disconnected ||
                     (pinned && !owner) ||
                     (transferring &&
                       account.id !== teamTransfer?.targetAccountKey)
@@ -637,17 +625,19 @@ export default function Accounts({
                 </Menu.Item>
               ))}
             <AccountTransferStatus
-              transfer={teamTransfer}
+              transfer={teamTransfer ?? undefined}
               targetLabel={transferTarget?.email || transferTarget?.label}
               pending={!!pending}
-              onAction={(kind) =>
+              onAction={(kind) => {
+                const requestId = teamTransfer?.id;
+                if (typeof requestId !== "string") return;
                 void action(`${kind}-transfer`, () =>
-                  api("/api/agents/account-transfer", {
+                  post("/api/agents/account-transfer", {
                     action: kind,
-                    request_id: teamTransfer?.id,
+                    request_id: requestId,
                   }),
-                )
-              }
+                );
+              }}
             />
             <Menu.Divider />
             <Menu.Item
@@ -737,19 +727,16 @@ export default function Accounts({
                         disabled={
                           !!pending ||
                           account.status !== "ready" ||
-                          account.disconnected
+                          !!account.disconnected
                         }
                         loading={pending === `default:${account.id}`}
                         aria-label={`Use ${account.email || account.label} by default`}
                         onClick={() =>
                           void action(`default:${account.id}`, async () => {
                             state.setData(
-                              await api<AccountsState>(
-                                "/api/accounts/default",
-                                {
-                                  account_key: account.id,
-                                },
-                              ),
+                              await post("/api/accounts/default", {
+                                account_key: account.id,
+                              }),
                             );
                           })
                         }
@@ -807,10 +794,9 @@ export default function Accounts({
                         if (account.disconnected)
                           void action(`reconnect:${account.id}`, async () => {
                             state.setData(
-                              await api<AccountsState>(
-                                "/api/accounts/reconnect",
-                                { account_key: account.id },
-                              ),
+                              await post("/api/accounts/reconnect", {
+                                account_key: account.id,
+                              }),
                             );
                           });
                         else setDisconnectChoice(account);
@@ -854,9 +840,7 @@ export default function Accounts({
                 disabled={!!pending}
                 onClick={() =>
                   void action("discover", async () => {
-                    state.setData(
-                      await api<AccountsState>("/api/accounts/discover", {}),
-                    );
+                    state.setData(await post("/api/accounts/discover", {}));
                   })
                 }
               >
@@ -874,7 +858,7 @@ export default function Accounts({
                 e.preventDefault();
                 void action("register", async () => {
                   state.setData(
-                    await api<AccountsState>("/api/accounts/register", {
+                    await post("/api/accounts/register", {
                       home: home.trim(),
                     }),
                   );
@@ -914,7 +898,7 @@ export default function Accounts({
         onClose={() => setTransferChoice(null)}
         onConfirm={async () => {
           if (!transferChoice) return;
-          await api("/api/agents/account-transfer", {
+          await post("/api/agents/account-transfer", {
             id: transferChoice.agentId,
             account_key: transferChoice.target.id,
             request_id: transferChoice.requestId,
@@ -961,16 +945,18 @@ export default function Accounts({
         <Button
           loading={pending === "disconnect"}
           disabled={!!pending || (disconnectsDefault && !replacement)}
-          onClick={() =>
+          onClick={() => {
+            const accountKey = disconnectChoice?.id;
+            if (!accountKey) return;
             void action("disconnect", async () => {
               state.setData(
-                await api<AccountsState>("/api/accounts/disconnect", {
-                  account_key: disconnectChoice?.id,
+                await post("/api/accounts/disconnect", {
+                  account_key: accountKey,
                 }),
               );
               setDisconnectChoice(null);
-            })
-          }
+            });
+          }}
         >
           Disconnect account
         </Button>
@@ -1017,20 +1003,20 @@ export default function Accounts({
           color="red"
           loading={pending === "delete"}
           disabled={!!pending || (deletesDefault && !deleteReplacement)}
-          onClick={() =>
+          onClick={() => {
+            if (!deleteChoice || !deleteRequestId) return;
             void action("delete", async () => {
               state.setData(
-                await api<AccountsState>("/api/accounts/delete", {
-                  account_key: deleteChoice?.id,
+                await post("/api/accounts/delete", {
+                  account_key: deleteChoice.id,
                   request_id: deleteRequestId,
                 }),
               );
-              if (deleteChoice)
-                saveDeleteRequest(state.scope, deleteChoice.id, null);
+              saveDeleteRequest(state.scope, deleteChoice.id, null);
               setDeleteChoice(null);
               setDeleteRequestId("");
-            })
-          }
+            });
+          }}
         >
           Delete account
         </Button>

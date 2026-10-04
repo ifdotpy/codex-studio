@@ -1,9 +1,12 @@
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { syncApi, errorText, save, saved } from "../api";
+import { syncGet, errorText, save, saved, type GetResult } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
+
+type TranscriptSearchResult =
+  GetResult<"/api/transcript/search">["results"][number];
 
 export default function PromptNavigator({
   messages,
@@ -37,7 +40,7 @@ export default function PromptNavigator({
   const [onlySaved, setOnlySaved] = useState(false);
   const [search, setSearch] = useState<{
     query: string;
-    results: Message[];
+    results: TranscriptSearchResult[];
     loading: boolean;
     error: string;
     truncated?: boolean;
@@ -49,8 +52,9 @@ export default function PromptNavigator({
     let active = true;
     setSearch({ query: searchQuery, results: [], loading: true, error: "" });
     const timer = setTimeout(() => {
-      const params = new URLSearchParams({ id: agentId, q: searchQuery });
-      void syncApi(`/api/transcript/search?${params}`)
+      void syncGet("/api/transcript/search", {
+        query: { id: agentId, q: searchQuery },
+      })
         .then((result) => {
           if (active)
             setSearch({
@@ -240,9 +244,9 @@ export default function PromptNavigator({
                       : prompts.indexOf(prompt) + 1}
                   </span>
                   <span>
-                    {(searching ? prompt.excerpt : prompt.text) ||
-                      prompt.text ||
-                      "Attachment"}
+                    {(searching && "excerpt" in prompt
+                      ? prompt.excerpt || prompt.text
+                      : prompt.text) || "Attachment"}
                   </span>
                 </button>
                 {!searching && (

@@ -152,25 +152,33 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
     if (
       message.role !== "output" ||
       ["running", "failed", "declined", "cancelled", "interrupted"].includes(
-        message.toolStatus,
+        message.toolStatus ?? "",
       )
     )
       continue;
-    let payload;
+    let payload: unknown;
     try {
-      payload = JSON.parse(message.text);
+      payload = JSON.parse(message.text) as unknown;
     } catch {
       // The following falsy-payload check skips malformed JSON.
     }
-    if (!payload) continue;
-    if (payload.success === false || payload.error) continue;
-    if (["inProgress", "failed", "declined"].includes(payload.status)) continue;
-    if (payload.type === "fileChange" && Array.isArray(payload.changes)) {
-      if (payload.status !== "completed" && message.toolStatus !== "completed")
+    if (!payload || typeof payload !== "object" || Array.isArray(payload))
+      continue;
+    const result = payload as Record<string, unknown>;
+    if (result.success === false || result.error) continue;
+    if (
+      typeof result.status === "string" &&
+      ["inProgress", "failed", "declined"].includes(result.status)
+    )
+      continue;
+    if (result.type === "fileChange" && Array.isArray(result.changes)) {
+      if (result.status !== "completed" && message.toolStatus !== "completed")
         continue;
-      for (const change of payload.changes) {
+      const changes: unknown[] = result.changes;
+      for (const item of changes) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        const change = item as Record<string, unknown>;
         if (
-          !change ||
           typeof change.path !== "string" ||
           typeof change.diff !== "string" ||
           !change.diff.trim()
@@ -192,10 +200,10 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
       (message.title === "Changes" ||
         message.title === "turn/diff/updated" ||
         message.id.endsWith("turn/diff/updated")) &&
-      typeof payload.diff === "string" &&
-      payload.diff.trim()
+      typeof result.diff === "string" &&
+      result.diff.trim()
     ) {
-      const paths = patchPaths(payload.diff);
+      const paths = patchPaths(result.diff);
       add(
         {
           ...base(
@@ -204,11 +212,11 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
               : `Changes${paths.length ? ` · ${paths.length} files` : ""}`,
           ),
           kind: "patch",
-          source: payload.diff,
+          source: result.diff,
           paths,
           truncated: !!message.truncated,
         },
-        `patch:${paths.length === 1 ? paths[0] : ""}:${payload.diff}`,
+        `patch:${paths.length === 1 ? paths[0] : ""}:${result.diff}`,
       );
     }
   }

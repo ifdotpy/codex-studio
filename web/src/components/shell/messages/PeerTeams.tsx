@@ -14,10 +14,19 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import { api, ApiError, errorText, save, saved } from "../../../api";
+import { post, ApiError, errorText, save, saved } from "../../../api";
+import type { paths } from "../../../generated/api";
 import type { Agent, PeerTeam } from "../../../types";
 import type { Project } from "../../ProjectOrganization";
 import "./peer-teams.css";
+
+type PeerTeamRequest =
+  paths["/api/peer-teams"]["post"]["requestBody"]["content"]["application/json"];
+type RadioRequest = {
+  body: PeerTeamRequest;
+  acknowledged?: boolean;
+  rejected?: boolean;
+};
 
 export function PeerTeamGroup({
   team,
@@ -49,11 +58,9 @@ export function PeerTeamGroup({
   drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
   const requestKey = `studio-radio-open:${scope}:${team.id}`;
-  const [request, setRequest] = useState<{
-    body: Record<string, unknown>;
-    acknowledged?: boolean;
-    rejected?: boolean;
-  } | null>(() => saved(requestKey, null));
+  const [request, setRequest] = useState<RadioRequest | null>(() =>
+    saved<RadioRequest | null>(requestKey, null),
+  );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [selectRoom, setSelectRoom] = useState(false);
@@ -70,10 +77,14 @@ export function PeerTeamGroup({
       openRoom(roomId);
       return;
     }
+    if (typeof team.projectPath !== "string") {
+      setError("This team has no project path for a shared chat.");
+      return;
+    }
     lock.current = true;
     setPending(true);
     setError("");
-    let next = request || {
+    let next: RadioRequest = request || {
       body: {
         action: "radio",
         radio_action: "open",
@@ -89,7 +100,7 @@ export function PeerTeamGroup({
     remember();
     try {
       if (!next.acknowledged && !next.rejected) {
-        await api("/api/peer-teams", next.body, { timeoutMs: 15000 });
+        await post("/api/peer-teams", next.body, { timeoutMs: 15000 });
         next = { ...next, acknowledged: true };
         remember();
       }
@@ -141,7 +152,7 @@ export function PeerTeamGroup({
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
-            {(team.members.length === 2 || roomId) && (
+            {((team.members ?? []).length === 2 || roomId) && (
               <Menu.Item disabled={pending} onClick={() => void openShared()}>
                 Open shared chat
               </Menu.Item>
@@ -196,7 +207,7 @@ export function PeerTeamForm({
   const [pending, setPending] = useState(false);
   const [frozen, setFrozen] = useState(false);
   const [rejected, setRejected] = useState(false);
-  const request = useRef<Record<string, unknown> | null>(null);
+  const request = useRef<PeerTeamRequest | null>(null);
   const committed = useRef(false);
   const locked = useRef(false);
   const id = useRef(team?.id || crypto.randomUUID());
@@ -207,25 +218,41 @@ export function PeerTeamForm({
       a.isLead &&
       !a.deletedAt &&
       a.cwd === project.path &&
-      !teams.some((t) => t.id !== team?.id && t.members.includes(a.id)),
+      !teams.some((t) => t.id !== team?.id && (t.members ?? []).includes(a.id)),
   );
   const submit = async () => {
     if (locked.current) return;
+    if (typeof project.path !== "string") {
+      setError("This team has no project path.");
+      return;
+    }
     locked.current = true;
     setPending(true);
     setError("");
     setFrozen(true);
-    request.current ||= {
-      action,
-      path: project.path,
-      team_id: id.current,
-      expected_revision: revision.current,
-      request_id: crypto.randomUUID(),
-      ...(action === "save" ? { name: name.trim(), members } : {}),
-    };
+    request.current ||=
+      action === "save"
+        ? {
+            action: "save",
+            path: project.path,
+            team_id: id.current,
+            expected_revision: revision.current,
+            request_id: crypto.randomUUID(),
+            name: name.trim(),
+            members,
+          }
+        : {
+            action: "delete",
+            path: project.path,
+            team_id: id.current,
+            expected_revision: revision.current,
+            request_id: crypto.randomUUID(),
+          };
     try {
       if (!committed.current) {
-        await api("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        const body = request.current;
+        if (!body) return;
+        await post("/api/peer-teams", body, { timeoutMs: 15000 });
         committed.current = true;
       }
       await refresh?.();
@@ -355,7 +382,7 @@ export function usePeerTeamMove(
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
 ) {
-  const request = useRef<Record<string, unknown> | null>(null);
+  const request = useRef<PeerTeamRequest | null>(null);
   const committed = useRef(false);
   const running = useRef(false);
   const [pending, setPending] = useState(false);
@@ -374,7 +401,7 @@ export function usePeerTeamMove(
     setError("");
     try {
       if (!committed.current) {
-        await api("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        await post("/api/peer-teams", request.current, { timeoutMs: 15000 });
         committed.current = true;
       }
       await refresh?.();
@@ -395,6 +422,7 @@ export function usePeerTeamMove(
   };
   const move = (project: Project, member: string, teamId: string | null) => {
     if (request.current) return;
+    if (typeof project.path !== "string") return;
     request.current = {
       action: "move",
       path: project.path,

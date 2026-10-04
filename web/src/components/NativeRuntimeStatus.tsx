@@ -1,49 +1,12 @@
 import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
-import { api, errorText } from "../api";
+import { get, type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
 import "./native-runtime-status.css";
 
-interface RuntimeAccount {
-  status: "current" | "waiting" | "updating" | "failed";
-  version?: string;
-  pid?: number;
-  targetVersion?: string;
-  reason?: string;
-  updatedAt?: number;
-}
-
-interface RuntimeStatus {
-  status: "checking" | "ready" | "failed";
-  checkedAt: number | null;
-  error?: string;
-  selected: { version: string; sourcePath: string; sha256: string } | null;
-  candidates: {
-    version: string;
-    path: string;
-    status: "approved" | "rejected";
-    error?: string;
-  }[];
-  accounts: Record<string, RuntimeAccount>;
-}
-
-interface ProviderVersion {
-  id: string;
-  accountKey: string;
-  provider: string;
-  status: "checking" | "current" | "outdated" | "unknown" | "error";
-  runningVersion: string | null;
-  installedVersion: string | null;
-  configuredVersion: string | null;
-  baseline: string | null;
-  error?: string | null;
-  message?: string | null;
-}
-
-interface ProviderVersions {
-  checkedAt: number | null;
-  providers: ProviderVersion[];
-}
+type DesktopStatus = GetResult<"/api/desktop">;
+type RuntimeStatus = NonNullable<DesktopStatus["nativeRuntime"]>;
+type ProviderVersions = NonNullable<DesktopStatus["providerVersions"]>;
 
 const accountStatus = {
   current: "Up to date",
@@ -71,11 +34,12 @@ export default function NativeRuntimeStatus({
   const [providers, setProviders] = useState<ProviderVersions>({
     checkedAt: null,
     providers: [],
+    warnings: [],
   });
   const [error, setError] = useState("");
   useEffect(() => {
     setData(null);
-    setProviders({ checkedAt: null, providers: [] });
+    setProviders({ checkedAt: null, providers: [], warnings: [] });
     setError("");
     if (!opened) return;
     let live = true;
@@ -83,14 +47,17 @@ export default function NativeRuntimeStatus({
     const controller = new AbortController();
     const refresh = async () => {
       try {
-        const result = await api<{
-          nativeRuntime?: RuntimeStatus | null;
-          providerVersions?: ProviderVersions;
-        }>("/api/desktop", undefined, { signal: controller.signal });
+        const result = await get("/api/desktop", {
+          signal: controller.signal,
+        });
         if (live) {
           setData(result.nativeRuntime ?? null);
           setProviders(
-            result.providerVersions || { checkedAt: null, providers: [] },
+            result.providerVersions || {
+              checkedAt: null,
+              providers: [],
+              warnings: [],
+            },
           );
           setError("");
         }

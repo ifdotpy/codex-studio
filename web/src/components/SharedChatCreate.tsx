@@ -1,14 +1,26 @@
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText, save, saved } from "../api";
-import type { Json, Snapshot } from "../types";
+import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
+import type { JsonValue, Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ModelPicker, type ModelOption } from "./ModelPicker";
 import "./shared-chat-create.css";
 
-type Participant = { account_key: string; model: string; effort?: string };
-type Creation = { body: Json; roomId?: string; rejected?: boolean };
+type Participant = {
+  account_key: string;
+  model: string;
+  effort?: string | null;
+};
+type SharedCreateRequest = Extract<
+  PostBody<"/api/peer-teams">,
+  { action: "radio"; radio_action: "create" }
+>;
+type Creation = {
+  body: SharedCreateRequest;
+  roomId?: string;
+  rejected?: boolean;
+};
 export const sharedCreationKey = (scope: string) =>
   `studio-radio-create:${scope}`;
 
@@ -30,11 +42,28 @@ function ParticipantFields({
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const options: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
-    label: row.displayName || row.model,
-    description: row.description || undefined,
-    isDefault: !!row.isDefault,
+    label:
+      typeof row.displayName === "string" && row.displayName
+        ? row.displayName
+        : row.model,
+    ...(typeof row.description === "string" && row.description
+      ? { description: row.description }
+      : {}),
+    isDefault: row.isDefault === true,
   }));
   const info = catalog.models.find((row) => row.model === value.model);
+  const reasoningEfforts = Array.isArray(info?.supportedReasoningEfforts)
+    ? info.supportedReasoningEfforts.flatMap((item: JsonValue) => {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          typeof item.reasoningEffort !== "string"
+        )
+          return [];
+        return [item.reasoningEffort];
+      })
+    : [];
   useEffect(() => {
     valid(!!info && !catalog.loading && !catalog.error);
     if (!frozen && !value.model && catalog.models.length) {
@@ -77,18 +106,18 @@ function ParticipantFields({
         options={options}
         onChange={(model) => change({ ...value, model, effort: undefined })}
       />
-      {!!info?.supportedReasoningEfforts?.length && (
+      {!!reasoningEfforts.length && (
         <NativeSelect
           label={`Reasoning for agent ${index + 1}`}
           value={value.effort || ""}
           data={[
             {
               value: "",
-              label: `Default${info.defaultReasoningEffort ? ` (${info.defaultReasoningEffort})` : ""}`,
+              label: `Default${typeof info?.defaultReasoningEffort === "string" ? ` (${info.defaultReasoningEffort})` : ""}`,
             },
-            ...info.supportedReasoningEfforts.map((row: Json) => ({
-              value: row.reasoningEffort,
-              label: row.reasoningEffort,
+            ...reasoningEfforts.map((effort) => ({
+              value: effort,
+              label: effort,
             })),
           ]}
           onChange={(e) =>
@@ -125,7 +154,10 @@ export default function SharedChatCreate({
     saved(key, null),
   );
   const [path, setPath] = useState<string>(
-    attempt?.body.path || initialPath || data.runtime.projects?.[0]?.path || "",
+    attempt?.body.path ||
+      initialPath ||
+      data.runtime?.projects?.[0]?.path ||
+      "",
   );
   const [name, setName] = useState<string>(attempt?.body.name || "");
   const readyAccounts = accounts.accounts.filter(
@@ -163,37 +195,43 @@ export default function SharedChatCreate({
     if (
       !attempt?.roomId ||
       finished.current ||
-      !data.runtime.rooms.some((room) => room.id === attempt.roomId)
+      !data.runtime?.rooms.some((room) => room.id === attempt.roomId)
     )
       return;
     finished.current = true;
     save(key, null);
     created(attempt.roomId);
-  }, [attempt?.roomId, data.runtime.rooms, created, key]);
+  }, [attempt?.roomId, data.runtime?.rooms, created, key]);
   const submit = async () => {
     if (lock.current) return;
     lock.current = true;
     setPending(true);
     setError("");
-    let next = attempt || {
-      body: {
-        action: "radio",
-        radio_action: "create",
-        request_id: crypto.randomUUID(),
-        path,
-        name: name.trim() || "Shared chat",
-        participants,
-      },
+    const body: SharedCreateRequest = {
+      action: "radio",
+      radio_action: "create",
+      request_id: crypto.randomUUID(),
+      path,
+      name: name.trim() || "Shared chat",
+      participants,
     };
+    let next: Creation = attempt || { body };
     remember(next);
     try {
       if (!next.roomId && !next.rejected) {
-        const result = await api("/api/peer-teams", next.body, {
+        const result = await post("/api/peer-teams", next.body, {
           timeoutMs: 15000,
         });
-        if (!result.room?.id)
+        const room = "room" in result ? result.room : null;
+        if (
+          !room ||
+          typeof room !== "object" ||
+          Array.isArray(room) ||
+          !("id" in room) ||
+          typeof room.id !== "string"
+        )
           throw Error("The server did not return the shared chat identity.");
-        next = { ...next, roomId: result.room.id };
+        next = { ...next, roomId: room.id };
         remember(next);
       }
       await refresh();
@@ -217,12 +255,22 @@ export default function SharedChatCreate({
   const projects = [
     ...new Map(
       [
-        ...(data.runtime.projects || []).map(
-          (p) => [p.path, p.name || p.path] as const,
+        ...(data.runtime?.projects || []).flatMap((project) => {
+          const projectPath = project.path;
+          if (typeof projectPath !== "string" || !projectPath) return [];
+          const label = project.name;
+          return [
+            [
+              projectPath,
+              typeof label === "string" && label ? label : projectPath,
+            ] as const,
+          ];
+        }),
+        ...data.threads.flatMap((thread) =>
+          typeof thread.cwd === "string" && thread.cwd
+            ? [[thread.cwd, thread.cwd] as const]
+            : [],
         ),
-        ...data.threads
-          .filter((a) => a.cwd)
-          .map((a) => [a.cwd!, a.cwd!] as const),
       ].map(([path, label]) => [path, { value: path, label }]),
     ).values(),
   ];

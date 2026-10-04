@@ -67,7 +67,7 @@ export default function ConversationWarnings({
                 <p>
                   <ErrorDescription value={message.text} role="status" />
                 </p>
-                {message.details != null && (
+                {"details" in message && message.details != null && (
                   <pre>{errorDetails(message.details)}</pre>
                 )}
               </article>

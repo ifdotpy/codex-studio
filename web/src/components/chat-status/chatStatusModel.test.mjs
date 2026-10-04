@@ -590,6 +590,54 @@ const makeSnapshot = (threads, runtime = {}) => ({
   },
 });
 
+it("rejects malformed epochs while preserving absent, null and numeric epoch rules", () => {
+  const failed = makeAgent({ status: "failed", epoch: 4 });
+  const waiting = makeAgent({ status: "waiting", epoch: 4 });
+  const requestEpochs = [
+    [{}, true],
+    [{ epoch: null }, true],
+    [{ epoch: 4 }, true],
+    [{ epoch: 3 }, false],
+    [{ epoch: "3" }, false],
+  ];
+
+  for (const [record, current] of requestEpochs) {
+    const request = { agent: "lead", status: "pending", ...record };
+    assert.equal(
+      chatWaitState(makeSnapshot([waiting], { requests: [request] }), waiting)
+        .inputs,
+      current ? 1 : 0,
+      `wait input epoch ${JSON.stringify(record)}`,
+    );
+    assert.equal(
+      chatIndicators(makeSnapshot([failed], { requests: [request] })).get(
+        "lead",
+      ).kind,
+      current ? "answer" : "error",
+      `indicator request epoch ${JSON.stringify(record)}`,
+    );
+  }
+
+  for (const kind of ["tasks", "monitors"]) {
+    for (const [record, current] of requestEpochs) {
+      const activity = {
+        id: `activity-${kind}-${JSON.stringify(record)}`,
+        agent: "lead",
+        status: "running",
+        ...record,
+      };
+      const activities = chatActivities(
+        makeSnapshot([waiting], { [kind]: [activity] }),
+      );
+      assert.equal(
+        activities.get("lead")?.some(({ id }) => id === activity.id) ?? false,
+        current,
+        `${kind} epoch ${JSON.stringify(record)}`,
+      );
+    }
+  }
+});
+
 it("maps live runtime records to sorted caller-visible activities", () => {
   const lead = makeAgent();
   const child = makeAgent({

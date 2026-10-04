@@ -30,8 +30,16 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText } from "../../api";
-import type { Agent, Json, Snapshot } from "../../types";
+import {
+  get,
+  post,
+  errorText,
+  type ApiPostPath,
+  type GetResult,
+  type PostBody,
+  type PostResult,
+} from "../../api";
+import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
@@ -46,20 +54,23 @@ type Props = {
   onClose: () => void;
   agent?: Agent;
   data: Snapshot;
-  allRequests: Json[];
+  allRequests: NonNullable<Snapshot["runtime"]>["requests"];
   onSelect: (id: string, messageId?: string) => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };
+type WorkspaceAction = <Path extends ApiPostPath>(
+  path: Path,
+  body: PostBody<Path>,
+) => Promise<PostResult<Path>>;
 type Context = Props & {
   selected: Agent | undefined;
-  run: (path: string, body: Json) => Promise<any>;
+  run: WorkspaceAction;
   reload: () => void;
   revision: number;
   preview: (target: PreviewTarget) => void;
   navigate: (section: string, agent?: string, item?: string) => void;
   focusId: string;
-  resourceCache: Map<string, Json>;
 };
 const sections = [
   ["changes", "Changes", FileDiff],
@@ -85,15 +96,13 @@ const date = (value: number | string | undefined) =>
   value
     ? localDateTime(new Date(typeof value === "number" ? value * 1000 : value))
     : "";
-const endpoint = (name: string, agent?: Agent) =>
-  `/api/${name}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`;
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="workspace-empty">{children}</div>;
 }
 function ResourceState({
   state,
 }: {
-  state: { error: string; loading: boolean; data: Json | null };
+  state: { error: string; loading: boolean; data: unknown };
 }) {
   return state.error ? (
     <p role="alert" className="workspace-error">
@@ -129,7 +138,6 @@ function ownerName(data: Snapshot, id?: string) {
 }
 
 export function Workspace(props: Props) {
-  const resourceCache = useRef(new Map<string, Json>()).current;
   const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
@@ -184,10 +192,13 @@ export function Workspace(props: Props) {
     return () => clearInterval(timer);
   }, [props.opened, reload]);
   const run = useCallback(
-    async (path: string, body: Json) => {
+    async <Path extends ApiPostPath>(
+      path: Path,
+      body: PostBody<Path>,
+    ): Promise<PostResult<Path>> => {
       setPending((n) => n + 1);
       try {
-        const result = await api(path, body);
+        const result = await post(path, body);
         reload();
         await refreshRef.current();
         return result;
@@ -211,7 +222,6 @@ export function Workspace(props: Props) {
     revision,
     preview: setPreview,
     focusId,
-    resourceCache,
     navigate: (section, agent, item) => {
       setSection(section);
       if (agent) setAgentId(agent);
@@ -373,21 +383,38 @@ export function Workspace(props: Props) {
 export default Workspace;
 
 function Changes(c: Context) {
-  const state = useResource(
-      `${endpoint("changes", c.selected)}&scope=chat`,
-      c.revision,
-    ),
-    comments = useResource(
-      `${endpoint("workspace", c.selected)}${c.selected ? "&" : "?"}view=annotations`,
-      c.revision,
-    );
+  const state = useResource("/api/changes", c.revision, {
+      query: {
+        ...(c.selected ? { agent: c.selected.id } : {}),
+        scope: "chat",
+      },
+    }),
+    comments = useResource("/api/workspace", c.revision, {
+      query: {
+        ...(c.selected ? { agent: c.selected.id } : {}),
+        view: "annotations",
+      },
+    });
   const [path, setPath] = useState(""),
-    [comment, setComment] = useState<Json | null>(null),
+    [comment, setComment] = useState<{
+      path: string;
+      line: number;
+      turnId?: string;
+      text: string;
+      id: string;
+    } | null>(null),
     [saving, setSaving] = useState(false);
   const report = state.data?.scope === "chat" ? state.data : null;
-  const files: Json[] = report?.files || [];
-  const annotations: Json[] = (comments.data?.annotations || []).filter(
-    (entry: Json) => entry.agent === c.selected?.id,
+  const files = (report?.files || []).filter(
+    (file) => typeof file.path === "string" && typeof file.status === "string",
+  );
+  const annotations = (comments.data?.annotations || []).filter(
+    (entry) =>
+      entry.agent === c.selected?.id &&
+      typeof entry.id === "string" &&
+      typeof entry.path === "string" &&
+      typeof entry.line === "number" &&
+      typeof entry.text === "string",
   );
   let line = 0,
     current = "",
@@ -495,7 +522,9 @@ function Changes(c: Context) {
                       setComment({
                         path: row.path,
                         line: row.line,
-                        turnId: report?.turnId,
+                        ...(typeof report?.turnId === "string"
+                          ? { turnId: report.turnId }
+                          : {}),
                         text: "",
                         id: crypto.randomUUID(),
                       })
@@ -521,7 +550,7 @@ function Changes(c: Context) {
       {!!annotations.length && (
         <section className="workspace-result">
           <h3>Comments sent to this agent</h3>
-          {annotations.map((entry: Json) => (
+          {annotations.map((entry) => (
             <article key={entry.id}>
               <small>
                 {entry.path}:{entry.line}
@@ -579,14 +608,18 @@ function Find(c: Context) {
     },
     [],
   );
-  const [source, setSource] = useState<Json | null>(null),
+  type SearchResult = GetResult<"/api/search">["results"][number];
+  type SearchItem = GetResult<"/api/search/item">;
+  type SearchSource =
+    | (SearchResult & { loading: boolean })
+    | (SearchItem & { loading: boolean });
+  const [source, setSource] = useState<SearchSource | null>(null),
     [sourceError, setSourceError] = useState("");
   const [query, setQuery] = useState(""),
     [search, setSearch] = useState("");
-  const state = useResource(
-    search ? `/api/search?q=${encodeURIComponent(search)}` : null,
-    c.revision,
-  );
+  const state = useResource(search ? "/api/search" : null, c.revision, {
+    query: { q: search },
+  });
   return (
     <>
       <form
@@ -615,7 +648,7 @@ function Find(c: Context) {
         </Button>
       </form>
       <ResourceState state={state} />
-      {(state.data?.results || []).map((result: Json, index: number) => (
+      {(state.data?.results || []).map((result, index) => (
         <UnstyledButton
           className="workspace-row"
           key={`${result.kind}:${result.id}:${index}`}
@@ -624,9 +657,9 @@ function Find(c: Context) {
             setSource({ ...result, loading: true });
             setSourceError("");
             try {
-              const record = await api(
-                `/api/search/item?id=${encodeURIComponent(result.id)}`,
-              );
+              const record = await get("/api/search/item", {
+                query: { id: result.id },
+              });
               if (request === sourceRequest.current)
                 setSource({ ...result, ...record, loading: false });
             } catch (e) {
@@ -663,7 +696,7 @@ function Find(c: Context) {
           <>
             <div className="workspace-toolbar">
               <Badge variant="light" color="gray">
-                {source.kind || source.type}
+                {source.kind || ("type" in source ? source.type : "")}
               </Badge>
               <small className="workspace-muted">{source.id}</small>
             </div>
@@ -702,11 +735,12 @@ function Find(c: Context) {
 }
 
 function Plan(c: Context) {
-  const state = useResource(endpoint("plan", c.selected), c.revision);
+  const state = useResource("/api/plan", c.revision, {
+    query: c.selected ? { agent: c.selected.id } : {},
+  });
   const native = state.data?.native;
-  const steps: Json[] = Array.isArray(native?.plan) ? native.plan : [];
-  const explanation =
-    typeof native?.explanation === "string" ? native.explanation : "";
+  const steps = native?.plan ?? [];
+  const explanation = native?.explanation ?? "";
   return (
     <>
       <ResourceState state={state} />
@@ -727,12 +761,21 @@ function Plan(c: Context) {
         <section className="workspace-result">
           <h3>Agent plan</h3>
           {explanation && <p className="workspace-prose">{explanation}</p>}
-          {steps.map((step: Json, i: number) => (
-            <div className="workspace-plan-step" key={i}>
-              <Status value={step.status || "pending"} />
-              <span>{step.step}</span>
-            </div>
-          ))}
+          {steps.map((step, i) => {
+            const detail = isRecord(step) ? step : null;
+            const status =
+              typeof detail?.status === "string" ? detail.status : "pending";
+            const text =
+              typeof detail?.step === "string"
+                ? detail.step
+                : JSON.stringify(step);
+            return (
+              <div className="workspace-plan-step" key={i}>
+                <Status value={status} />
+                <span>{text}</span>
+              </div>
+            );
+          })}
         </section>
       ) : (
         state.data !== null && (
@@ -744,9 +787,11 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
-  const state = useResource(endpoint("checkpoints", c.selected), c.revision),
+  const state = useResource("/api/checkpoints", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
     [label, setLabel] = useState(""),
-    [preview, setPreview] = useState<Json | null>(null),
+    [preview, setPreview] = useState<CheckpointPreview | null>(null),
     [busy, setBusy] = useState(false);
   return (
     <>
@@ -779,12 +824,12 @@ function Checkpoints(c: Context) {
           variant="filled"
           type="submit"
           loading={busy}
-          disabled={c.selected?.inFlight}
+          disabled={!!c.selected?.inFlight}
         >
           Save checkpoint
         </Button>
       </form>
-      {(state.data?.checkpoints || []).map((checkpoint: Json) => (
+      {(state.data?.checkpoints || []).map((checkpoint) => (
         <div className="workspace-row" key={checkpoint.id}>
           <div className="workspace-row-head">
             <strong>{checkpoint.label}</strong>
@@ -866,9 +911,22 @@ function Checkpoints(c: Context) {
   );
 }
 
+type CheckpointPreview = Omit<
+  PostResult<"/api/checkpoint/preview">,
+  "checkpoint"
+> & { checkpoint: string; label: string };
+
 function Tools(c: Context) {
-  const state = useResource(endpoint("capabilities", c.selected), c.revision),
+  const state = useResource("/api/capabilities", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
     [query, setQuery] = useState("");
+  const managedTools = (state.data?.managed ?? []).filter(
+    (value): value is Record<string, JsonValue> => isJsonObject(value),
+  );
+  const observedNative = (state.data?.observedNative ?? []).filter(
+    (name): name is string => typeof name === "string",
+  );
   return (
     <>
       <ResourceState state={state} />
@@ -886,22 +944,31 @@ function Tools(c: Context) {
         <>
           <h3 className="workspace-section-title">Orchestration tools</h3>
           <div className="workspace-tools">
-            {(state.data.managed || [])
-              .filter((tool: Json) =>
+            {managedTools
+              .filter((tool) =>
                 JSON.stringify(tool)
                   .toLowerCase()
                   .includes(query.toLowerCase()),
               )
-              .map((tool: Json) => (
-                <details key={tool.name} className="workspace-tool">
+              .map((tool, index) => (
+                <details
+                  key={`${inventoryName(tool) || "tool"}:${index}`}
+                  className="workspace-tool"
+                >
                   <summary>
                     <Wrench size={14} />
-                    <strong>{tool.name}</strong>
+                    <strong>
+                      {inventoryName(tool) || `Tool ${index + 1}`}
+                    </strong>
                   </summary>
-                  <p>{tool.description}</p>
+                  <p>
+                    {typeof tool.description === "string"
+                      ? tool.description
+                      : JSON.stringify(tool.description ?? "")}
+                  </p>
                   <pre className="workspace-code">
                     {JSON.stringify(
-                      tool.inputSchema || tool.parameters,
+                      tool.inputSchema ?? tool.parameters,
                       null,
                       2,
                     )}
@@ -910,10 +977,14 @@ function Tools(c: Context) {
               ))}
           </div>
           <h3 className="workspace-section-title">Observed native tools</h3>
-          <p className="workspace-muted">{state.data.nativeInventory}</p>
+          <p className="workspace-muted">
+            {typeof state.data.nativeInventory === "string"
+              ? state.data.nativeInventory
+              : JSON.stringify(state.data.nativeInventory)}
+          </p>
           <div className="workspace-actions">
-            {(state.data.observedNative || [])
-              .filter((name: string) =>
+            {observedNative
+              .filter((name) =>
                 name.toLowerCase().includes(query.toLowerCase()),
               )
               .map((name: string) => (
@@ -936,36 +1007,55 @@ function Tools(c: Context) {
     </>
   );
 }
-function Inventory({ value, query }: { value: any; query: string }) {
+function Inventory({ value, query }: { value: unknown; query: string }) {
   if (!value || (Array.isArray(value) && !value.length))
     return <p className="workspace-muted">No entries returned by Codex.</p>;
-  const entries = Array.isArray(value)
+  const entries: unknown[] = Array.isArray(value)
     ? value
-    : value.data || value.servers || [value];
+    : isRecord(value)
+      ? Array.isArray(value.data)
+        ? value.data
+        : Array.isArray(value.servers)
+          ? value.servers
+          : [value]
+      : [value];
   return (
     <div className="workspace-tools">
       {entries
-        .filter((entry: any) =>
-          JSON.stringify(entry).toLowerCase().includes(query.toLowerCase()),
+        .filter((entry: unknown) =>
+          JSON.stringify(entry)?.toLowerCase().includes(query.toLowerCase()),
         )
-        .map((entry: any, index: number) => (
+        .map((entry: unknown, index: number) => (
           <details className="workspace-tool" key={index}>
             <summary>
               <SlidersHorizontal size={14} />
-              <strong>
-                {entry.name ||
-                  entry.cwd ||
-                  entry.serverName ||
-                  `Entry ${index + 1}`}
-              </strong>
+              <strong>{inventoryName(entry) || `Entry ${index + 1}`}</strong>
             </summary>
             <pre className="workspace-code">
-              {JSON.stringify(entry, null, 2)}
+              {JSON.stringify(entry, null, 2) ?? String(entry)}
             </pre>
           </details>
         ))}
     </div>
   );
+}
+
+function isJsonObject(
+  value: JsonValue | null | undefined,
+): value is Record<string, JsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function inventoryName(value: unknown): string | undefined {
+  if (!isRecord(value)) return;
+  for (const key of ["name", "cwd", "serverName"] as const) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate) return candidate;
+  }
 }
 
 function Profiles(c: Context) {
@@ -975,8 +1065,15 @@ function Profiles(c: Context) {
       c.notify,
     ),
     [busy, setBusy] = useState(false),
-    [remove, setRemove] = useState<Json | null>(null),
-    [launch, setLaunch] = useState<Json | null>(null);
+    [remove, setRemove] = useState<
+      GetResult<"/api/profiles">["profiles"][number] | null
+    >(null),
+    [launch, setLaunch] = useState<{
+      id: string;
+      profile_id: string;
+      name: string;
+      prompt: string;
+    } | null>(null);
   const lead = c.data.threads.find(
     (a) => a.id === (c.selected?.rootId || c.selected?.id) && a.isLead,
   );
@@ -984,12 +1081,19 @@ function Profiles(c: Context) {
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
   const profileModels: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
-    label: row.displayName || row.model,
-    description: row.description || undefined,
+    label:
+      typeof row.displayName === "string" && row.displayName
+        ? row.displayName
+        : row.model,
+    description:
+      typeof row.description === "string" && row.description
+        ? row.description
+        : undefined,
     isDefault: !!row.isDefault,
   }));
-  if (draft?.model && !profileModels.some((row) => row.value === draft.model))
-    profileModels.unshift({ value: draft.model, label: draft.model });
+  const draftModel = typeof draft?.model === "string" ? draft.model : "";
+  if (draftModel && !profileModels.some((row) => row.value === draftModel))
+    profileModels.unshift({ value: draftModel, label: draftModel });
   return (
     <>
       <ResourceState state={state} />
@@ -1017,7 +1121,7 @@ function Profiles(c: Context) {
           New profile
         </Button>
       </div>
-      {(state.data?.profiles || []).map((profile: Json) => (
+      {(state.data?.profiles || []).map((profile) => (
         <div className="workspace-row" key={profile.id}>
           <div className="workspace-row-head">
             <strong>{profile.name}</strong>
@@ -1080,7 +1184,27 @@ function Profiles(c: Context) {
               e.preventDefault();
               setBusy(true);
               try {
-                await c.run("/api/profiles", { ...draft, action: "save" });
+                await c.run("/api/profiles", {
+                  action: "save",
+                  id: typeof draft.id === "string" ? draft.id : undefined,
+                  isNew: draft.isNew === true,
+                  name: typeof draft.name === "string" ? draft.name : "",
+                  role: draft.role === "reviewer" ? "reviewer" : "implementer",
+                  model: draftModel,
+                  effort:
+                    draft.effort === "low" ||
+                    draft.effort === "medium" ||
+                    draft.effort === "high" ||
+                    draft.effort === "xhigh" ||
+                    draft.effort === "max" ||
+                    draft.effort === "ultra"
+                      ? draft.effort
+                      : null,
+                  instructions:
+                    typeof draft.instructions === "string"
+                      ? draft.instructions
+                      : "",
+                });
                 setDraft((current) => (current === draft ? null : current));
               } catch {
               } finally {
@@ -1091,19 +1215,21 @@ function Profiles(c: Context) {
             <TextInput
               label="Name"
               required
-              value={draft.name}
+              value={typeof draft.name === "string" ? draft.name : ""}
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             />
             <NativeSelect
               label="Role"
-              value={draft.role}
+              value={
+                typeof draft.role === "string" ? draft.role : "implementer"
+              }
               onChange={(e) => setDraft({ ...draft, role: e.target.value })}
               data={["implementer", "reviewer"]}
             />
             {catalog.models.length ? (
               <ModelPicker
                 label="Model"
-                value={draft.model}
+                value={draftModel}
                 options={profileModels}
                 onChange={(model) => setDraft({ ...draft, model })}
               />
@@ -1111,13 +1237,13 @@ function Profiles(c: Context) {
               <TextInput
                 label="Model"
                 required
-                value={draft.model}
+                value={draftModel}
                 onChange={(e) => setDraft({ ...draft, model: e.target.value })}
               />
             )}
             <NativeSelect
               label="Reasoning effort"
-              value={draft.effort}
+              value={typeof draft.effort === "string" ? draft.effort : "high"}
               onChange={(e) => setDraft({ ...draft, effort: e.target.value })}
               data={["low", "medium", "high", "xhigh", "max", "ultra"]}
             />
@@ -1125,7 +1251,9 @@ function Profiles(c: Context) {
               label="Instructions"
               minRows={7}
               autosize
-              value={draft.instructions}
+              value={
+                typeof draft.instructions === "string" ? draft.instructions : ""
+              }
               onChange={(e) =>
                 setDraft({ ...draft, instructions: e.target.value })
               }
@@ -1154,6 +1282,8 @@ function Profiles(c: Context) {
               await c.run("/api/profiles", {
                 id: remove?.id,
                 action: "delete",
+                role: remove?.role ?? "reviewer",
+                instructions: remove?.instructions ?? "",
               });
               setRemove(null);
             } catch {
@@ -1179,7 +1309,10 @@ function Profiles(c: Context) {
               setBusy(true);
               try {
                 const worker = await c.run("/api/agents", {
-                  ...launch,
+                  id: launch.id,
+                  name: launch.name,
+                  profile_id: launch.profile_id,
+                  prompt: launch.prompt,
                   parent: lead!.id,
                   cwd: lead!.cwd,
                 });
@@ -1213,14 +1346,19 @@ function Profiles(c: Context) {
 }
 
 function Rules(c: Context) {
-  const state = useResource(endpoint("rules", c.selected), c.revision),
-    [draft, setDraft] = useFormDraft(
+  const state = useResource("/api/rules", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
+    [draftValue, setDraftValue] = useFormDraft(
       `studio-rule-draft:${JSON.stringify([c.data.stateDir, c.selected?.id])}`,
       c.notify,
     ),
     [busy, setBusy] = useState(false),
-    [remove, setRemove] = useState<Json | null>(null);
-  const act = async (rule: Json, action: string) => {
+    [remove, setRemove] = useState<RuleRecord | null>(null);
+  const draft = parseRuleDraft(draftValue);
+  const setDraft = (value: RuleDraft | null) =>
+    setDraftValue(value ? { ...value } : null);
+  const act = async (rule: RuleRecord, action: RuleAction) => {
     setBusy(true);
     try {
       await c.run("/api/rules", { agent: c.selected!.id, id: rule.id, action });
@@ -1251,10 +1389,12 @@ function Rules(c: Context) {
               intervalSeconds: 300,
               minimumWorkers: 8,
               durationMinutes: 30,
+              stallTimeoutSeconds: 1800,
               at: "",
               path: "",
               event: "worker_completed",
               command: "",
+              livenessCommand: "",
               text: "",
             })
           }
@@ -1263,8 +1403,8 @@ function Rules(c: Context) {
         </Button>
       </div>
       {(state.data?.rules || [])
-        .filter((rule: Json) => rule.agent === c.selected?.id)
-        .map((rule: Json) => (
+        .filter((rule) => rule.agent === c.selected?.id)
+        .map((rule) => (
           <div className="workspace-row" key={rule.id}>
             <div className="workspace-row-head">
               <strong>{rule.name}</strong>
@@ -1313,21 +1453,7 @@ function Rules(c: Context) {
               <Button
                 size="compact-xs"
                 variant="subtle"
-                onClick={() =>
-                  setDraft({
-                    ...rule,
-                    at: rule.at
-                      ? new Date(
-                          typeof rule.at === "number"
-                            ? rule.at * 1000
-                            : rule.at,
-                        )
-                          .toLocaleString("sv-SE")
-                          .slice(0, 16)
-                          .replace(" ", "T")
-                      : "",
-                  })
-                }
+                onClick={() => setDraft(ruleDraftFromRecord(rule))}
               >
                 Edit
               </Button>
@@ -1360,7 +1486,7 @@ function Rules(c: Context) {
           </div>
         ))}
       {!(state.data?.rules || []).some(
-        (rule: Json) => rule.agent === c.selected?.id,
+        (rule) => rule.agent === c.selected?.id,
       ) &&
         state.data !== null && <Empty>No rules for this agent.</Empty>}
       <Modal
@@ -1375,18 +1501,15 @@ function Rules(c: Context) {
             onSubmit={async (e) => {
               e.preventDefault();
               setBusy(true);
+              const submittedDraft = draftValue;
               try {
-                await c.run("/api/rules", {
-                  ...draft,
-                  agent: c.selected!.id,
-                  action: "save",
-                  command: draft.kind === "low_workers" ? "" : draft.command,
-                  at:
-                    draft.kind === "once"
-                      ? new Date(draft.at).getTime() / 1000
-                      : undefined,
-                });
-                setDraft((current) => (current === draft ? null : current));
+                await c.run(
+                  "/api/rules",
+                  ruleBodyFromDraft(draft, c.selected!.id),
+                );
+                setDraftValue((current) =>
+                  current === submittedDraft ? null : current,
+                );
               } catch {
               } finally {
                 setBusy(false);
@@ -1404,6 +1527,7 @@ function Rules(c: Context) {
               value={draft.kind}
               onChange={(e) => {
                 const kind = e.target.value;
+                if (!isRuleKind(kind)) return;
                 setDraft({
                   ...draft,
                   kind,
@@ -1502,7 +1626,10 @@ function Rules(c: Context) {
                 label="Runtime event"
                 required
                 value={draft.event}
-                onChange={(e) => setDraft({ ...draft, event: e.target.value })}
+                onChange={(e) => {
+                  const event = e.target.value;
+                  if (isRuleEvent(event)) setDraft({ ...draft, event });
+                }}
                 data={[
                   { value: "", label: "Select an event" },
                   {
@@ -1561,4 +1688,126 @@ function Rules(c: Context) {
       </Modal>
     </>
   );
+}
+
+type RuleRecord = GetResult<"/api/rules">["rules"][number];
+type RuleAction = PostBody<"/api/rules">["action"];
+type RuleDraft = {
+  id: string;
+  isNew?: boolean;
+  name: string;
+  kind: NonNullable<RuleRecord["kind"]>;
+  intervalSeconds: number | string;
+  minimumWorkers: number | string;
+  durationMinutes: number | string;
+  stallTimeoutSeconds: number | string;
+  at: string;
+  path: string;
+  event: NonNullable<PostBody<"/api/rules">["event"]>;
+  command: string;
+  livenessCommand: string;
+  text: string;
+};
+
+const ruleKinds = ["interval", "once", "file", "event", "low_workers"] as const;
+const ruleEvents = [
+  "worker_completed",
+  "monitor_exit",
+  "complaint",
+  "work_review",
+] as const;
+
+function isRuleKind(value: string): value is RuleDraft["kind"] {
+  return ruleKinds.some((kind) => kind === value);
+}
+
+function isRuleEvent(value: string): value is RuleDraft["event"] {
+  return ruleEvents.some((event) => event === value);
+}
+
+export function parseRuleDraft(value: Json | null): RuleDraft | null {
+  if (
+    !value ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.kind !== "string" ||
+    !isRuleKind(value.kind)
+  )
+    return null;
+  const asNumberOrString = (candidate: JsonValue, fallback: number) =>
+    typeof candidate === "number" || typeof candidate === "string"
+      ? candidate
+      : fallback;
+  return {
+    id: value.id,
+    isNew: value.isNew === true,
+    name: value.name,
+    kind: value.kind,
+    intervalSeconds: asNumberOrString(value.intervalSeconds, 60),
+    minimumWorkers: asNumberOrString(value.minimumWorkers, 8),
+    durationMinutes: asNumberOrString(value.durationMinutes, 30),
+    stallTimeoutSeconds: asNumberOrString(value.stallTimeoutSeconds, 1800),
+    at: typeof value.at === "string" ? value.at : "",
+    path: typeof value.path === "string" ? value.path : "",
+    event:
+      typeof value.event === "string" && isRuleEvent(value.event)
+        ? value.event
+        : "worker_completed",
+    command: typeof value.command === "string" ? value.command : "",
+    livenessCommand:
+      typeof value.livenessCommand === "string" ? value.livenessCommand : "",
+    text: typeof value.text === "string" ? value.text : "",
+  };
+}
+
+export function ruleDraftFromRecord(rule: RuleRecord): RuleDraft {
+  return {
+    id: rule.id,
+    name: rule.name || "",
+    kind: rule.kind || "interval",
+    intervalSeconds: rule.intervalSeconds ?? 60,
+    minimumWorkers: rule.minimumWorkers ?? 8,
+    durationMinutes: rule.durationMinutes ?? 30,
+    stallTimeoutSeconds: rule.stallTimeoutSeconds ?? 1800,
+    at: rule.at
+      ? new Date(typeof rule.at === "number" ? rule.at * 1000 : rule.at)
+          .toLocaleString("sv-SE")
+          .slice(0, 16)
+          .replace(" ", "T")
+      : "",
+    path: rule.path || "",
+    event:
+      typeof rule.event === "string" && isRuleEvent(rule.event)
+        ? rule.event
+        : "worker_completed",
+    command: rule.command || "",
+    livenessCommand: rule.livenessCommand || "",
+    text: rule.text || "",
+  };
+}
+
+export function ruleBodyFromDraft(
+  draft: RuleDraft,
+  agent: string,
+): PostBody<"/api/rules"> {
+  return {
+    id: draft.id,
+    agent,
+    action: "save",
+    name: draft.name,
+    kind: draft.kind,
+    intervalSeconds:
+      draft.kind === "interval" ? Number(draft.intervalSeconds) : undefined,
+    minimumWorkers:
+      draft.kind === "low_workers" ? Number(draft.minimumWorkers) : undefined,
+    durationMinutes:
+      draft.kind === "low_workers" ? Number(draft.durationMinutes) : undefined,
+    stallTimeoutSeconds: Number(draft.stallTimeoutSeconds),
+    at: draft.kind === "once" ? new Date(draft.at).getTime() / 1000 : undefined,
+    path: draft.kind === "file" ? draft.path : undefined,
+    event: draft.kind === "event" ? draft.event : undefined,
+    command: draft.kind === "low_workers" ? "" : draft.command,
+    livenessCommand: draft.kind === "file" ? draft.livenessCommand : undefined,
+    text: draft.text,
+  };
 }

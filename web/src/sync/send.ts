@@ -1,11 +1,41 @@
 import { useEffect, useState } from "react";
-import { syncApi, ApiError, errorText, refreshSession } from "../api";
+import { syncGet, syncPost, ApiError, errorText, refreshSession } from "../api";
+import type { PostBody, PostResult } from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
 import { receiptOutgoing, type MessageReceipt } from "./messageReceipts";
+import type { Attachment } from "../components/ComposerAttachments";
+
+type MessageBody = PostBody<"/api/messages">;
+type MessageDelivery = PostResult<"/api/messages">;
+type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
+  Partial<Pick<MessageDelivery, "deliveries" | "error">>;
+const acknowledgedStatuses = {
+  queued: true,
+  pending: true,
+  reserved: true,
+  dispatching: true,
+  delivered: true,
+  accepted: true,
+  sent: true,
+  uncertain: true,
+  failed: true,
+  cancelled: true,
+  stored_only: true,
+} satisfies Record<MessageDelivery["status"], true>;
+
+export function matchesMessageDelivery(value: unknown, messageId: string) {
+  if (!value || typeof value !== "object") return false;
+  if (!("id" in value) || value.id !== messageId || !("status" in value))
+    return false;
+  return (
+    typeof value.status === "string" &&
+    Object.hasOwn(acknowledgedStatuses, value.status)
+  );
+}
 
 type Intention = {
-  body: Record<string, any>;
+  body: MessageBody;
   status:
     | "queued"
     | "paused"
@@ -15,17 +45,26 @@ type Intention = {
     | "failed";
   attempted?: boolean;
   error?: string;
-  receipt?: any;
+  receipt?: StoredMessageReceipt;
   created: number;
   displayPending?: boolean;
-  attachments?: any[];
+  attachments?: Attachment[];
   displayText?: string;
 };
 export type OutboxEntry = Intention & { id: string };
 export type OutgoingMessage = Omit<OutboxEntry, "status"> & {
   status: OutboxEntry["status"] | "sending";
 };
-const active = new Map<string, Promise<any>>();
+type SendResult =
+  | (MessageDelivery & { kind: "server"; queued: boolean })
+  | {
+      kind: "local";
+      id: string;
+      queued: boolean;
+      status: Intention["status"];
+      error?: string;
+    };
+const active = new Map<string, Promise<SendResult>>();
 const sendingRooms = new Set<string>();
 const queuedDocuments = (docs: any[]) =>
   docs
@@ -40,22 +79,33 @@ const updateIntention = (doc: any, change: Partial<Intention>) =>
     ...record,
     payload: JSON.stringify({ ...JSON.parse(record.payload), ...change }),
   }));
-const intentionResult = (value: Intention) =>
-  value.receipt || {
-    queued: value.status === "queued" || value.status === "paused",
-    status: value.status,
-    error: value.error,
-  };
+export const intentionResult = (value: Intention): SendResult =>
+  value.receipt
+    ? {
+        ...value.receipt,
+        ...(value.receipt.deliveries
+          ? { deliveries: value.receipt.deliveries }
+          : {}),
+        kind: "server",
+        queued: value.receipt.status === "queued",
+      }
+    : {
+        kind: "local",
+        id: value.body.id,
+        queued: value.status === "queued" || value.status === "paused",
+        status: value.status,
+        error: value.error,
+      };
 const removalFence = (workspaceId: string, id: string) =>
   `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
-async function deliver(doc: any) {
+async function deliver(doc: any): Promise<SendResult> {
   let value: Intention = JSON.parse(doc.getLatest().payload);
   if (value.status !== "queued" || !navigator.onLine)
     return intentionResult(value);
   try {
     const { workspaceId } = await syncDatabase();
     const [identity, session] = await Promise.all([
-      syncApi<{ workspaceId: string }>("/api/sync/identity"),
+      syncGet("/api/sync/identity"),
       refreshSession(),
     ]);
     if (identity.workspaceId !== workspaceId)
@@ -92,23 +142,11 @@ async function deliver(doc: any) {
     });
     value = JSON.parse(claimed.payload);
     if (value.status !== "queued") return intentionResult(value);
-    const result = await syncApi<any>("/api/messages", value.body, {
+    const result = await syncPost("/api/messages", value.body, {
       workspaceId,
       sessionToken: session.token,
     });
-    const acknowledged = [
-      "queued",
-      "pending",
-      "reserved",
-      "dispatching",
-      "delivered",
-      "accepted",
-      "sent",
-      "uncertain",
-      "failed",
-      "cancelled",
-    ].includes(result?.status);
-    if (result?.id !== value.body.id || !acknowledged)
+    if (!matchesMessageDelivery(result, value.body.id))
       throw new Error("The delivery response does not match this message.");
     if (result.status === "failed" || result.status === "cancelled")
       throw new ApiError(
@@ -122,8 +160,10 @@ async function deliver(doc: any) {
       const stored: Intention = JSON.parse(record.payload);
       // Preserve confirmed delivery against an older queue receipt. A matching
       // later reply can still resolve queue acceptance or an uncertain outcome.
-      const confirmed = (receipt: any) =>
-        ["delivered", "accepted", "sent"].includes(receipt?.status);
+      const confirmed = (receipt: StoredMessageReceipt | undefined) =>
+        receipt?.status === "delivered" ||
+        receipt?.status === "accepted" ||
+        receipt?.status === "sent";
       if (
         stored.status === "cancelled" ||
         (["accepted", "uncertain"].includes(stored.status) &&
@@ -177,7 +217,7 @@ async function deliver(doc: any) {
     throw error;
   }
 }
-function once(doc: any) {
+function once(doc: any): Promise<SendResult> {
   let task = active.get(doc.id);
   if (!task) {
     task = (async () => {
@@ -207,8 +247,8 @@ function once(doc: any) {
   return task;
 }
 export async function durableSend(
-  body: Record<string, any>,
-  attachments: any[] = [],
+  body: MessageBody,
+  attachments: Attachment[] = [],
   onPersist?: () => void | Promise<void>,
 ) {
   if (typeof body.id !== "string" || !body.id)

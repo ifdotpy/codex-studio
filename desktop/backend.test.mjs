@@ -17,9 +17,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-const { identity, ensureBackend, backendBuild, updateStatus } = createRequire(
-  import.meta.url,
-)("./backend.cjs");
+import { createHash } from "node:crypto";
+const { identity, ensureBackend, backendBuild, updateStatus, apiPython } =
+  createRequire(import.meta.url)("./backend.cjs");
 const state = "/unused-studio-state";
 const record = {
   application: "codex-agents",
@@ -29,6 +29,45 @@ const record = {
   stateDir: state,
 };
 const timing = { attemptTimeoutMs: 50, timeoutMs: 250, retryDelayMs: 10 };
+
+test("desktop honors an equipped explicit API interpreter", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "studio-api-python-"));
+  const python = path.join(root, "python");
+  try {
+    writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    assert.equal(apiPython(root, { CODEX_AGENTS_PYTHON: python }), python);
+    writeFileSync(python, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    assert.throws(
+      () => apiPython(root, { CODEX_AGENTS_PYTHON: python }),
+      /CODEX_AGENTS_PYTHON/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("desktop resolves the user-cache API environment by lock digest", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "studio-api-python-cache-"));
+  const requirements = "fastapi==1\n";
+  const digest = createHash("sha256").update(requirements).digest("hex");
+  const python = path.join(
+    root,
+    "cache/codex-agents/python",
+    digest,
+    "bin/python",
+  );
+  try {
+    writeFileSync(path.join(root, "requirements.txt"), requirements);
+    mkdirSync(path.dirname(python), { recursive: true });
+    writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    assert.equal(
+      apiPython(root, { XDG_CACHE_HOME: path.join(root, "cache") }),
+      python,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 async function serve(handler, run) {
   const server = createServer(handler);
@@ -214,7 +253,7 @@ test("saved supervisor mode attaches consistently when Finder supplies no variab
 });
 
 test("recovery and desktop attach to the same independently launched supervisor", async () => {
-  const root = mkdtempSync(path.join("/tmp", "srr-"));
+  const root = mkdtempSync(path.join(tmpdir(), "srr-"));
   const canonicalState = path.join(root, "state");
   mkdirSync(canonicalState);
   const portServer = createServer();
@@ -309,14 +348,21 @@ test("recovery and desktop attach to the same independently launched supervisor"
       });
     } catch (error) {
       let supervisorLog = "";
+      let canvasLog = "";
       try {
         supervisorLog = readFileSync(
           path.join(canonicalState, "supervisor.log"),
           "utf8",
         );
       } catch {}
+      try {
+        canvasLog = readFileSync(
+          path.join(canonicalState, "canvas.log"),
+          "utf8",
+        );
+      } catch {}
       throw new Error(
-        `${error.message}\nRecovery service: ${recoveryOutput.join("")}\nSupervisor: ${supervisorLog}`,
+        `${error.message}\nRecovery service: ${recoveryOutput.join("")}\nSupervisor: ${supervisorLog}\nBackend: ${canvasLog}`,
       );
     }
     assert.equal(backend.supervisorMode, true);

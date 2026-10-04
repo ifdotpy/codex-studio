@@ -33,7 +33,7 @@ export default memo(function FileChangeCard({
     return (
       payload.type === "fileChange"
         ? fileChanges(payload.changes, payload.arguments)
-        : unifiedDiff(payload.diff || "")
+        : unifiedDiff(typeof payload.diff === "string" ? payload.diff : "")
     ).map((file) => ({
       ...file,
       path: displayPath(file.path),
@@ -89,7 +89,7 @@ export default memo(function FileChangeCard({
                 : JSON.stringify(error, null, 2)}
             </pre>
           )}
-          {payload.aggregatedOutput && (
+          {typeof payload.aggregatedOutput === "string" && (
             <pre className="file-diff-raw">{payload.aggregatedOutput}</pre>
           )}
           <details

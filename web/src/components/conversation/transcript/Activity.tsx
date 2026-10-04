@@ -34,13 +34,21 @@ const names: Record<string, string> = {
   "turn/diff/updated": "Changes",
 };
 const payloads = new WeakMap<Message, { text: string; value: Json }>();
+function isJsonObject(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
 function payload(item: Message): Json {
   const prior = payloads.get(item);
   if (prior?.text === item.text) return prior.value;
   let value: Json = {};
   try {
-    const parsed = JSON.parse(item.text);
-    if (parsed && typeof parsed === "object") value = parsed;
+    const parsed: unknown = JSON.parse(item.text);
+    if (isJsonObject(parsed)) value = parsed;
   } catch {
     /* Plain tool output has no structured fields. */
   }
@@ -64,21 +72,26 @@ const pretty = (value: unknown) =>
   typeof value === "string" ? value : JSON.stringify(value, null, 2);
 const textResult = (value: unknown): string => {
   if (Array.isArray(value))
-    return value.map((v) => v.text || pretty(v)).join("\n");
+    return value
+      .map((v) =>
+        isJsonObject(v) ? stringValue(v.text) || pretty(v) : pretty(v),
+      )
+      .join("\n");
   return value == null ? "" : pretty(value);
 };
 function status(item: Message, p: Json) {
+  const statusValue = stringValue(p.status) || "";
   return (
     item.toolStatus ||
-    (p.status === "inProgress"
+    (statusValue === "inProgress"
       ? "running"
-      : p.status === "failed" ||
+      : statusValue === "failed" ||
           p.success === false ||
           (p.exitCode != null && p.exitCode !== 0)
         ? "failed"
-        : ["declined", "cancelled", "interrupted"].includes(p.status)
-          ? p.status
-          : p.status === "completed"
+        : ["declined", "cancelled", "interrupted"].includes(statusValue || "")
+          ? statusValue
+          : statusValue === "completed"
             ? "completed"
             : "recorded")
   );
@@ -93,7 +106,9 @@ export function isPastCommand(item: Message) {
   const p = payload(item);
   const command =
     (p.type || item.title) === "commandExecution" ||
-    ["exec_command", "write_stdin", "orchestration_monitor"].includes(p.tool);
+    ["exec_command", "write_stdin", "orchestration_monitor"].includes(
+      stringValue(p.tool) || "",
+    );
   return (
     command &&
     ![
@@ -105,7 +120,7 @@ export function isPastCommand(item: Message) {
       "approval",
       "waiting",
       "stopping",
-    ].includes(item.toolStatus || p.status || "recorded")
+    ].includes(item.toolStatus || stringValue(p.status) || "recorded")
   );
 }
 interface ReadTarget {
@@ -128,17 +143,23 @@ function readActivity(p: Json): { targets: ReadTarget[]; onlyReads: boolean } {
     };
   };
   if (p.type === "commandExecution") {
-    const actions: Json[] = Array.isArray(p.commandActions)
-      ? p.commandActions
-      : [];
+    const actions = Array.isArray(p.commandActions) ? p.commandActions : [];
     return {
-      targets: actions
-        .filter((a) => a?.type === "read" && typeof a.path === "string")
-        .map((a) => target(a.path, a.name)),
-      onlyReads: actions.length > 0 && actions.every((a) => a?.type === "read"),
+      targets: actions.flatMap((action) =>
+        isJsonObject(action) &&
+        action.type === "read" &&
+        typeof action.path === "string"
+          ? [target(action.path, stringValue(action.name))]
+          : [],
+      ),
+      onlyReads:
+        actions.length > 0 &&
+        actions.every(
+          (action) => isJsonObject(action) && action.type === "read",
+        ),
     };
   }
-  const tool = String(p.tool || p.type || "");
+  const tool = stringValue(p.tool) || stringValue(p.type) || "";
   const skillRead =
     ["skills/read", "skills.read", "read_skill"].includes(tool) ||
     (tool === "read" && (p.namespace === "skills" || p.server === "skills"));
@@ -148,10 +169,11 @@ function readActivity(p: Json): { targets: ReadTarget[]; onlyReads: boolean } {
     "read_multiple_files",
   ].includes(tool);
   if (!skillRead && !fileRead) return { targets: [], onlyReads: false };
-  let args = p.arguments;
-  if (typeof args === "string") {
+  let args: Json = isJsonObject(p.arguments) ? p.arguments : {};
+  if (typeof p.arguments === "string") {
     try {
-      args = JSON.parse(args);
+      const parsed: unknown = JSON.parse(p.arguments);
+      if (isJsonObject(parsed)) args = parsed;
     } catch {
       args = {};
     }
@@ -168,7 +190,7 @@ function readActivity(p: Json): { targets: ReadTarget[]; onlyReads: boolean } {
   return {
     targets: targets.length
       ? targets
-      : [target("", args?.name || tool, skillRead)],
+      : [target("", stringValue(args.name) || tool, skillRead)],
     onlyReads: true,
   };
 }
@@ -184,14 +206,15 @@ function readLabel(targets: ReadTarget[]) {
 }
 function describe(item: Message, p: Json) {
   const read = readActivity(p);
-  const kind = p.type || item.title;
+  const kind = stringValue(p.type) || item.title || "";
+  const tool = stringValue(p.tool);
   return {
     ...read,
     label:
       read.onlyReads && read.targets.length
         ? `Read ${readLabel(read.targets)}`
-        : toolNames[p.tool] ||
-          p.tool ||
+        : (tool ? toolNames[tool] : undefined) ||
+          tool ||
           names[kind] ||
           item.title ||
           "Tool activity",
@@ -208,7 +231,7 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const p = payload(item),
     state = status(item, p),
-    kind = p.type || item.title,
+    kind = stringValue(p.type) || item.title || "",
     read = describe(item, p);
   const Icon =
     read.onlyReads && read.targets.length
@@ -228,11 +251,14 @@ export const ToolCard = memo(function ToolCard({
   const [open, setOpen] = useState(false);
   const images = open ? toolImages(p) : [];
   const display = open ? toolImageDisplayPayload(p) : p;
+  const result = isJsonObject(display.result) ? display.result : undefined;
   const output = open
-    ? (display.aggregatedOutput ??
-      textResult(
-        display.contentItems ?? display.result?.content ?? display.result,
-      ))
+    ? textResult(
+        display.aggregatedOutput ??
+          display.contentItems ??
+          result?.content ??
+          display.result,
+      )
     : "";
   if (kind === "fileChange")
     return <FileChangeCard item={item} payload={p} status={state} cwd={cwd} />;
@@ -258,8 +284,11 @@ export const ToolCard = memo(function ToolCard({
           )}
           {!read.targets.length &&
             (typeof p.command === "string" || typeof p.query === "string") && (
-              <small className="tool-read-summary" title={p.command || p.query}>
-                {p.command || p.query}
+              <small
+                className="tool-read-summary"
+                title={stringValue(p.command) || stringValue(p.query)}
+              >
+                {stringValue(p.command) || stringValue(p.query)}
               </small>
             )}
           {read.targets.length > 0 && (
@@ -325,8 +354,10 @@ export const ToolCard = memo(function ToolCard({
               <pre className="tool-command">{textResult(p.command)}</pre>
             </div>
           )}
-          {p.cwd && <div className="tool-directory">{p.cwd}</div>}
-          {p.query && (
+          {typeof p.cwd === "string" && (
+            <div className="tool-directory">{p.cwd}</div>
+          )}
+          {typeof p.query === "string" && (
             <div className="tool-section">
               <span>Search query</span>
               <p>{p.query}</p>
@@ -335,7 +366,7 @@ export const ToolCard = memo(function ToolCard({
           {args != null && (
             <div className="tool-section">
               <span>Input</span>
-              {typeof args === "object" && !Array.isArray(args) ? (
+              {isJsonObject(args) ? (
                 <dl className="tool-arguments">
                   {Object.entries(args).map(([key, value]) => (
                     <div key={key}>
@@ -350,12 +381,15 @@ export const ToolCard = memo(function ToolCard({
             </div>
           )}
           {Array.isArray(p.changes) &&
-            p.changes.map((change: Json, i: number) => (
-              <div className="tool-section" key={i}>
-                <span>{change?.path || "File change"}</span>
-                <pre>{change?.diff || pretty(change)}</pre>
-              </div>
-            ))}
+            p.changes.map((change, i) => {
+              const fields = isJsonObject(change) ? change : {};
+              return (
+                <div className="tool-section" key={i}>
+                  <span>{stringValue(fields.path) || "File change"}</span>
+                  <pre>{stringValue(fields.diff) || pretty(change)}</pre>
+                </div>
+              );
+            })}
           {output && (
             <div className="tool-section">
               <span>Output</span>
@@ -364,7 +398,7 @@ export const ToolCard = memo(function ToolCard({
           )}
           {p.exitCode != null && (
             <div className={`tool-exit ${p.exitCode !== 0 ? "danger" : ""}`}>
-              Exit code {p.exitCode}
+              Exit code {pretty(p.exitCode)}
             </div>
           )}
           {p.error && (
@@ -412,11 +446,15 @@ export function activitySummary(items: Message[]) {
     for (const target of read.targets)
       (target.skill ? skills : files).add(target.path || target.name);
     if (read.onlyReads) continue;
-    const kind = p.type || item.title;
+    const kind = stringValue(p.type) || item.title || "";
     if (kind === "commandExecution") commands++;
     else if (kind === "webSearch") searches++;
     else if (kind === "fileChange" && Array.isArray(p.changes))
-      for (const change of p.changes) changes.add(change.path || item.id);
+      for (const change of p.changes)
+        changes.add(
+          (isJsonObject(change) ? stringValue(change.path) : undefined) ||
+            item.id,
+        );
     else other++;
   }
   const count = (n: number, singular: string) =>

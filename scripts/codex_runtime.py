@@ -1333,6 +1333,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("migrations-indexes-start")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_agent_record_generation (
+                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                INSERT OR IGNORE INTO runtime_agent_record_generation VALUES (1, 0);
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_insert
+                  AFTER INSERT ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_update
+                  AFTER UPDATE OF record ON runtime_agents WHEN OLD.record IS NOT NEW.record BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_delete
+                  AFTER DELETE ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
@@ -2046,15 +2061,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
             return rows if shared else list(rows)
-        cache_lock = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
+        runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
         runtime.__dict__.setdefault("_agent_record_revision", 0)
-        with cache_lock:
-            generation = runtime._agent_record_revision
-        cacheable = not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1
-        if not cacheable:
+        transactional_read = db.in_transaction and db.execute(
+            "PRAGMA query_only").fetchone()[0] == 1
+        if not transactional_read:
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
         else:
+            generation = db.execute(
+                "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
             rows = cache.get(generation)
             if rows is None:
@@ -2064,10 +2080,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if rows is None:
                         rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                             "SELECT record FROM runtime_agents"))
-                        if runtime._agent_record_revision == generation:
-                            cache[generation] = rows
-                            while len(cache) > 4:
-                                cache.pop(next(iter(cache)))
+                        cache[generation] = rows
+                        while len(cache) > 4:
+                            cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
     def team_agents(self, db, root_id):
@@ -2289,7 +2304,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
             self.__dict__.setdefault("_agent_record_revision", 0)
             self._agent_record_revision += 1
-            self.__dict__.setdefault("_agent_records_cache", {}).clear()
 
     def mark_agent_records_changed(self, key=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
@@ -8296,7 +8310,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_peer_teams import snapshot as peer_snapshot
         from codex_project_folders import sidebar_order
         agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
+        agent_ids = {a["id"] for a in agents}
+        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
         team_names = {a["id"]: a["name"] for a in agents}
+        work_records = self.records(db, "work") if include_work else []
+        work_result_files = {}
+        if worker_ids:
+            if include_work:
+                result_records = iter(sorted(
+                    work_records,
+                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
+                                        record.get("status") or ""),
+                ))
+            else:
+                rows = db.execute(
+                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
+                    "(SELECT value FROM json_each(?)) "
+                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
+                    (json.dumps(sorted(worker_ids)),),
+                )
+                result_records = (json.loads(row[0]) for row in rows)
+            for record in result_records:
+                owner = record.get("owner")
+                if owner not in worker_ids:
+                    continue
+                for result in record.get("results", []):
+                    if result.get("agent") != owner or not result.get("resultFile"):
+                        continue
+                    created = result.get("created", 0)
+                    prior = work_result_files.get(owner)
+                    if prior is None or created > prior[0]:
+                        work_result_files[owner] = (created, result["resultFile"])
         for a in agents:
             a["nextTurnSettingsSupported"] = True
             a["readStateSupported"] = True
@@ -8309,7 +8353,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a.get("lastCompletedTurn") and not a.get("turnId")
                     and not a.get("inFlight") and a.get("status") == "completed"
                 ) else ""
-                result_file = self.latest_work_result_file(db, a['id'])
+                result_file = work_result_files.get(a['id'], (None, None))[1]
                 a["overview"] = {
                     "task": task[:4000], "taskTruncated": len(task) > 4000,
                     "result": result[:4000], "resultTruncated": len(result) > 4000,
@@ -8341,13 +8385,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "monitors": [
                 m
                 for m in self.recent_monitors(db)
-                if m["agent"] in {a["id"] for a in agents}
+                if m["agent"] in agent_ids
             ],
             "requests": [
                 r
                 for r in self.records(db, "requests")
                 if r["status"] == "pending"
-                and r.get("agent") in {a["id"] for a in agents}
+                and r.get("agent") in agent_ids
             ],
             "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
             "complaints": self.complaint_summaries(db),
@@ -8356,13 +8400,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # not delay every chat update.
             **({"work": [
                 w
-                for w in self.records(db, "work")
-                if w["rootId"] in {a["id"] for a in agents}
+                for w in work_records
+                if w["rootId"] in agent_ids
             ]} if include_work else {}),
             "rules": [
                 r
                 for r in self.records(db, "rules")
-                if r["agent"] in {a["id"] for a in agents}
+                if r["agent"] in agent_ids
             ],
             "rateLimits": self.rate_limits.copy(),
             "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],

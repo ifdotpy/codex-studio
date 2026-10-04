@@ -3,8 +3,8 @@ import { useState } from "react";
 import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../usage/limitRecovery";
 import { copyText } from "../clipboard/clipboard";
-import { api, errorText } from "../api";
-import type { Json } from "../types";
+import { errorText, post, type PostResult } from "../api";
+import type { Agent } from "../types";
 
 export default function LimitRecoveryNotice({
   recovery,
@@ -14,11 +14,12 @@ export default function LimitRecoveryNotice({
 }: {
   recovery?: LimitRecovery;
   agentId?: string;
-  usageResume?: Json;
+  usageResume?: Agent["usageResume"];
   inline?: boolean;
 }) {
   const [copyStatus, setCopyStatus] = useState("");
-  const [confirmed, setConfirmed] = useState<Json | null>(null);
+  const [confirmed, setConfirmed] =
+    useState<PostResult<"/api/usage-resume"> | null>(null);
   const [busy, setBusy] = useState(false);
   const [resumeError, setResumeError] = useState("");
   const resume =
@@ -38,7 +39,7 @@ export default function LimitRecoveryNotice({
     setBusy(true);
     setResumeError("");
     try {
-      const updated = await api<Json>("/api/usage-resume", {
+      const updated = await post("/api/usage-resume", {
         id: agentId,
         resume_id: resume.id,
         enabled,

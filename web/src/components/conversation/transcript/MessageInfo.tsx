@@ -1,26 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
-import { api } from "../../../api";
+import { get, type GetOptions, type GetResult } from "../../../api";
 import { localDateTime } from "../../../local-time";
 import { peekSessionCost } from "../../../usage/sessionCostCache";
 import type { Message } from "../../../types";
 import type { UsageAccount } from "../../Usage";
 import "./message-info.css";
 
-type Metadata = {
-  at?: number | string;
-  model?: string;
-  effort?: string;
-  accountKey?: string;
-  accountLabel?: string;
-  provider?: string;
-  runId?: string;
-  attemptId?: string;
-  turnDurationMs?: number;
-  responseRate?: number;
-  tokens?: { outputTokens?: number; reasoningOutputTokens?: number };
-};
+type Metadata = GetResult<"/api/analytics">;
 
 export type MessageInfoProps = {
   message: Message;
@@ -33,6 +21,8 @@ export type MessageInfoProps = {
 
 const knownNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const duration = (value: number) =>
   value === 0
     ? "0 s"
@@ -53,6 +43,22 @@ export default function MessageInfo({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const target = useRef<HTMLButtonElement>(null);
+  // Transcript items can carry renderer metadata; validate optional extension
+  // fields at runtime before displaying or querying with them.
+  const details: Record<string, unknown> = isRecord(message) ? message : {};
+  const threadId =
+    typeof details.threadId === "string" ? details.threadId : undefined;
+  const timestamp =
+    typeof details.timestamp === "number" ||
+    typeof details.timestamp === "string"
+      ? details.timestamp
+      : undefined;
+  const messageAccountKey =
+    typeof details.accountKey === "string" ? details.accountKey : undefined;
+  const messageModel =
+    typeof details.model === "string" ? details.model : undefined;
+  const messageEffort =
+    typeof details.effort === "string" ? details.effort : undefined;
   const itemId =
     agentId && message.id.startsWith(`${agentId}:`)
       ? message.id.slice(agentId.length + 1)
@@ -63,14 +69,14 @@ export default function MessageInfo({
     setLoading(true);
     setFailed(false);
     setMetadata(null);
-    const query = new URLSearchParams({
+    const query = {
       agent: agentId,
       view: "message-info",
       item: itemId,
-    });
-    if (message.turnId) query.set("turn", message.turnId);
-    if (message.threadId) query.set("thread", message.threadId);
-    api<Metadata>(`/api/analytics?${query}`, undefined, { timeoutMs: 5000 })
+      ...(message.turnId ? { turn: message.turnId } : {}),
+      ...(threadId ? { thread: threadId } : {}),
+    } satisfies NonNullable<GetOptions<"/api/analytics">["query"]>;
+    get("/api/analytics", { query, timeoutMs: 5000 })
       .then((value) => {
         if (active) setMetadata(value);
       })
@@ -88,7 +94,7 @@ export default function MessageInfo({
     agentId,
     itemId,
     message.turnId,
-    message.threadId,
+    threadId,
     message.streaming,
     message.turnStatus,
   ]);
@@ -96,16 +102,20 @@ export default function MessageInfo({
     setOpen(false);
     target.current?.focus({ preventScroll: true });
   };
-  const at = message.at ?? message.created ?? message.timestamp ?? metadata?.at;
+  const at = message.at ?? message.created ?? timestamp ?? metadata?.at;
   const date =
     at == null || at === ""
       ? null
       : new Date(typeof at === "number" ? at * 1000 : at);
   const account = accounts?.find(
-    (entry) => entry.key === (metadata?.accountKey || message.accountKey),
+    (entry) => entry.key === (metadata?.accountKey || messageAccountKey),
   );
   const cost = open && rootId ? peekSessionCost(stateDir, rootId) : null;
   const rows: [string, string][] = [];
+  const identifiers: Array<[string, string | undefined]> = [
+    ["Turn ID", message.turnId ?? undefined],
+    ["Item ID", itemId],
+  ];
   if (date && Number.isFinite(date.getTime()) && date.getTime() > 0)
     rows.push([
       "Local date and time",
@@ -118,10 +128,10 @@ export default function MessageInfo({
         second: "2-digit",
       }),
     ]);
-  if (metadata?.model || message.model)
-    rows.push(["Model", metadata?.model || message.model]);
-  if (metadata?.effort || message.effort)
-    rows.push(["Reasoning effort", metadata?.effort || message.effort]);
+  if (metadata?.model || messageModel)
+    rows.push(["Model", metadata?.model || messageModel || ""]);
+  if (metadata?.effort || messageEffort)
+    rows.push(["Reasoning effort", metadata?.effort || messageEffort || ""]);
   if (metadata?.provider || account?.provider)
     rows.push(["Provider", metadata?.provider || account!.provider!]);
   if (metadata?.accountLabel || account?.label)
@@ -216,10 +226,7 @@ export default function MessageInfo({
               <dd>{value}</dd>
             </div>
           ))}
-          {[
-            ["Turn ID", message.turnId],
-            ["Item ID", itemId],
-          ].map(([label, value]) =>
+          {identifiers.map(([label, value]) =>
             value ? (
               <div className="message-info-row" key={label}>
                 <dt>{label}</dt>
