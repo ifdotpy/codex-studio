@@ -37,7 +37,15 @@ export function useMobileViewport(enabled: boolean) {
           : "env(safe-area-inset-top)",
       );
       // Safari can retain a document scroll offset after it reveals a focused input.
-      if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+      const activeElement = document.activeElement;
+      const androidComposerFocused =
+        /Android/i.test(navigator.userAgent) &&
+        activeElement instanceof HTMLTextAreaElement &&
+        activeElement.matches("#composer textarea");
+      // Android's IME language picker dismisses if its geometry update also
+      // forces the page to scroll. Keep the browser's scroll state while typing.
+      if ((window.scrollX || window.scrollY) && !androidComposerFocused)
+        window.scrollTo(0, 0);
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
