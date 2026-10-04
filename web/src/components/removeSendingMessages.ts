@@ -162,7 +162,7 @@ export async function removeAllSendingMessages(
             },
           });
         }
-        if (["running", "starting", "approval"].includes(agent.status)) {
+        if (["running", "starting", "approval"].includes(agent.status || "")) {
           const page = await get("/api/transcript/page", {
             query: { id: agent.id },
             workspaceId: scope.workspaceId,

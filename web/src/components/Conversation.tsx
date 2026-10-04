@@ -1066,7 +1066,7 @@ export default function Conversation(p: {
                 pending: true,
                 localDelivery: true,
                 deliveryStatus: "sending",
-              }) as Message,
+              }) satisfies Message,
           ),
       ].filter((message) => !removed.hidden(message)),
     [items, queue, sending, p.id, removed.hidden],

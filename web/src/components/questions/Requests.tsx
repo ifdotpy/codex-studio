@@ -11,10 +11,10 @@ import "./request-questions.css";
 import { nativeThreadError } from "../../nativeErrors";
 import AnswerFields, {
   answerList,
-  type AnswerQuestion,
   type AnswerValue,
   type AnswerValues,
 } from "./AnswerFields";
+import { requestApprovalDetails, requestQuestions } from "./requestData";
 
 type Props = {
   showDates?: boolean;
@@ -26,8 +26,8 @@ type Props = {
   notify: (s: string) => void;
 };
 
-type JsonObject = Record<string, JsonValue>;
 type RequestDto = components["schemas"]["RequestEntityDto"];
+type JsonObject = Record<string, JsonValue>;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,60 +63,6 @@ function parseJson(text: string): JsonValue {
   const value: unknown = JSON.parse(text);
   if (!isJsonValue(value)) throw new Error("Enter a valid JSON value.");
   return value;
-}
-
-function jsonOptions(value: unknown): AnswerQuestion["options"] {
-  if (!Array.isArray(value)) return undefined;
-  return value.flatMap((entry) => {
-    if (typeof entry === "string") return [{ label: entry }];
-    if (!isJsonObject(entry)) return [];
-    const label = stringValue(entry.label);
-    if (!label) return [];
-    const description = stringValue(entry.description);
-    return [{ label, ...(description ? { description } : {}) }];
-  });
-}
-
-function requestQuestions(request: RequestDto): AnswerQuestion[] {
-  const params = objectValue(request.params);
-  if (Array.isArray(params.questions)) {
-    return params.questions.flatMap((entry, index) => {
-      if (!isJsonObject(entry)) return [];
-      const id = stringValue(entry.id) || `question-${index + 1}`;
-      return [
-        {
-          id,
-          question:
-            stringValue(entry.question) || stringValue(entry.title) || id,
-          options: jsonOptions(entry.options),
-          multiSelect: entry.multiSelect === true,
-          isSecret: entry.isSecret === true,
-        },
-      ];
-    });
-  }
-
-  const schema = objectValue(params.requestedSchema);
-  const properties = objectValue(schema.properties);
-  return Object.entries(properties).flatMap(([id, value]) => {
-    if (!isJsonObject(value)) return [];
-    const items = objectValue(value.items);
-    const optionValues = stringValues(
-      value.type === "array" ? items.enum : value.enum,
-    );
-    return [
-      {
-        id,
-        question: stringValue(value.title) || id,
-        options: optionValues.map((label) => ({ label })),
-        multiSelect: value.type === "array" && optionValues.length > 0,
-        isSecret:
-          value.isSecret === true ||
-          value.writeOnly === true ||
-          value.format === "password",
-      },
-    ];
-  });
 }
 
 // Secret answers remain in memory. Other answers survive a reload.
@@ -307,7 +253,7 @@ function RequestCard({
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
   const params = objectValue(r.params);
-  const preview = objectValue(params.preview);
+  const approvalDetails = requestApprovalDetails(r);
   const method = r.method || "";
   const requestThread = stringValue(params.threadId);
   const blocked =
@@ -390,9 +336,9 @@ function RequestCard({
     (method === "mcpServer/elicitation/request" && params.mode === "url");
   const reason = stringValue(params.reason);
   const message = stringValue(params.message);
-  const command = params.command ?? preview.command;
+  const command = approvalDetails.command;
   const cwd = stringValue(params.cwd);
-  const permissions = params.permissions ?? preview.changes;
+  const permissions = approvalDetails.permissions;
   const url = stringValue(params.url);
   const questions = question ? requestQuestions(r) : [];
   const Icon = approval ? ShieldQuestion : MessageCircleQuestion;

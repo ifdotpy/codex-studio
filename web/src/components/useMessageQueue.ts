@@ -4,6 +4,7 @@ import type { QueueItemDto } from "../api";
 import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
+import { queueMutationMessageId } from "./queueMutationIdentity";
 
 type QueueView =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
@@ -53,16 +54,17 @@ function isQueueMutation(value: unknown): value is QueueMutation {
     typeof value.expected_revision !== "string"
   )
     return false;
+  const hasMessageId =
+    typeof value.message_id === "string" || typeof value.id === "string";
   if (value.action === "cancel")
-    return (
-      typeof value.id === "string" && typeof value.expectedText === "string"
-    );
+    return hasMessageId && typeof value.expectedText === "string";
   if (value.action === "edit")
     return (
-      typeof value.id === "string" &&
+      hasMessageId &&
       typeof value.expectedText === "string" &&
       typeof value.text === "string"
     );
+  if (value.action === "first") return hasMessageId;
   return value.action === "reorder" && isStringArray(value.ordered_ids);
 }
 
@@ -190,8 +192,14 @@ export function useMessageQueue(p: {
         workspaceId: p.workspaceId,
       });
       await clearRequest(request);
-      if (request.action === "cancel") p.observed?.([request.id]);
-      if (request.action === "edit") p.edited?.(request.id, request.text);
+      const messageId = queueMutationMessageId(request);
+      if (request.action === "cancel" && messageId) p.observed?.([messageId]);
+      if (
+        request.action === "edit" &&
+        messageId &&
+        typeof request.text === "string"
+      )
+        p.edited?.(messageId, request.text);
       if (currentKey.current === key) {
         await reload().catch((error) =>
           setFailure({ key, text: errorText(error) }),
