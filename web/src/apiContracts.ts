@@ -129,3 +129,14 @@ export type ApiPostContract<
   body: ApiRequestBodyFor<ApiOperationFor<Paths, Path, "post">>,
   options?: Options,
 ) => Promise<ApiSuccessBodyFor<ApiOperationFor<Paths, Path, "post">>>;
+
+export type ApiSyncGetContract<
+  Paths,
+  Options extends {
+    timeoutMs?: number;
+    workspaceId?: string;
+    sessionToken?: string;
+    signal?: AbortSignal;
+  },
+  Metadata,
+> = ApiGetContract<Paths, Omit<Options, "timeoutMs">, Metadata>;

@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { serializePrimitiveParam } from "openapi-fetch";
-import type { ApiGetContract, ApiPostContract } from "./apiContracts";
+import type {
+  ApiGetContract,
+  ApiPostContract,
+  ApiSyncGetContract,
+} from "./apiContracts";
 
 type FixturePaths = {
   "/items": {
@@ -56,6 +60,11 @@ declare const fixtureGet: ApiGetContract<
   FixtureMetadata
 >;
 declare const fixturePost: ApiPostContract<FixturePaths, FixtureOptions>;
+declare const fixtureSyncGet: ApiSyncGetContract<
+  FixturePaths,
+  FixtureOptions,
+  FixtureMetadata
+>;
 
 function compileTimeContractAssertions() {
   fixtureGet("/items", { query: { cursor: "next" } });
@@ -70,6 +79,7 @@ function compileTimeContractAssertions() {
   });
   fixturePost("/items", { id: "1", state: "open" });
   fixturePost("/mutation", { name: "sample" });
+  fixtureSyncGet("/items", { query: { cursor: "same-query" } });
 
   // @ts-expect-error a required query object must be supplied
   fixtureGet("/items");
@@ -85,6 +95,8 @@ function compileTimeContractAssertions() {
   fixturePost("/items", { id: "1", state: "pending" });
   // @ts-expect-error ETag caching must retain the 304 metadata destination
   fixtureGet("/health", { etag: "tag" });
+  // @ts-expect-error a fixed-deadline read cannot omit its required query
+  fixtureSyncGet("/items");
 }
 void compileTimeContractAssertions;
 

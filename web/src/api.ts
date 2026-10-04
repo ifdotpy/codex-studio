@@ -69,6 +69,7 @@ let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 
 export const client = createClient<paths>({
+  baseUrl: globalThis.location?.origin ?? "http://localhost",
   fetch: (request) => globalThis.fetch(request),
 });
 
@@ -200,8 +201,7 @@ export async function get<Path extends PathsFor<"get">>(
     if (requestOptions.readMetadata)
       requestOptions.readMetadata.etag =
         response.headers.get("ETag") || undefined;
-    if (result.error !== undefined)
-      throw errorPayload(result.error, response.status);
+    if (!response.ok) throw errorPayload(result.error, response.status);
     return result.data;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();
@@ -230,7 +230,7 @@ export async function post<Path extends PathsFor<"post">>(
           : {}),
       },
     });
-    if (result.error !== undefined)
+    if (!result.response.ok)
       throw errorPayload(result.error, result.response.status);
     syncDocuments(result.data, options.workspaceId);
     return result.data;
@@ -242,6 +242,20 @@ export async function post<Path extends PathsFor<"post">>(
   }
 }
 
+export function apiDownload<Path extends PathsWithRequiredQuery>(
+  path: Path,
+  query: QueryOf<Operation<Path, "get">>,
+): Promise<{ blob: Blob; name: string; truncated: boolean }>;
+export function apiDownload<
+  Path extends Exclude<PathsFor<"get">, PathsWithRequiredQuery>,
+>(
+  path: Path,
+  query?: QueryOf<Operation<Path, "get">>,
+): Promise<{
+  blob: Blob;
+  name: string;
+  truncated: boolean;
+}>;
 export async function apiDownload<Path extends PathsFor<"get">>(
   path: Path,
   query?: QueryOf<Operation<Path, "get">>,
@@ -259,15 +273,7 @@ export async function apiDownload<Path extends PathsFor<"get">>(
     },
   });
   const response = result.response;
-  if (!response.ok) {
-    let details: unknown;
-    try {
-      details = await response.clone().json();
-    } catch {
-      details = `Request failed (${response.status})`;
-    }
-    throw errorPayload(details, response.status);
-  }
+  if (!response.ok) throw errorPayload(result.error, response.status);
   const disposition = response.headers.get("Content-Disposition") || "";
   const name = disposition.match(/filename="([^"]+)"/)?.[1] || "download.log";
   return {
@@ -278,10 +284,30 @@ export async function apiDownload<Path extends PathsFor<"get">>(
 }
 
 // Only reads and operations with a durable request identity use this deadline.
-export const syncGet = <Path extends PathsFor<"get">>(
+type SyncGetOptions<Path extends PathsFor<"get">> = Omit<
+  GetOptions<Path>,
+  "timeoutMs"
+>;
+export function syncGet<Path extends PathsFor<"get">>(
   path: Path,
-  options?: Omit<GetOptions<Path>, "timeoutMs">,
-) => get(path, { ...options, timeoutMs: 15000 });
+  options: SyncGetOptions<Path> & { readMetadata: ApiReadMetadata },
+): Promise<GetResult<Path> | undefined>;
+export function syncGet<Path extends PathsWithRequiredQuery>(
+  path: Path,
+  options: SyncGetOptions<Path> & { readMetadata?: undefined },
+): Promise<GetResult<Path>>;
+export function syncGet<
+  Path extends Exclude<PathsFor<"get">, PathsWithRequiredQuery>,
+>(
+  path: Path,
+  options?: SyncGetOptions<Path> & { readMetadata?: undefined },
+): Promise<GetResult<Path>>;
+export function syncGet<Path extends PathsFor<"get">>(
+  path: Path,
+  options?: SyncGetOptions<Path>,
+): Promise<GetResult<Path> | undefined> {
+  return get(path, { ...options, timeoutMs: 15000 });
+}
 export const syncPost = <Path extends PathsFor<"post">>(
   path: Path,
   body: PostBody<Path>,
@@ -291,12 +317,12 @@ export const syncPost = <Path extends PathsFor<"post">>(
 export type QueueView = GetResult<"/api/queue">;
 export type QueueItemDto = QueueView["items"][number];
 
-export async function refreshSession(): Promise<{ token: string }> {
+export async function refreshSession(): Promise<GetResult<"/api/session">> {
   const generation = ++sessionGeneration;
   pendingSessions.add(generation);
-  let session: { token: string };
+  let session: GetResult<"/api/session">;
   try {
-    session = (await get("/api/session")) as { token: string };
+    session = await get("/api/session");
     if (
       generation > manualTokenGeneration &&
       (!successfulSession || successfulSession.generation < generation)
