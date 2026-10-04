@@ -5,7 +5,10 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import subprocess
 import uuid
+
+from codex_python import prepare_environment, resolve_python
 
 COMMANDS = (
     "codex-canvas",
@@ -68,12 +71,24 @@ def main():
         "--replace-from",
         help="Previous project root whose matching command links can be replaced",
     )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Also prepare the isolated development and mypy environment",
+    )
     args = parser.parse_args()
     try:
+        project = Path(__file__).resolve().parents[1]
+        if os.environ.get("CODEX_AGENTS_PYTHON"):
+            resolve_python(project / "scripts")
+        else:
+            prepare_environment(project)
+        if args.dev:
+            prepare_environment(project, development=True)
         paths = install(
-            Path(__file__).resolve().parents[1], args.bin_dir, args.replace_from
+            project, args.bin_dir, args.replace_from
         )
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + "\n")
     print(f"Installed {len(paths)} command links in {Path(paths[0]).parent}")
 
