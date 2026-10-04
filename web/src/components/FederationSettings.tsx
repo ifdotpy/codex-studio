@@ -1,7 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Switch, Textarea, TextInput } from "@mantine/core";
-import { api } from "../api";
-import type { Agent, FederationSnapshot } from "../types";
+import { post, type PostBody, type PostResult } from "../api";
+import type { Agent } from "../types";
+
+type FederationResponse = PostResult<"/api/federation">;
+type FederationSnapshot = Extract<FederationResponse, { peers: unknown[] }>;
+type FederationInvitation = Extract<
+  FederationResponse,
+  { invitation: unknown }
+>["invitation"];
+
+function isFederationInvitation(value: unknown): value is FederationInvitation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const invitation = value as Record<string, unknown>;
+  return (
+    invitation.protocol === 1 &&
+    typeof invitation.inviteId === "string" &&
+    typeof invitation.token === "string" &&
+    typeof invitation.stateId === "string" &&
+    typeof invitation.label === "string" &&
+    typeof invitation.origin === "string" &&
+    typeof invitation.publicKey === "string" &&
+    typeof invitation.expires === "number"
+  );
+}
 
 export function FederationSettings({
   active,
@@ -31,14 +53,15 @@ export function FederationSettings({
   );
   useEffect(() => setLocalMembers([leadId]), [leadId]);
 
-  const run = async (body: Record<string, unknown>) => {
+  const run = async (
+    body: PostBody<"/api/federation">,
+  ): Promise<FederationResponse | null> => {
     setBusy(true);
     try {
-      const result = await api<any>("/api/federation", body);
-      if (result && Array.isArray(result.peers))
-        setState(result as FederationSnapshot);
+      const result = await post("/api/federation", body);
+      if ("peers" in result) setState(result);
       await refresh();
-      return result as FederationSnapshot;
+      return result;
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error));
       return null;
@@ -62,7 +85,8 @@ export function FederationSettings({
     );
   const pair = async () => {
     try {
-      const invitation = JSON.parse(inviteText);
+      const invitation: unknown = JSON.parse(inviteText);
+      if (!isFederationInvitation(invitation)) throw new Error();
       const result = await run({ action: "accept_peer", invitation });
       if (result) setInviteText("");
     } catch {
@@ -119,17 +143,8 @@ export function FederationSettings({
             label: serverLabel,
             expected_user: expectedUser || undefined,
           });
-          if (
-            result &&
-            "invitation" in (result as unknown as Record<string, unknown>)
-          )
-            setInviteText(
-              JSON.stringify(
-                (result as unknown as { invitation: unknown }).invitation,
-                null,
-                2,
-              ),
-            );
+          if (result && "invitation" in result)
+            setInviteText(JSON.stringify(result.invitation, null, 2));
         }}
       >
         Create pairing invitation

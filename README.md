@@ -79,6 +79,15 @@ dependencies; install them before committing.
 For full-repository audits, run `npm run lint:all` and
 `npm run format:check:all`. Append paths after `--` to check selected files.
 
+`python3 scripts/install-cli.py` prepares the pinned Python API environment in
+the user cache and installs command links. Pass `--dev` to prepare a separate
+development environment with mypy. Set `CODEX_AGENTS_PYTHON` to choose a
+Python 3.11+ interpreter with the API dependencies installed; the launcher
+validates it before use. Otherwise Studio uses its prepared environment, then
+a dependency-equipped system Python. Backend launch does not install packages
+or access the network. Run `python3 scripts/codex_python.py --mypy` for the
+backend type check.
+
 Claude Code is also supported through the installed CLI and its Claude subscription.
 Run `claude auth login`, then select **Claude Code** in the account menu for a new
 chat. Use **Find existing accounts** in Accounts if it does not appear. Studio

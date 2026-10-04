@@ -1,16 +1,34 @@
 import { useRef, useState } from "react";
-import { api, ApiError, errorText, saved as readSaved } from "../api";
-import type { Json } from "../types";
+import {
+  post,
+  ApiError,
+  errorText,
+  saved as readSaved,
+  type ApiPostPath,
+  type PostBody,
+  type PostResult,
+} from "../api";
+
+export function persistedProjectRequest<Path extends ApiPostPath>(
+  persisted: PostBody<Path> | null,
+  next: PostBody<Path>,
+): PostBody<Path> {
+  return persisted ?? next;
+}
 
 // Project metadata uses exact values and revision checks for a safe retry.
-export function useProjectSave(
-  path: string,
+export function useProjectSave<Path extends ApiPostPath>(
+  path: Path,
   onSaved: () => Promise<void>,
-  validate?: (result: Json) => void,
+  validate?: (result: PostResult<Path>) => void,
   storageKey?: string,
 ) {
-  const [stored] = useState<{ body: Json; acknowledged: boolean } | null>(() =>
-    storageKey ? readSaved(storageKey, null) : null,
+  type StoredRequest = {
+    body: PostBody<Path>;
+    acknowledged: boolean;
+  };
+  const [stored] = useState<StoredRequest | null>(() =>
+    storageKey ? readSaved<StoredRequest | null>(storageKey, null) : null,
   );
   const [pending, setPending] = useState(false);
   const [frozen, setFrozen] = useState(!!stored);
@@ -23,7 +41,7 @@ export function useProjectSave(
   );
   const [error, setError] = useState("");
   const lock = useRef(false);
-  const request = useRef<Json | null>(stored?.body || null);
+  const request = useRef<PostBody<Path> | null>(stored?.body ?? null);
   const acknowledged = useRef(!!stored?.acknowledged);
   const persist = () => {
     if (storageKey)
@@ -35,17 +53,18 @@ export function useProjectSave(
         }),
       );
   };
-  const submit = async (body: Json) => {
+  const submit = async (body: PostBody<Path>) => {
     if (lock.current) return;
     lock.current = true;
-    request.current ||= body;
+    const requestBody = persistedProjectRequest(request.current, body);
+    request.current = requestBody;
     setPending(true);
     setFrozen(true);
     setError("");
     try {
       persist();
       if (!acknowledged.current) {
-        const result = await api(path, request.current, { timeoutMs: 15000 });
+        const result = await post(path, requestBody, { timeoutMs: 15000 });
         validate?.(result);
         acknowledged.current = true;
         persist();

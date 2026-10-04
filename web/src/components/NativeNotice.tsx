@@ -9,13 +9,52 @@ import ConnectionRecovery, {
   canCheckConnection,
   matchingConnectionCheck,
 } from "./ConnectionRecovery";
-import type { Agent, Message, Json } from "../types";
+import type { Agent, Message, Json, JsonValue } from "../types";
 import { agentErrorLabel } from "../types";
 import { Button } from "@mantine/core";
 import { CircleAlert } from "lucide-react";
 import { failureMessage } from "./turnFailureReason";
 import { nativeErrorView, nativeThreadError } from "../nativeErrors";
 import "./native-notice.css";
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+const MAX_RESUME_JSON_DEPTH = 32;
+
+function jsonValue(value: unknown, depth = 0): JsonValue | undefined {
+  if (depth > MAX_RESUME_JSON_DEPTH) return undefined;
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return value;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    const result: JsonValue[] = [];
+    for (const entry of value) {
+      const converted = jsonValue(entry, depth + 1);
+      if (converted === undefined) return undefined;
+      result.push(converted);
+    }
+    return result;
+  }
+  const record = objectRecord(value);
+  if (!record) return undefined;
+  const result: { [key: string]: JsonValue } = {};
+  for (const [key, entry] of Object.entries(record)) {
+    const converted = jsonValue(entry, depth + 1);
+    if (converted === undefined) return undefined;
+    result[key] = converted;
+  }
+  return result;
+}
+
+function jsonObject(value: unknown): Json | null {
+  const json = jsonValue(value);
+  return json && typeof json === "object" && !Array.isArray(json) ? json : null;
+}
 
 function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
   return (
@@ -41,11 +80,12 @@ function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
 
 export function isNonBlockingWarning(item: Message): boolean {
   return (
+    "nativeNotice" in item &&
     item.nativeNotice === "warning" &&
-    !item.nativeError &&
-    !item.nativeReview &&
-    !item.nativeHook &&
-    !item.nativeHookQuiet
+    !("nativeError" in item && item.nativeError) &&
+    !("nativeReview" in item && item.nativeReview) &&
+    !("nativeHook" in item && item.nativeHook) &&
+    !("nativeHookQuiet" in item && item.nativeHookQuiet)
   );
 }
 
@@ -74,10 +114,13 @@ export function NativeError({
   }, [limits]);
   const recovered = useRecoveredLimit(agent, limits ?? null, now);
   const recovery = recovered ? null : limitRecovery(agent, limits ?? null, now);
+  const usageResume = jsonObject(
+    "usageResume" in agent ? agent.usageResume : undefined,
+  );
   const authResume =
-    agent.usageResume?.cause === "auth" &&
-    (agent.usageResume.status === "scheduled" ||
-      agent.usageResume.reason === "Automatic resume is off for this chat.");
+    usageResume?.cause === "auth" &&
+    (usageResume.status === "scheduled" ||
+      usageResume.reason === "Automatic resume is off for this chat.");
   const retry = currentCapacityRetry(agent);
   const blocked = nativeThreadError(agent);
   const connectionCheck = matchingConnectionCheck(agent);
@@ -86,7 +129,7 @@ export function NativeError({
     ? nativeErrorView(agent.error, planType)
     : error;
   if (!blocked && !retry && recovered) return null;
-  const wait = agent.contextRepairWait;
+  const wait = objectRecord(agent.contextRepairWait);
   if (
     !blocked &&
     !retry &&
@@ -122,15 +165,19 @@ export function NativeError({
       ) : null}
       {(recovery || authResume) && (
         <LimitRecoveryNotice
-          key={JSON.stringify([recovery, agent.usageResume?.id])}
+          key={JSON.stringify([recovery, usageResume?.id])}
           recovery={recovery ?? undefined}
           agentId={agent.id}
-          usageResume={agent.usageResume}
+          usageResume={usageResume ?? undefined}
           inline
         />
       )}
       {retry && (
-        <CapacityRetry key={retry.id} agentId={agent.id} retry={retry} />
+        <CapacityRetry
+          key={String(retry.id)}
+          agentId={agent.id}
+          retry={retry}
+        />
       )}
       {refresh && canCheckConnection(agent) && (
         <ConnectionRecovery
@@ -188,11 +235,18 @@ export function NativeNotice({
   item: Message;
   planType?: string;
 }) {
-  if (item.nativeHookQuiet) return null;
-  const error = item.nativeError
-    ? nativeErrorView(item.nativeError, planType)
+  if ("nativeHookQuiet" in item && item.nativeHookQuiet) return null;
+  const nativeErrorValue = "nativeError" in item ? item.nativeError : undefined;
+  const notice: "error" | "warning" | undefined =
+    "nativeNotice" in item &&
+    (item.nativeNotice === "error" || item.nativeNotice === "warning")
+      ? item.nativeNotice
+      : undefined;
+  const error = nativeErrorValue
+    ? nativeErrorView(nativeErrorValue, planType)
     : null;
-  const details = error?.details || item.details;
+  const details =
+    error?.details || ("details" in item ? item.details : undefined);
   if (
     error &&
     ["usageLimitExceeded", "rateLimitExceeded"].includes(error.kind)
@@ -222,16 +276,16 @@ export function NativeNotice({
   }
   return (
     <div
-      className={`native-notice ${error?.severity || item.nativeNotice}`}
+      className={`native-notice ${error?.severity || notice}`}
       data-message={item.id}
     >
       <details>
         <summary>
-          {item.nativeNotice === "error"
-            ? failureMessage(item.nativeError || item.text)
+          {notice === "error"
+            ? failureMessage(nativeErrorValue || item.text)
             : error?.title || error?.message || displayError(item.text)}
         </summary>
-        {details && <pre>{errorDetails(details)}</pre>}
+        {Boolean(details) && <pre>{errorDetails(details)}</pre>}
       </details>
       {error && <Guidance error={error} />}
     </div>

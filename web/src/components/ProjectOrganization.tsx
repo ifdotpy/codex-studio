@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
 import type { Agent, Snapshot } from "../types";
 
-export type Project = NonNullable<Snapshot["runtime"]["projects"]>[number];
+export type Project = NonNullable<Snapshot["runtime"]>["projects"][number];
 export type ProjectFolder = NonNullable<Project["folders"]>[number];
 
 export function folderLabel(folders: ProjectFolder[], id: string): string {
@@ -30,7 +30,7 @@ export function ProjectNameForm({
   saved: () => Promise<void>;
 }) {
   const [name, setName] = useState(
-    folder === "new" ? "" : folder?.name || project.name,
+    folder === "new" ? "" : folder?.name || project.name || "",
   );
   const save = useProjectSave("/api/projects", saved);
   const id = useRef(folder === "new" ? crypto.randomUUID() : folder?.id);
@@ -39,6 +39,7 @@ export function ProjectNameForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (typeof project.path !== "string") return;
         void save.submit({
           action:
             folder === "new"
@@ -102,6 +103,7 @@ export function MoveChatForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (typeof project.path !== "string") return;
         void save.submit({
           id: agent.id,
           project_path: project.path,
@@ -117,7 +119,7 @@ export function MoveChatForm({
         disabled={save.pending || save.frozen}
         onChange={(event) => setFolder(event.currentTarget.value)}
         data={[
-          { value: "", label: project.name },
+          { value: "", label: project.name || project.path || "Project" },
           ...(project.folders || [])
             .map((item) => ({
               value: item.id,
@@ -158,6 +160,7 @@ export function ConvertChatForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (typeof project.path !== "string") return;
         void save.submit({
           action: "convert",
           path: project.path,

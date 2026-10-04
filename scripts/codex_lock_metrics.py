@@ -107,6 +107,9 @@ class MeasuredRLock:
     def __getattr__(self, name):
         return getattr(self._lock, name)
 
+    def __repr__(self):
+        return repr(self._lock)
+
     @staticmethod
     def _percentile(values, fraction):
         ordered = sorted(values)

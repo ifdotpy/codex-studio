@@ -282,15 +282,16 @@ test("Native runtime status", async ({ context }) => {
     // Ignore abort in this request to prove that a late response cannot replace a new open's data.
     await page.evaluate(() => {
       const original = window.fetch;
-      window.fetch = (...args) => {
-        if (args[0] === "/api/desktop") {
+      window.fetch = (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).pathname === "/api/desktop") {
           window.fetch = original;
-          window.delayedRuntimeSignal = args[1].signal;
+          window.delayedRuntimeSignal = request.signal;
           return new Promise((resolve) => {
             window.finishOldRuntimeRead = resolve;
           });
         }
-        return original(...args);
+        return original(input, init);
       };
       window.setRuntimeOpen(true);
     });

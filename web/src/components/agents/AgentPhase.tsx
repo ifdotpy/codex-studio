@@ -19,6 +19,13 @@ import {
   type ChatWaitState,
 } from "../chat-status/chatStatusModel";
 import "./provider-activity.css";
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 export default function AgentPhase({
   agent,
   connection,
@@ -29,18 +36,21 @@ export default function AgentPhase({
   wait?: ChatWaitState;
 }) {
   if (!agent) return null;
-  const safety = agent.nativeSafetyBuffering;
+  const safety = objectRecord(
+    "nativeSafetyBuffering" in agent ? agent.nativeSafetyBuffering : undefined,
+  );
   if (
-    safety?.showBufferingUi &&
-    !safety.dismissed &&
-    !safety.responseStarted &&
+    safety?.showBufferingUi === true &&
+    safety.dismissed !== true &&
+    safety.responseStarted !== true &&
     safety.turnId === agent.turnId &&
-    agent.inFlight
+    agent.inFlight === true
   )
     return null;
   // The terminal error appears in the transcript and the account notice.
   if (agent.status === "failed" && agent.error) return null;
-  const active = ["running", "starting"].includes(agent.status);
+  const status = agent.status || "idle";
+  const active = ["running", "starting"].includes(status);
   const awaitingResponse =
     active &&
     (agent.startAttempt?.prepareError || agent.startAttempt?.responseError);
@@ -48,11 +58,15 @@ export default function AgentPhase({
     ? "blocked"
     : currentCapacityRetry(agent)?.status === "scheduled"
       ? "capacity-retry"
-      : awaitingResponse
-        ? "acknowledgement"
-        : active
-          ? agent.activity?.phase || agent.status
-          : agent.status;
+      : agent.status === "starting" && agent.worktreePreparation
+        ? agent.worktreePreparation === "waiting"
+          ? "folder-wait"
+          : "folder-prepare"
+        : awaitingResponse
+          ? "acknowledgement"
+          : active
+            ? agent.activity?.phase || status
+            : status;
   const phase =
     wait?.live && ["idle", "completed"].includes(currentPhase)
       ? "waiting"
@@ -63,6 +77,8 @@ export default function AgentPhase({
     tool: "Using tools",
     running: "Working",
     starting: "Starting",
+    "folder-wait": "Waiting to prepare folder",
+    "folder-prepare": "Preparing folder",
     acknowledgement: "Waiting for Codex",
     retrying: "Codex is retrying",
     "capacity-retry": "Waiting to retry model",
@@ -86,6 +102,8 @@ export default function AgentPhase({
     writing: PenLine,
     tool: Wrench,
     starting: LoaderCircle,
+    "folder-wait": Clock3,
+    "folder-prepare": LoaderCircle,
     running: LoaderCircle,
     queued: Clock3,
     waiting: Circle,
@@ -105,14 +123,19 @@ export default function AgentPhase({
   const waiting = ["waiting", "parked"].includes(phase);
   const liveWait = waiting && wait?.live && connection !== "reconnecting";
   const native = ["retrying", "auth", "safety"].includes(phase)
-    ? agent.nativeStatus
+    ? objectRecord(agent.nativeStatus)
     : null;
+  const nativeError = objectRecord(native?.error);
+  const nativeMessage =
+    typeof native?.message === "string" ? native.message : undefined;
+  const nativeErrorMessage =
+    typeof nativeError?.message === "string" ? nativeError.message : undefined;
   const message =
-    displayError(native?.message) ||
-    displayError(native?.error?.message) ||
+    displayError(nativeMessage) ||
+    displayError(nativeErrorMessage) ||
     names[phase] ||
     "Working";
-  const details = errorDetails(native?.error?.additionalDetails);
+  const details = errorDetails(nativeError?.additionalDetails);
   return (
     <div
       className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}`}
@@ -164,7 +187,7 @@ export default function AgentPhase({
               "Connection lost. Reconnecting…"
             ) : (
               <ErrorDescription
-                value={native?.message || native?.error?.message || message}
+                value={nativeMessage || nativeErrorMessage || message}
                 role="status"
               />
             )}
@@ -180,8 +203,8 @@ export default function AgentPhase({
           <i />
         </span>
       )}
-      {phase === "tool" && agent.activity?.tools?.length > 1 && (
-        <small>{agent.activity.tools.length} tools</small>
+      {phase === "tool" && (agent.activity?.tools?.length ?? 0) > 1 && (
+        <small>{agent.activity?.tools?.length} tools</small>
       )}
     </div>
   );

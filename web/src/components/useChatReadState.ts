@@ -7,7 +7,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { api, ApiError, errorText } from "../api";
+import { get, post, ApiError, errorText } from "../api";
 import type { Agent, Message, Snapshot } from "../types";
 
 export type ChatReadState = {
@@ -29,17 +29,25 @@ const completed = (agent: Agent): ChatReadProof | null =>
     : null;
 const sameResult = (a: ChatReadProof, b: ChatReadProof) =>
   a.id === b.id && a.threadId === b.threadId && a.turnId === b.turnId;
-const storedState = (agent: Agent): ChatReadState | null => {
-  const value = agent.readState;
-  return value &&
-    typeof value.threadId === "string" &&
-    typeof value.turnId === "string" &&
-    typeof value.read === "boolean" &&
-    Number.isSafeInteger(value.revision) &&
-    value.revision >= 0
-    ? value
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const parseReadState = (value: unknown): ChatReadState | null =>
+  isRecord(value) &&
+  typeof value.threadId === "string" &&
+  typeof value.turnId === "string" &&
+  typeof value.read === "boolean" &&
+  Number.isSafeInteger(value.revision) &&
+  typeof value.revision === "number" &&
+  value.revision >= 0
+    ? {
+        threadId: value.threadId,
+        turnId: value.turnId,
+        read: value.read,
+        revision: value.revision,
+      }
     : null;
-};
+const storedState = (agent: Pick<Agent, "readState">): ChatReadState | null =>
+  parseReadState(agent.readState);
 
 export function useChatReadState(
   data: Snapshot | null,
@@ -153,10 +161,10 @@ export function useChatReadState(
           },
         };
         const requestWorkspace = latest.current.workspaceId;
-        let canonical: Agent;
+        let response: unknown;
         for (let retry = 0; ; retry++) {
           try {
-            canonical = await api<Agent>("/api/organization", body, {
+            response = await post("/api/organization", body, {
               workspaceId: requestWorkspace,
               timeoutMs: 15000,
             });
@@ -171,15 +179,16 @@ export function useChatReadState(
             await new Promise((resolve) =>
               setTimeout(resolve, 1000 * (retry + 1)),
             );
-            // Repeat the same revision. A newer Unread must win over this retry.
+            // Retry the exact compare-and-set body; a queued Unread follows it.
             if (!valid()) return;
             if (latest.current.opened !== proof.id) throw error;
           }
         }
         if (!valid()) return;
-        const state = storedState(canonical);
+        const canonical = isRecord(response) ? response : null;
+        const state = parseReadState(canonical?.readState);
         if (
-          canonical.id !== proof.id ||
+          canonical?.id !== proof.id ||
           !state ||
           state.threadId !== proof.threadId ||
           state.turnId !== proof.turnId ||
@@ -201,7 +210,9 @@ export function useChatReadState(
           // Reconcile a lost success before a queued Unread can use local state.
           // The app's normal refresh can update only credentials during sync.
           try {
-            const snapshot = await api<Snapshot>("/api/state?view=chat");
+            const snapshot = await get("/api/state", {
+              query: { view: "chat" },
+            });
             if (!valid()) return;
             const canonical = snapshot.threads.find(
               (value) => value.id === proof.id,
@@ -212,7 +223,7 @@ export function useChatReadState(
               result &&
               sameResult(result, proof)
             ) {
-              const state = storedState(canonical!);
+              const state = canonical ? storedState(canonical) : null;
               const known = current.states.get(proof.id);
               if (state && (!known || state.revision >= known.revision))
                 current.states.set(proof.id, state);

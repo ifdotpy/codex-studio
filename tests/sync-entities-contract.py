@@ -61,7 +61,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert projected["startAttempt"] == {"prepareError": "prepare failure"}
     assert "nativeToolCatalog" not in projected and "timing" not in projected
     question = project("request", {"id": "request-1", "method": "agent/asyncQuestion",
-        "status": "pending", "params": {"questions": [{"question": "Which scope?"}]},
+        "status": "pending", "params": {"questions": [{"id": "0", "question": "Which scope?"}]},
         "internal": "private"})
     assert question["params"]["questions"][0]["question"] == "Which scope?"
     assert "internal" not in question

@@ -1,8 +1,10 @@
-import type { Agent, Json } from "../../types";
+import type { Agent, Snapshot } from "../../types";
 import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import { TeamDiskTotal } from "../WorktreeDisk";
 
-export function awaitingAnswerIds(requests: Json[]) {
+type Request = NonNullable<Snapshot["runtime"]>["requests"][number];
+
+export function awaitingAnswerIds(requests: Request[]) {
   return new Set(
     requests
       .filter(
@@ -10,7 +12,9 @@ export function awaitingAnswerIds(requests: Json[]) {
           !request.deferred &&
           (request.status === "pending" || !request.status),
       )
-      .map((request) => request.agent as string),
+      .flatMap((request) =>
+        typeof request.agent === "string" ? [request.agent] : [],
+      ),
   );
 }
 
@@ -19,15 +23,16 @@ export function workerState(
   answers: Set<string>,
   deferred?: Set<string>,
 ) {
+  const status = agent.status ?? "";
   if (answers.has(agent.id)) return "answer";
-  if (agent.status === "approval")
+  if (status === "approval")
     return deferred?.has(agent.id) ? "waiting" : "answer";
-  if (["failed", "interrupted"].includes(agent.status)) return "attention";
-  if (["running", "starting"].includes(agent.status)) return "working";
-  if (agent.status === "parked") return "waiting";
-  if (agent.status === "completed") return "completed";
+  if (["failed", "interrupted"].includes(status)) return "attention";
+  if (["running", "starting"].includes(status)) return "working";
+  if (status === "parked") return "waiting";
+  if (status === "completed") return "completed";
   // A paused worker was stopped. It does not wait for input or delivery.
-  if (agent.status === "paused") return "stopped";
+  if (status === "paused") return "stopped";
   return "waiting";
 }
 

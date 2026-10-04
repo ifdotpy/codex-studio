@@ -1,7 +1,7 @@
 import { Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText } from "../api";
+import { get, errorText } from "../api";
 import { IconAction } from "./ui/actions/IconAction";
 import FilePreview from "./FilePreview";
 
@@ -155,7 +155,7 @@ function AttachmentImage(p: { asset: Attachment; onPreview: () => void }) {
     let live = true;
     setSrc(undefined);
     setError("");
-    api(`/api/file?asset=${encodeURIComponent(p.asset.id)}`)
+    get("/api/file", { query: { asset: p.asset.id } })
       .then((file) => {
         if (
           live &&

@@ -10,25 +10,61 @@ import {
   Send,
   Trash2,
 } from "lucide-react";
-import { errorText, saved } from "../api";
+import { errorText, saved, type QueueItemDto } from "../api";
+import type { components } from "../generated/api";
+import type { Message } from "../types";
 import { writeLocalDraft } from "../sync/localDraft";
-import type { Attachment } from "./ComposerAttachments";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
 
-export type QueueItem = {
-  id: string;
-  text: string;
-  assets?: Attachment[];
-  [key: string]: any;
-};
+export type LocalQueueItem = Pick<
+  Message,
+  "assets" | "id" | "requestedDelivery" | "text"
+> & { localDelivery: true };
+export type QueueItem =
+  | (QueueItemDto & { localDelivery?: false })
+  | LocalQueueItem;
+
+function isServerQueueItem(item: QueueItem): item is QueueItemDto {
+  return item.localDelivery !== true;
+}
+
+function isQueueItemDto(value: unknown): value is QueueItemDto {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "text" in value &&
+    typeof value.text === "string" &&
+    "created" in value &&
+    typeof value.created === "number" &&
+    "status" in value &&
+    value.status === "pending" &&
+    "kind" in value &&
+    (value.kind === "user" || value.kind === "followup")
+  );
+}
+
+type QueueAsset = { id: string; name: string };
+function isQueueAsset(
+  value: components["schemas"]["JsonValue"],
+): value is QueueAsset {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string"
+  );
+}
 
 type Props = {
   items: QueueItem[];
   scope: string;
-  onEdit: (item: QueueItem, text: string) => Promise<void>;
-  onCancel: (item: QueueItem) => Promise<void>;
-  onSendNow?: (item: QueueItem) => Promise<void>;
+  onEdit: (item: QueueItemDto, text: string) => Promise<void>;
+  onCancel: (item: QueueItemDto) => Promise<void>;
+  onSendNow?: (item: QueueItemDto) => Promise<void>;
   onReorder: (ids: string[]) => Promise<void>;
   canReorder: boolean;
   refreshing?: boolean;
@@ -37,7 +73,7 @@ type Props = {
 };
 
 type EditDraft = {
-  item: QueueItem;
+  item: QueueItemDto;
   text: string;
   revision: string;
   key: string;
@@ -56,8 +92,7 @@ function readDrafts(prefix: string): { drafts: Drafts; error: string } {
       const draft = saved<EditDraft | null>(key, null);
       if (
         draft?.key === key &&
-        typeof draft.item?.id === "string" &&
-        typeof draft.item.text === "string" &&
+        isQueueItemDto(draft.item) &&
         typeof draft.text === "string" &&
         typeof draft.revision === "string" &&
         typeof draft.updated === "number"
@@ -222,6 +257,7 @@ function ScopedMessageQueue(p: Props) {
     setError("");
   };
   const beginEdit = (item: QueueItem) => {
+    if (!isServerQueueItem(item)) return;
     persist({
       item,
       text: item.text,
@@ -372,19 +408,22 @@ function ScopedMessageQueue(p: Props) {
     </div>
   );
 
-  const alternatives = Object.values(drafts.entries).filter(
-    (draft) =>
-      draft.key !== current?.key &&
-      !current?.ancestors?.some(
+  const alternatives = Object.values(drafts.entries).filter((draft) => {
+    if (draft.key === current?.key) return false;
+    if (
+      current?.ancestors?.some(
         (ancestor) =>
           ancestor.key === draft.key && ancestor.revision === draft.revision,
-      ) &&
-      !(
-        draft.item.id === current?.item.id &&
-        draft.text === current.text &&
-        draft.item.text === current.item.text
-      ),
-  );
+      )
+    )
+      return false;
+    return !(
+      current &&
+      draft.item.id === current.item.id &&
+      draft.text === current.text &&
+      draft.item.text === current.item.text
+    );
+  });
   if (
     !p.items.length &&
     !current &&
@@ -515,7 +554,7 @@ function ScopedMessageQueue(p: Props) {
                     )}
                     {!!item.assets?.length && (
                       <div className="message-queue-assets">
-                        {item.assets.map((asset) => (
+                        {item.assets.filter(isQueueAsset).map((asset) => (
                           <span key={asset.id}>
                             <Paperclip size={12} />
                             <span>{asset.name}</span>
@@ -524,14 +563,14 @@ function ScopedMessageQueue(p: Props) {
                       </div>
                     )}
                     {draft && editor(draft)}
-                    {item.error && (
+                    {isServerQueueItem(item) && item.error && (
                       <p className="message-queue-error" role="alert">
                         {item.error}
                       </p>
                     )}
                   </div>
                   <div className="message-queue-actions">
-                    {p.onSendNow && !draft && (
+                    {p.onSendNow && !draft && isServerQueueItem(item) && (
                       <button
                         type="button"
                         disabled={disabled || !!item.localDelivery}
@@ -560,7 +599,7 @@ function ScopedMessageQueue(p: Props) {
                       title="Delete"
                       onClick={() =>
                         void mutate(async () => {
-                          await p.onCancel(item);
+                          if (isServerQueueItem(item)) await p.onCancel(item);
                         })
                       }
                     >

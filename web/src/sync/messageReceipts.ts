@@ -1,42 +1,61 @@
+import type { GetResult } from "../api";
 import type { Message } from "../types";
 import type { OutgoingMessage } from "./send";
 
-export type MessageReceipt = {
-  id: string;
-  status: string;
-  error?: string | null;
-};
+type MessageReceiptResponse = GetResult<"/api/messages/receipts">;
+export type MessageReceipt = MessageReceiptResponse["items"][number];
 
-const statuses = new Set([
-  "pending",
-  "reserved",
-  "dispatching",
-  "delivered",
-  "uncertain",
-  "failed",
-  "cancelled",
-]);
+const statuses = {
+  queued: true,
+  pending: true,
+  reserved: true,
+  dispatching: true,
+  delivered: true,
+  accepted: true,
+  sent: true,
+  uncertain: true,
+  failed: true,
+  cancelled: true,
+  stored_only: true,
+} satisfies Record<MessageReceipt["status"], true>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+function isMessageReceipt(value: unknown): value is MessageReceipt {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.status === "string" &&
+    Object.hasOwn(statuses, value.status) &&
+    (value.error === undefined ||
+      value.error === null ||
+      typeof value.error === "string")
+  );
+}
 
 export function checkedMessageReceipts(
-  value: any,
+  value: unknown,
   room: string,
   ids: string[],
 ): MessageReceipt[] {
   const requested = new Set(ids);
-  if (value == null || value.agent !== room || !Array.isArray(value.items))
+  if (!isRecord(value) || value.agent !== room || !Array.isArray(value.items))
     throw new Error("The delivery receipts belong to another chat.");
-  if (
-    value.items.some(
-      (item: any) =>
-        item == null || !requested.has(item.id) || !statuses.has(item.status),
-    ) ||
-    new Set(value.items.map((item: MessageReceipt) => item.id)).size !==
-      value.items.length
-  )
+  const receipts: MessageReceipt[] = [];
+  for (const item of value.items) {
+    if (!isMessageReceipt(item) || !requested.has(item.id))
+      throw new Error(
+        "The delivery receipts do not match the requested messages.",
+      );
+    receipts.push(item);
+  }
+  if (new Set(receipts.map((item) => item.id)).size !== receipts.length)
     throw new Error(
       "The delivery receipts do not match the requested messages.",
     );
-  return value.items;
+  return receipts;
 }
 
 export function latestMessageReceipt(

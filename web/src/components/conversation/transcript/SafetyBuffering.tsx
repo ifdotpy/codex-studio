@@ -2,7 +2,7 @@ import ErrorDescription from "../../ErrorDescription";
 import { useRef, useState } from "react";
 import { Button, Modal } from "@mantine/core";
 import { Clock3 } from "lucide-react";
-import { api, errorText } from "../../../api";
+import { post, errorText } from "../../../api";
 import type { Agent } from "../../../types";
 
 export default function SafetyBuffering({ agent }: { agent: Agent }) {
@@ -18,35 +18,39 @@ export default function SafetyBuffering({ agent }: { agent: Agent }) {
     stored?.accountKey === (agent.accountKey || "default")
       ? stored
       : null;
+  const bufferingTurnId = b?.turnId || "";
+  const retryTurnId = retry?.turnId || "";
+  const turnId = bufferingTurnId || retryTurnId;
   const active =
-    !!retry && !["running", "failed", "cancelled"].includes(retry.stage);
+    !!retry?.stage && !["running", "failed", "cancelled"].includes(retry.stage);
   const visible =
     b?.showBufferingUi &&
     !b.responseStarted &&
-    b.turnId === agent.turnId &&
+    !!bufferingTurnId &&
+    bufferingTurnId === agent.turnId &&
     agent.inFlight &&
     !b.dismissed &&
-    dismissed !== b.turnId;
+    dismissed !== bufferingTurnId;
   const failed =
     retry?.stage === "failed" &&
     (retry.turnId === agent.turnId || !agent.turnId);
   if (!visible && !active && !failed) return null;
   const choose = async (safety: "wait" | "retry" | "cancel") => {
-    if (lock.current || !(b?.turnId || retry?.turnId)) return;
+    if (lock.current || !turnId) return;
     lock.current = true;
     setPending(true);
     setError("");
     try {
-      await api(
+      await post(
         "/api/action",
         {
           id: agent.id,
-          action: { safety, turnId: b?.turnId || retry?.turnId },
+          action: { safety, turnId },
         },
         { timeoutMs: 15000 },
       );
       setConfirm(false);
-      if (safety === "wait") setDismissed(b.turnId);
+      if (safety === "wait") setDismissed(turnId);
     } catch (cause) {
       setError(errorText(cause));
     } finally {

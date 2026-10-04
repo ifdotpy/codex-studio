@@ -35,6 +35,8 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("tests/portable-smoke.mjs", paths)
         self.assertIn("tests/state-contract-smoke.mjs", paths)
         self.assertIn("tests/swarm-retry-contract.mjs", paths)
+        self.assertNotIn("tests/sync-live-patch-http-contract.py", paths)
+        self.assertIn("tests/sync-live-patch-http-contract.py", RUNNER.NON_TESTS)
         self.assertEqual(categories["tests/workspace-native-turn.py"], "native")
         self.assertEqual(categories["tests/workspace-protocol.py"], "native")
         self.assertEqual(categories["tests/tool-parity.py"], "native")
@@ -46,6 +48,39 @@ class ServerSuiteRunner(unittest.TestCase):
                 if (RUNNER.is_unittest_suite(path) and relative not in RUNNER.NON_TESTS
                         and "tests/fixtures/" not in relative):
                     self.assertIn(relative, paths, f"AST unittest suite omitted: {relative}")
+
+    def test_discovers_colocated_fastapi_component_tests_recursively(self):
+        component_root = RUNNER.STUDIO_API_COMPONENT_ROOT
+        paths = dict(RUNNER.inventory())
+        if not component_root.is_dir():
+            self.skipTest("FastAPI component sources have not arrived in this worktree")
+        expected = {
+            path.relative_to(ROOT).as_posix()
+            for path in component_root.rglob("test_*.py")
+            if path.is_file() and not path.is_symlink()
+        }
+        self.assertTrue(expected, "FastAPI package has no colocated component tests")
+        self.assertTrue(expected.issubset(paths))
+        self.assertTrue(all(paths[path] == "component" for path in expected))
+
+    def test_runs_fastapi_component_suites_as_package_modules(self):
+        commands = []
+
+        def execute(command, _cwd, _timeout, _environment):
+            commands.append(command)
+            return 0, None
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            RUNNER.run_suites(
+                [("scripts/studio_api/agents/test_router.py", "component")],
+                set(), 1, 1, root=ROOT, execute=execute,
+            )
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(
+            commands[0][-4:],
+            ["-B", "-m", "unittest", "studio_api.agents.test_router"],
+        )
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
         calls = []

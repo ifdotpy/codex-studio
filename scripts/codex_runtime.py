@@ -316,8 +316,8 @@ class ResponseTimeout(RuntimeError):
 
 
 class PreparationPending(ResponseTimeout):
-    def __init__(self, future):
-        super().__init__("Thread preparation acknowledgement pending; no turn input has been submitted")
+    def __init__(self, future, message="Thread preparation acknowledgement pending; no turn input has been submitted"):
+        super().__init__(message)
         self.future = future
 
 
@@ -350,7 +350,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None):
         import queue
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -413,6 +413,13 @@ class AppServer:
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
+            try:
+                monitor_bindings = (supervisor_monitor_bindings(self.proc) if self.supervisor_resumed
+                                    and supervisor_monitor_bindings else [])
+            except Exception:
+                self.proc.detach()
+                self.log.close()
+                raise
             if supervisor_reattached:
                 self.supervisor_reattach_future = concurrent.futures.Future()
                 def restore(_message):
@@ -424,6 +431,21 @@ class AppServer:
                     self.supervisor_reattach_future.set_result(None)
                 # Restore before native events, outside the startup gate.
                 self.callbacks.put((restore, {"_studioReattachBarrier": True}))
+            for binding in monitor_bindings:
+                self.sequence += 1
+                local_id = self.sequence
+                future = concurrent.futures.Future()
+                self.pending[local_id] = future
+                self.proc.remote_to_local[binding["nativeId"]] = local_id
+                if supervisor_monitor_result:
+                    future.add_done_callback(lambda done, binding=binding: self.enqueue(
+                        lambda _: supervisor_monitor_result(binding, done), {}))
+                response = binding.get("response")
+                if response is not None:
+                    if "error" in response:
+                        future.set_exception(NativeRpcError(response["error"]))
+                    else:
+                        future.set_result(response.get("result", {}))
         else:
             self.proc = subprocess.Popen(
                 command, env=env,
@@ -473,8 +495,28 @@ class AppServer:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
             if self.supervisor_mode:
+                clock = None
+                reply = value.get("result")
+                if ("method" not in value and "error" not in value and isinstance(reply, dict)
+                        and set(reply) == {"currentTimeAt"} and type(reply["currentTimeAt"]) is int
+                        and type(value.get("id")) in {int, str}):
+                    key = (type(value["id"]), value["id"])
+                    with self.lock:
+                        sequences = self.__dict__.get("_clock_reply_sequences", {}).get(key)
+                        if sequences:
+                            clock = (key, sequences[0])
                 result = self.proc.send_write(value, operation_id=operation_id)
                 self.transcript_capture.record("out", value)
+                if clock is not None:
+                    key, sequence = clock
+                    self.proc.ack(sequence)
+                    with self.lock:
+                        ledger = self.__dict__.get("_clock_reply_sequences", {})
+                        sequences = ledger.get(key, [])
+                        if sequence in sequences:
+                            sequences.remove(sequence)
+                            if not sequences:
+                                ledger.pop(key, None)
                 return result
             text = json.dumps(value) + "\n"
             try:
@@ -604,9 +646,37 @@ class AppServer:
 
     def enqueue_clock(self, message):
         import queue
+        key = None
+        sequence = message.get("_studioSupervisorSequence")
+        if self.supervisor_mode and sequence is not None:
+            if type(message.get("id")) not in {int, str} or type(sequence) is not int or sequence < 1:
+                error = RuntimeError("Codex clock request identity is invalid; connection closed; outcome unknown")
+                self.fail_transport(error)
+                raise error
+            key = (type(message["id"]), message["id"])
+            with self.lock:
+                ledger = self.__dict__.setdefault("_clock_reply_sequences", {})
+                sequences = ledger.get(key, [])
+                if sequence in sequences:
+                    return
+                saturated = sum(len(saved) for saved in ledger.values()) >= self.CLOCK_QUEUE_LIMIT + 1
+                if not saturated:
+                    ledger.setdefault(key, []).append(sequence)
+            if saturated:
+                error = RuntimeError("Codex clock receipt ledger saturated; connection closed; outcome unknown")
+                self.fail_transport(error)
+                raise error
         try:
             self.clock_replies.put_nowait(message)
         except queue.Full:
+            if key is not None:
+                with self.lock:
+                    ledger = self.__dict__.get("_clock_reply_sequences", {})
+                    sequences = ledger.get(key, [])
+                    if sequence in sequences:
+                        sequences.remove(sequence)
+                    if not sequences:
+                        ledger.pop(key, None)
             error = RuntimeError(f"Codex clock reply queue saturated; rejected id {json.dumps(message['id'])}; connection closed; outcome unknown")
             self.fail_transport(error)
             raise error
@@ -931,6 +1001,10 @@ class AppServer:
 
     def enqueue(self, callback, message):
         import queue
+        if (self.supervisor_mode and callback == self.request and isinstance(message, dict)
+                and "id" in message and message.get("method") == "currentTime/read"):
+            self.enqueue_clock(message)
+            return
         if (not self.supervisor_mode and callback == self.request and isinstance(message, dict) and "id" in message
                 and message.get("method") == "item/tool/call"):
             # Tool calls must not wait behind a long notification backlog.
@@ -1278,6 +1352,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self._agent_record_revision = 0
         self.start_lock = threading.Lock()
         self.prepare_locks = {}
+        self.worktree_creation_executors = {}
+        self.worktree_preparations = {}
         self.preparations = {}
         self.monitor_threads = set()
         self.offline = False
@@ -1328,6 +1404,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("migrations-indexes-start")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_agent_record_generation (
+                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                INSERT OR IGNORE INTO runtime_agent_record_generation VALUES (1, 0);
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_insert
+                  AFTER INSERT ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_update
+                  AFTER UPDATE OF record ON runtime_agents WHEN OLD.record IS NOT NEW.record BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_delete
+                  AFTER DELETE ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
@@ -2041,15 +2132,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
             return rows if shared else list(rows)
-        cache_lock = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
+        runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
         runtime.__dict__.setdefault("_agent_record_revision", 0)
-        with cache_lock:
-            generation = runtime._agent_record_revision
-        cacheable = not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1
-        if not cacheable:
+        transactional_read = db.in_transaction and db.execute(
+            "PRAGMA query_only").fetchone()[0] == 1
+        if not transactional_read:
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
         else:
+            generation = db.execute(
+                "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
             rows = cache.get(generation)
             if rows is None:
@@ -2059,10 +2151,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if rows is None:
                         rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                             "SELECT record FROM runtime_agents"))
-                        if runtime._agent_record_revision == generation:
-                            cache[generation] = rows
-                            while len(cache) > 4:
-                                cache.pop(next(iter(cache)))
+                        cache[generation] = rows
+                        while len(cache) > 4:
+                            cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
     def team_agents(self, db, root_id):
@@ -2284,7 +2375,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
             self.__dict__.setdefault("_agent_record_revision", 0)
             self._agent_record_revision += 1
-            self.__dict__.setdefault("_agent_records_cache", {}).clear()
 
     def mark_agent_records_changed(self, key=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
@@ -2405,7 +2495,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
                                                       "account:" + account_key, sequence),
                                                   supervisor_reattached=lambda resumed: self.supervisor_reattached(
-                                                      account_key, connection_id, resumed))
+                                                      account_key, connection_id, resumed),
+                                                  supervisor_monitor_bindings=lambda proxy: self.supervisor_monitor_bindings(
+                                                      account_key, connection_id, proxy),
+                                                  supervisor_monitor_result=lambda binding, future: self.supervisor_monitor_result(
+                                                      account_key, connection_id, binding, future))
                             if selected:
                                 server.native_binary = selected
                         else:
@@ -2430,6 +2524,91 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self)
+
+    def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
+        """Bind exact accepted monitor RPCs before replay reads their replies."""
+        if not proxy.resumed or not self.connection_current(account_key, connection_id):
+            return []
+        with self.read_db() as db:
+            rows = db.execute("SELECT record FROM runtime_monitors WHERE "
+                "json_extract(record,'$.status')='lost' AND "
+                "json_extract(record,'$.reattachRecovery.status')='running'").fetchall()
+        bindings = []
+        for row in rows:
+            monitor = json.loads(row[0])
+            operation = monitor.get("operation") or {}
+            if (not isinstance(operation, dict) or operation.get("accountKey") != account_key
+                    or operation.get("agent") != monitor.get("agent")
+                    or operation.get("epoch") != monitor.get("epoch")
+                    or not operation.get("connectionId")
+                    or operation["connectionId"] == connection_id):
+                continue
+            try:
+                proof = proxy.call("operationStatus", operationId="monitor:" + monitor["id"])
+            except RuntimeError as error:
+                if "Unknown supervisor action" not in str(error):
+                    raise
+                proof = {"accepted": False, "reason": "operation_lookup_unsupported"}
+            if not proof.get("accepted"):
+                with self.lock, self.db() as db:
+                    saved = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],)).fetchone()
+                    if saved:
+                        current = json.loads(saved[0])
+                        receipt = current.get("reattachRecovery") or {}
+                        if current.get("status") == "lost" and current.get("operation") == operation:
+                            receipt.update(status="not_reattachable", proof=proof.get("reason"))
+                            current["reattachRecovery"] = receipt
+                            self.put(db, "monitors", current)
+                continue
+            with self.lock, self.db() as db:
+                saved = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],)).fetchone()
+                if not saved:
+                    continue
+                current = json.loads(saved[0])
+                owner = self.agent(monitor["agent"], db)
+                receipt = current.get("reattachRecovery") or {}
+                if (current.get("status") != "lost" or current.get("operation") != operation
+                        or receipt.get("status") != "running" or receipt.get("epoch") != owner.get("epoch")
+                        or owner.get("deletedAt") or owner.get("status") == "paused"
+                        or owner.get("accountKey", "default") != account_key
+                        or not self.connection_current(account_key, connection_id)):
+                    continue
+                current.update(status="running", error=receipt.get("error"),
+                               reattachedConnectionId=connection_id)
+                if receipt.get("finished") is None:
+                    current.pop("finished", None)
+                else:
+                    current["finished"] = receipt["finished"]
+                current.pop("reattachRecovery", None)
+                self.put(db, "monitors", current)
+                notice = db.execute("SELECT status,text FROM runtime_events WHERE id=?",
+                                    ("monitor:" + current["id"],)).fetchone()
+                if notice and notice["status"] == "pending":
+                    try:
+                        previous = json.loads(notice["text"])
+                    except (TypeError, ValueError):
+                        previous = {}
+                    if previous.get("id") == current["id"] and previous.get("status") == "lost":
+                        db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
+                                   ("Native command reattached; discard the provisional disconnect notice.",
+                                    "monitor:" + current["id"]))
+            bindings.append({"key": monitor["id"], "operation": operation,
+                             "nativeId": proof["nativeId"], "response": proof.get("response")})
+        return bindings
+
+    def supervisor_monitor_result(self, account_key, connection_id, binding, future):
+        if self.closed or not self.connection_current(account_key, connection_id):
+            return
+        try:
+            result = future.result()
+            code = result.get("exitCode")
+            if type(code) is not int:
+                code, error = None, "Command returned no exit code; outcome unknown"
+            else:
+                error = None
+        except Exception as cause:
+            code, error = None, str(cause)
+        self.finish_monitor(binding["key"], code, error, operation=binding["operation"])
 
     def supervisor_reattached(self, account_key, connection_id, resumed):
         """Restore only work whose native child was proven to survive this restart."""
@@ -2486,9 +2665,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "accountKey": account_key, "at": now, "turnId": recovery["turnId"],
                         "threadId": recovery.get("threadId"), "epoch": recovery.get("epoch")}
                     self.put(db, "agents", agent)
-            # Task results arrive on the resumed native stream. Standalone
-            # monitor results require their original command RPC Future, which
-            # a new transport cannot reconstruct from the surviving child.
+            # Task results arrive on the resumed native stream. Monitor RPC
+            # replies use the supervisor's saved operation identity and receipt.
             rows = db.execute("SELECT record FROM runtime_tasks WHERE "
                 "json_extract(record,'$.status') IN ('lost','running','starting','approval') "
                 "AND json_extract(record,'$.reattachRecovery.accountKey')=? "
@@ -2542,7 +2720,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pending = [a for a in self.records(db, "agents")
                        if not a.get("deletedAt")
                        and (a.get("restartRecovery") or {}).get("stage") == "pending"]
-        accounts = sorted({a.get("accountKey", "default") for a in pending})
+            monitors = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' "
+                "AND json_extract(record,'$.reattachRecovery.status')='running' "
+                "AND json_type(record,'$.operation')='object'")]
+        accounts = sorted(({a.get("accountKey", "default") for a in pending}
+                           | {(m.get("operation") or {}).get("accountKey") for m in monitors}) - {None})
         if not self.supervisor_mode:
             for account in accounts:
                 self._record_supervisor_restore(account, "not_restored", "supervisor_mode_disabled")
@@ -4029,6 +4212,76 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "profileInstructions", "role")},
                 **{key: a[key] for key in ("daybreakEnabled", "cyberAccessProgram") if key in a}}
 
+    def prepare_worker_worktree(self, a, repo, timing=None):
+        if a["worktree"] and not a["worktreeReady"]:
+            with self.lock, self.db() as db:
+                latest = self.agent(a["id"], db)
+                if not latest["autoWake"] or latest["epoch"] != a["epoch"]:
+                    latest.pop("worktreePreparation", None)
+                    self.put(db, "agents", latest)
+                    return latest
+                latest["worktreePreparation"] = "preparing"
+                self.put(db, "agents", latest)
+            relative_project = Path(a["cwd"]).resolve().relative_to(Path(repo).resolve())
+            directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
+            project_directory = str(Path(directory) / relative_project)
+            branch = "codex-agent/" + a["id"]
+            # Git can commit the worktree before SQLite stores its identity.
+            # Adopt only the exact registered path and branch; preserve its files.
+            listing = subprocess.check_output(["git", "-C", repo, "worktree", "list", "--porcelain", "-z"],
+                                              timeout=30).decode("utf-8", errors="surrogateescape")
+            if timing is not None:
+                timing["worktreeListedAt"] = time.monotonic_ns()
+            registered = None
+            for block in listing.split("\0\0"):
+                fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
+                if fields.get("worktree") and Path(fields["worktree"]).resolve() == Path(directory).resolve():
+                    registered = fields
+                    break
+            if registered is not None:
+                expected_head = a.get("workerBaseCommit") or registered.get("HEAD")
+                from codex_worktree_creation import verify_registered_worktree
+                verify_registered_worktree(repo, directory, project_directory, branch,
+                                           expected_head)
+            else:
+                from codex_worktree_creation import create_worker_worktree
+                if create_worker_worktree(repo, directory, project_directory, branch,
+                                          base_commit=a.get("workerBaseCommit")):
+                    registered = {"worktree": directory, "branch": "refs/heads/" + branch}
+            if timing is not None:
+                timing["worktreeAddedAt"] = time.monotonic_ns()
+            with self.lock, self.db() as db:
+                latest = self.agent(a["id"], db)
+                latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
+                latest.pop("worktreePreparation", None)
+                self.put(db, "agents", latest)
+                a = latest
+            try:
+                if registered is None:
+                    hook_name = self.git(a, ["rev-parse", "--git-path", "hooks/post-checkout"]).decode().strip()
+                    hook = Path(hook_name)
+                    if not hook.is_absolute():
+                        hook = Path(a["cwd"]) / hook
+                    # A checkout hook can change tracked files. Capture those
+                    # changes instead of assuming that the worktree equals HEAD.
+                    if hook.is_file() and os.access(hook, os.X_OK):
+                        self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+                    else:
+                        tree = self.git(a, ["rev-parse", "HEAD^{tree}"]).decode().strip()
+                        self.capture_checkpoint(a["id"], "Before first turn", tree=tree)
+                else:
+                    self.checkpoint_capture(a["id"], "Before first turn", internal=True)
+            except Exception as error:
+                # The new worktree equals HEAD; a missing first checkpoint must not stop the worker.
+                with self.lock, self.db() as db:
+                    latest = self.agent(a["id"], db)
+                    latest["checkpointError"] = "Checkpoint skipped: " + str(error)[:500]
+                    self.put(db, "agents", latest)
+                    a = latest
+            if timing is not None:
+                timing["firstCheckpointAt"] = time.monotonic_ns()
+        return a
+
     def prepare_locked(self, a, timing=None):
         from codex_context_repair import assert_context_available
         with self.lock:
@@ -4097,67 +4350,30 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.put(db, "agents", latest)
                     a = latest
         if a["worktree"] and not a["worktreeReady"] and not a.get("imageWorkspace"):
-            relative_project = Path(a["cwd"]).resolve().relative_to(Path(repo).resolve())
-            directory = str(Path(repo) / ".worktrees" / "codex-agents" / a["id"])
-            project_directory = str(Path(directory) / relative_project)
-            branch = "codex-agent/" + a["id"]
-            # Git can commit the worktree before SQLite stores its identity.
-            # Adopt only the exact registered path and branch; preserve its files.
-            listing = subprocess.check_output(["git", "-C", repo, "worktree", "list", "--porcelain", "-z"],
-                                              timeout=30).decode("utf-8", errors="surrogateescape")
-            if timing is not None:
-                timing["worktreeListedAt"] = time.monotonic_ns()
-            registered = None
-            for block in listing.split("\0\0"):
-                fields = dict(line.split(" ", 1) for line in block.split("\0") if " " in line)
-                if fields.get("worktree") and Path(fields["worktree"]).resolve() == Path(directory).resolve():
-                    registered = fields
-                    break
-            if registered is not None:
-                expected_head = a.get("workerBaseCommit") or registered.get("HEAD")
-                if (registered.get("branch") != "refs/heads/" + branch
-                        or registered.get("HEAD") != expected_head
-                        or not Path(project_directory).is_dir()):
-                    raise ValueError("Worker worktree identity differs from its reservation; inspect the existing directory")
-                from codex_worktree_creation import verify_registered_worktree
-                verify_registered_worktree(repo, directory, project_directory, branch,
-                                           expected_head)
-            else:
-                from codex_worktree_creation import create_worker_worktree
-                if create_worker_worktree(repo, directory, project_directory, branch,
-                                           base_commit=a.get("workerBaseCommit")):
-                    registered = {"worktree": directory, "branch": "refs/heads/" + branch}
-            if timing is not None:
-                timing["worktreeAddedAt"] = time.monotonic_ns()
-            with self.lock, self.db() as db:
-                latest = self.agent(a["id"], db)
-                latest.update(cwd=project_directory, branch=branch, worktreeReady=True)
-                self.put(db, "agents", latest)
-                a = latest
-            try:
-                if registered is None:
-                    hook_name = self.git(a, ["rev-parse", "--git-path", "hooks/post-checkout"]).decode().strip()
-                    hook = Path(hook_name)
-                    if not hook.is_absolute():
-                        hook = Path(a["cwd"]) / hook
-                    # A checkout hook can change tracked files. Capture those
-                    # changes instead of assuming that the worktree equals HEAD.
-                    if hook.is_file() and os.access(hook, os.X_OK):
-                        self.checkpoint_capture(a["id"], "Before first turn", internal=True)
-                    else:
-                        tree = self.git(a, ["rev-parse", "HEAD^{tree}"]).decode().strip()
-                        self.capture_checkpoint(a["id"], "Before first turn", tree=tree)
-                else:
-                    self.checkpoint_capture(a["id"], "Before first turn", internal=True)
-            except Exception as error:
-                # The new worktree equals HEAD; a missing first checkpoint must not stop the worker.
-                with self.lock, self.db() as db:
-                    latest = self.agent(a["id"], db)
-                    latest["checkpointError"] = "Checkpoint skipped: " + str(error)[:500]
-                    self.put(db, "agents", latest)
-                    a = latest
-            if timing is not None:
-                timing["firstCheckpointAt"] = time.monotonic_ns()
+            common_git_dir = subprocess.check_output(
+                ["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                timeout=30).decode().strip()
+            key = str(Path(common_git_dir).resolve())
+            with self.lock:
+                pending = self.worktree_preparations.get(a["id"])
+                if pending is None:
+                    with self.db() as db:
+                        latest = self.agent(a["id"], db)
+                        latest["worktreePreparation"] = "waiting"
+                        self.put(db, "agents", latest)
+                    executor = self.worktree_creation_executors.get(key)
+                    if executor is None:
+                        executor = concurrent.futures.ThreadPoolExecutor(
+                            max_workers=1, thread_name_prefix="studio-worktree")
+                        self.worktree_creation_executors[key] = executor
+                    pending = executor.submit(self.prepare_worker_worktree, a, repo, timing)
+                    self.worktree_preparations[a["id"]] = pending
+                    def clear(done):
+                        with self.lock:
+                            if self.worktree_preparations.get(a["id"]) is done:
+                                self.worktree_preparations.pop(a["id"], None)
+                    pending.add_done_callback(clear)
+            raise PreparationPending(pending, "Worker folder preparation pending; no turn input has been submitted")
         if a["id"] not in self.loaded:
             if "nativeEffort" not in a:
                 catalog = self.catalog(a.get("accountKey", "default"))
@@ -4302,8 +4518,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def schedule(self):
         first_tick = True
+        last_dispatch = 0.0
         while not self.closed:
-            self.changed.wait(1)
+            woke = self.changed.wait(1)
             self.changed.clear()
             if self.closed:
                 break
@@ -4312,7 +4529,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.rules_tick()
                 self.capacity_tick()
                 self.usage_resume_tick()
-                self.dispatch()
+                now = time.monotonic()
+                if woke or now - last_dispatch >= 5:
+                    self.dispatch()
+                    last_dispatch = now
+                else:
+                    # Check archive deadlines on each scheduler tick.
+                    self.accepted_archive_tick()
                 if first_tick:
                     startup_memory_mark("scheduler-first-tick")
                     first_tick = False
@@ -4483,6 +4706,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for a in agents:
                 if a.get("liveSteerAttempt") or a.get("liveSteerRejectedTurnId") or a.get("queueNotice"):
                     self.retire_legacy_steer(db, a)
+                if (a.get("status") == "running" and a.get("inFlight") and a.get("turnId")
+                        and a.get("error") == "turn/start response timed out; outcome unknown"):
+                    a["error"] = None
+                    self.put(db, "agents", a)
             if agent_id is None:
                 self.release_failed_work(db, agents)
                 self.queue_turn_recovery(agents)
@@ -4530,6 +4757,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if fast_event_ids:
                 fast_marks["fastCandidatesAt"] = time.monotonic_ns()
             global_limit = global_concurrency_limit()
+            # Keep one busy account from filling its native reply stream with
+            # starts. Old unknown receipts do not consume a slot forever.
+            from codex_turn_recovery import START_PACE_LIMIT, recent_account_starts
+            recent_starts = recent_account_starts(agents)
             for a in candidates:
                 # The root owns the setting. Resolve it from the current DB
                 # record instead of trusting a cached descendant projection.
@@ -4542,6 +4773,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if fast_event_ids:
                     fast_marks["fastRadioCheckedAt"] = time.monotonic_ns()
                 if not busy and len(active) >= global_limit:
+                    continue
+                account_key = a.get("accountKey", "default")
+                if (not busy and a.get("provider", "codex") == "codex"
+                        and recent_starts.get(account_key, 0) >= START_PACE_LIMIT):
                     continue
                 if (not busy and a["id"] != a["rootId"]
                         and sum(t["rootId"] == a["rootId"] and t["id"] != t["rootId"]
@@ -4685,6 +4920,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 if not busy:
                     active.append(a)
+                    if a.get("provider", "codex") == "codex":
+                        recent_starts[account_key] = recent_starts.get(account_key, 0) + 1
                 self.delivery_executor().submit(self.start, a, [dict(r) for r in rows])
             if fast_event_ids:
                 fast_marks["fastDispatchDoneAt"] = time.monotonic_ns()
@@ -4915,6 +5152,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(nativeOperationId=native_operation_id, accountKey=a.get("accountKey", "default"),
                     connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
+                from codex_connection_recovery import supervisor_identity
+                current["startAttempt"]["supervisorIdentity"] = supervisor_identity(server)
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
                 db.commit()
@@ -4936,7 +5175,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             except ResponseTimeout as error:
                 self.start_error(a["id"], attempt_id, error, unknown=True)
                 # Do not occupy a worker while waiting for a late response.
-                server.on_result(submitted, lambda future: self.pool.submit(
+                getattr(server, 'on_result_now', server.on_result)(submitted, lambda future: self.recovery_pool.submit(
                     self.start_result, a["id"], dispatch_attempt, future
                 ) if not self.closed else None)
                 return
@@ -5035,6 +5274,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.changed.set()
             if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
                 return
+            a.pop("startOutcomeHold", None)
             self.capacity_started(db, a, attempt, turn)
             completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
             if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
@@ -5074,6 +5314,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False, preparation=False):
+        from codex_worktree_creation import WorktreeNeedsReview
         stream = getattr(self, '_stream_buffer', None)
         if stream:
             with self.lock, self.db() as db:
@@ -5103,6 +5344,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # Stop/disconnect owns its visible state. Unknown requests retain
             # their reservation until acceptance, rejection, or disconnection.
             current_epoch = a["epoch"] == attempt["epoch"]
+            worktree_hold = current_epoch and not unknown and isinstance(error, WorktreeNeedsReview)
             if (not unknown and attempt.get("activeAtReservation")
                     and current_epoch and a["autoWake"]):
                 # Native definitively rejected this busy input. It is safe to
@@ -5130,9 +5372,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             if unknown:
                 if current_epoch and a["autoWake"]:
-                    attempt["responseError"] = str(error)
-                    a.update(status="running" if attempt.get("activeAtReservation") else "starting",
-                             inFlight=True, error=str(error))
+                    waiting = ("The native start result is unknown. Studio is checking the original input "
+                               "in native history.")
+                    attempt["responseError"] = waiting
+                    a.update(status="running" if attempt.get("activeAtReservation") else "waiting",
+                             inFlight=True, error=waiting)
             else:
                 # Native rejects this request before submitting a turn. A cached
                 # load is no longer valid, even when the rollout still exists.
@@ -5148,6 +5392,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if current_epoch and a["autoWake"]:
                     a.update(status="running" if attempt.get("activeAtReservation") else "failed",
                              error=str(error))
+                a.pop("startOutcomeHold", None)
+            if worktree_hold:
+                a.update(status="paused", autoWake=False, error=str(error))
+                a.pop("worktreePreparation", None)
             attempt["executionOutcome"] = "unknown" if unknown else "unsent" if not attempt.get("submitted") else "rejected"
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
@@ -5165,6 +5413,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not self.worker_continuation_pending(a):
                     self.child_stopped_event(db, a, "failed", str(error),
                         "start:" + str(attempt["id"]))
+            elif worktree_hold:
+                self.child_stopped_event(db, a, "paused", str(error),
+                    "worktree:" + str(attempt["id"]))
         self.changed.set()
 
     def parent_event(self, db, a, event_id, text, *, recovery=False):
@@ -5570,6 +5821,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 else:
                     self.capacity_reset(db, a, "A new native turn replaces this retry.")
                 a["turnId"] = p["turn"]["id"]
+                if (a.get("error") == "turn/start response timed out; outcome unknown"
+                        and a.get("autoWake") and a.get("turnEpoch", a["epoch"]) == a["epoch"]):
+                    a["error"] = None
+                if (a.get("startOutcomeHold") or {}).get("attemptId") == attempt.get("id"):
+                    a.pop("startOutcomeHold", None)
                 a["lastAnswer"] = ""
                 a["activity"] = {"phase": "thinking", "at": time.time()}
                 a["activeTools"] = []
@@ -7524,10 +7780,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 return
             operation = receipt["operation"]
+            reattached = False
             if operation and not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
-                self.pending_monitor_results.pop(key, None)
-                return
-            self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
+                with self.read_db() as db:
+                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                monitor = json.loads(row[0]) if row else {}
+                account = operation["accountKey"]
+                connection = self.connection_ids.get(account)
+                if (monitor.get("status") != "running" or monitor.get("operation") != operation
+                        or monitor.get("reattachedConnectionId") != connection
+                        or not connection or not self.connection_current(account, connection)):
+                    self.pending_monitor_results.pop(key, None)
+                    return
+                reattached = True
+            if reattached:
+                from codex_monitor_recovery import recover_monitor_results
+                with self.db() as db:
+                    recovered = recover_monitor_results(self, db, keys=[key])
+                    if key not in recovered["acknowledge"]:
+                        raise OSError("The reattached monitor result is not committed")
+            else:
+                self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
             acknowledge_monitor_result(self.root, key)
         except (sqlite3.Error, OSError) as error:
             receipt["attempts"] += 1
@@ -7624,6 +7897,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 AND json_type(m.record,'$.operation.connectionId')='text'
                 AND json_extract(m.record,'$.operation.connectionId')<>''
                 AND json_extract(m.record,'$.operation.connectionId')<>c.connection
+                AND (json_extract(m.record,'$.reattachedConnectionId') IS NULL
+                     OR json_extract(m.record,'$.reattachedConnectionId')<>c.connection)
                 AND json_extract(m.record,'$.operation.accountKey')=c.account
                 AND json_extract(m.record,'$.operation.agent')=a.id
                 AND json_extract(m.record,'$.operation.epoch')=json_extract(a.record,'$.epoch')
@@ -7695,6 +7970,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     continue
                 if (m.get("status") not in {"running", "lost"} or m.get("ruleId")
                         or m.get("exitCode") is not None
+                        or m.get("reattachedConnectionId") == self.connection_ids.get(
+                            operation.get("accountKey"))
                         or (m.get("status") == "running" and m.get("finished") is not None)
                         or event["kind"] != "monitor_exit" or event["status"] != "cancelled"):
                     continue
@@ -7739,11 +8016,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def recover_monitor_receipts(self, db, *, wake=False, keys=None):
         """Restore terminal history without replaying commands or old work."""
+        # Rule checks have separate receipts. Skip them before fetching agent payloads.
         query = """SELECT m.id, m.record, a.record FROM runtime_monitors m
             JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
             LEFT JOIN runtime_events e ON e.id='monitor:' || m.id
             WHERE e.id IS NULL AND json_extract(m.record,'$.status')
-                IN ('completed','failed','cancelled','lost')"""
+                IN ('completed','failed','cancelled','lost')
+            AND CASE json_type(m.record,'$.ruleId')
+                WHEN 'text' THEN json_extract(m.record,'$.ruleId')=''
+                WHEN 'array' THEN json_array_length(m.record,'$.ruleId')=0
+                WHEN 'object' THEN NOT EXISTS (
+                    SELECT 1 FROM json_each(m.record,'$.ruleId'))
+                ELSE coalesce(json_extract(m.record,'$.ruleId'),0)=0
+            END"""
         params = ()
         if keys is not None:
             if not keys:
@@ -8324,7 +8609,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_peer_teams import snapshot as peer_snapshot
         from codex_project_folders import sidebar_order
         agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
+        agent_ids = {a["id"] for a in agents}
+        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
         team_names = {a["id"]: a["name"] for a in agents}
+        work_records = self.records(db, "work") if include_work else []
+        work_result_files = {}
+        if worker_ids:
+            if include_work:
+                result_records = iter(sorted(
+                    work_records,
+                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
+                                        record.get("status") or ""),
+                ))
+            else:
+                rows = db.execute(
+                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
+                    "(SELECT value FROM json_each(?)) "
+                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
+                    (json.dumps(sorted(worker_ids)),),
+                )
+                result_records = (json.loads(row[0]) for row in rows)
+            for record in result_records:
+                owner = record.get("owner")
+                if owner not in worker_ids:
+                    continue
+                for result in record.get("results", []):
+                    if result.get("agent") != owner or not result.get("resultFile"):
+                        continue
+                    created = result.get("created", 0)
+                    prior = work_result_files.get(owner)
+                    if prior is None or created > prior[0]:
+                        work_result_files[owner] = (created, result["resultFile"])
         for a in agents:
             a["nextTurnSettingsSupported"] = True
             a["readStateSupported"] = True
@@ -8337,7 +8652,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a.get("lastCompletedTurn") and not a.get("turnId")
                     and not a.get("inFlight") and a.get("status") == "completed"
                 ) else ""
-                result_file = self.latest_work_result_file(db, a['id'])
+                result_file = work_result_files.get(a['id'], (None, None))[1]
                 a["overview"] = {
                     "task": task[:4000], "taskTruncated": len(task) > 4000,
                     "result": result[:4000], "resultTruncated": len(result) > 4000,
@@ -8369,13 +8684,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "monitors": [
                 m
                 for m in self.recent_monitors(db)
-                if m["agent"] in {a["id"] for a in agents}
+                if m["agent"] in agent_ids
             ],
             "requests": [
                 r
                 for r in self.records(db, "requests")
                 if r["status"] == "pending"
-                and r.get("agent") in {a["id"] for a in agents}
+                and r.get("agent") in agent_ids
             ],
             "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
             "complaints": self.complaint_summaries(db),
@@ -8384,13 +8699,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # not delay every chat update.
             **({"work": [
                 w
-                for w in self.records(db, "work")
-                if w["rootId"] in {a["id"] for a in agents}
+                for w in work_records
+                if w["rootId"] in agent_ids
             ]} if include_work else {}),
             "rules": [
                 r
                 for r in self.records(db, "rules")
-                if r["agent"] in {a["id"] for a in agents}
+                if r["agent"] in agent_ids
             ],
             "rateLimits": self.rate_limits.copy(),
             "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],
@@ -8838,6 +9153,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for worker in monitor_threads:
             worker.join()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        for executor in self.worktree_creation_executors.values():
+            executor.shutdown(wait=True, cancel_futures=True)
         for name in ("_dispatch_executor", "_delivery_executor"):
             executor = getattr(self, name, None)
             if executor is not None:

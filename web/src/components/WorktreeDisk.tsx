@@ -21,7 +21,7 @@ export function WorkerDiskLabel({
 }) {
   if (!agent.worktree && !agent.imageWorkspace) return null;
   const label =
-    disk?.state === "ready" && disk.bytes !== undefined
+    disk?.state === "ready" && disk.bytes != null
       ? formatDiskBytes(disk.bytes)
       : disk?.state === "missing"
         ? "No folder"

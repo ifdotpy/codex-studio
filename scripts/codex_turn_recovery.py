@@ -7,6 +7,29 @@ from datetime import datetime
 import json
 import time
 
+START_PACE_WINDOW_SECONDS = 90
+START_PACE_LIMIT = 4
+UNKNOWN_START_HOLD_SECONDS = 600
+
+
+def recent_account_starts(agents, now=None):
+    """Count recent Codex starts that still lack a native turn identity."""
+    now = time.time() if now is None else now
+    counts = {}
+    for agent in agents:
+        attempt = agent.get('startAttempt') or {}
+        created = attempt.get('created')
+        if (agent.get('provider', 'codex') != 'codex' or not agent.get('autoWake')
+                or agent.get('deletedAt') or not agent.get('inFlight')
+                or not attempt.get('id') or attempt.get('activeAtReservation')
+                or attempt.get('turnId') or attempt.get('observedTurnId')
+                or type(created) not in (float, int)
+                or not 0 <= now - created < START_PACE_WINDOW_SECONDS):
+            continue
+        account = agent.get('accountKey', 'default')
+        counts[account] = counts.get(account, 0) + 1
+    return counts
+
 
 def read_native_turn(server, thread_id, turn_id):
     """Find the exact turn across history pages within one read deadline."""
@@ -41,12 +64,14 @@ def orphan_busy(agent):
 def unconfirmed_start(agent):
     """A submitted start needs its exact input receipt before another dispatch."""
     attempt = agent.get('startAttempt') or {}
-    return bool(agent.get('inFlight') and agent.get('autoWake') and not agent.get('turnId')
+    held = (agent.get('startOutcomeHold') or {}).get('stage') == 'held'
+    return bool((agent.get('inFlight') or held) and agent.get('autoWake') and not agent.get('turnId')
                 and agent.get('threadId') and not agent.get('deletedAt')
                 and not agent.get('nativeFailureHold') and not agent.get('accountTransferId')
                 and not agent.get('workspaceOperation') and not attempt.get('action')
                 and attempt.get('id') and attempt.get('submitted') is True
-                and attempt.get('executionOutcome') == 'unknown'
+                and (attempt.get('executionOutcome') == 'unknown'
+                     or agent.get('error') == 'turn/start response timed out; outcome unknown')
                 and attempt.get('epoch') == agent.get('epoch')
                 and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
                 and attempt.get('threadId') == agent.get('threadId')
@@ -78,12 +103,13 @@ class TurnRecoveryMixin:
                     pass
                 if unconfirmed_start(a):
                     activity = (a.get('startAttempt') or {}).get('created') or activity
-                if a['id'] != force_id and (now - activity < 120 or now - checked.get(a['id'], 0) < 60):
+                if a['id'] != force_id and (now - activity < (10 if unconfirmed_start(a) else 120)
+                        or now - checked.get(a['id'], 0) < 60):
                     continue
                 candidates.append(a)
             if not candidates:
                 return
-            selected = min(candidates, key=lambda a: checked.get(a['id'], 0))
+            selected = min(candidates, key=lambda a: (not unconfirmed_start(a), checked.get(a['id'], 0)))
             checked[selected['id']] = now
             self._turn_recovery_busy = True
             try:
@@ -110,7 +136,8 @@ class TurnRecoveryMixin:
             a = self.agent(key, db)
             account = a.get('accountKey', 'default')
             connection = self.connection_ids.get(account)
-            if (not a.get('inFlight') or not (a.get('turnId') or orphan_busy(a) or unconfirmed_start(a)) or a.get('deletedAt')
+            if (not (a.get('inFlight') or unconfirmed_start(a))
+                    or not (a.get('turnId') or orphan_busy(a) or unconfirmed_start(a)) or a.get('deletedAt')
                     or not self.connection_current(account, connection)):
                 return {'status': 'skipped'}
             server = self.servers.get(account)
@@ -152,7 +179,15 @@ class TurnRecoveryMixin:
     def reconcile_start_receipt(self, server, a, expected, connection):
         """Read an exact start receipt without replay or an idle-state inference."""
         attempt = a['startAttempt']
-        if attempt.get('connectionId') != connection:
+        from codex_connection_recovery import supervisor_identity
+        previous_child = attempt.get('supervisorIdentity')
+        current_child = supervisor_identity(server)
+        replaced_child = bool(previous_child and current_child
+            and previous_child.get('stateDir') == current_child.get('stateDir')
+            and previous_child.get('handle') == current_child.get('handle')
+            and type(previous_child.get('generation')) is int
+            and current_child['generation'] > previous_child['generation'])
+        if attempt.get('connectionId') != connection and not replaced_child:
             return {'status': 'unconfirmed'}
         message = attempt['events'][0]
         cursor, seen = None, set()
@@ -182,7 +217,13 @@ class TurnRecoveryMixin:
                     break
                 cursor = page.get('nextCursor')
                 if not cursor:
-                    # An absent input cannot cancel an original request that is still pending.
+                    # A replaced native child cannot finish an old request. A
+                    # live child can still accept its request after this read.
+                    if replaced_child:
+                        return self.restore_absent_start(server, expected, connection)
+                    if not (a.get('startOutcomeHold') or {}).get('stage') and (
+                            time.time() - attempt.get('created', time.time()) >= UNKNOWN_START_HOLD_SECONDS):
+                        return self.hold_unknown_start(server, expected, connection)
                     return {'status': 'unconfirmed'}
                 if cursor in seen:
                     raise ValueError('Native start history repeated its page cursor')
@@ -197,7 +238,7 @@ class TurnRecoveryMixin:
                                 or any(current.get(k) != value for k, value in expected.items())):
                             result.set_result({'status': 'superseded'})
                             return
-                        self.start_accepted(a['id'], attempt, {'turn': turn})
+                        self.start_accepted(a['id'], {**attempt, 'connectionId': connection}, {'turn': turn})
                         current = self.agent(a['id'])
                         if (current.get('inFlight') and current.get('turnId') == turn['id']
                                 and turn.get('status') in {'completed', 'failed', 'interrupted'}):
@@ -208,6 +249,106 @@ class TurnRecoveryMixin:
                             value = {'status': 'reconciled', 'turnId': turn['id'],
                                      'outcome': turn.get('status')}
                     result.set_result(value)
+                except Exception as error:
+                    result.set_exception(error)
+            server.after_events(apply)
+            return result.result(timeout=10)
+        except Exception as error:
+            return {'status': 'unconfirmed', 'error': str(error)}
+
+    def restore_absent_start(self, server, expected, connection):
+        """Return an exact batch only after the old native child is gone and idle history is complete."""
+        a = expected
+        try:
+            for _ in range(2):
+                thread = server.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=5)['thread']
+                status = thread.get('status') or {}
+                if (thread.get('id') != a['threadId'] or status.get('type') not in {'idle', 'notLoaded'}
+                        or status.get('activeFlags')):
+                    return {'status': 'unconfirmed'}
+            result = Future()
+            def apply():
+                try:
+                    with self.lock, self.db() as db:
+                        current = self.agent(a['id'], db)
+                        if (self.closed or not self.connection_current(a.get('accountKey', 'default'), connection)
+                                or not unconfirmed_start(current)
+                                or any(current.get(k) != value for k, value in expected.items())):
+                            result.set_result({'status': 'superseded'})
+                            return
+                        attempt = current['startAttempt']
+                        for event_id in attempt['events']:
+                            row = db.execute('SELECT agent,epoch,status,turn_id FROM runtime_events WHERE id=?',
+                                             (event_id,)).fetchone()
+                            if not row or tuple(row) != (current['id'], current['epoch'], 'uncertain', None):
+                                result.set_result({'status': 'unconfirmed'})
+                                return
+                        for event_id in attempt['events']:
+                            db.execute("UPDATE runtime_events SET status='pending',error=NULL WHERE id=?",
+                                       (event_id,))
+                        current.pop('startAttempt')
+                        current.pop('startOutcomeHold', None)
+                        current.update(status='queued', inFlight=False, error=None,
+                                       activity=None, activeTools=[])
+                        current['turnRecovery'] = {'at': time.time(), 'turnId': None,
+                            'outcome': 'input_absent', 'source': 'replaced_native_child',
+                            'attemptId': attempt['id']}
+                        self.put(db, 'agents', current)
+                        self.changed.set()
+                        result.set_result({'status': 'input_restored'})
+                except Exception as error:
+                    result.set_exception(error)
+            server.after_events(apply)
+            return result.result(timeout=10)
+        except Exception as error:
+            return {'status': 'unconfirmed', 'error': str(error)}
+
+    def hold_unknown_start(self, server, expected, connection):
+        """Stop showing a perpetual start while preserving the unresolved native input."""
+        try:
+            callbacks = getattr(server, 'callbacks', None)
+            if callbacks is not None and not callbacks.empty():
+                return {'status': 'unconfirmed'}
+            process = getattr(server, 'proc', None)
+            if getattr(server, 'supervisor_mode', False):
+                if process is None or not hasattr(process, 'call'):
+                    return {'status': 'unconfirmed'}
+                journal = process.call('status')
+                if (journal.get('sequence') != journal.get('acknowledged')
+                        or journal.get('backpressure')):
+                    return {'status': 'unconfirmed'}
+            for _ in range(2):
+                thread = server.call('thread/read', {'threadId': expected['threadId'],
+                                                     'includeTurns': False}, timeout=5)['thread']
+                status = thread.get('status') or {}
+                if (thread.get('id') != expected['threadId']
+                        or status.get('type') not in {'idle', 'notLoaded'} or status.get('activeFlags')):
+                    return {'status': 'unconfirmed'}
+            result = Future()
+            def apply():
+                try:
+                    with self.lock, self.db() as db:
+                        current = self.agent(expected['id'], db)
+                        if (self.closed or not self.connection_current(current.get('accountKey', 'default'), connection)
+                                or not unconfirmed_start(current)
+                                or any(current.get(k) != value for k, value in expected.items())):
+                            result.set_result({'status': 'superseded'})
+                            return
+                        at = time.time()
+                        reason = ('Start outcome unknown. Studio checked native history at '
+                                  + time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(at))
+                                  + '. The original request can still finish. Recover this worker before new input.')
+                        current.update(status='interrupted', inFlight=False, error=reason,
+                                       activity=None, activeTools=[])
+                        current['startAttempt']['executionOutcome'] = 'unknown'
+                        current['startOutcomeHold'] = {'stage': 'held', 'at': at,
+                            'attemptId': current['startAttempt']['id'], 'threadId': current['threadId'],
+                            'connectionId': connection, 'evidence': 'complete_history_absent_idle_twice_journal_drained'}
+                        self.child_stopped_event(db, current, 'interrupted', reason,
+                                                 'start-unknown:' + current['startAttempt']['id'])
+                        self.put(db, 'agents', current)
+                        self.changed.set()
+                        result.set_result({'status': 'held', 'at': at})
                 except Exception as error:
                     result.set_exception(error)
             server.after_events(apply)

@@ -30,6 +30,17 @@ HANDLE_LIMIT = 256 * 1024 * 1024
 SOCKET_TIMEOUT = 10
 
 
+def _retryable_storage_error(error):
+    if isinstance(error, OSError):
+        return True
+    code = getattr(error, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return code & 255 in {sqlite3.SQLITE_FULL, sqlite3.SQLITE_BUSY,
+                             sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_IOERR}
+    return isinstance(error, sqlite3.OperationalError) and str(error).lower() in {
+        "database or disk is full", "database is locked", "database table is locked", "disk i/o error"}
+
+
 def _connect(path, timeout=SOCKET_TIMEOUT):
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
@@ -74,7 +85,6 @@ class Journal:
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
-            db.execute(f"PRAGMA max_page_count={max(1, HANDLE_LIMIT // 4096)}")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS handles(
                     id TEXT PRIMARY KEY, signature TEXT NOT NULL, pid INTEGER NOT NULL,
@@ -83,7 +93,8 @@ class Journal:
                     closed_at REAL, closed_reason TEXT, generation INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS operations(
                     handle TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL,
-                    native_id INTEGER, accepted REAL NOT NULL,
+                    native_id INTEGER, accepted REAL NOT NULL, generation INTEGER,
+                    response TEXT, response_sequence INTEGER,
                     PRIMARY KEY(handle,operation_id));
                 CREATE TABLE IF NOT EXISTS events(
                     handle TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -116,15 +127,23 @@ class Journal:
             event_columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
             if "generation" not in event_columns:
                 db.execute("ALTER TABLE events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1")
+            operation_columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
+            if "generation" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN generation INTEGER")
+            if "response" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN response TEXT")
+            if "response_sequence" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN response_sequence INTEGER")
+            db.execute("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations("
+                       "handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")
 
     @contextmanager
     def db(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA synchronous=FULL")
-        db.execute("PRAGMA wal_autocheckpoint=100")
-        db.execute(f"PRAGMA max_page_count={max(1, HANDLE_LIMIT // 4096)}")
         try:
+            db.execute("PRAGMA synchronous=FULL")
+            db.execute("PRAGMA wal_autocheckpoint=100")
             with db:
                 yield db
         finally:
@@ -217,9 +236,12 @@ class Child:
     def __init__(self, handle, process, signature):
         self.handle, self.process, self.signature = handle, process, signature
         self.lock = threading.RLock()
+        self.append_lock = threading.Lock()
         self.output = threading.Condition(self.lock)
         self.stopping = threading.Event()
         self.paused = threading.Event()
+        self.persistence_errors = {}
+        self.stdout_error = None
         self.reader = threading.Thread(target=self.read_stdout, daemon=True,
                                        name="supervisor-stdout-" + handle[:8])
         self.reader.start()
@@ -229,30 +251,64 @@ class Child:
 
     def append(self, kind, payload):
         raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        size = len(raw.encode())
+        # One frame owns its candidate sequence until storage confirms it. ACK
+        # and request handling use other locks and can continue during a retry.
+        with self.append_lock:
+            self._append_frame(kind, payload, raw, size)
+
+    def _append_frame(self, kind, payload, raw, size):
+        pending = None
         while not self.stopping.is_set():
             try:
-                self.process.supervisor.journal.ensure_space(len(raw.encode()) + 1024 * 1024)
-            except OSError:
-                self.paused.set()
-                self.stopping.wait(.1)
-                continue
-            with self.lock, self.process.supervisor.journal.lock:
-                with self.process.supervisor.journal.db() as db:
-                    used = self.process.supervisor.journal.outstanding_bytes(db, self.handle)
-                    if used + len(raw.encode()) <= HANDLE_LIMIT:
-                        row = db.execute("SELECT sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
-                        if not row:
-                            return
+                journal = self.process.supervisor.journal
+                journal.ensure_space(size + 1024 * 1024)
+                with self.lock, journal.lock, journal.db() as db:
+                    used = journal.outstanding_bytes(db, self.handle)
+                    row = db.execute("SELECT sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
+                    if not row:
+                        return
+                    if pending and row[1] != pending[1]:
+                        raise RuntimeError("Supervisor output generation changed before its receipt")
+                    if pending and row[0] == pending[0]:
+                        # The full transaction committed before a storage
+                        # error was reported. This frame is already durable.
+                        self.persistence_errors.pop(kind, None)
+                        if not self.persistence_errors:
+                            self.paused.clear()
+                        self.output.notify_all()
+                        return
+                    if pending and row[0] != pending[0] - 1:
+                        raise RuntimeError("Supervisor output sequence changed before its receipt")
+                    if used + size <= HANDLE_LIMIT:
                         sequence = row[0] + 1
+                        pending = (sequence, row[1])
                         db.execute("UPDATE handles SET sequence=? WHERE id=?", (sequence, self.handle))
                         db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) "
                                    "VALUES (?,?,?,?,?,?)",
-                                   (self.handle, sequence, kind, raw, len(raw.encode()), row[1]))
+                                   (self.handle, sequence, kind, raw, size, row[1]))
+                        if kind == "stdout" and isinstance(payload, dict):
+                            if payload.get("id") == 1 and "result" in payload:
+                                db.execute("UPDATE handles SET init_result=? WHERE id=?",
+                                           (json.dumps(payload["result"]), self.handle))
+                            if type(payload.get("id")) is int and "method" not in payload:
+                                db.execute("UPDATE operations SET response=?,response_sequence=? WHERE handle=? "
+                                           "AND native_id=? AND generation=? AND substr(operation_id,1,8)='monitor:' "
+                                           "AND response IS NULL",
+                                           (raw, sequence, self.handle, payload["id"], row[1]))
                         db.commit()
-                        self.paused.clear()
+                        self.persistence_errors.pop(kind, None)
+                        if not self.persistence_errors:
+                            self.paused.clear()
                         self.output.notify_all()
                         return
                     self.paused.set()
+            except (sqlite3.Error, OSError) as error:
+                if not _retryable_storage_error(error):
+                    raise
+                with self.lock:
+                    self.persistence_errors[kind] = type(error).__name__ + ": " + str(error)[:256]
+                self.paused.set()
             # Backpressure blocks the app-server pipe reader rather than dropping
             # output. The backend health endpoint reports this state separately.
             self.stopping.wait(.1)
@@ -266,13 +322,11 @@ class Child:
                     value = {"supervisorRaw": line}
                 if isinstance(value, dict) and isinstance(value.get("method"), str):
                     value["_studioSupervisorReceivedAt"] = time.time()
-                if value.get("id") == 1 and "result" in value:
-                    with self.process.supervisor.journal.db() as db:
-                        db.execute("UPDATE handles SET init_result=? WHERE id=?",
-                                   (json.dumps(value["result"]), self.handle))
                 self.append("stdout", value)
+        except Exception as error:
+            self.stdout_error = type(error).__name__ + ": " + str(error)[:256]
         finally:
-            self.append("exit", {"returnCode": self.process.poll()})
+            self.append("exit", {"returnCode": self.process.wait()})
 
     def read_stderr(self):
         try:
@@ -308,14 +362,18 @@ class Child:
             # FULL synchronous commit is the acceptance point. Never write child
             # stdin before this commit succeeds.
             remote_id = native_id
-            if "method" in message and isinstance(native_id, int):
-                row = db.execute("SELECT rpc_sequence FROM handles WHERE id=?", (self.handle,)).fetchone()
+            rpc_request = "method" in message and isinstance(native_id, int)
+            if rpc_request:
+                row = db.execute("SELECT rpc_sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                 remote_id = row[0] + 1
                 message = {**message, "id": remote_id}
                 body = json.dumps(message, separators=(",", ":"))
                 db.execute("UPDATE handles SET rpc_sequence=? WHERE id=?", (remote_id, self.handle))
-            db.execute("INSERT INTO operations VALUES (?,?,?,?,?)",
-                       (self.handle, operation_id, digest, remote_id, time.time()))
+            else:
+                row = db.execute("SELECT generation FROM handles WHERE id=?", (self.handle,)).fetchone()
+            db.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) "
+                       "VALUES (?,?,?,?,?,?)",
+                       (self.handle, operation_id, digest, remote_id, time.time(), row[1] if rpc_request else row[0]))
             db.commit()
             self.process.stdin.write(body + "\n")
             self.process.stdin.flush()
@@ -428,9 +486,13 @@ class Supervisor:
                         "signature": signature, "startTime": identity[0] if identity else None,
                         "sequence": row["sequence"], "acknowledged": row["acknowledged"],
                         "bufferedBytes": self.journal.outstanding_bytes(db, row["id"]),
-                        "backpressure": bool(child and child.paused.is_set())})
+                        "backpressure": bool(child and child.paused.is_set()),
+                        "stdoutReaderAlive": bool(child and child.reader.is_alive()),
+                        "stdoutReaderError": child.stdout_error if child else None,
+                        "persistenceErrors": dict(child.persistence_errors) if child else {}})
             return {"protocol": PROTOCOL, "stateDir": str(self.root), "handles": handles,
-                    "journalLimitBytes": HANDLE_LIMIT, "durability": "sqlite-full-sync-per-request",
+                    "journalLimitBytes": HANDLE_LIMIT, "outputLimitBytesPerHandle": HANDLE_LIMIT,
+                    "durability": "sqlite-full-sync-per-request",
                     "recovery": self.recovery}
         if request.get("action") == "finishFallback":
             if self.recovery.get("blocked"):
@@ -498,6 +560,22 @@ class Supervisor:
         action = request.get("action")
         if action == "write":
             return child.write(request["operationId"], request.get("nativeId"), request["message"])
+        if action == "operationStatus":
+            operation_id = request.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id.startswith("monitor:"):
+                raise ValueError("Invalid monitor operation identity")
+            with self.journal.db() as db:
+                row = db.execute("SELECT native_id,generation,response,response_sequence FROM operations "
+                                 "WHERE handle=? AND operation_id=?", (handle, operation_id)).fetchone()
+                current, acknowledged = db.execute(
+                    "SELECT generation,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
+            if not row or row[1] != current or type(row[0]) is not int:
+                return {"accepted": False, "reason": (
+                    "operation_missing" if not row else
+                    "native_generation_changed" if row[1] != current else "rpc_identity_missing")}
+            return {"accepted": True, "nativeId": row[0],
+                    "response": json.loads(row[2]) if row[2] and type(row[3]) is int
+                    and row[3] <= acknowledged else None}
         if action == "ack":
             sequence = request.get("sequence")
             with self.journal.db() as db:
@@ -507,8 +585,9 @@ class Supervisor:
                 db.execute("DELETE FROM events WHERE handle=? AND sequence<=?", (handle, sequence))
                 db.execute("UPDATE handles SET acknowledged=? WHERE id=?", (sequence, handle))
                 db.commit()
-            with self.journal.db() as db:
-                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # SQLite checkpoints the WAL automatically. A synchronous TRUNCATE
+            # after every event makes the single replay stream wait for disk I/O
+            # before it can deliver later RPC replies.
             return {"acknowledged": sequence}
         if action == "replay":
             cursor = request.get("cursor")
@@ -813,10 +892,17 @@ def process_launch_environment(pid):
     return environment
 
 
+# Backend diagnostics and ownership. A native child neither reads nor needs
+# them, so they must not change its launch identity.
+BACKEND_ONLY_ENVIRONMENT = ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS',
+                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE')
+
+
 def native_launch_environment(root, handle, command, env, cwd):
-    """Backend ownership is transport metadata, not a native launch setting."""
+    """Exclude backend ownership and diagnostics from native launch settings."""
     clean = dict(env)
-    clean.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in BACKEND_ONLY_ENVIRONMENT:
+        clean.pop(key, None)
     path = Path(root) / 'supervisor.sqlite3'
     db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True)
     try:
@@ -844,7 +930,8 @@ def native_launch_environment(root, handle, command, env, cwd):
         # A macOS Python launcher can add this marker after a script's exec.
         original.pop('__PYVENV_LAUNCHER__', None)
     comparable = dict(original)
-    comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in BACKEND_ONLY_ENVIRONMENT:
+        comparable.pop(key, None)
     # Reattachment keeps the child's accepted launch, including its PATH and
     # locale. A backend launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,
@@ -962,10 +1049,13 @@ class ProcessProxy:
         method = request.get("method", "reply")
         params = request.get("params", {})
         identity = operation_id or request.get("operationId") or self._operation_identity(method, params, request)
-        result = self.call("write", operationId=identity, nativeId=request.get("id"), message=request)
-        self.last_durable_ms = result["durableMs"]
-        if result.get("remoteId") is not None and isinstance(request.get("id"), int):
-            self.remote_to_local[result["remoteId"]] = request["id"]
+        # A native reply can enter the journal before the write receipt returns.
+        # Publish its local ID before next_event can classify that reply.
+        with self.event_lock:
+            result = self.call("write", operationId=identity, nativeId=request.get("id"), message=request)
+            self.last_durable_ms = result["durableMs"]
+            if "method" in request and result.get("remoteId") is not None and isinstance(request.get("id"), int):
+                self.remote_to_local[result["remoteId"]] = request["id"]
         return result
 
     def _operation_identity(self, method, params, request):

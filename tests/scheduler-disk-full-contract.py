@@ -15,7 +15,7 @@ source = Path(__file__).resolve().parents[1] / "scripts/codex_runtime.py"
 module = ast.parse(source.read_text())
 cls = next(n for n in module.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
 method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "schedule")
-scope = {"time": time}
+scope = {"time": time, "startup_memory_mark": lambda _: None}
 exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), scope)
 
 class SchedulerDiskContract(unittest.TestCase):
@@ -36,6 +36,7 @@ class SchedulerDiskContract(unittest.TestCase):
                 if seen.count("wait") > 3: raise AssertionError("Scheduler did not recover")
             def clear(self): pass
         rt = types.SimpleNamespace(root=Root(), changed=Wake(), closed=False)
+        rt.monitors_tick = lambda: None
         def rules():
             seen.append("rules")
             if seen.count("rules") == 1: raise sqlite3.OperationalError("disk I/O error")

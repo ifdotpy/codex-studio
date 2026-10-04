@@ -87,13 +87,37 @@ def eligible(agent):
     restart_pending = restart_turn_pending(agent)
     marker = agent.get('restartRecovery') or {}
     stale_restart = marker.get('stage') in {'pending', 'superseded'}
-    return preparation_eligible(agent) or queued_restart_eligible(agent) or queued_active_wait_eligible(agent) or restart_pending or transport_turn_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
+    return disconnected_preparation_eligible(agent) or preparation_eligible(agent) or queued_restart_eligible(agent) or queued_active_wait_eligible(agent) or restart_pending or transport_turn_eligible(agent) or (agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and not agent.get('startAttempt')
             and not stale_restart
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
             and not agent.get('deletedAt') and agent.get('threadId') and agent.get('turnId')
             and isinstance(agent.get('error'), str) and agent['error'] in DISCONNECT_ERRORS
             and not native_thread_block(agent))
+
+
+def disconnected_preparation_eligible(agent):
+    """A retained pre-submit receipt proves that the original input stayed local."""
+    previous = agent.get('disconnectRecovery') or {}
+    attempt = previous.get('startAttempt') or {}
+    events = attempt.get('events')
+    return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
+        and not agent.get('autoWake') and not agent.get('startAttempt') and not agent.get('turnId')
+        and agent.get('error') == 'Codex disconnected. Review the transcript before resuming.'
+        and previous.get('autoWake') and not previous.get('turnId')
+        and all(previous.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId'))
+        and attempt.get('id') and attempt.get('submitted') is False
+        and attempt.get('epoch') == agent.get('epoch')
+        and attempt.get('accountKey', 'default') == agent.get('accountKey', 'default')
+        and not attempt.get('activeAtReservation') and not attempt.get('turnId')
+        and not attempt.get('observedTurnId') and not attempt.get('action')
+        and isinstance(events, list) and 0 < len(events) <= 32
+        and all(isinstance(event, str) and event for event in events)
+        and len(events) == len(set(events))
+        and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
+        and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+        and not native_thread_block(agent)
+        and (agent.get('restartRecovery') or {}).get('stage') not in {'pending', 'held', 'superseded'})
 
 
 def restart_turn_pending(agent):
@@ -156,10 +180,22 @@ def queued_active_wait_eligible(agent):
     scope = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
     events = attempt.get('events')
     repair_source = repair.get('source') or {}
+    disconnect = agent.get('disconnectRecovery') or {}
+    surviving_restart = (marker.get('stage') == 'finished' and marker.get('autoWake')
+        and disconnect.get('source') == 'restart' and disconnect.get('autoWake')
+        and all(disconnect.get(field) == agent.get(field)
+                for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
+        and repair.get('phase') == 'failed'
+        and str(repair.get('error', '')).startswith('Context repair requires a confirmed idle native thread; native status: ')
+        and repair_source.get('threadId') == agent.get('threadId'))
+    continued = (marker.get('stage') == 'continued' and marker.get('outcome') == 'active'
+        and recovery.get('source') == 'native_thread_read' and recovery.get('outcome') == 'active'
+        and recovery.get('automatic') is True and recovery.get('turnId') == agent.get('turnId'))
     same_repair = (repair.get('agent') == agent.get('id')
         and all(repair_source.get(field) == scope[field] for field in ('id', 'accountKey', 'epoch'))
         and ((repair.get('phase') == 'unchanged' and repair_source.get('threadId') == agent.get('threadId'))
-             or (repair.get('phase') == 'completed' and repair.get('newThreadId') == agent.get('threadId'))))
+             or (repair.get('phase') == 'completed' and repair.get('newThreadId') == agent.get('threadId'))
+             or surviving_restart))
     return bool(agent.get('status') == 'queued' and agent.get('autoWake') and not agent.get('inFlight')
         and agent.get('threadId') and agent.get('turnId')
         and agent.get('turnEpoch', agent['epoch']) == agent['epoch']
@@ -179,10 +215,9 @@ def queued_active_wait_eligible(agent):
         and isinstance(events, list) and 0 < len(events) <= 32
         and all(isinstance(event, str) and event for event in events)
         and len(events) == len(set(events)) and wait.get('events') == events
-        and marker.get('stage') == 'continued' and marker.get('outcome') == 'active' and marker.get('autoWake')
+        and (continued or surviving_restart) and marker.get('autoWake')
         and all(marker.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
-        and recovery.get('source') == 'native_thread_read' and recovery.get('outcome') == 'active'
-        and recovery.get('automatic') is True and recovery.get('turnId') == agent['turnId'])
+        )
 
 
 def recover(runtime, key, *, automatic=False):
@@ -221,6 +256,8 @@ def recover(runtime, key, *, automatic=False):
         with runtime.lock, runtime.db() as db:
             if not current(runtime, db, expected, connection, server):
                 return {'status': 'superseded'}
+        if disconnected_preparation_eligible(agent):
+            return restore_disconnected_preparation(runtime, expected, connection, server)
         if preparation_eligible(agent):
             return restore_preparation(runtime, expected, connection, server)
         thread = server.call('thread/read', {'threadId': agent['threadId'], 'includeTurns': False}, timeout=5)['thread']
@@ -410,7 +447,8 @@ def recover_queued_active_wait(runtime, expected, connection, server):
                         agent['lastContextRepairWait'] = {**wait, 'status': 'superseded',
                             'reason': 'The exact native turn was confirmed', 'finishedAt': time.time()}
                         agent.update(status='running', inFlight=True, error=None)
-                        agent['connectionRecovery'] = {**agent['connectionRecovery'], 'at': time.time(),
+                        agent['connectionRecovery'] = {**(agent.get('connectionRecovery') or {}), 'at': time.time(),
+                            'turnId': expected['turnId'], 'outcome': 'active',
                             'supervisor': native_identity, 'queuedInputPreserved': True,
                             'attemptId': attempt['id'], 'eventIds': list(attempt['events'])}
                         runtime.loaded.add(agent['id'])
@@ -600,6 +638,36 @@ def restore_queued_restart(runtime, expected, connection, server, turn):
                                         'turn:' + str(turn.get('id') or 'unknown'))
     runtime.changed.set()
     return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': outcome, 'queuedInputPreserved': True}
+
+
+def restore_disconnected_preparation(runtime, expected, connection, server):
+    """Return only the exact unsubmitted batch to its original queue."""
+    with runtime.lock, runtime.db() as db:
+        if not current(runtime, db, expected, connection, server):
+            return {'status': 'superseded'}
+        agent = runtime.agent(expected['id'], db)
+        if not disconnected_preparation_eligible(agent):
+            return {'status': 'superseded'}
+        attempt = agent['disconnectRecovery']['startAttempt']
+        rows = []
+        for event_id in attempt['events']:
+            row = db.execute('SELECT agent,epoch,status,turn_id FROM runtime_events WHERE id=?',
+                             (event_id,)).fetchone()
+            if (not row or row['agent'] != agent['id'] or row['epoch'] != agent['epoch']
+                    or row['status'] not in {'pending', 'reserved'} or row['turn_id'] is not None):
+                return {'status': 'unconfirmed'}
+            rows.append(event_id)
+        for event_id in rows:
+            db.execute("UPDATE runtime_events SET status='pending',error=NULL WHERE id=? "
+                       "AND agent=? AND epoch=? AND status IN ('pending','reserved') AND turn_id IS NULL",
+                       (event_id, agent['id'], agent['epoch']))
+        agent['connectionRecovery'] = {'source': 'disconnected_preparation', 'at': time.time(),
+            'attemptId': attempt['id'], 'eventIds': rows, 'previousError': agent['error'],
+            'outcome': 'input_restored'}
+        agent.update(status='queued', autoWake=True, inFlight=False, error=None)
+        runtime.put(db, 'agents', agent)
+    runtime.changed.set()
+    return {'status': 'input_restored', 'attemptId': attempt['id']}
 
 
 def restore_preparation(runtime, expected, connection, server):

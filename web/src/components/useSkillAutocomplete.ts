@@ -1,16 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { get, type GetResult } from "../api";
 
-export interface SkillItem {
-  name: string;
-  description: string;
-  path: string;
-}
-
-interface SkillCatalog {
-  skills: SkillItem[];
-  errors: string[];
-}
+type SkillCatalog = GetResult<"/api/skills">;
+export type SkillItem = SkillCatalog["skills"][number];
 
 interface CacheEntry {
   expiresAt: number;
@@ -32,9 +24,8 @@ function catalogFor(key: string, agentId: string): Promise<SkillCatalog> {
   if (existing?.failed && existing.expiresAt > Date.now())
     return Promise.reject(new Error("Skill catalog unavailable"));
 
-  const params = new URLSearchParams({ agent: agentId });
   const entry: CacheEntry = { expiresAt: Date.now() + CACHE_TTL_MS };
-  const pending = api<SkillCatalog>(`/api/skills?${params}`)
+  const pending = get("/api/skills", { query: { agent: agentId } })
     .then((result) => {
       const value = {
         skills: Array.isArray(result.skills) ? result.skills : [],

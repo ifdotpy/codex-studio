@@ -32,6 +32,10 @@ try {
   signCode(speech, identity);
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
+  await cp(
+    path.join(root, "../requirements.txt"),
+    path.join(resources, "requirements.txt"),
+  );
   await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
     recursive: true,
     filter: (source) =>

@@ -28,12 +28,74 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, apiDownload, errorText } from "../../api";
+import {
+  get,
+  post,
+  apiDownload,
+  errorText,
+  type ApiPostPath,
+  type GetResult,
+  type PostBody,
+} from "../../api";
+import type { paths } from "../../generated/api";
 import "./background-controls.css";
-import type { Agent, BackgroundTask, Json, Snapshot } from "../../types";
+import type { Agent, BackgroundTask, JsonValue, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
+
+type BackgroundAction = <Path extends ApiPostPath>(
+  path: Path,
+  body: PostBody<Path>,
+) => Promise<boolean>;
+type TaskDetailResponse =
+  paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
+type MonitorTask = NonNullable<Snapshot["runtime"]>["monitors"][number];
+type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
+type PendingRequest = NonNullable<Snapshot["runtime"]>["requests"][number];
+
+const taskStatuses: readonly BackgroundTask["status"][] = [
+  "running",
+  "starting",
+  "approval",
+  "queued",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "lost",
+];
+
+function isTaskStatus(value: unknown): value is BackgroundTask["status"] {
+  return taskStatuses.some((status) => status === value);
+}
+
+export function monitorTask(monitor: MonitorTask): BackgroundTask | null {
+  if (
+    typeof monitor.agent !== "string" ||
+    typeof monitor.created !== "number" ||
+    !isTaskStatus(monitor.status)
+  )
+    return null;
+  return {
+    ...monitor,
+    agent: monitor.agent,
+    created: monitor.created,
+    kind: "monitor",
+    status: monitor.status,
+  };
+}
+
+function workspaceTask(task: WorkspaceTask | BackgroundTask): BackgroundTask {
+  return { ...task };
+}
+
+function isJsonObject(
+  value: JsonValue | null | undefined,
+): value is Record<string, JsonValue> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 export { activeTask, backgroundTasks } from "../backgroundTaskModel";
 const labels: Record<string, string> = {
@@ -151,10 +213,10 @@ export default function BackgroundTasks({
   }, [opened]);
   const agents = data.threads,
     tasks = [
-      ...(data.runtime.monitors || []).map(
-        (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
-      ),
-      ...(taskFeed ?? data.runtime.tasks ?? []),
+      ...(data.runtime?.monitors ?? [])
+        .map(monitorTask)
+        .filter((task): task is BackgroundTask => task !== null),
+      ...(taskFeed ?? data.runtime?.tasks ?? []).map(workspaceTask),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
@@ -359,7 +421,7 @@ export default function BackgroundTasks({
             opened={opened}
             owner={owner(selectedTask.agent)}
             now={now}
-            requests={data.runtime.requests}
+            requests={data.runtime?.requests ?? []}
             back={() => setMobileDetail(false)}
             openAgent={() => {
               close();
@@ -403,13 +465,13 @@ function TaskDetail({
   opened: boolean;
   owner?: Agent;
   now: number;
-  requests: Json[];
+  requests: PendingRequest[];
   back: () => void;
   openAgent: () => void;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
-  const [detail, setDetail] = useState<BackgroundTask | null>(null),
+  const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
     if (!opened || summary.kind === "monitor") return;
@@ -417,9 +479,7 @@ function TaskDetail({
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const value = await api<BackgroundTask>(
-          "/api/task?id=" + encodeURIComponent(summary.id),
-        );
+        const value = await get("/api/task", { query: { id: summary.id } });
         if (!stopped) {
           setDetail(value);
           setLoadError("");
@@ -445,12 +505,21 @@ function TaskDetail({
     if (follow && output.current)
       output.current.scrollTop = output.current.scrollHeight;
   }, [task.tail, follow]);
-  const act = async (path: string, body: Json) => {
+  const act: BackgroundAction = async <Path extends ApiPostPath>(
+    path: Path,
+    body: PostBody<Path>,
+  ) => {
     setPending(true);
     try {
-      const result = await api(path, body);
+      const result = await post(path, body);
       await refresh();
-      if (result?.error) throw new Error(displayError(result.error));
+      if (
+        result &&
+        typeof result === "object" &&
+        "error" in result &&
+        result.error
+      )
+        throw new Error(displayError(result.error));
       return true;
     } catch (error) {
       notify(errorText(error));
@@ -460,7 +529,10 @@ function TaskDetail({
     }
   };
   const request = requests.find(
-    (r) => r.method === "monitor/approve" && r.params?.monitorId === task.id,
+    (r) =>
+      r.method === "monitor/approve" &&
+      isJsonObject(r.params) &&
+      r.params.monitorId === task.id,
   );
   const Icon = iconFor(task),
     age = elapsed(task, now);
@@ -651,7 +723,7 @@ function TaskDetail({
             color="red"
             leftSection={<Square size={12} />}
             loading={pending}
-            disabled={task.cancelRequested}
+            disabled={!!task.cancelRequested}
             onClick={() => void act("/api/monitor/cancel", { id: task.id })}
           >
             {task.cancelRequested ? "Stop requested" : "Cancel monitor"}
@@ -676,7 +748,7 @@ function ProcessInput({
 }: {
   task: BackgroundTask;
   pending: boolean;
-  act: (path: string, body: Json) => Promise<boolean>;
+  act: BackgroundAction;
 }) {
   const [input, setInput] = useState("");
   const [rows, setRows] = useState<string | number>(24);
@@ -688,14 +760,16 @@ function ProcessInput({
   const native = task.kind === "command";
   const send = async () => {
     const sent = input;
-    const ok = await act(
-      native ? "/api/native-command" : "/api/monitor/input",
-      {
-        id: task.id,
-        text: sent + "\n",
-        ...(native ? { action: "input" } : {}),
-      },
-    );
+    const ok = native
+      ? await act("/api/native-command", {
+          id: task.id,
+          action: "input",
+          text: sent + "\n",
+        })
+      : await act("/api/monitor/input", {
+          id: task.id,
+          text: sent + "\n",
+        });
     if (ok) setInput((current) => (current === sent ? "" : current));
   };
   return (
@@ -812,9 +886,7 @@ async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
   try {
     let blob: Blob, name: string;
     if (task.kind === "monitor") {
-      const result = await apiDownload(
-        "/api/monitor/log?id=" + encodeURIComponent(task.id),
-      );
+      const result = await apiDownload("/api/monitor/log", { id: task.id });
       blob = result.blob;
       name = result.name;
       if (result.truncated)

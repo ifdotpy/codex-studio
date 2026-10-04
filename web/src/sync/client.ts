@@ -5,9 +5,11 @@ import { replicateRxCollection } from "rxdb/plugins/replication";
 import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
 import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
-import { syncApi as api, ApiError, saved, save, setWorkspace } from "../api";
+import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
+import type { GetOptions } from "../api";
 
 import { onResume } from "./resume";
+import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
   clearWorkspaceTokenRates,
   receiveWorkspaceTokenRates,
@@ -22,6 +24,12 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
+function isGenerationCounter(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+const syncStreamQuery = {
+  protocol: "2",
+} satisfies NonNullable<GetOptions<"/api/sync/stream">["query"]>;
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -53,18 +61,17 @@ let pending: ReturnType<typeof open> | undefined;
 async function open() {
   const cached = saved<string>("codex-sync-workspace", "");
   const hasCache = /^[a-f0-9]{32}$/.test(cached);
-  type Identity = { workspaceId: string };
   const identify = async () => {
     if (navigator.onLine === false)
       throw new TypeError("The device is offline.");
-    const identity = await api<Identity>("/api/sync/identity");
+    const identity = await syncGet("/api/sync/identity");
     if (!/^[a-f0-9]{32}$/.test(identity.workspaceId))
       throw new Error("Invalid workspace identity");
     return identity;
   };
   const initialIdentity = identify();
   let grace: ReturnType<typeof setTimeout> | undefined;
-  let identity: Identity | null = null;
+  let identity: Awaited<ReturnType<typeof identify>> | null = null;
   try {
     identity = await (hasCache
       ? Promise.race([
@@ -88,7 +95,7 @@ async function open() {
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
-  let firstCheck: Promise<Identity> | undefined = initialIdentity;
+  let firstCheck: ReturnType<typeof identify> | undefined = initialIdentity;
   let checking: Promise<void> | undefined;
   const verifyWorkspace = () => {
     if (verified) return Promise.resolve();
@@ -178,15 +185,16 @@ async function pull(
   priorityId?: string | null,
 ) {
   await verifyWorkspace();
-  const fresh =
-    initialHigh !== undefined ? `&fresh=1&initialHigh=${initialHigh}` : "";
-  const reset = scope === "state:entities:v1" ? "&reset=1" : "";
-  const priority = priorityId
-    ? `&priorityId=${encodeURIComponent(priorityId)}`
-    : "";
-  const result = await api(
-    `/api/sync/pull?scope=${encodeURIComponent(scope)}&after=${after}&limit=${limit}${fresh}${reset}${priority}`,
-  );
+  const result = await syncGet("/api/sync/pull", {
+    query: {
+      scope,
+      after,
+      limit,
+      ...(initialHigh !== undefined ? { fresh: "1", initialHigh } : {}),
+      ...(scope === "state:entities:v1" ? { reset: "1" } : {}),
+      ...(priorityId ? { priorityId } : {}),
+    },
+  });
   if (result.workspaceId !== workspaceId) throw new WorkspaceMismatchError();
   return result;
 }
@@ -200,7 +208,7 @@ let latestTranscriptRevisions: TranscriptRevisions | undefined;
 const revisionListeners = new Set<(value: TranscriptRevisions) => void>();
 function receiveTranscriptRevisions(value: {
   workspaceId?: string;
-  transcriptRevisions?: Record<string, number>;
+  transcriptRevisions?: Record<string, number> | null;
 }) {
   const revisions = value.transcriptRevisions;
   if (
@@ -324,42 +332,49 @@ export function watchSyncInvalidations(
         value: {
           protocol?: number;
           workspaceId?: string;
-          generations?: Record<string, number>;
-          transcriptRevisions?: Record<string, number>;
+          generations?: {
+            drafts?: number;
+            state?: number;
+            transcripts?: number;
+          };
+          transcriptRevisions?: Record<string, number> | null;
         },
         acceptRevisions = true,
       ) => {
         const generations = value?.generations;
-        const expected = ["drafts", "state", "transcripts"];
-        const valid =
-          value?.protocol === 2 &&
-          /^[a-f0-9]{32}$/.test(value.workspaceId || "") &&
-          generations &&
-          Object.keys(generations).sort().join(",") === expected.join(",") &&
-          expected.every(
-            (changedScope) =>
-              Number.isSafeInteger(generations[changedScope]) &&
-              generations[changedScope] >= 0,
-          );
-        if (!valid || (workspaceId && value.workspaceId !== workspaceId)) {
+        if (
+          value?.protocol !== 2 ||
+          !/^[a-f0-9]{32}$/.test(value.workspaceId || "") ||
+          !generations ||
+          Object.keys(generations).sort().join(",") !==
+            "drafts,state,transcripts" ||
+          !isGenerationCounter(generations.drafts) ||
+          !isGenerationCounter(generations.state) ||
+          !isGenerationCounter(generations.transcripts) ||
+          (workspaceId && value.workspaceId !== workspaceId)
+        ) {
           lastGenerations = undefined;
           lastWorkspaceId = undefined;
           notify();
           return false;
         }
+        const current = {
+          drafts: generations.drafts,
+          state: generations.state,
+          transcripts: generations.transcripts,
+        };
         if (
           (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
           (lastGenerations &&
-            expected.some(
-              (changedScope) =>
-                generations[changedScope] < lastGenerations![changedScope],
-            ))
+            (current.drafts < lastGenerations.drafts ||
+              current.state < lastGenerations.state ||
+              current.transcripts < lastGenerations.transcripts))
         ) {
           lastGenerations = undefined;
           notify();
         }
         lastWorkspaceId = value.workspaceId;
-        applyGenerations(generations!);
+        applyGenerations(current);
         if (acceptRevisions) receiveTranscriptRevisions(value);
         return true;
       };
@@ -378,11 +393,7 @@ export function watchSyncInvalidations(
       };
       const pollGenerations = () => {
         if (!available()) return;
-        void api<{
-          protocol: number;
-          workspaceId: string;
-          generations: Record<string, number>;
-        }>("/api/sync/generations")
+        void syncGet("/api/sync/generations")
           .then((value) => {
             if (stopped) return;
             const accepted = applyGenerationState(value);
@@ -435,7 +446,9 @@ export function watchSyncInvalidations(
         if (!available() || !isOwner || source) return;
         let connectedSource: EventSource;
         try {
-          connectedSource = new EventSource("/api/sync/stream?protocol=2");
+          connectedSource = new EventSource(
+            `/api/sync/stream?${new URLSearchParams(syncStreamQuery)}`,
+          );
           source = connectedSource;
         } catch {
           // The elected lock holder already polls the compact generation row.
@@ -1155,11 +1168,21 @@ async function acquireProjection(
                 : null,
             );
             if (stopped) return;
-            if (remoteScope === "state:entities:v1" && result.reset === true) {
+            if (isEntityResetResponse(result, remoteScope)) {
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
             }
+            if (
+              remoteScope === "state:entities:v1" &&
+              initialHigh !== undefined &&
+              result.initialHigh == null
+            )
+              throw new Error(
+                "The server omitted the initial sync checkpoint.",
+              );
+            if (remoteScope === "state:entities:v1" && result.maxSeq == null)
+              throw new Error("The server omitted the sync sequence limit.");
             if (
               remoteScope === "state:entities:v1" &&
               initialHigh !== undefined
@@ -1167,10 +1190,13 @@ async function acquireProjection(
               await persistProjection(db.projections, {
                 id: "state:entities:initial",
                 payload: "{}",
-                seq: result.initialHigh,
+                seq: requiredSyncNumber(
+                  result.initialHigh,
+                  "initial checkpoint",
+                ),
               });
             const entityBatch: SyncDocument[] = [];
-            for (const document of result.documents as SyncDocument[]) {
+            for (const document of result.documents) {
               if (
                 remoteScope === "state:entities:v1"
                   ? !document.id.startsWith("entity:")
@@ -1199,8 +1225,12 @@ async function acquireProjection(
                       workspaceId,
                       verifyWorkspace,
                     );
-                    const fullDocument = full.documents?.find(
-                      (row: SyncDocument) => row.id === scope && !row._deleted,
+                    if (full.reset === true)
+                      throw new Error(
+                        "The server reset transcript sync unexpectedly.",
+                      );
+                    const fullDocument = full.documents.find(
+                      (row) => row.id === scope && !row._deleted,
                     );
                     if (!fullDocument)
                       throw new Error(
@@ -1246,10 +1276,14 @@ async function acquireProjection(
                 });
                 readyPublished = true;
               }
-              initialHigh = result.initialHigh;
+              initialHigh = requiredSyncNumber(
+                result.initialHigh,
+                "initial checkpoint",
+              );
               more =
                 result.documents.length === ENTITY_BATCH_SIZE &&
-                result.checkpoint.seq < result.maxSeq;
+                result.checkpoint.seq <
+                  requiredSyncNumber(result.maxSeq, "maximum sequence");
             } else {
               more = false;
             }
@@ -1513,22 +1547,25 @@ export async function startDraftReplication(
     retryTime: 3000,
     pull: {
       handler: (checkpoint, batchSize) =>
-        attempt("pull", () =>
-          pull(
+        attempt("pull", async () => {
+          const result = await pull(
             "drafts",
             checkpoint?.seq || 0,
             batchSize,
             workspaceId,
             verifyWorkspace,
-          ),
-        ),
+          );
+          if (result.reset === true)
+            throw new Error("The server reset draft sync unexpectedly.");
+          return { documents: result.documents, checkpoint: result.checkpoint };
+        }),
       batchSize: 100,
     },
     push: {
       handler: (rows) =>
         attempt("push", async () => {
           await verifyWorkspace();
-          return api("/api/sync/drafts", { rows }, { workspaceId });
+          return syncPost("/api/sync/drafts", { rows }, { workspaceId });
         }),
       batchSize: 100,
     },

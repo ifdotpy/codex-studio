@@ -5,6 +5,7 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
+import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
@@ -58,9 +59,18 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import { api, ApiError, errorText, save, saved } from "./api";
+import {
+  get,
+  post,
+  ApiError,
+  errorText,
+  save,
+  saved,
+  type PostBody,
+} from "./api";
 import { useSnapshot } from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
+import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
   fontFamilies,
@@ -86,6 +96,30 @@ import {
   type Agent,
   type Json,
 } from "./types";
+
+type LeadCreateRequest = Omit<
+  PostBody<"/api/leads">,
+  "id" | "previous" | "reuse_empty" | "cwd" | "project_folder" | "account_key"
+> & {
+  id: string;
+  previous: string | null;
+  reuse_empty: boolean;
+  cwd?: string;
+  project_folder?: string;
+  account_key?: string;
+};
+function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
+  return (
+    typeof value.id === "string" &&
+    !!value.id &&
+    (value.previous === null || typeof value.previous === "string") &&
+    typeof value.reuse_empty === "boolean" &&
+    (value.cwd === undefined || typeof value.cwd === "string") &&
+    (value.project_folder === undefined ||
+      typeof value.project_folder === "string") &&
+    (value.account_key === undefined || typeof value.account_key === "string")
+  );
+}
 import Sidebar from "./components/Sidebar";
 import {
   chatIndicators,
@@ -370,7 +404,9 @@ export default function App() {
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
     ),
-    [limitsByAccount, setLimitsByAccount] = useState<Record<string, Json>>({}),
+    [limitsByAccount, setLimitsByAccount] = useState<
+      Record<string, AccountLimitsSnapshot>
+    >({}),
     [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -392,8 +428,8 @@ export default function App() {
   }, [data?.stateDir]);
   const receipts = useMemo(
     () =>
-      new Map((data?.runtime.events || []).map((event) => [event.id, event])),
-    [data?.runtime.events],
+      new Map((data?.runtime?.events || []).map((event) => [event.id, event])),
+    [data?.runtime?.events],
   );
   const prepareChat = useChatPrefetch(data, opened, workspaceId);
   useEffect(() => {
@@ -413,9 +449,19 @@ export default function App() {
         .filter((entry) => receipts.get(entry.id)?.status !== "cancelled")
         .map((entry) => {
           const receipt = receipts.get(entry.id);
-          return receipt && ["failed", "uncertain"].includes(receipt.status)
-            ? { ...entry, status: receipt.status, error: receipt.error }
-            : entry;
+          if (receipt?.status === "failed")
+            return {
+              ...entry,
+              status: "failed",
+              error: receipt.error || undefined,
+            } satisfies OutgoingMessage;
+          if (receipt?.status === "uncertain")
+            return {
+              ...entry,
+              status: "uncertain",
+              error: receipt.error || undefined,
+            } satisfies OutgoingMessage;
+          return entry;
         }),
     [outgoingMessages, receipts],
   );
@@ -429,8 +475,8 @@ export default function App() {
   } = useSyncedDrafts();
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
-  const creation = useRef<Json | null>(null),
-    sends = useRef<Record<string, Json>>({}),
+  const creation = useRef<LeadCreateRequest | null>(null),
+    sends = useRef<Record<string, PostBody<"/api/messages">>>({}),
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
@@ -492,7 +538,7 @@ export default function App() {
       (a) => a.source === "managed" && a.isLead && !a.sharedRoomId,
     ),
     agent = agents.find((a) => a.id === opened),
-    room = data?.runtime.rooms?.find((r) => r.id === opened),
+    room = data?.runtime?.rooms?.find((r) => r.id === opened),
     legacy = data?.chats.find((c) => c.id === opened),
     roomRoots = room ? roomLeadIds(room, agents) : [],
     lead = room?.radio
@@ -569,8 +615,8 @@ export default function App() {
     accountId,
   );
   const snapshotLimits =
-    data?.runtime.rateLimitsByAccount?.[accountKey] ||
-    (accountKey === "default" ? data?.runtime.rateLimits : null);
+    data?.runtime?.rateLimitsByAccount?.[accountKey] ||
+    (accountKey === "default" ? data?.runtime?.rateLimits : null);
   const matchingSnapshot = accountLimits(snapshotLimits, accountKey, accountId);
   const visibleLimits =
     matchingSnapshot &&
@@ -611,7 +657,7 @@ export default function App() {
     if (!data) return;
     if (
       agent?.sharedRoomId &&
-      data.runtime.rooms.some(
+      data.runtime?.rooms.some(
         (room) => room.id === agent.sharedRoomId && !room.userHidden,
       )
     ) {
@@ -628,7 +674,7 @@ export default function App() {
       if (
         selected &&
         (data.threads.some((item) => item.id === selected) ||
-          data.runtime.rooms.some((item) => item.id === selected) ||
+          data.runtime?.rooms.some((item) => item.id === selected) ||
           data.chats.some((item) => item.id === selected))
       ) {
         setOpened(selected);
@@ -646,7 +692,7 @@ export default function App() {
     if (!opened || (!agent && !room && !legacy))
       setOpened(
         leads.at(-1)?.id ||
-          data.runtime.rooms
+          data.runtime?.rooms
             .filter((room) => room.radio?.direct && !room.userHidden)
             .at(-1)?.id ||
           null,
@@ -718,10 +764,9 @@ export default function App() {
         Date.now() / 1000 - (cached.at || 0) < 60
       )
         return Promise.resolve();
-      const query =
-        key === "default" ? "" : `?account_key=${encodeURIComponent(key)}`;
       setLimitsLoading((old) => ({ ...old, [key]: true }));
-      const request = api("/api/limits" + query, undefined, {
+      const request = get("/api/limits", {
+        query: key === "default" ? undefined : { account_key: key },
         timeoutMs: 25000,
       })
         .then((result) => {
@@ -770,12 +815,12 @@ export default function App() {
         !item.deletedAt &&
         (item.id === rootId ||
           (item.rootId === rootId &&
-            !item.archivedAt &&
+            !item.archived &&
             (item.inFlight ||
               ["running", "queued", "approval", "starting"].includes(
-                item.status,
+                item.status ?? "",
               ) ||
-              (["waiting", "parked"].includes(item.status) &&
+              (["waiting", "parked"].includes(item.status ?? "") &&
                 ["answer", "working"].includes(
                   indicators.get(item.id)?.kind || "",
                 ))))),
@@ -804,8 +849,8 @@ export default function App() {
           account?.accountId,
         );
         const snapshot =
-          data?.runtime.rateLimitsByAccount?.[key] ||
-          (key === "default" ? data?.runtime.rateLimits : null);
+          data?.runtime?.rateLimitsByAccount?.[key] ||
+          (key === "default" ? data?.runtime?.rateLimits : null);
         const matching = accountLimits(snapshot, key, account?.accountId);
         const limits =
           matching && (!cached || (matching.at || 0) > (cached.at || 0))
@@ -815,7 +860,7 @@ export default function App() {
           key,
           label: account?.label || key,
           email: account?.email,
-          provider: account?.provider,
+          provider: account?.provider ?? undefined,
           accountId: account?.accountId,
           signedOut: !!account?.disconnected,
           limits,
@@ -829,8 +874,8 @@ export default function App() {
     indicators,
     accounts.data.accounts,
     limitsByAccount,
-    data?.runtime.rateLimitsByAccount,
-    data?.runtime.rateLimits,
+    data?.runtime?.rateLimitsByAccount,
+    data?.runtime?.rateLimits,
     limitsLoading,
     reloadLimitsFor,
   ]);
@@ -841,7 +886,7 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accounts.data.accounts.find((item) => item.id === key);
       if (account?.disconnected) continue;
-      void api(`/api/limits?account_key=${encodeURIComponent(key)}&cached=1`)
+      void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
           if (!accountLimits(result, key, account?.accountId) || !result.data)
             return;
@@ -880,8 +925,8 @@ export default function App() {
   }, [accountKey, visibleLimits?.error, reloadLimits]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
-    const incoming = { ...data?.runtime.rateLimitsByAccount };
-    if (data?.runtime.rateLimits && !incoming.default)
+    const incoming = { ...data?.runtime?.rateLimitsByAccount };
+    if (data?.runtime?.rateLimits && !incoming.default)
       incoming.default = data.runtime.rateLimits;
     setLimitsByAccount((old) => {
       let next = old;
@@ -893,7 +938,7 @@ export default function App() {
       }
       return next;
     });
-  }, [data?.runtime.rateLimits, data?.runtime.rateLimitsByAccount]);
+  }, [data?.runtime?.rateLimits, data?.runtime?.rateLimitsByAccount]);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -926,10 +971,13 @@ export default function App() {
     if (creationLock.current) return null;
     if (!retryId && !cwd) {
       cwd =
-        lead?.cwd ||
+        (lead?.cwd ?? undefined) ||
         (mobileClient
-          ? data?.runtime.projects?.[0]?.path ||
-            leads.find((item) => item.cwd)?.cwd
+          ? (typeof data?.runtime?.projects?.[0]?.path === "string"
+              ? data.runtime.projects[0].path
+              : undefined) ||
+            leads.find((item) => item.cwd)?.cwd ||
+            undefined
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
@@ -937,9 +985,13 @@ export default function App() {
       const pending = pendingChatCreations(creationKey);
       creation.current =
         (retryId
-          ? pending.find((request) => request.id === retryId)
+          ? pending.find(
+              (request): request is LeadCreateRequest =>
+                isLeadCreateRequest(request) && request.id === retryId,
+            )
           : pending.find(
-              (request) =>
+              (request): request is LeadCreateRequest =>
+                isLeadCreateRequest(request) &&
                 (request.cwd ||
                   leads.find((item) => item.id === request.previous)?.cwd) ===
                   cwd &&
@@ -955,9 +1007,11 @@ export default function App() {
     if (creation.current) cwd = creation.current.cwd;
     if (mobileClient && !cwd) {
       cwd =
-        lead?.cwd ||
-        data?.runtime.projects?.[0]?.path ||
-        leads.find((item) => item.cwd)?.cwd;
+        (lead?.cwd ?? undefined) ||
+        (typeof data?.runtime?.projects?.[0]?.path === "string"
+          ? data.runtime.projects[0].path
+          : undefined) ||
+        (leads.find((item) => item.cwd)?.cwd ?? undefined);
       if (!cwd) {
         setSidebar(false);
         setModal({
@@ -965,7 +1019,7 @@ export default function App() {
           body: (
             <ProjectDirectoryPicker
               onSelect={async (path) => {
-                await api("/api/projects", { path });
+                await post("/api/projects", { path });
                 setModal(null);
                 await refresh();
                 await newChat(path);
@@ -987,26 +1041,34 @@ export default function App() {
       ...(cwd ? { cwd } : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
       ...(cwd &&
-      data?.runtime.projects?.find((project) => project.path === cwd)
+      data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
         ? {
-            account_key: data.runtime.projects.find(
-              (project) => project.path === cwd,
-            )!.accountKey,
+            account_key:
+              data.runtime?.projects?.find((project) => project.path === cwd)
+                ?.accountKey ?? undefined,
           }
         : {}),
     };
+    const creationRequest = creation.current;
+    if (!creationRequest) {
+      creationLock.current = false;
+      setCreating(false);
+      return null;
+    }
     if (!opened && getDraft("new"))
-      setDraft(getDraft("new"), creation.current.id);
+      setDraft(getDraft("new"), creationRequest.id);
     try {
       // Save the exact request before sending it. A lost response must retain this identity.
-      saveChatCreation(creationKey, creation.current);
+      saveChatCreation(creationKey, creationRequest);
       setPendingCreations(pendingChatCreations(creationKey));
-      const a = await api("/api/leads", creation.current, { timeoutMs: 15000 });
-      if (a.id !== creation.current.id)
+      const a = await post("/api/leads", creationRequest, {
+        timeoutMs: 15000,
+      });
+      if (a.id !== creationRequest.id)
         throw new Error("The server returned another chat identity.");
       rememberCreated(a, creationScope);
-      confirmChatCreation(creationKey, creation.current.id);
+      confirmChatCreation(creationKey, creationRequest.id);
       setPendingCreations(pendingChatCreations(creationKey));
       if (!opened && getDraft("new")) setDraft(getDraft("new"), a.id);
       setToast("");
@@ -1021,7 +1083,7 @@ export default function App() {
         setTeamOpen(false);
       }
       void refresh();
-      return a.id as string;
+      return a.id;
     } catch (e) {
       notify(errorText(e));
       return null;
@@ -1032,7 +1094,7 @@ export default function App() {
   };
   const send = async (options?: {
     assets?: string[];
-    attachments?: Json[];
+    attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
     delivery?: "after_tool" | "after_turn";
   }) => {
@@ -1048,14 +1110,17 @@ export default function App() {
       sendingLock.current = null;
       setSending(false);
     };
-    let request: Json | undefined;
+    let request: PostBody<"/api/messages"> | undefined;
     try {
       if (renameCommand(text) !== undefined && !opened)
         throw new Error("Open a chat before using /rename.");
       const id = opened || (await newChat());
       if (!id) return;
       latestSend.current[id] = attempt;
-      if (agent?.source === "managed" && studioCommand(text, agent.provider)) {
+      if (
+        agent?.source === "managed" &&
+        studioCommand(text, agent.provider ?? undefined)
+      ) {
         const [command] = text.split(/\s+/);
         if (options?.assets?.length)
           throw new Error(
@@ -1075,10 +1140,7 @@ export default function App() {
           }
           const request_id = renameRequests.current[id].id;
           const body = { id, name, request_id };
-          const result = await api<{ status: string; error?: string }>(
-            "/api/rename",
-            body,
-          );
+          const result = await post("/api/rename", body);
           const finishRename = async (receipt: typeof result, attempts = 0) => {
             if (receipt.status === "pending") {
               if (attempts >= 90) {
@@ -1090,7 +1152,7 @@ export default function App() {
               window.setTimeout(async () => {
                 try {
                   await finishRename(
-                    await api("/api/rename", body),
+                    await post("/api/rename", body),
                     attempts + 1,
                   );
                 } catch (error) {
@@ -1111,8 +1173,8 @@ export default function App() {
           };
           void finishRename(result);
         } else if (command === "/stop" || command === "/stop-team")
-          await api("/api/stop", {
-            id: command === "/stop-team" ? agent.rootId : id,
+          await post("/api/stop", {
+            id: command === "/stop-team" ? (agent.rootId ?? id) : id,
             descendants: command === "/stop-team",
           });
         else
@@ -1177,8 +1239,8 @@ export default function App() {
               : result.status === "uncertain"
                 ? "uncertain"
                 : "accepted",
-            receipt: result,
-            error: result.error,
+            ...(result.kind === "server" ? { receipt: result } : {}),
+            error: result.error || undefined,
           },
         }));
         if (result.status === "cancelled") {
@@ -1202,7 +1264,10 @@ export default function App() {
           delete sends.current[id];
           persistSends();
         }
-        if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
+        if (
+          result.kind === "server" &&
+          Object.values(result.deliveries || {}).some((v) => v !== "queued")
+        )
           notify("Message saved. Some deliveries are not confirmed.");
       }
       if (!request)
@@ -1261,7 +1326,7 @@ export default function App() {
   };
   const rename = async (id: string, name: string) => {
     try {
-      await api("/api/rename", { id, name, request_id: crypto.randomUUID() });
+      await post("/api/rename", { id, name, request_id: crypto.randomUUID() });
       await refresh();
     } catch (e) {
       notify(errorText(e));
@@ -1284,19 +1349,25 @@ export default function App() {
             data-delete-chat={id}
             onClick={() =>
               void run(async () => {
-                const r = await api(
+                const r = await post(
                   isRoom ? "/api/room/delete" : "/api/conversation/delete",
                   { id },
                 );
+                const deleted =
+                  typeof r.deleted === "string"
+                    ? [r.deleted]
+                    : (r.deleted || []).filter(
+                        (value): value is string => typeof value === "string",
+                      );
                 setModal(null);
-                if (!isRoom) forgetCreated(r.deleted);
-                if (r.deleted.includes(opened)) {
+                if (!isRoom) forgetCreated(deleted);
+                if (opened && deleted.includes(opened)) {
                   navigationIntent.current++;
                   setOpened(null);
                 }
                 setDrafts((old) => {
                   const next = { ...old };
-                  for (const key of r.deleted) delete next[key];
+                  for (const key of deleted) delete next[key];
                   return next;
                 });
               })
@@ -1313,9 +1384,9 @@ export default function App() {
       title: "Choose project folder",
       body: (
         <ProjectDirectoryPicker
-          initialPath={target.cwd}
+          initialPath={target.cwd ?? undefined}
           onSelect={async (cwd) => {
-            await api("/api/conversation", { id: target.id, cwd });
+            await post("/api/conversation", { id: target.id, cwd });
             setModal(null);
             await refresh();
           }}
@@ -1353,13 +1424,14 @@ export default function App() {
     );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
-    data.runtime.projects?.find((item) => item.path === agent?.cwd)?.name ||
+    data.runtime?.projects?.find((item) => item.path === agent?.cwd)?.name ||
     agent?.cwd?.split("/").filter(Boolean).at(-1);
-  const answerIds = awaitingAnswerIds(chatData?.runtime.requests || []);
+  const answerIds = awaitingAnswerIds(chatData?.runtime?.requests || []);
   const deferredIds = new Set<string>(
-    (chatData?.runtime.requests || [])
+    (chatData?.runtime?.requests || [])
       .filter((request) => request.deferred && request.status === "pending")
-      .map((request) => request.agent),
+      .map((request) => request.agent)
+      .filter((agentId): agentId is string => typeof agentId === "string"),
   );
   const worker = (a: Agent) => (
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
@@ -1372,7 +1444,10 @@ export default function App() {
         indicator={indicators.get(a.id)}
         open={() => open(a.id)}
         previewResult={() =>
-          setFilePreview({ agent: a.id, path: a.overview?.resultFile })
+          setFilePreview({
+            agent: a.id,
+            path: a.overview?.resultFile ?? undefined,
+          })
         }
         remove={() => {
           setTeamOpen(false);
@@ -1393,12 +1468,12 @@ export default function App() {
       : workerFilter === "attention"
         ? failed(a)
         : workerFilter === "active"
-          ? busy.has(a.status)
+          ? busy.has(a.status ?? "")
           : true,
   );
   // The same states and names as the team summary; Finished stays collapsed below.
   const panelState = (a: Agent) =>
-    a.inFlight && ["running", "starting"].includes(a.status)
+    a.inFlight && ["running", "starting"].includes(a.status ?? "")
       ? "working"
       : workerState(a, answerIds, deferredIds);
   const groups = TEAM_PANEL_STATES.filter(
@@ -1552,7 +1627,7 @@ export default function App() {
             body: (
               <ProjectDirectoryPicker
                 onSelect={async (path) => {
-                  await api("/api/projects", { path });
+                  await post("/api/projects", { path });
                   setModal(null);
                   await refresh();
                 }}
@@ -1568,19 +1643,21 @@ export default function App() {
             body: (
               <ProjectAccount
                 path={path}
-                project={data.runtime.projects?.find(
+                project={data.runtime?.projects?.find(
                   (item) => item.path === path,
                 )}
                 accounts={accounts.data}
                 defaultAccountKey={
-                  data.runtime.projects
+                  data.runtime?.projects
                     ?.filter(
                       (item) =>
-                        path === item.path ||
-                        path.startsWith(item.path.replace(/\/$/, "") + "/"),
+                        typeof item.path === "string" &&
+                        (path === item.path ||
+                          path.startsWith(item.path.replace(/\/$/, "") + "/")),
                     )
-                    .sort((a, b) => b.path.length - a.path.length)[0]
-                    ?.accountKey || accounts.data.defaultAccountKey
+                    .sort(
+                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
+                    )[0]?.accountKey || accounts.data.defaultAccountKey
                 }
                 saved={async () => {
                   await refresh();
@@ -1660,9 +1737,9 @@ export default function App() {
                     ? livePhase.label
                     : [
                         statusLabel(
-                          agent.status,
-                          agent.activity?.phase,
-                          agent.parkedEvent,
+                          agent.status ?? "unknown",
+                          agent.activity?.phase ?? undefined,
+                          agent.parkedEvent ?? undefined,
                         ),
                         nativeReleaseLabel(agent),
                       ]
@@ -1707,8 +1784,11 @@ export default function App() {
               Team
               {workers.length > 0 && (
                 <span className="team-button-count">
-                  {workers.filter((worker) => busy.has(worker.status)).length}/
-                  {workers.length}
+                  {
+                    workers.filter((worker) => busy.has(worker.status ?? ""))
+                      .length
+                  }
+                  /{workers.length}
                 </span>
               )}
             </Button>
@@ -1791,7 +1871,10 @@ export default function App() {
                     onClick={toggleTeam}
                   >
                     Team{" "}
-                    {workers.filter((worker) => busy.has(worker.status)).length}
+                    {
+                      workers.filter((worker) => busy.has(worker.status ?? ""))
+                        .length
+                    }
                     /{workers.length}
                   </Menu.Item>
                 )}
@@ -1820,7 +1903,9 @@ export default function App() {
                       ] as const
                     )
                       .filter(([action]) =>
-                        menuActions(agent.provider).includes(action),
+                        menuActions(agent.provider ?? undefined).includes(
+                          action,
+                        ),
                       )
                       .map(([action, label, Icon]) => (
                         <Menu.Item
@@ -1828,7 +1913,7 @@ export default function App() {
                           data-action={action}
                           leftSection={<Icon size={14} />}
                           disabled={
-                            busy.has(agent.status) ||
+                            busy.has(agent.status ?? "") ||
                             !!agent.inFlight ||
                             !!nativeThreadError(agent) ||
                             !agent.threadId
@@ -1843,7 +1928,7 @@ export default function App() {
                     {(!!agent.inFlight ||
                       team.some(
                         (member) =>
-                          busy.has(member.status) ||
+                          (member.status != null && busy.has(member.status)) ||
                           member.status === "queued" ||
                           member.inFlight,
                       )) && (
@@ -1853,8 +1938,8 @@ export default function App() {
                         leftSection={<Square size={14} />}
                         onClick={() => {
                           void run(() =>
-                            api("/api/stop", {
-                              id: agent.rootId,
+                            post("/api/stop", {
+                              id: agent.rootId ?? agent.id,
                               descendants: true,
                             }),
                           );
@@ -1964,7 +2049,17 @@ export default function App() {
                     (item.id === agent?.id || item.rootId === lead?.id) &&
                     (item.accountKey || "default") === account.id,
                 )
-                .flatMap((item) => [item.error, item.nativeStatus?.error])}
+                .flatMap((item) => {
+                  const nativeStatus = item.nativeStatus;
+                  const nativeError =
+                    nativeStatus &&
+                    typeof nativeStatus === "object" &&
+                    "error" in nativeStatus
+                      ? nativeStatus.error
+                      : undefined;
+                  return [item.error, nativeError];
+                })
+                .filter((value): value is string => typeof value === "string")}
               onSignIn={
                 account.provider === "claude"
                   ? setClaudeLoginKey
@@ -1979,7 +2074,7 @@ export default function App() {
         )}
         <div className="sync-notices">
           {!creating &&
-            pendingCreations.map((request) => (
+            pendingCreations.filter(isLeadCreateRequest).map((request) => (
               <div className="sync-status" key={request.id}>
                 <p>
                   The previous chat request needs confirmation:{" "}
@@ -2065,7 +2160,9 @@ export default function App() {
                 setSidebar(false);
                 setTeamOpen(false);
               }}
-              onNewChat={() => void newChat(agent?.cwd || lead?.cwd)}
+              onNewChat={() =>
+                void newChat(agent?.cwd || lead?.cwd || undefined)
+              }
               onChooseChat={() => {
                 setSidebar(true);
                 setSidebarCollapsed(false);
@@ -2107,7 +2204,7 @@ export default function App() {
       {(workspaceRendered || workspaceOpen) && (
         <Suspense fallback={null}>
           <Workspace
-            allRequests={data.runtime.requests}
+            allRequests={data.runtime?.requests || []}
             key={`workspace:${lead?.id || "none"}`}
             initialSection={workspaceSection}
             initialFocus={workspaceFocus}
@@ -2385,7 +2482,7 @@ export default function App() {
                 <FederationSettings
                   active={studioSettingsOpen}
                   leadId={lead.id}
-                  agents={data?.runtime.agents || []}
+                  agents={data?.runtime?.agents || []}
                   refresh={refresh}
                   notify={notify}
                 />
@@ -2491,14 +2588,16 @@ export default function App() {
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
-                  data.runtime.projects
+                  data.runtime?.projects
                     ?.filter(
                       (project) =>
-                        (agent || lead)?.cwd === project.path ||
-                        (agent || lead)?.cwd?.startsWith(project.path + "/"),
+                        typeof project.path === "string" &&
+                        ((agent || lead)?.cwd === project.path ||
+                          (agent || lead)?.cwd?.startsWith(`${project.path}/`)),
                     )
-                    .sort((a, b) => b.path.length - a.path.length)[0]
-                    ?.accountKeys
+                    .sort(
+                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
+                    )[0]?.accountKeys ?? undefined
                 }
                 state={accounts}
                 agent={agent || lead}
@@ -2507,7 +2606,7 @@ export default function App() {
                 changeAccount={async (key) => {
                   const selectedAgent = agent || lead;
                   if (selectedAgent?.isLead) {
-                    const selected = await api("/api/agents/account", {
+                    const selected = await post("/api/agents/account", {
                       id: selectedAgent.id,
                       account_key: key,
                     });
@@ -2515,7 +2614,7 @@ export default function App() {
                     await refresh();
                   } else {
                     accounts.setData(
-                      await api("/api/accounts/default", {
+                      await post("/api/accounts/default", {
                         account_key: key,
                       }),
                     );
@@ -2563,7 +2662,7 @@ export default function App() {
                 agent={lead}
                 catalog={workerModels}
                 accounts={accounts.data.accounts}
-                team={data?.runtime.agents || []}
+                team={data?.runtime?.agents || []}
                 refresh={refresh}
                 teamDefaults
               />
@@ -2589,7 +2688,7 @@ export default function App() {
               disabled={creating}
               onClick={() => {
                 setSettingsOpen(false);
-                void newChat(agent.cwd);
+                void newChat(agent.cwd ?? undefined);
               }}
             >
               New chat in this project

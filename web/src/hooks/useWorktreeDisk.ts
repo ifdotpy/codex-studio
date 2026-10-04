@@ -1,21 +1,8 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { get } from "../api";
+import type { GetResult } from "../api";
 
-export interface WorktreeDiskSnapshot {
-  workers: Record<
-    string,
-    { state: string; bytes?: number; scannedAt?: number; measure?: string }
-  >;
-  totalBytes: number;
-  baseBytes?: number;
-  storageBytes?: number;
-  bases?: Record<string, { state: string; bytes?: number; measure?: string }>;
-  limitBytes: number;
-  measure?: string;
-  warning: boolean;
-  scanning: boolean;
-  error?: string | null;
-}
+export type WorktreeDiskSnapshot = GetResult<"/api/worktree-disk">;
 
 export function useWorktreeDisk(
   enabled: boolean,
@@ -34,13 +21,9 @@ export function useWorktreeDisk(
     let priorityPending = prioritize && !!workerKey;
     const load = async () => {
       try {
-        const query = priorityPending
-          ? `?workers=${encodeURIComponent(workerKey)}`
-          : "";
+        const query = priorityPending ? { workers: workerKey } : undefined;
         priorityPending = false;
-        const result = await api<WorktreeDiskSnapshot>(
-          `/api/worktree-disk${query}`,
-        );
+        const result = await get("/api/worktree-disk", { query });
         if (!stopped)
           setDisk((old) =>
             JSON.stringify(old) === JSON.stringify(result) ? old : result,

@@ -30,10 +30,15 @@ menu can disable that service without stopping the server or its active work.
   one continuation when no operation or input has an unknown outcome.
 - In supervisor mode, a replacement backend first opens each stable native
   handle. When the supervisor confirms that the same live child resumed, Studio
-  restores that handle's exact in-flight turns, monitors, and background tasks
+  restores that handle's exact in-flight turns, accepted monitor commands, and background tasks
   before it consumes journal replay. The existing turn continues; Studio does
   not submit it again. The journal cursor and transcript item identities keep
   replayed output and completion idempotent.
+- The supervisor saves each monitor command reply under its accepted operation ID.
+  A replacement backend uses that ID to bind the reply to the original monitor.
+  It keeps the monitor running while the native command waits to finish.
+  If no matching operation exists in the same native generation, the monitor
+  stays lost. Studio does not run the command again.
 - A new child generation, dead or unverified child, fallback backend, disabled
   supervisor, or failed handle open does not grant reattachment. Existing
   interrupted or uncertain recovery remains in force, and accepted input is
@@ -108,9 +113,9 @@ and p95 18.854 ms over 80 RPCs. These figures are host- and storage-dependent.
 If the supervisor dies between the durable receipt and the child write, the
 operation outcome is uncertain; the receipt prevents an automatic retry.
 
-Unacknowledged output is limited to 256 MiB per handle. ACK removes event rows;
-the supervisor checkpoints and truncates its WAL after ACK, with an automatic
-checkpoint every 100 pages. The SQLite database also has a 256 MiB page limit.
+Unacknowledged output is limited to 256 MiB per handle. ACK removes event rows.
+SQLite uses an automatic checkpoint every 100 pages.
+Operation receipts have no fixed database size limit.
 At the per-handle limit the supervisor stops reading that child's output pipe,
 which applies backpressure to the child. Status reports the handle as stalled;
 an RPC refused because the journal is full returns an explicit error to the
@@ -198,11 +203,12 @@ to supervisor mode. The v1 tests exercise process death using private state and
 fake children; they do not prove model-provider behavior under a host power
 failure.
 
-The supervisor checks that at least 272 MiB is free before creating its bounded
+The supervisor checks that at least 272 MiB is free before it creates the
 journal and checks free space before durable writes. Low disk space stalls child
 output with pipe backpressure; diagnostics identify the affected handle and
-state. The UI shows that output has paused. The overall database page limit is
-256 MiB, including retained operation receipts. Native binary replacement is
+state. The UI shows that output has paused. A temporary storage error keeps the
+same output frame in memory until SQLite can save it. Operation receipts remain
+available to prevent command replay. Native binary replacement is
 deferred while supervisor mode is on; v1 keeps the current child identity until
 fallback or a planned idle cutover. Native tool catalog replacement
 also stays deferred when it requires stopping the child. Existing chats continue

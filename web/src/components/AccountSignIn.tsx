@@ -2,23 +2,11 @@ import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText, save, saved } from "../api";
+import { errorText, post, save, saved, type PostResult } from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
 
-export interface LoginReceipt {
-  requestId: string;
-  accountKey: string;
-  resolvedAccountKey?: string;
-  status: string;
-  loginId?: string;
-  verificationUrl?: string;
-  userCode?: string;
-  error?: unknown;
-  createdAt?: number;
-  reauthAccountKey?: string;
-  email?: string;
-}
+export type LoginReceipt = PostResult<"/api/accounts/login">;
 const active = (status?: string) =>
   ["starting", "pending", "uncertain"].includes(status || "");
 
@@ -101,7 +89,7 @@ export default function AccountSignIn({
             ? requestId
             : crypto.randomUUID();
       remember(id);
-      const result = await api<LoginReceipt>(
+      const result = await post(
         "/api/accounts/login",
         {
           request_id: id,
@@ -117,7 +105,7 @@ export default function AccountSignIn({
     run("cancel", async () => {
       if (!receipt) return;
       store(
-        await api<LoginReceipt>(
+        await post(
           "/api/accounts/login/cancel",
           { request_id: receipt.requestId },
           { timeoutMs: 15000 },

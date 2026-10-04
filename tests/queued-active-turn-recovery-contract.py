@@ -74,6 +74,42 @@ class QueuedActiveRecovery(unittest.TestCase):
                 self.assertEqual(params['limit'], 1)
                 self.assertEqual(params['itemsView'], 'notLoaded')
 
+    def failed_idle_repair(self):
+        scope = {field: self.initial[field] for field in ('epoch', 'accountKey', 'threadId', 'turnId')}
+        return self.update(
+            contextRepair={**self.initial['contextRepair'], 'phase': 'failed',
+                'error': 'Context repair requires a confirmed idle native thread; native status: {"type":"active"}'},
+            restartRecovery={**self.initial['restartRecovery'], 'stage': 'finished'},
+            disconnectRecovery={**scope, 'autoWake': True, 'source': 'restart'},
+            connectionRecovery={'source': 'native_thread_read', 'turnId': 'older-turn', 'outcome': 'interrupted'})
+
+    def test_surviving_restart_turn_replaces_false_queued_state_without_native_input(self):
+        self.failed_idle_repair()
+        events = self.events()
+        self.assertEqual(recovery.recover(self.runtime, self.key), {'status': 'adopted', 'turnId': 'live-turn'})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'running')
+        self.assertTrue(agent['inFlight'])
+        self.assertEqual(agent['connectionRecovery']['turnId'], 'live-turn')
+        self.assertNotIn('contextRepairWait', agent)
+        self.assertEqual(self.events(), events)
+        self.assert_native_reads()
+
+    def test_failed_idle_repair_needs_the_exact_restart_scope(self):
+        original = self.failed_idle_repair()
+        for field, value in [('turnId', 'older-turn'), ('epoch', 1), ('source', 'transport'), ('autoWake', False)]:
+            with self.subTest(field=field):
+                changed = {**original['disconnectRecovery'], field: value}
+                self.update(disconnectRecovery=changed)
+                self.assertEqual(recovery.recover(self.runtime, self.key), {'status': 'superseded'})
+        self.assertEqual(self.server.calls, [])
+
+    def test_failed_idle_repair_does_not_replace_the_exact_native_turn(self):
+        original = self.failed_idle_repair()
+        self.server.native['turns'] = [{'id': 'newer-turn', 'status': 'inProgress', 'items': []}]
+        self.assertEqual(recovery.recover(self.runtime, self.key)['status'], 'unconfirmed')
+        self.assertEqual(self.runtime.agent(self.key), original)
+
     def test_automatic_and_manual_adopt_live_turn_without_new_native_input(self):
         events = self.events()
         for automatic in (False, True):

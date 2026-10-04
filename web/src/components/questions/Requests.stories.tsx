@@ -1,18 +1,22 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import Requests from "./Requests";
-import type { Agent, Json } from "../../types";
+import type { Agent } from "../../types";
+import type { components } from "../../generated/api";
+
+type RequestDto = components["schemas"]["RequestEntityDto"];
 
 const agent = {
+  kind: "agent",
   id: "worker-1",
   name: "Release worker",
   source: "managed",
   status: "approval",
   model: "gpt-6",
   created: 1,
-} as Agent;
+} satisfies Agent;
 
-const question = {
+const question: RequestDto = {
   id: "question-1",
   agent: agent.id,
   method: "agent/asyncQuestion",
@@ -30,7 +34,7 @@ const question = {
       },
     ],
   },
-} as Json;
+};
 
 const meta = {
   title: "Questions/Requests",

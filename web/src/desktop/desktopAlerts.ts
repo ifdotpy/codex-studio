@@ -12,18 +12,22 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
   const alerts: DesktopAlert[] = [];
   const add = (
     id: string,
-    agentId: string,
+    agentId: string | null | undefined,
     title: string,
     body: string,
     itemId?: string,
   ) => {
-    const agent = agents.get(agentId);
+    const agent = typeof agentId === "string" ? agents.get(agentId) : undefined;
     if (!agent || agent.deletedAt) return;
     alerts.push({
       id,
       title: `${agent.name}: ${title}`.slice(0, 160),
       body: body.slice(0, 2000),
-      target: { agentId, section: "messages", ...(itemId ? { itemId } : {}) },
+      target: {
+        agentId: agent.id,
+        section: "messages",
+        ...(itemId ? { itemId } : {}),
+      },
     });
   };
   for (const agent of agents.values()) {
@@ -55,7 +59,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
             : "Open the chat to check the error.",
       );
   }
-  for (const request of data.runtime.requests) {
+  for (const request of data.runtime?.requests ?? []) {
     if (request.status !== "pending" || request.deferred) continue;
     const question = request.params?.questions?.[0]?.question;
     add(
@@ -66,7 +70,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
       request.id,
     );
   }
-  for (const complaint of data.runtime.complaints) {
+  for (const complaint of data.runtime?.complaints ?? []) {
     if (
       complaint.needsResponse &&
       (complaint.recipient === "user" ||
@@ -76,7 +80,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
         `complaint:${complaint.id}:${complaint.version || 0}`,
         complaint.leadId,
         "Message for you",
-        complaint.title,
+        complaint.title || "Open the message to read it.",
         complaint.id,
       );
   }

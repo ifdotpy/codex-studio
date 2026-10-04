@@ -1,7 +1,11 @@
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
+import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
-import MessageQueue from "./MessageQueue";
+import MessageQueue, {
+  type LocalQueueItem,
+  type QueueItem,
+} from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
 import { useMessageReceipts } from "./useMessageReceipts";
 import { receiptOutgoing, receiptTranscript } from "../sync/messageReceipts";
@@ -33,7 +37,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { api, errorText } from "../api";
+import { get, post, errorText } from "../api";
 import { refreshProjection } from "../sync/client";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
@@ -46,6 +50,7 @@ import { useDisplayPhase } from "./useDisplayPhase";
 import {
   outgoingTranscript,
   deliveryLabel,
+  applySendingOverlay,
   messageRenderKey,
   explicitQueue,
   dispatchedMessage,
@@ -102,17 +107,21 @@ import ComposerAttachments, {
 } from "./ComposerAttachments";
 import "./chat-controls.css";
 import { copyText } from "../clipboard/clipboard";
+
+function isJsonObject(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
-function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
+function useMessageAction<Args extends unknown[], Result>(
+  action: (...args: Args) => Result,
+): (...args: Args) => Result {
   const current = useRef(action);
   useLayoutEffect(() => {
     current.current = action;
   });
-  return useCallback(
-    ((...args: Parameters<T>) => current.current(...args)) as T,
-    [],
-  );
+  return useCallback((...args: Args) => current.current(...args), []);
 }
 
 function FollowLatest(p: {
@@ -231,6 +240,12 @@ export default function Conversation(p: {
   onPhase: (id: string | null, label: string) => void;
 }) {
   reportPromptComposerRender("conversation");
+  const limitsData = isJsonObject(p.limits?.data) ? p.limits.data : undefined;
+  const rateLimits = isJsonObject(limitsData?.rateLimits)
+    ? limitsData.rateLimits
+    : undefined;
+  const planType =
+    typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const shortViewport = useMediaQuery(
     "(max-width: 760px) and (max-height: 750px)",
@@ -406,21 +421,19 @@ export default function Conversation(p: {
       ].filter((message) => !removed.hidden(message)),
     [delivery.items, removed.hidden, removed.restored],
   );
+  const historyAgentId = p.id;
   const promptRecall = usePromptRecall(
     `${p.data.stateDir}:${kind}:${p.id}:${historyVersion}`,
     p.room ? [] : items,
     () => p.getDraft(p.id || "new"),
     p.setDraft,
-    p.agent?.source === "managed" && kind === "agent" && p.id
+    p.agent?.source === "managed" && kind === "agent" && historyAgentId
       ? {
           before: before ? String(before) : null,
           load: async (cursor) => {
-            const params = new URLSearchParams({
-              id: p.id!,
-              before: cursor,
-              limit: "500",
+            const page = await get("/api/transcript/page", {
+              query: { id: historyAgentId, before: cursor, limit: 500 },
             });
-            const page = await api(`/api/transcript/page?${params}`);
             if (page.unavailable) throw new Error(page.unavailable);
             if (
               historyVersion &&
@@ -431,9 +444,10 @@ export default function Conversation(p: {
                 "The conversation changed. Open its message history again.",
               );
             return {
-              messages: transcriptMessages(page.items || [], p.id).filter(
-                (item) => !removed.hidden(item),
-              ),
+              messages: transcriptMessages(
+                page.items || [],
+                historyAgentId,
+              ).filter((item) => !removed.hidden(item)),
               before: page.nextCursor || null,
             };
           },
@@ -640,8 +654,7 @@ export default function Conversation(p: {
           ? "Chat stopped as a precaution"
           : capacityRetry?.status === "scheduled"
             ? "Waiting to retry model"
-            : displayError(agent?.nativeStatus?.error?.message) ||
-              displayError(agent?.nativeStatus?.message) ||
+            : displayError(nativeStatusMessage(agent?.nativeStatus)) ||
               (["starting", "running"].includes(agent?.status || "")
                 ? "Working"
                 : ["waiting", "parked"].includes(agent?.status || "")
@@ -653,8 +666,7 @@ export default function Conversation(p: {
     agent?.status,
     wait?.label,
     agent?.activity?.phase,
-    agent?.nativeStatus?.error?.message,
-    agent?.nativeStatus?.message,
+    agent?.nativeStatus,
     threadBlock,
     capacityRetry?.status,
     connection,
@@ -693,7 +705,7 @@ export default function Conversation(p: {
     pendingDelivery,
     refreshDelivery,
   });
-  const queued = useMemo(
+  const queued = useMemo<QueueItem[]>(
     () =>
       [
         ...messageQueue.items,
@@ -713,14 +725,17 @@ export default function Conversation(p: {
                   `${p.id}:${row.id}` === item.id,
               ),
           )
-          .map((item) => ({
-            ...item,
+          .map((item): LocalQueueItem => ({
             id: item.clientMessageId || item.id,
+            text: item.text,
+            ...(item.assets ? { assets: item.assets } : {}),
+            requestedDelivery: item.requestedDelivery,
             localDelivery: true,
           })),
       ].filter(
         (entry) =>
-          explicitQueue(entry) &&
+          (("localDelivery" in entry && entry.localDelivery === true) ||
+            explicitQueue(entry)) &&
           !items.some(
             (item) =>
               item.role === "user" &&
@@ -738,8 +753,9 @@ export default function Conversation(p: {
     const shown: typeof queued = [];
     const held: typeof queued = [];
     for (const entry of queued) {
-      const { requestedDelivery, delivery } = entry as Json;
-      const mode = requestedDelivery || delivery;
+      const mode =
+        entry.requestedDelivery ||
+        ("delivery" in entry ? entry.delivery : undefined);
       (mode === "after_turn" ? shown : held).push(entry);
     }
     return { queue: shown, sending: held };
@@ -882,18 +898,20 @@ export default function Conversation(p: {
     try {
       let original = message;
       if (message.truncated) {
-        const query = new URLSearchParams({
-          id: chat || "",
-          message_id: message.id,
-        });
-        const full = await api(`/api/transcript/item?${query}`, undefined, {
+        const full = await get("/api/transcript/item", {
+          query: { id: chat || "", message_id: message.id },
           timeoutMs: 15000,
         });
         if (full.truncated || typeof full.text !== "string")
           throw new Error(
             "The full original message is unavailable. Copy the visible text into a new message instead.",
           );
-        original = { ...message, ...full };
+        original = {
+          ...message,
+          ...full,
+          role: full.role || message.role,
+          text: typeof full.text === "string" ? full.text : message.text,
+        };
       }
       if (activeId.current === chat && attempt === editAttempt.current)
         setBranchDraft({
@@ -911,21 +929,23 @@ export default function Conversation(p: {
   const branch = useMessageAction(
     async (message: Message, draft?: { before: boolean; text: string }) => {
       if (branchLock.current) return;
+      const agentId = p.id;
+      if (!agentId) return;
       branchLock.current = true;
       const sourceId = draft?.before
         ? message.id
         : message.sourceId || message.id;
-      const key = `${p.id}:${sourceId}:${draft?.before ? "before" : "after"}`;
+      const key = `${agentId}:${sourceId}:${draft?.before ? "before" : "after"}`;
       branchRequests.current[key] ||= crypto.randomUUID();
       setBranching(true);
       try {
-        const response = await api("/api/branch", {
-          agent: p.id,
+        const response = await post("/api/branch", {
+          agent: agentId,
           message_id: sourceId,
           id: branchRequests.current[key],
           ...(draft?.before ? { before: true } : {}),
         });
-        const branchId = response.agent?.id || response.id;
+        const branchId = response.id;
         if (!branchId)
           throw new Error("The server did not return the new chat identity.");
         if (draft) {
@@ -943,10 +963,11 @@ export default function Conversation(p: {
             prefix ? `${prefix}\n\n${reviewedText}` : reviewedText,
             branchId,
           );
-          if (draft.before && response.draft?.assets?.length)
+          const branchAssets = response.draft?.assets;
+          if (draft.before && branchAssets?.length)
             setAttachments((current) => ({
               ...current,
-              [branchId]: response.draft.assets,
+              [branchId]: branchAssets,
             }));
         }
         await p.refresh();
@@ -987,13 +1008,14 @@ export default function Conversation(p: {
   const team = p.data.threads.filter(
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
-  const requests = p.data.runtime.requests.filter(
+  const runtime = p.data.runtime;
+  const requests = (runtime?.requests || []).filter(
     (r) =>
       !r.agent ||
       r.agent === p.id ||
       (!mobileClient && team.some((a) => a.id === r.agent)),
   );
-  const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
+  const first = p.room?.members?.[0] || items.find((m) => m.sender)?.sender;
   const canSend = !threadBlock && (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
@@ -1029,28 +1051,23 @@ export default function Conversation(p: {
       [
         ...items
           .filter((item) => !queueEntry(item))
-          .map((item) =>
-            sendingEntry(item)
-              ? { ...item, pending: true, deliveryStatus: "sending" }
-              : item,
+          .map((item): Message =>
+            applySendingOverlay(item, Boolean(sendingEntry(item))),
           ),
         ...sending
           .filter(
             (entry) => !items.some((item) => sendingEntry(item) === entry),
           )
-          .map(
-            (entry) =>
-              ({
-                id: entry.id,
-                clientMessageId: entry.id,
-                role: "user",
-                text: entry.text,
-                ...("assets" in entry ? { assets: entry.assets } : {}),
-                pending: true,
-                localDelivery: true,
-                deliveryStatus: "sending",
-              }) as Message,
-          ),
+          .map((entry): Message => ({
+            id: entry.id,
+            clientMessageId: entry.id,
+            role: "user",
+            text: entry.text,
+            ...("assets" in entry ? { assets: entry.assets } : {}),
+            pending: true,
+            localDelivery: true,
+            deliveryStatus: "sending",
+          })),
       ].filter((message) => !removed.hidden(message)),
     [items, queue, sending, p.id, removed.hidden],
   );
@@ -1221,7 +1238,7 @@ export default function Conversation(p: {
         />
       )}
       {m.deliveryError &&
-        ["failed", "uncertain", "queued"].includes(m.deliveryStatus) && (
+        ["failed", "uncertain", "queued"].includes(m.deliveryStatus || "") && (
           <div className="message-delivery-error">
             <p>{m.deliveryError}</p>
             {m.deliveryStatus === "failed" && (
@@ -1314,17 +1331,13 @@ export default function Conversation(p: {
         key={`${p.data.stateDir}:${p.id}`}
         items={transcriptItems}
         agent={managed && !p.room ? agent : undefined}
-        currentTurn={agent?.turnId}
+        currentTurn={agent?.turnId || undefined}
         enabled={managed && !p.room}
         storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
         renderMessage={(item) =>
           item.nativeNotice ? (
             isNonBlockingWarning(item) ? null : (
-              <NativeNotice
-                key={item.id}
-                item={item}
-                planType={p.limits?.data?.rateLimits?.planType}
-              />
+              <NativeNotice key={item.id} item={item} planType={planType} />
             )
           ) : (
             renderMessage(item)
@@ -1342,7 +1355,7 @@ export default function Conversation(p: {
       p.id,
       p.data.stateDir,
       p.data.threads,
-      p.limits?.data?.rateLimits?.planType,
+      planType,
       p.outgoing,
       p.notify,
       highlighted,
@@ -1425,7 +1438,7 @@ export default function Conversation(p: {
         <NativeError
           agent={agent}
           refresh={p.refresh}
-          planType={p.limits?.data?.rateLimits?.planType}
+          planType={planType}
           limits={p.limits}
           openLimits={() => {
             setLimitsOpen(true);
@@ -1442,7 +1455,7 @@ export default function Conversation(p: {
           <ConversationWarnings
             key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
             scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            notices={p.data.runtime.nativeNotices}
+            notices={(runtime?.nativeNotices || []).filter(isJsonObject)}
             accountKey={agent.accountKey || "default"}
             messages={items}
           />,
@@ -1627,7 +1640,7 @@ export default function Conversation(p: {
           <Requests
             showDates={!!p.room}
             scope={p.data.stateDir}
-            allRequests={p.data.runtime.requests}
+            allRequests={runtime?.requests || []}
             requests={requests}
             agents={p.data.threads}
             refresh={p.refresh}
@@ -1668,7 +1681,7 @@ export default function Conversation(p: {
           )}
           {managed && (
             <>
-              {messageQueue.pending && !messageQueue.busy && (
+              {Boolean(messageQueue.pending) && !messageQueue.busy && (
                 <div className="notice queue-notice" role="status">
                   The last queue change needs confirmation.
                   <Button
@@ -1964,7 +1977,7 @@ export default function Conversation(p: {
                           aria-label="Stop agent"
                           title={
                             ["running", "starting", "approval"].includes(
-                              agent.status,
+                              agent.status || "",
                             )
                               ? "Stop agent"
                               : "No active turn to stop"
@@ -1972,16 +1985,17 @@ export default function Conversation(p: {
                           disabled={
                             stopping ||
                             !["running", "starting", "approval"].includes(
-                              agent.status,
+                              agent.status || "",
                             )
                           }
                           aria-busy={stopping}
                           onClick={() => {
-                            if (stopping) return;
+                            const agentId = p.id;
+                            if (stopping || !agentId) return;
                             const attempt = ++stopAttempt.current;
                             setStopping(true);
-                            void api("/api/stop", {
-                              id: p.id,
+                            void post("/api/stop", {
+                              id: agentId,
                               descendants: false,
                             })
                               .then(p.refresh)

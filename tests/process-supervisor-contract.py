@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 import uuid
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from test_isolation import isolate_supervisor_environment
@@ -82,6 +83,11 @@ for line in sys.stdin:
         print(json.dumps({'method':'turn/completed','params':{'threadId':params['threadId'],'turn':{'id':'long-turn','status':'completed'}}}),flush=True)
         result={'turn':{'id':'long-turn','status':'completed'}}
     elif method == 'command/exec':
+        if request['params']['processId'] == 'live-monitor':
+            Path(os.environ['FAKE_PHASE_ONE']).touch()
+            release=Path(os.environ['FAKE_RELEASE'])
+            deadline=time.time()+10
+            while not release.exists() and time.time()<deadline: time.sleep(.01)
         print(json.dumps({'method':'command/exec/outputDelta','params':{'processId':request['params']['processId'],'delta':'monitor-output'}}),flush=True)
         result={'exitCode':0}
     elif method == 'process/spawn':
@@ -122,6 +128,245 @@ def wait_for(fn, timeout=5):
         if result: return result
         time.sleep(.02)
     raise AssertionError('timed out waiting for private process fixture')
+
+
+class StdoutPersistenceContract(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-', dir='/tmp')
+        self.root = Path(self.temp.name)
+        self.supervisor = process_supervisor.Supervisor(self.root)
+        self.supervisor.journal = process_supervisor.Journal(self.root)
+        self.journal = self.supervisor.journal
+        self.release = threading.Event()
+        self.failed = threading.Event()
+        self.attempts = []
+        self.process = subprocess.Popen([sys.executable, '-u', '-c',
+            'import os,sys\nfor line in sys.stdin:\n'
+            ' if line == ":close-stdout\\n": os.close(1)\n'
+            ' else: print(line, end="", flush=True)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.process.supervisor = self.supervisor
+        self.handle = 'account:private-storage-fixture'
+        with self.journal.db() as db:
+            db.execute('INSERT INTO handles(id,signature,pid,created,generation) VALUES (?,?,?,?,1)',
+                       (self.handle, 'exact-signature', self.process.pid, time.time()))
+            db.execute('INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) '
+                       'VALUES (?,?,?,?,?,1)', (self.handle, 'monitor:exact-request', 'exact-digest', 1, time.time()))
+        self.original_db = self.journal.db
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        self.release.set()
+        if self.process.stdin and not self.process.stdin.closed:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=3)
+        if hasattr(self, 'child'):
+            self.child.reader.join(timeout=3)
+            self.child.stopping.set()
+            self.child.stderr.join(timeout=3)
+        for stream in (self.process.stdout, self.process.stderr):
+            stream.close()
+        self.temp.cleanup()
+
+    def inject(self, error, *, statement='INSERT INTO events', after_commit=False):
+        fixture = self
+        class Connection:
+            def __init__(self, db):
+                self.db = db
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+            def execute(self, sql, params=()):
+                if after_commit and fixture.failed.is_set() and not fixture.release.is_set():
+                    raise error
+                if sql.startswith('INSERT INTO events') and params[2] == 'stdout':
+                    fixture.attempts.append(params[3])
+                if sql.startswith(statement) and not fixture.release.is_set() and not after_commit:
+                    if not sql.startswith('INSERT INTO events') or params[2] == 'stdout':
+                        fixture.failed.set()
+                        raise error
+                return self.db.execute(sql, params)
+            def commit(self):
+                self.db.commit()
+                if after_commit and not fixture.release.is_set():
+                    fixture.failed.set()
+                    raise error
+        @contextmanager
+        def database():
+            with self.original_db() as db:
+                yield Connection(db)
+        self.journal.db = database
+        self.child = process_supervisor.Child(self.handle, self.process, 'exact-signature')
+        self.supervisor.children[self.handle] = self.child
+
+    def send_frames(self):
+        self.frames = [{'id':1, 'result':{'userAgent':'private-model'}},
+                       {'method':'item/completed', 'params':{'itemId':'exact-next-item'}}]
+        self.process.stdin.write(''.join(json.dumps(frame) + '\n' for frame in self.frames))
+        self.process.stdin.flush()
+
+    def saved(self):
+        with self.original_db() as db:
+            handle = dict(db.execute('SELECT * FROM handles WHERE id=?', (self.handle,)).fetchone())
+            events = [dict(row) for row in db.execute('SELECT * FROM events WHERE handle=? ORDER BY sequence',
+                                                     (self.handle,))]
+            operation = dict(db.execute('SELECT * FROM operations WHERE handle=?', (self.handle,)).fetchone())
+        return handle, events, operation
+
+    def assert_paused_without_exit(self):
+        self.assertTrue(self.failed.wait(2))
+        wait_for(self.child.paused.is_set)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertIsNone(self.process.poll())
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 0)
+        self.assertIsNone(handle['init_result'])
+        self.assertEqual(events, [])
+        self.assertIsNone(operation['response'])
+        health = self.supervisor.handle({'action':'health'})['handles'][0]
+        self.assertTrue(health['stdoutReaderAlive'])
+        self.assertTrue(health['backpressure'])
+        self.assertIn('stdout', health['persistenceErrors'])
+        self.assertIsNone(health['stdoutReaderError'])
+        # Storage waits release the output and journal locks.
+        self.assertTrue(self.child.lock.acquire(timeout=.5))
+        self.child.lock.release()
+        self.assertTrue(self.journal.lock.acquire(timeout=.5))
+        self.journal.lock.release()
+
+    def assert_recovered_once(self):
+        self.release.set()
+        wait_for(lambda:len(self.saved()[1]) == 2)
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 2)
+        self.assertEqual([event['sequence'] for event in events], [1, 2])
+        self.assertTrue(all(event['kind'] == 'stdout' for event in events))
+        payloads = [json.loads(event['payload']) for event in events]
+        self.assertEqual(payloads[0], self.frames[0])
+        payloads[1].pop('_studioSupervisorReceivedAt')
+        self.assertEqual(payloads[1], self.frames[1])
+        self.assertEqual(json.loads(handle['init_result']), self.frames[0]['result'])
+        self.assertEqual(json.loads(operation['response']), self.frames[0])
+        self.assertEqual(operation['response_sequence'], 1)
+        first_attempts = [raw for raw in self.attempts if json.loads(raw).get('id') == 1]
+        self.assertTrue(first_attempts)
+        self.assertEqual(len(set(first_attempts)), 1)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertFalse(self.child.paused.is_set())
+        self.assertEqual(self.child.persistence_errors, {})
+        self.process.stdin.close()
+        self.process.wait(timeout=2)
+        self.child.reader.join(timeout=2)
+        self.assertFalse(self.child.reader.is_alive())
+        exit_events = [event for event in self.saved()[1] if event['kind'] == 'exit']
+        self.assertEqual(len(exit_events), 1)
+        self.assertEqual(json.loads(exit_events[0]['payload']), {'returnCode':0})
+
+    def test_full_insert_rolls_back_and_keeps_stdout_reader(self):
+        error = sqlite3.OperationalError('database or disk is full')
+        error.sqlite_errorcode = sqlite3.SQLITE_FULL
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_init_result_failure_retries_the_same_transaction(self):
+        error = sqlite3.OperationalError('disk I/O error')
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR_WRITE
+        self.inject(error, statement='UPDATE handles SET init_result')
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_busy_insert_keeps_the_same_frame_until_storage_recovers(self):
+        error = sqlite3.OperationalError('database is locked')
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY_RECOVERY
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_locked_insert_keeps_the_same_frame_until_storage_recovers(self):
+        error = sqlite3.OperationalError('database table is locked')
+        error.sqlite_errorcode = sqlite3.SQLITE_LOCKED_SHAREDCACHE
+        self.inject(error)
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_disk_oserror_keeps_the_same_frame_until_storage_recovers(self):
+        self.inject(OSError('injected disk failure'))
+        self.send_frames()
+        self.assert_paused_without_exit()
+        self.assert_recovered_once()
+
+    def test_successful_commit_with_lost_confirmation_does_not_duplicate_frame(self):
+        error = sqlite3.OperationalError('disk I/O error')
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+        self.inject(error, after_commit=True)
+        self.send_frames()
+        self.assertTrue(self.failed.wait(2))
+        wait_for(self.child.paused.is_set)
+        handle, events, operation = self.saved()
+        self.assertEqual(handle['sequence'], 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(operation['response_sequence'], 1)
+        self.assertTrue(self.child.reader.is_alive())
+        self.assert_recovered_once()
+
+    def test_stdout_end_does_not_report_exit_while_native_child_is_alive(self):
+        error = sqlite3.OperationalError('database or disk is full')
+        error.sqlite_errorcode = sqlite3.SQLITE_FULL
+        waiting = threading.Event()
+        original_wait = self.process.wait
+        def wait(*args, **kwargs):
+            waiting.set()
+            return original_wait(*args, **kwargs)
+        self.process.wait = wait
+        self.inject(error)
+        self.process.stdin.write(':close-stdout\n')
+        self.process.stdin.flush()
+        self.assertTrue(waiting.wait(2))
+        self.assertIsNone(self.process.poll())
+        self.assertTrue(self.child.reader.is_alive())
+        self.assertEqual(self.saved()[1], [])
+        self.process.stdin.close()
+        original_wait(timeout=2)
+        self.child.reader.join(timeout=2)
+        events = self.saved()[1]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['kind'], 'exit')
+        self.assertEqual(json.loads(events[0]['payload']), {'returnCode':0})
+
+    def test_retryable_storage_codes_and_disk_errors(self):
+        for code in (sqlite3.SQLITE_FULL, sqlite3.SQLITE_BUSY_RECOVERY,
+                     sqlite3.SQLITE_LOCKED_SHAREDCACHE, sqlite3.SQLITE_IOERR_WRITE):
+            with self.subTest(code=code):
+                error = sqlite3.OperationalError('injected storage failure')
+                error.sqlite_errorcode = code
+                self.assertTrue(process_supervisor._retryable_storage_error(error))
+        self.assertTrue(process_supervisor._retryable_storage_error(OSError('disk failure')))
+        self.assertFalse(process_supervisor._retryable_storage_error(sqlite3.OperationalError('syntax error')))
+
+
+class JournalRetentionContract(unittest.TestCase):
+    def test_operation_receipts_can_exceed_one_handles_output_limit(self):
+        with tempfile.TemporaryDirectory(prefix='studio-receipt-retention-') as directory:
+            journal = process_supervisor.Journal(directory)
+            with patch.object(process_supervisor, 'HANDLE_LIMIT', 64 * 1024):
+                with journal.db() as db:
+                    db.executemany('INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) '
+                                   'VALUES (?,?,?,?,?,?)',
+                                   [('account:fixture', str(i), 'a' * 64, i, 1.0, 1) for i in range(1024)])
+                with journal.db() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM operations').fetchone()[0], 1024)
+                    pages = db.execute('PRAGMA page_count').fetchone()[0]
+                    page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                    self.assertGreater(pages * page_size, process_supervisor.HANDLE_LIMIT)
+                    self.assertEqual(journal.outstanding_bytes(db, 'account:fixture'), 0)
 
 
 class ProcessSupervisorContract(unittest.TestCase):
@@ -230,6 +475,22 @@ class ProcessSupervisorContract(unittest.TestCase):
                 AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
                           executable=str(other), supervisor_handle='account:default')
         self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
+
+    def test_supervisor_rpc_reply_passes_a_blocked_notification(self):
+        entered, release = threading.Event(), threading.Event()
+        def notification(message):
+            if message.get('method') == 'command/exec/outputDelta':
+                entered.set()
+                release.wait(3)
+        server = AppServer(self.root, notification, lambda _: None, lambda: None,
+                           executable=str(self.binary), supervisor_handle='account:reply-lane')
+        self.servers.append(server)
+        try:
+            submitted = server.submit('command/exec', {'processId': 'reply-lane'})
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(server.wait(submitted, 1)['exitCode'], 0)
+        finally:
+            release.set()
 
     def test_exited_child_is_replaced_in_the_same_supervisor_generation(self):
         first = self.server()
@@ -389,7 +650,15 @@ class ProcessSupervisorContract(unittest.TestCase):
             monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
                                             ('native-monitor',)).fetchone()[0])
         self.assertEqual(task['status'], 'running')
-        self.assertEqual(monitor['status'], 'running')
+        # This fixture saves a monitor row but never starts a command/exec RPC.
+        # The resumed model turn cannot restore that monitor's missing Future.
+        self.assertEqual(monitor['status'], 'lost')
+        self.assertIsNone(monitor.get('exitCode'))
+        self.assertEqual(monitor['reattachRecovery']['proof'], 'operation_missing')
+        with second.db() as db:
+            notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:native-monitor'").fetchall()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['status'], 'lost')
         wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
         partial = self._stored_runtime_item(second, agent['id'], 'long-item')
         self.assertEqual(partial['text'], 'buffered-')
@@ -408,13 +677,92 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(json.loads(item_rows[0][0])['text'], 'buffered-final-answer')
         self.assertEqual(completed, 1)
         self.assertEqual(restart_errors, 0)
-        # The separate native monitor is still active, so the finished agent
-        # waits for that result while retaining the completed model turn.
-        self.assertEqual(second.agent(agent['id'])['status'], 'waiting')
+        # This monitor was never submitted, so it cannot hold the completed turn.
+        self.assertEqual(second.agent(agent['id'])['status'], 'completed')
         self.assertNotIn('Server restarted during a turn', second.agent(agent['id']).get('error') or '')
         operations = [json.loads(line)['method'] for line in
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('longTurn'), 1)
+        self.assertEqual(operations.count('command/exec'), 0)
+
+    def test_runtime_restart_reattaches_live_monitor_and_delivers_exact_reply(self):
+        from codex_runtime import Runtime
+        first = Runtime(self.root, AppServer)
+        self.addCleanup(first.close)
+        agent = first.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            server = first.connect()
+        operation = {'agent': agent['id'], 'epoch': agent['epoch'], 'accountKey': 'default',
+                     'connectionId': first.connection_ids['default']}
+        with first.lock, first.db() as db:
+            first.put(db, 'monitors', {'id': 'live-monitor', 'agent': agent['id'], 'epoch': agent['epoch'],
+                'status': 'running', 'created': time.time(), 'command': 'fixture command',
+                'operation': operation, 'successExitCodes': [0], 'tail': '', 'bytes': 0,
+                'log': str(self.root / 'monitor-logs' / 'live-monitor.log')})
+        server.submit('command/exec', {'processId': 'live-monitor'},
+                      operation_id='monitor:live-monitor')
+        wait_for(lambda: (self.root / 'phase-one').exists())
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            second = Runtime(self.root, AppServer)
+            self.addCleanup(second.close)
+            second.connect()
+        with second.db() as db:
+            monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()[0])
+            notice = db.execute("SELECT status FROM runtime_events WHERE id='monitor:live-monitor'").fetchone()
+        self.assertEqual(monitor['status'], 'running')
+        self.assertEqual(notice['status'], 'cancelled')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.release.touch()
+        def completed():
+            with second.db() as db:
+                row = db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()
+            return json.loads(row[0])['status'] == 'completed'
+        wait_for(completed)
+        with second.db() as db:
+            monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()[0])
+            notices = db.execute("SELECT id,status,text FROM runtime_events WHERE id='monitor:live-monitor'").fetchall()
+        self.assertEqual(monitor['exitCode'], 0)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['status'], 'completed')
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('command/exec'), 1)
+
+    def test_runtime_restart_recovers_monitor_reply_after_supervisor_ack(self):
+        from codex_runtime import Runtime
+        first = Runtime(self.root, AppServer)
+        self.addCleanup(first.close)
+        agent = first.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            server = first.connect()
+        operation = {'agent': agent['id'], 'epoch': agent['epoch'], 'accountKey': 'default',
+                     'connectionId': first.connection_ids['default']}
+        with first.lock, first.db() as db:
+            first.put(db, 'monitors', {'id': 'acked-monitor', 'agent': agent['id'], 'epoch': agent['epoch'],
+                'status': 'running', 'created': time.time(), 'command': 'fixture command',
+                'operation': operation, 'successExitCodes': [0], 'tail': '', 'bytes': 0,
+                'log': str(self.root / 'monitor-logs' / 'acked-monitor.log')})
+        submitted = server.submit('command/exec', {'processId': 'acked-monitor'},
+                                  operation_id='monitor:acked-monitor')
+        self.assertEqual(server.wait(submitted)['exitCode'], 0)
+        wait_for(lambda: server.proc.call('operationStatus',
+            operationId='monitor:acked-monitor')['response'] is not None)
+        first.close()
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            second = Runtime(self.root, AppServer)
+            self.addCleanup(second.close)
+        def completed():
+            with second.db() as db:
+                row = db.execute("SELECT record FROM runtime_monitors WHERE id='acked-monitor'").fetchone()
+            return json.loads(row[0])['status'] == 'completed'
+        wait_for(completed)
+        with second.db() as db:
+            notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:acked-monitor'").fetchall()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['exitCode'], 0)
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('command/exec'), 1)
 
     def test_claude_bridge_transport_reports_the_same_live_child_reattach(self):
         observed = []
@@ -917,6 +1265,20 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_backend_diagnostics_do_not_change_native_launch(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1',
+                                    'CODEX_AGENTS_PROVIDER_CAPTURE': '1'}):
+            second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        second.close()
+        # A child launched while a diagnostic was set reattaches after it is removed.
+        self.assertEqual(self.server().call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
     def test_reattach_still_rejects_changed_credentials_options_and_command(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
@@ -931,6 +1293,40 @@ class ProcessSupervisorContract(unittest.TestCase):
                 process_supervisor.native_launch_environment(self.root, 'account:default',
                     [str(self.binary), 'different-command'], dict(os.environ), None)
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
+    def test_backend_lock_metrics_do_not_change_native_launch_or_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        self.assertFalse('CODEX_RUNTIME_LOCK_METRICS' in
+                         process_supervisor.process_launch_environment(native_pid))
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_child_lock_metrics_preserve_exact_launch_on_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}), \
+                patch.object(process_supervisor, 'native_launch_environment',
+                             side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.assertEqual(process_supervisor.process_launch_environment(native_pid)
+                         ['CODEX_RUNTIME_LOCK_METRICS'], '1')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
 
     def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
         with patch.object(process_supervisor, 'native_launch_environment',
