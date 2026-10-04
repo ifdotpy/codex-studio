@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from email.message import Message
 from typing import TYPE_CHECKING
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +26,7 @@ from studio_api.federation.models import (
     SignedStatusResponse,
     StatusRequest,
 )
+from studio_api.responses import register_route_components
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -62,13 +63,18 @@ def _raw_headers(request: Request) -> RequestHeaders:
     return RequestHeaders(request.headers.raw)
 
 
-def _openapi_body(schema: dict[str, object]) -> dict[str, object]:
+def _openapi_body(component_name: str) -> dict[str, object]:
     return {
         "requestBody": {
             "required": True,
-            "content": {"application/json": {"schema": schema}},
+            "content": {"application/json": {"schema": {"$ref": f"#/components/schemas/{component_name}"}}},
         }
     }
+
+
+def _register_request_schema(route: object, name: str, model: type[BaseModel]) -> None:
+    schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
+    register_route_components(route, {name: schema})
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -80,31 +86,11 @@ def create_router(context: ApiContext) -> APIRouter:
         responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
                    413: {"model": ErrorResponse}, 415: {"model": ErrorResponse},
                    503: {"model": ErrorResponse}},
-        openapi_extra=_openapi_body(TypeAdapter(ManagementRequest).json_schema()),
     )
-    async def manage_federation(request: Request) -> Response:
+    async def manage_federation(request: Request, body: ManagementRequest) -> Response:
         runtime = context.runtime
         if runtime is None:
             return context.send(request, {"error": "Runtime unavailable"}, status=503)
-
-        content_length = request.headers.get("content-length", "0")
-        try:
-            length = int(content_length)
-        except ValueError:
-            return context.send(request, {"error": "Invalid request size"}, status=400)
-        if not 0 < length <= 262_144:
-            return context.send(request, {"error": "Invalid request size"}, status=413)
-        content_type = Message()
-        content_type["Content-Type"] = request.headers.get("content-type", "")
-        if content_type.get_content_type() != "application/json":
-            return context.send(request, {"error": "JSON required"}, status=415)
-        raw = await request.body()
-        if len(raw) != length:
-            return context.send(request, {"error": "Incomplete request"}, status=400)
-        try:
-            body: ManagementRequest = TypeAdapter(ManagementRequest).validate_json(raw)
-        except ValidationError:
-            return context.send(request, {"error": "Invalid federation request"}, status=400)
 
         def dispatch() -> Response:
             try:
@@ -128,8 +114,10 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": "Runtime unavailable"}, status=503)
 
         listener = request.scope.get("server")
+        extensions = request.scope.get("extensions", {})
+        unix_socket = isinstance(extensions, dict) and bool(extensions.get("studio.unix_socket"))
         port = context.server_port
-        if not context.unix_socket and isinstance(listener, tuple) and len(listener) >= 2:
+        if not unix_socket and isinstance(listener, tuple) and len(listener) >= 2:
             port = listener[1] or context.server_port
         peer = request.client.host if request.client is not None else ""
         headers = _raw_headers(request)
@@ -175,40 +163,44 @@ def create_router(context: ApiContext) -> APIRouter:
         response_model=SignedPairResponse,
         responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
                    413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
-        openapi_extra=_openapi_body(PairRequest.model_json_schema()),
+        openapi_extra=_openapi_body("PairRequest"),
     )
     async def pair(request: Request) -> Response:
         return await signed_post(request, "pair")
+    _register_request_schema(router.routes[-1], "PairRequest", PairRequest)
 
     @router.post(
         FEDERATION_PATHS[1],
         response_model=SignedStatusResponse,
         responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
                    413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
-        openapi_extra=_openapi_body(StatusRequest.model_json_schema()),
+        openapi_extra=_openapi_body("StatusRequest"),
     )
     async def status(request: Request) -> Response:
         return await signed_post(request, "status")
+    _register_request_schema(router.routes[-1], "StatusRequest", StatusRequest)
 
     @router.post(
         FEDERATION_PATHS[2],
         response_model=SignedMessageResponse,
         responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
                    413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
-        openapi_extra=_openapi_body(MessageRequest.model_json_schema()),
+        openapi_extra=_openapi_body("MessageRequest"),
     )
     async def message(request: Request) -> Response:
         return await signed_post(request, "message")
+    _register_request_schema(router.routes[-1], "MessageRequest", MessageRequest)
 
     @router.post(
         FEDERATION_PATHS[3],
         response_model=SignedPullResponse,
         responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
                    413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
-        openapi_extra=_openapi_body(PullRequest.model_json_schema()),
+        openapi_extra=_openapi_body("PullRequest"),
     )
     async def pull(request: Request) -> Response:
         return await signed_post(request, "pull")
+    _register_request_schema(router.routes[-1], "PullRequest", PullRequest)
 
     async def no_get_counterpart(request: Request) -> Response:
         return context.send(request, {"error": "Not found"}, status=404)

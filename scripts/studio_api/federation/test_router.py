@@ -10,14 +10,18 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from httpx import Response
 from pydantic import TypeAdapter, ValidationError
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response as StarletteResponse
 from studio_api.context import ApiContext
 from studio_api.federation.models import CreateInviteResponse, FederationSnapshot
 from studio_api.middleware import RequestBoundary
+from studio_api.models import ErrorResponse
+from studio_api.responses import install_error_response_docs
 
 if TYPE_CHECKING:
     from codex_canvas import Canvas
@@ -88,7 +92,11 @@ class FakeCanvas:
 
 
 class FakeRemote:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
     def request_origin(self, _headers: Message, _peer: str, _port: int) -> str | None:
+        self.calls.append((_peer, _port))
         return "https://studio.example.ts.net"
 
 
@@ -101,7 +109,8 @@ class FakeContext:
         self.unix_socket = False
         self.schema_only = False
         self.token = "federation-session-token"
-        self.remote = cast("RemoteAccess", FakeRemote())
+        self.remote_fixture = FakeRemote()
+        self.remote = cast("RemoteAccess", self.remote_fixture)
 
     @property
     def runtime(self) -> FakeRuntime:
@@ -135,14 +144,20 @@ class FederationRouterTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, self.context)))
         app.add_middleware(RequestBoundary, context=cast(ApiContext, self.context))
+
+        @app.middleware("http")
+        async def bind_listener_scope(
+            request: Request, call_next: RequestResponseEndpoint
+        ) -> StarletteResponse:
+            request.scope["server"] = ("127.0.0.1", 4321)
+            return await call_next(request)
+
+        @app.exception_handler(RequestValidationError)
+        async def invalid_request(request: Request, _error: RequestValidationError) -> StarletteResponse:
+            return self.context.send(request, ErrorResponse(error="Invalid request"), status=400)
+
+        install_error_response_docs(app)
         self.client = TestClient(app, headers={"X-Canvas-Token": self.context.token})
-        self.origin_result = "https://studio.example.ts.net"
-        self.origin_check = patch(
-            "studio_api.federation.test_router.FakeRemote.request_origin",
-            return_value=self.origin_result,
-        )
-        self.origin_check.start()
-        self.addCleanup(self.origin_check.stop)
         self.addCleanup(self.client.close)
         self.addCleanup(self.temp.cleanup)
 
@@ -164,13 +179,24 @@ class FederationRouterTests(unittest.TestCase):
     def test_public_origin_gate_runs_before_service(self) -> None:
         with patch(
             "studio_api.federation.test_router.FakeRemote.request_origin",
-            side_effect=(self.origin_result, None),
+            side_effect=("https://studio.example.ts.net", None),
         ):
             response = self.post_signed(b'{"protocol":1}')
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json(), {"error": "Tailscale Serve origin required"})
         self.assertEqual(self.runtime.service.calls, [])
         self.assertEqual(self.runtime.service.writes, 0)
+
+    def test_listener_port_comes_from_asgi_scope_not_host_header(self) -> None:
+        response = self.client.post(
+            "/api/federation/v1/status",
+            content=b'{"protocol":1}',
+            headers={"content-type": "application/json", "host": "spoofed.example:1234"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.context.remote_fixture.calls)
+        self.assertTrue(all(port == 4321 for _, port in self.context.remote_fixture.calls))
+        self.assertNotIn(1234, [port for _, port in self.context.remote_fixture.calls])
 
     def test_get_has_no_api_counterpart_and_returns_legacy_not_found(self) -> None:
         response = self.client.get("/api/federation/v1/status")
@@ -218,7 +244,7 @@ class FederationRouterTests(unittest.TestCase):
             headers={"content-type": "application/json"},
         )
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json(), {"error": "Invalid federation request"})
+        self.assertEqual(response.json(), {"error": "Invalid request"})
         self.assertEqual(self.runtime.service.actions, [])
 
     def test_valid_management_action_keeps_legacy_body_keys(self) -> None:
@@ -283,10 +309,36 @@ class FederationRouterTests(unittest.TestCase):
         schema = self.client.get("/openapi.json").json()
         management = schema["paths"]["/api/federation"]["post"]["requestBody"]
         self.assertIn("oneOf", management["content"]["application/json"]["schema"])
+        self.assertEqual(
+            management["content"]["application/json"]["schema"]["discriminator"]["propertyName"],
+            "action",
+        )
         pair = schema["paths"]["/api/federation/v1/pair"]["post"]["requestBody"]
-        self.assertEqual(pair["content"]["application/json"]["schema"]["properties"]["protocol"]["const"], 1)
+        self.assertEqual(pair["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/PairRequest")
         pull = schema["paths"]["/api/federation/v1/pull"]["post"]["requestBody"]
-        self.assertEqual(pull["content"]["application/json"]["schema"]["properties"]["protocol"]["const"], 1)
+        self.assertEqual(pull["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/PullRequest")
+
+        components = schema["components"]["schemas"]
+        self.assertIn("PairRequest", components)
+        self.assertIn("SignedEnvelope", components)
+        self.assertNotIn("$defs", str(schema))
+        references: list[str] = []
+
+        def collect_references(value: object) -> None:
+            if isinstance(value, dict):
+                reference = value.get("$ref")
+                if isinstance(reference, str):
+                    references.append(reference)
+                for child in value.values():
+                    collect_references(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_references(child)
+
+        collect_references(schema)
+        for reference in references:
+            self.assertTrue(reference.startswith("#/components/schemas/"), reference)
+            self.assertIn(reference.removeprefix("#/components/schemas/"), components)
 
     def test_management_response_union_accepts_both_legacy_shapes(self) -> None:
         response: TypeAdapter[FederationSnapshot | CreateInviteResponse] = TypeAdapter(
