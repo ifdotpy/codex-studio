@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from codex_account_transfer import AccountTransfers
 from codex_sync_entities import COLLECTION_FIELDS, project, validate_entity_payload
 from studio_api.models import JsonValue
 from studio_api.sync.models import (
@@ -57,6 +58,25 @@ class RadioFixture(Protocol):
     ) -> JsonValue: ...
 
 
+class TransferRuntimeFixture:
+    def __init__(self) -> None:
+        self.lead: dict[str, JsonValue] = {"id": "lead-a"}
+
+    def agent(self, agent_id: str, db: object) -> dict[str, JsonValue]:
+        del db
+        if agent_id != "lead-a":
+            raise ValueError("unexpected transfer lead")
+        return self.lead
+
+    def put(self, db: object, collection: str, record: dict[str, JsonValue]) -> None:
+        del db
+        if collection == "account_transfers":
+            return
+        if collection != "agents":
+            raise ValueError("unexpected transfer collection")
+        self.lead = record
+
+
 class SyncEntityContractTests(unittest.TestCase):
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
@@ -69,6 +89,41 @@ class SyncEntityContractTests(unittest.TestCase):
         }
         agent = project("agent", source)
         self.assertEqual(agent, {"id": "a", "status": "running"})
+
+    def test_agent_transfer_summary_matches_runtime_projection(self) -> None:
+        runtime = TransferRuntimeFixture()
+        transfers = object.__new__(AccountTransfers)
+        transfers.rt = runtime
+        operation: dict[str, JsonValue] = {
+            "id": "transfer-a", "leadId": "lead-a", "targetAccountKey": "account-b",
+            "status": "pending", "scope": "subagents", "updated": 10.0,
+            "finishHistory": True,
+            "members": {
+                "agent-a": {"phase": "completed", "lazy": True, "interruptReason": "Interrupted",
+                            "name": "Worker"},
+                "agent-b": {"phase": "left", "provider": "codex", "name": "Other",
+                            "reason": "Unavailable"},
+                "agent-c": {"phase": "blocked", "error": "Receipt unknown"},
+            },
+        }
+        save_transfer = cast(Callable[[object, dict[str, JsonValue]], None], transfers.save)
+        save_transfer(None, operation)
+        projected = project("agent", runtime.lead)
+        agent = AgentEntityDto.model_validate(projected)
+        self.assertIsNotNone(agent.accountTransfer)
+        assert agent.accountTransfer is not None
+        assert agent.accountTransfer.leftOnSource is not None
+        saved_transfer = runtime.lead.get("accountTransfer")
+        assert isinstance(saved_transfer, dict)
+        invalid_transfer = saved_transfer.copy()
+        invalid_transfer["status"] = "in-progress"
+        self.assertEqual(agent.accountTransfer.scope, "subagents")
+        self.assertEqual(agent.accountTransfer.moved, 1)
+        self.assertEqual(agent.accountTransfer.leftOnSource[0].provider, "codex")
+        with self.assertRaises(ValidationError):
+            AgentEntityDto.model_validate({
+                "id": "lead-a", "accountTransfer": invalid_transfer,
+            })
 
     def test_runtime_draft_create_persists_boolean_worktree_projection(self) -> None:
         repository = Path(__file__).resolve().parents[3]

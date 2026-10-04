@@ -412,6 +412,60 @@ class ExecutionSettingsDto(ContractModel):
     updatedAt: float | None = None
 
 
+class AccountTransferScope(ContractStrEnum):
+    TEAM = "team"
+    SUBAGENTS = "subagents"
+
+
+class AccountTransferStatus(ContractStrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class AccountTransferInterruptedDto(ContractModel):
+    id: str
+    name: str | None = None
+    reason: str | None = None
+
+
+class AccountTransferLeftOnSourceDto(ContractModel):
+    id: str
+    name: str | None = None
+    provider: AgentProvider | None = None
+    reason: str | None = None
+
+
+class AccountTransferBlockedDto(ContractModel):
+    id: str
+    name: str | None = None
+    reason: str | None = None
+
+
+class AccountTransferSummaryDto(ContractModel):
+    """Public summary projected onto an agent by AccountTransfers.save."""
+
+    id: str | None = None
+    targetAccountKey: str | None = None
+    status: AccountTransferStatus | None = None
+    updated: float | None = None
+    scope: AccountTransferScope | None = None
+    finishHistory: bool | None = None
+    total: int | None = None
+    completed: int | None = None
+    moved: int | None = None
+    nativeHistoryPending: int | None = None
+    movingNow: int | None = None
+    canFinishHistory: bool | None = None
+    interrupted: list[AccountTransferInterruptedDto] | None = None
+    leftOnSource: list[AccountTransferLeftOnSourceDto] | None = None
+    blocked: list[AccountTransferBlockedDto] | None = None
+    waitingCount: int | None = None
+    waiting: str | None = None
+    needsAttention: bool | None = None
+    canRetry: bool | None = None
+
+
 class CapacityRetrySettingsDto(ExecutionSettingsDto):
     """Settings captured by Runtime.preparation_settings for a retry receipt."""
 
@@ -479,7 +533,7 @@ class AgentEntityDto(ContractModel):
     quickCreate: JsonValue | None = None
     nativeThreadBlock: NativeThreadBlockDto | None = None
     daybreakEnabled: bool | None = None
-    accountTransfer: JsonValue | None = None
+    accountTransfer: AccountTransferSummaryDto | None = None
     overview: AgentOverview | None = None
     nativeRelease: SnapshotNativeRelease | None = None
     activity: AgentActivity | None = None
