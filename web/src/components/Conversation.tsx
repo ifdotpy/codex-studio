@@ -1666,7 +1666,7 @@ export default function Conversation(p: {
           )}
           {managed && (
             <>
-              {messageQueue.pending && !messageQueue.busy && (
+              {Boolean(messageQueue.pending) && !messageQueue.busy && (
                 <div className="notice queue-notice" role="status">
                   The last queue change needs confirmation.
                   <Button
