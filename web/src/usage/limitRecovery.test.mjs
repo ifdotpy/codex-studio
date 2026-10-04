@@ -720,4 +720,26 @@ test("limit notice handles stale snapshots, reset boundaries, and plan guidance"
     );
     assert.equal(recovery.resetAt, undefined, JSON.stringify(window));
   }
+
+  for (const malformedBucket of [
+    { primary: { usedPercent: 20, resetsAt: "later" } },
+    { individualLimit: [] },
+    { spendControlReached: 0 },
+  ]) {
+    assert.equal(
+      limitRecovered(
+        rateLimitAgent,
+        availableLimits({
+          data: {
+            ordinaryUsageAllowed: true,
+            rateLimits: { primary: { usedPercent: 20, resetsAt: now + 60 } },
+            rateLimitsByLimitId: { provider: malformedBucket },
+          },
+        }),
+        now,
+      ),
+      false,
+      "malformed provider limit details cannot confirm recovery",
+    );
+  }
 });

@@ -1,5 +1,6 @@
-import type { Agent, Json } from "../types";
+import type { Agent, Json, JsonValue } from "../types";
 import { nativeErrorKind } from "../nativeErrors";
+import { jsonObject } from "./accountUsage";
 
 export type LimitRecovery = {
   title: string;
@@ -10,11 +11,47 @@ export type LimitRecovery = {
 };
 const finite = (value: unknown): value is number => Number.isFinite(value);
 
+function freshLimits(limits: Json | null, agent: Agent, now: number) {
+  return Boolean(
+    limits &&
+    !limits.error &&
+    !limits.stale &&
+    !limits.loading &&
+    (limits.accountKey || "default") === (agent.accountKey || "default") &&
+    finite(limits.at) &&
+    now - limits.at <= 300,
+  );
+}
+
+function windowAllowsUsage(
+  value: JsonValue | undefined | null,
+  now: number,
+): boolean {
+  if (value == null) return true;
+  const window = jsonObject(value);
+  if (!window) return false;
+  const usedPercent = window.usedPercent;
+  const resetsAt = window.resetsAt;
+  return (
+    finite(usedPercent) &&
+    usedPercent >= 0 &&
+    usedPercent < 100 &&
+    (resetsAt == null || (finite(resetsAt) && resetsAt > now))
+  );
+}
+
+function hasExhaustedWindow(value: JsonValue | undefined, now: number) {
+  const window = jsonObject(value);
+  const resetsAt = window?.resetsAt;
+  return finite(resetsAt) && resetsAt <= now;
+}
+
 export function limitRecovered(
   agent: Agent,
   limits: Json | null,
   now: number,
 ): boolean {
+  const limitsAt = finite(limits?.at) ? limits.at : Number.NaN;
   if (
     !["usageLimitExceeded", "rateLimitExceeded"].includes(
       nativeErrorKind(agent.error),
@@ -23,46 +60,46 @@ export function limitRecovered(
     return false;
   const errorAt = finite(agent.nativeLimitErrorAt)
     ? agent.nativeLimitErrorAt
-    : agent.lastEvent
+    : typeof agent.lastEvent === "string"
       ? Date.parse(agent.lastEvent) / 1000
       : Number.NaN;
+  const data = jsonObject(limits?.data);
+  const rateLimits = jsonObject(data?.rateLimits);
+  const rateLimitsByLimitId = jsonObject(data?.rateLimitsByLimitId);
+  const buckets = [rateLimits, ...Object.values(rateLimitsByLimitId ?? {})];
   if (
     !limits ||
-    limits.error ||
-    limits.stale ||
-    limits.loading ||
-    (limits.accountKey || "default") !== (agent.accountKey || "default") ||
-    !finite(limits.at) ||
-    now - limits.at > 300 ||
-    limits.at > now + 5 ||
-    (finite(errorAt) && limits.at <= errorAt) ||
-    limits.data?.ordinaryUsageAllowed !== true
+    !freshLimits(limits, agent, now) ||
+    limitsAt > now + 5 ||
+    (finite(errorAt) && limitsAt <= errorAt) ||
+    data?.ordinaryUsageAllowed !== true
   )
     return false;
-  const buckets = [
-    limits.data.rateLimits,
-    ...Object.values(limits.data.rateLimitsByLimitId || {}),
-  ] as Json[];
   return (
-    !!limits.data.rateLimits &&
-    buckets.every(
-      (bucket) =>
-        bucket &&
+    !!rateLimits &&
+    buckets.every((value) => {
+      const bucket = jsonObject(value);
+      if (!bucket) return false;
+      const individualLimitValue = bucket.individualLimit;
+      const individualLimit = jsonObject(individualLimitValue);
+      const remainingPercent = individualLimit?.remainingPercent;
+      const validIndividualLimit =
+        individualLimitValue == null ||
+        (individualLimit !== null &&
+          (remainingPercent == null ||
+            (finite(remainingPercent) &&
+              remainingPercent >= 0 &&
+              remainingPercent <= 100)));
+      return Boolean(
         bucket.rateLimitReachedType == null &&
-        !bucket.spendControlReached &&
-        !(
-          finite(bucket.individualLimit?.remainingPercent) &&
-          bucket.individualLimit.remainingPercent <= 0
-        ) &&
-        [bucket.primary, bucket.secondary].every(
-          (window) =>
-            !window ||
-            (finite(window.usedPercent) &&
-              window.usedPercent >= 0 &&
-              window.usedPercent < 100 &&
-              (!finite(window.resetsAt) || window.resetsAt > now)),
-        ),
-    )
+        (bucket.spendControlReached == null ||
+          bucket.spendControlReached === false) &&
+        validIndividualLimit &&
+        !(finite(remainingPercent) && remainingPercent <= 0) &&
+        windowAllowsUsage(bucket.primary, now) &&
+        windowAllowsUsage(bucket.secondary, now),
+      );
+    })
   );
 }
 
@@ -79,31 +116,30 @@ export function limitRecovery(
     title: "Usage limit reached",
     message: "View account limits for reset times and available credits.",
   };
-  const snapshot = limits?.data?.rateLimits;
+  const data = jsonObject(limits?.data);
+  const snapshot = jsonObject(data?.rateLimits);
   if (
     !snapshot ||
-    limits.error ||
-    limits.stale ||
-    limits.loading ||
-    (limits.accountKey || "default") !== (agent.accountKey || "default") ||
-    !finite(limits.at) ||
-    now - limits.at > 300 ||
-    [snapshot.primary, snapshot.secondary].some(
-      (window) => finite(window?.resetsAt) && window.resetsAt <= now,
-    )
+    !freshLimits(limits, agent, now) ||
+    hasExhaustedWindow(snapshot.primary, now) ||
+    hasExhaustedWindow(snapshot.secondary, now)
   )
     return fallback;
 
-  const resets = [snapshot.primary, snapshot.secondary]
-    .filter(
-      (window) =>
-        finite(window?.usedPercent) &&
-        window.usedPercent >= 100 &&
-        finite(window.resetsAt),
-    )
-    .map((window) => window.resetsAt as number);
-  const reset = resets.length ? { resetAt: Math.max(...resets) } : {};
-  let reached = snapshot.rateLimitReachedType;
+  const resets = [snapshot.primary, snapshot.secondary].flatMap((value) => {
+    const window = jsonObject(value);
+    return finite(window?.usedPercent) &&
+      window.usedPercent >= 100 &&
+      finite(window.resetsAt)
+      ? [window.resetsAt]
+      : [];
+  });
+  const reset =
+    resets.length > 0 ? { resetAt: Math.max(...resets) } : undefined;
+  let reached =
+    typeof snapshot.rateLimitReachedType === "string"
+      ? snapshot.rateLimitReachedType
+      : null;
   if (kind === "usageLimitExceeded") {
     if (reached === "workspace_owner_credits_depleted")
       reached = "workspace_owner_usage_limit_reached";
@@ -152,7 +188,9 @@ export function limitRecovery(
   }
   // Unknown limit types cannot establish permission to buy or change a plan.
   if (reached != null) return fallback;
-  if (["pro", "plus", "pro_lite"].includes(snapshot.planType)) {
+  const planType =
+    typeof snapshot.planType === "string" ? snapshot.planType : "";
+  if (["pro", "plus", "pro_lite"].includes(planType)) {
     return {
       title: "Usage limit reached",
       message: "Wait for the limit to reset, or add credits in ChatGPT.",
@@ -163,7 +201,7 @@ export function limitRecovery(
       ...reset,
     };
   }
-  if (["free", "go"].includes(snapshot.planType)) {
+  if (["free", "go"].includes(planType)) {
     return {
       title: "Usage limit reached",
       message: "Wait for the limit to reset, or review your plan in ChatGPT.",

@@ -8,6 +8,15 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(accountLimits(a, "a", "native-a"), a);
   assert.equal(accountLimits(a, "b"), null);
   assert.equal(accountLimits(a, "a", "replacement-login"), null);
+  assert.equal(
+    accountLimits(
+      { accountKey: "a", data: { accountId: 42 } },
+      "a",
+      "native-a",
+    ),
+    null,
+    "malformed native identity does not match the selected account",
+  );
   const legacyWithoutAccountId = { accountKey: "a", data: {} };
   assert.equal(
     accountLimits(legacyWithoutAccountId, "a", "native-a"),
@@ -21,5 +30,6 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(accountLimits({ data: {} }, "a"), null);
   assert.equal(accountLimits({ data: {} }, "default"), null);
   assert.equal(accountLimits(null, "default"), null);
+  assert.equal(accountLimits("not an object", "a"), null);
   console.log("Account limits ownership: 8 passed");
 });
