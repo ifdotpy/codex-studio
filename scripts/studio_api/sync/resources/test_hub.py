@@ -134,6 +134,18 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         second.close()
         self.assertEqual(watchdog.detached, ["agent-a", "agent-a"])
 
+    async def test_publish_after_loop_close_detaches_orphaned_subscription(self) -> None:
+        stale_loop = asyncio.new_event_loop()
+        watchdog = Watchdog()
+        hub = ResourceHub("workspace-a", watchdog)
+        hub.subscribe([panel("agent-a")], loop=stale_loop)
+        stale_loop.close()
+        hub.publish(panel("agent-a"))
+        self.assertEqual(len(hub._subscriptions), 0)
+        self.assertEqual(watchdog.detached, ["agent-a"])
+        hub.close()
+        self.assertEqual(watchdog.detached, ["agent-a"])
+
     async def test_overflow_reconciles_full_subscription(self) -> None:
         loop = asyncio.get_running_loop()
         resources = [

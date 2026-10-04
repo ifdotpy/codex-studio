@@ -202,6 +202,7 @@ class ResourceHub:
         self._token_rates_published = token_rates is not None
         self._lock = threading.RLock()
         self._subscriptions: set[ResourceSubscription] = set()
+        self._orphaned_subscriptions: set[ResourceSubscription] = set()
 
     def subscribe(
         self,
@@ -285,7 +286,15 @@ class ResourceHub:
     def close(self) -> None:
         """Release all live subscriptions without entering watchers under lock."""
         with self._lock:
-            subscriptions = list(self._subscriptions)
+            subscriptions = list(self._subscriptions | self._orphaned_subscriptions)
+            self._orphaned_subscriptions.clear()
+        for subscription in subscriptions:
+            subscription.close()
+
+    def _close_orphaned_subscriptions(self) -> None:
+        with self._lock:
+            subscriptions = list(self._orphaned_subscriptions)
+            self._orphaned_subscriptions.clear()
         for subscription in subscriptions:
             subscription.close()
 
@@ -299,7 +308,9 @@ class ResourceHub:
             for subscription in self._subscriptions:
                 subscription._pending_token_rates = snapshot
                 self._schedule_wake(subscription)
-            return self._revision
+            revision = self._revision
+        self._close_orphaned_subscriptions()
+        return revision
 
     def publish_many(self, resources: Iterable[ResourceRef]) -> int:
         keyed: dict[ResourceKey, ResourceRef] = {}
@@ -325,7 +336,9 @@ class ResourceHub:
                         break
                 if subscription._pending or subscription._overflow:
                     self._schedule_wake(subscription)
-            return self._revision
+            revision = self._revision
+        self._close_orphaned_subscriptions()
+        return revision
 
     def _schedule_wake(self, subscription: ResourceSubscription) -> None:
         if subscription._wake_scheduled:
@@ -335,7 +348,7 @@ class ResourceHub:
             subscription._loop.call_soon_threadsafe(subscription._signal)
         except RuntimeError:
             subscription._wake_scheduled = False
-            subscription._closed = True
+            self._orphaned_subscriptions.add(subscription)
 
     def _event(
         self,
