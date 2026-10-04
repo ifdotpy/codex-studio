@@ -1,21 +1,13 @@
 import { useRef, useState } from "react";
-import { post, ApiError, errorText, saved as readSaved } from "../api";
-import type { paths } from "../generated/api";
-
-type PostPath = Extract<
-  {
-    [Path in keyof paths]: paths[Path] extends { post: unknown } ? Path : never;
-  }[keyof paths],
-  string
->;
-type PostBody<Path extends PostPath> = paths[Path] extends {
-  post: {
-    requestBody: { content: { "application/json": infer Body } };
-  };
-}
-  ? Body
-  : never;
-type PostResult<Path extends PostPath> = Awaited<ReturnType<typeof post<Path>>>;
+import {
+  post,
+  ApiError,
+  errorText,
+  saved as readSaved,
+  type ApiPostPath,
+  type PostBody,
+  type PostResult,
+} from "../api";
 
 export function persistedProjectRequest<Path extends ApiPostPath>(
   persisted: PostBody<Path> | null,
@@ -25,7 +17,7 @@ export function persistedProjectRequest<Path extends ApiPostPath>(
 }
 
 // Project metadata uses exact values and revision checks for a safe retry.
-export function useProjectSave<Path extends PostPath>(
+export function useProjectSave<Path extends ApiPostPath>(
   path: Path,
   onSaved: () => Promise<void>,
   validate?: (result: PostResult<Path>) => void,
