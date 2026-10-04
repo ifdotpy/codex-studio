@@ -146,20 +146,24 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                 loop=asyncio.get_running_loop(),
             )
             cache_lock = threading.RLock()
-            changed_values = iter((True, False))
-            publications_under_lock: list[bool] = []
-
-            def store_rate_limits(_account_key: str, _value: dict[str, object]) -> bool:
-                return next(changed_values)
-
-            runtime = SimpleNamespace(
-                root=state_dir,
-                connection_current=lambda _account_key, _connection_id: True,
-                rate_limits_for=lambda _account_key: {"data": {}, "at": 0},
-                store_rate_limits=store_rate_limits,
-                usage_resume_limits_changed=lambda _account_key, _value: None,
-                _rate_cache_lock=cache_lock,
-            )
+            publications_under_lock: list[tuple[bool, bool]] = []
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.db_path = state_dir / "runtime.sqlite"
+            runtime.analytics_db_path = state_dir / "analytics.sqlite"
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = cache_lock
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            runtime.rate_limits = {"data": None, "at": None, "error": None}
+            runtime.rate_limits_by_account = {}
+            runtime.connection_current = lambda *_args: True
+            runtime.analytics_safe = lambda *_args, **_kwargs: None
+            runtime.schedule_analytics_captures = lambda *_args, **_kwargs: None
+            runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None
+            runtime.usage_resume_limits_changed = lambda *_args: None
             bucket = {"limitId": "codex", "primary": {"usedPercent": 27}}
             message = {
                 "method": "account/rateLimits/updated",
@@ -167,14 +171,19 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             }
 
             def publish_checked(root: str | Path, *resources: ResourceRef) -> None:
-                publications_under_lock.append(_available_to_other_thread(cast(_TimedLock, cache_lock)))
+                publications_under_lock.append((
+                    _available_to_other_thread(cast(_TimedLock, runtime.lock)),
+                    _available_to_other_thread(cast(_TimedLock, cache_lock)),
+                ))
                 publish_to_hub(root, *resources)
 
             try:
                 with patch(
                     "studio_api.sync.resources.hub.publish_resources", side_effect=publish_checked
                 ):
-                    Runtime.notification(runtime, message, "account-a", "connection-a")
+                    runtime.notification(message, "account-a", "connection-a")
+                    self.assertIsNone(await subscription.next_event(timeout=0.01))
+                    runtime._publish_committed_resource_changes()
                     event = await subscription.next_event(timeout=1)
                     self.assertIsNotNone(event)
                     assert event is not None
@@ -182,10 +191,11 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                         event.resources,
                         [ResourceRef(LimitsResource(kind="limits", accountKey="account-a"))],
                     )
-                    Runtime.notification(runtime, message, "account-a", "connection-a")
+                    runtime.notification(message, "account-a", "connection-a")
+                    runtime._publish_committed_resource_changes()
 
                 self.assertIsNone(await subscription.next_event(timeout=0.01))
-                self.assertEqual(publications_under_lock, [True])
+                self.assertEqual(publications_under_lock, [(True, True)])
             finally:
                 subscription.close()
                 unregister_resource_hub(state_dir, hub)
