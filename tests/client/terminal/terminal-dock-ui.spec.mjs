@@ -392,7 +392,7 @@ test("Terminal dock", async () => {
     const screen = await dock.locator(".xterm-screen").boundingBox();
     await page.mouse.move(screen.x + 1, screen.y + 7);
     await page.mouse.down();
-    await page.mouse.move(screen.x + 128, screen.y + 7, { steps: 8 });
+    await page.mouse.move(screen.x + 145, screen.y + 7, { steps: 8 });
     await page.mouse.up();
     await dock
       .getByRole("button", { name: "Copy selection", exact: true })
