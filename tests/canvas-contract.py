@@ -444,22 +444,32 @@ class CanvasContract(unittest.TestCase):
 
     def test_worktree_disk_route_forwards_priority_ids(self):
         class RecordingScanner:
+            def __init__(self):
+                self.priority_ids = None
+
             def snapshot(self, priority_ids=()):
-                return {"priority": list(priority_ids)}
+                self.priority_ids = list(priority_ids)
+                return {
+                    "workers": {}, "totalBytes": 0, "limitBytes": 0,
+                    "warning": False, "scanning": False, "error": None,
+                    "measure": "allocated blocks",
+                }
 
         server = make_server(self.canvas)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         self.canvas.runtime = SimpleNamespace(root=self.root, lock=threading.RLock())
-        with patch("codex_worktree_disk.scanner", return_value=RecordingScanner()) as get_scanner:
+        scanner = RecordingScanner()
+        with patch("codex_worktree_disk.scanner", return_value=scanner) as get_scanner:
             try:
                 with urllib.request.urlopen(
                     base + "/api/worktree-disk?workers=worker-one%2Cworker-two",
                     timeout=5,
                 ) as response:
                     payload = json.loads(response.read())
-                self.assertEqual(payload["priority"], ["worker-one", "worker-two"])
+                self.assertEqual(scanner.priority_ids, ["worker-one", "worker-two"])
+                self.assertEqual(payload["workers"], {})
                 get_scanner.assert_called_once_with(self.canvas.root)
             finally:
                 server.shutdown()

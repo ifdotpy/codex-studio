@@ -8171,7 +8171,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_peer_teams import snapshot as peer_snapshot
         from codex_project_folders import sidebar_order
         agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
+        agent_ids = {a["id"] for a in agents}
+        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
         team_names = {a["id"]: a["name"] for a in agents}
+        work_records = self.records(db, "work") if include_work else []
+        work_result_files = {}
+        if worker_ids:
+            if include_work:
+                result_records = iter(sorted(
+                    work_records,
+                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
+                                        record.get("status") or ""),
+                ))
+            else:
+                rows = db.execute(
+                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
+                    "(SELECT value FROM json_each(?)) "
+                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
+                    (json.dumps(sorted(worker_ids)),),
+                )
+                result_records = (json.loads(row[0]) for row in rows)
+            for record in result_records:
+                owner = record.get("owner")
+                if owner not in worker_ids:
+                    continue
+                for result in record.get("results", []):
+                    if result.get("agent") != owner or not result.get("resultFile"):
+                        continue
+                    created = result.get("created", 0)
+                    prior = work_result_files.get(owner)
+                    if prior is None or created > prior[0]:
+                        work_result_files[owner] = (created, result["resultFile"])
         for a in agents:
             a["nextTurnSettingsSupported"] = True
             a["readStateSupported"] = True
@@ -8184,7 +8214,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a.get("lastCompletedTurn") and not a.get("turnId")
                     and not a.get("inFlight") and a.get("status") == "completed"
                 ) else ""
-                result_file = self.latest_work_result_file(db, a['id'])
+                result_file = work_result_files.get(a['id'], (None, None))[1]
                 a["overview"] = {
                     "task": task[:4000], "taskTruncated": len(task) > 4000,
                     "result": result[:4000], "resultTruncated": len(result) > 4000,
@@ -8216,13 +8246,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "monitors": [
                 m
                 for m in self.recent_monitors(db)
-                if m["agent"] in {a["id"] for a in agents}
+                if m["agent"] in agent_ids
             ],
             "requests": [
                 r
                 for r in self.records(db, "requests")
                 if r["status"] == "pending"
-                and r.get("agent") in {a["id"] for a in agents}
+                and r.get("agent") in agent_ids
             ],
             "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
             "complaints": self.complaint_summaries(db),
@@ -8231,13 +8261,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # not delay every chat update.
             **({"work": [
                 w
-                for w in self.records(db, "work")
-                if w["rootId"] in {a["id"] for a in agents}
+                for w in work_records
+                if w["rootId"] in agent_ids
             ]} if include_work else {}),
             "rules": [
                 r
                 for r in self.records(db, "rules")
-                if r["agent"] in {a["id"] for a in agents}
+                if r["agent"] in agent_ids
             ],
             "rateLimits": self.rate_limits.copy(),
             "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],

@@ -201,14 +201,23 @@ class Canvas:
                 own.execute("PRAGMA query_only=ON")
                 own.execute("BEGIN")
                 return self.chats(db=own)
-        chats = []
-        for row in db.execute("SELECT * FROM groups"):
-            members = [e['source'] for e in db.execute("SELECT source FROM graph_edges WHERE target=? AND kind='chat' ORDER BY source", (row['id'],))]
-            last = db.execute("SELECT text, at FROM messages WHERE room=? ORDER BY at DESC LIMIT 1", (row['id'],)).fetchone()
-            count = db.execute("SELECT count(*) FROM messages WHERE room=?", (row['id'],)).fetchone()[0]
-            chats.append({'id': row['id'], 'name': row['name'], 'members': members, 'kind': 'chat',
-                          'messageCount': count, 'tail': last['text'] if last else '', 'lastMessageAt': last['at'] if last else None})
-        return chats
+        rows = db.execute("""
+            SELECT g.id, g.name,
+              (SELECT json_group_array(source) FROM (
+                SELECT source FROM graph_edges WHERE target=g.id AND kind='chat' ORDER BY source
+              )) AS members,
+              (SELECT text FROM messages WHERE room=g.id ORDER BY at DESC LIMIT 1) AS tail,
+              (SELECT at FROM messages WHERE room=g.id ORDER BY at DESC LIMIT 1) AS last_message_at,
+              (SELECT count(*) FROM messages WHERE room=g.id) AS message_count
+            FROM groups AS g
+        """)
+        return [
+            {'id': row['id'], 'name': row['name'], 'members': json.loads(row['members'] or '[]'),
+             'kind': 'chat', 'messageCount': row['message_count'],
+             'tail': row['tail'] if row['message_count'] else '',
+             'lastMessageAt': row['last_message_at']}
+            for row in rows
+        ]
 
     def edges(self, threads=None, db=None):
         if db is None:

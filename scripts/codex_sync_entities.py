@@ -322,14 +322,16 @@ def seed(db, snapshot):
         for value in runtime.get(name, []) or []:
             if value.get("id"):
                 put(db, collection, str(value["id"]), value)
-    for value in snapshot.get("chats", []):
+    chats = snapshot.get("chats", [])
+    chat_ids = {value["id"] for value in chats if value.get("id")}
+    for value in chats:
         if value.get("id"):
             put(db, "chat", str(value["id"]), value)
     for value in snapshot.get("edges", []):
         if value.get("id"):
             put(db, "edge", str(value["id"]), value)
     for item in snapshot.get("nodes", []):
-        if item.get("id") and item.get("id") not in threads:
+        if item.get("id") and item.get("id") not in threads and item.get("id") not in chat_ids:
             put(db, "agent", item["id"], item)
     # Mutable aggregate values are small and independently versioned.
     meta = {key: runtime.get(key) for key in ("connected", "rateLimits", "rateLimitsByAccount", "nativeNotices",
