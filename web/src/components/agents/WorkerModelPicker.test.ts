@@ -48,6 +48,18 @@ describe("supportsDaybreakMode", () => {
     },
   );
 
+  it.each([
+    ["standard", 1],
+    ["daybreakBlue", 1],
+  ])("rejects mixed-type cyber access entries: %s", (program, invalid) => {
+    const info = {
+      model: "claude-sonnet",
+      availableAccessPrograms: { cyber: [program, invalid] },
+    };
+    expect(supportsDaybreakMode(info, false)).toBe(false);
+    expect(supportsDaybreakMode(info, true)).toBe(false);
+  });
+
   it.each([null, "bad", []])(
     "does not grant standard mode for malformed access metadata: %s",
     (availableAccessPrograms) => {

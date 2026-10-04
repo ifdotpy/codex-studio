@@ -84,9 +84,9 @@ const cyberAccessPrograms = (
   if (!("cyber" in access)) return undefined;
   const cyber = access.cyber;
   if (!Array.isArray(cyber)) return null;
-  return cyber.filter(
-    (program): program is string => typeof program === "string",
-  );
+  if (!cyber.every((program): program is string => typeof program === "string"))
+    return null;
+  return cyber;
 };
 
 export function daybreakProgram(info?: WorkerModelInfo): string | null {
