@@ -709,9 +709,21 @@ def _snapshot_paths(repo_rel: Path, dirty_paths, delta, nested_repositories=()):
                   key=lambda path: path.as_posix())
 
 
-def create_workspace(repo_root, agent_id, *, start_commit=None) -> dict[str, Any]:
+def create_workspace(repo_root, agent_id, *, start_commit=None,
+                     restore_heads: dict[str, str] | None = None) -> dict[str, Any]:
     root = _repo_root(repo_root)
     agent_id = _safe_id(agent_id)
+    if restore_heads is not None and start_commit is not None:
+        raise ValueError('start_commit and restore_heads cannot be used together')
+    restore_mode = restore_heads is not None
+    if restore_heads is not None:
+        normalized_heads = {}
+        for relative, commit in restore_heads.items():
+            path = Path(relative)
+            if path.is_absolute() or '..' in path.parts:
+                raise ValueError('Restore repository paths must be relative')
+            normalized_heads[path.as_posix()] = str(commit)
+        restore_heads = normalized_heads
     key = _repo_key(root)
     state_path = _agent_state_path(agent_id)
     mount = _mount_path(agent_id)
@@ -720,6 +732,11 @@ def create_workspace(repo_root, agent_id, *, start_commit=None) -> dict[str, Any
         state = _read_json(state_path, {}) or {}
         if state and state.get('repoKey') != key:
             raise ValueError('Agent id is already reserved for another repository')
+        if state and state.get('state') != 'ready' and restore_heads is None:
+            saved_heads = state.get('restoreHeads')
+            if saved_heads is not None:
+                restore_heads = saved_heads
+                restore_mode = True
         if state.get('state') == 'ready':
             already_ready = True
         else:
@@ -736,6 +753,7 @@ def create_workspace(repo_root, agent_id, *, start_commit=None) -> dict[str, Any
                     'repoRoot': str(root), 'repoKey': key, 'agentId': agent_id,
                     'baseVersion': base['version'], 'baseImage': base['image'],
                     'startCommit': start_commit, 'snapshotCommit': None,
+                    'restoreHeads': restore_heads,
                     'branch': 'codex-agent/' + agent_id, 'image': None,
                     'mount': str(mount), 'state': 'creating', 'repositories': [],
                     'createdAt': time.time(),
@@ -759,8 +777,10 @@ def create_workspace(repo_root, agent_id, *, start_commit=None) -> dict[str, Any
                 target = mount_repo / rel
                 source = root / rel
                 copied_head = item['startCommit']
-                start = (start_commit if rel == Path('.') and start_commit else
-                         _git(source, 'rev-parse', 'HEAD').strip())
+                restore_head = restore_heads.get(item['path']) if restore_heads is not None else None
+                start = (restore_head or
+                         (start_commit if rel == Path('.') and start_commit else
+                          _git(source, 'rev-parse', 'HEAD').strip()))
                 item['startCommit'] = start
                 item['branch'] = 'codex-agent/' + agent_id
                 verify = _command(['git', '-C', str(target), 'show-ref', '--verify', '--quiet',
@@ -776,6 +796,10 @@ def create_workspace(repo_root, agent_id, *, start_commit=None) -> dict[str, Any
                 branch_tip = (prior_snapshot if prior_snapshot
                               else start_commit if start_commit and rel == Path('.') else start)
                 _sync_refs(target, source, agent_id, view=True)
+                if restore_mode:
+                    _git(target, 'checkout', '-f', '-B', item['branch'], start, view=True)
+                    item['snapshotCommit'] = None
+                    continue
                 if start_commit and rel == Path('.'):
                     _git(target, 'checkout', '-f', '-B', item['branch'], start_commit, view=True)
                 else:
@@ -883,9 +907,13 @@ def collect(agent_id) -> dict[str, Any]:
                 continue
             nested = _fetch_and_replay(user_repo, agent_repo, item['branch'],
                                        item.get('snapshotCommit'), item.get('startCommit'), agent_id)
-            result['repositories'].append({'path': item['path'], **nested})
+            head = nested.get('commit')
             if nested['state'] == 'conflict':
-                return {'state': 'conflict', 'conflict': nested.get('conflict'),
+                head = _git(user_repo, 'rev-parse', nested['rawRef']).strip()
+            repo_result = {**nested, 'path': item['path'], 'branch': item['branch'], 'head': head}
+            result['repositories'].append(repo_result)
+            if nested['state'] == 'conflict':
+                return {'state': 'conflict', 'path': item['path'], 'conflict': nested.get('conflict'),
                         'rawRef': nested['rawRef'], 'repositories': result['repositories']}
         result['branch'] = 'codex-agent/' + agent_id
         return result

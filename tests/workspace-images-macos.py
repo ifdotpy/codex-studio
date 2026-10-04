@@ -287,6 +287,10 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.git('cat-file', '-e', start_a['startCommit'] + '^{commit}', cwd=repo_a)
         collected = images.collect('agent-a')
         self.assertEqual(collected['state'], 'collected', collected)
+        saved_heads = {row['path']: row['head'] for row in collected['repositories']}
+        self.assertEqual(set(saved_heads), {'.', 'sub'})
+        self.assertTrue(all(row.get('branch') == 'codex-agent/agent-a'
+                            for row in collected['repositories']))
         result_branch = 'codex-agent/agent-a'
         self.assertEqual(self.git('rev-parse', result_branch, cwd=self.repo).stdout.strip(),
                          collected['repositories'][-1]['commit'])
@@ -312,6 +316,19 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.assertEqual(self.git('rev-parse', result_branch + '^').stdout.strip(), root_commits[-2])
         self.assertNotEqual(self.git('show', result_branch + ':user-after-agent-start.txt',
                                      check=False).returncode, 0)
+
+        images.remove_workspace('agent-a', force=True)
+        restored_a = images.create_workspace(self.repo, 'agent-a', restore_heads=saved_heads)
+        restored_root = pathlib.Path(restored_a['repoPath'])
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=restored_root).stdout.strip(),
+                         saved_heads['.'])
+        self.assertEqual((restored_root / 'agent-change.txt').read_text(), 'agent change\n')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=restored_root / 'sub').stdout.strip(),
+                         saved_heads['sub'])
+        self.assertEqual((restored_root / 'sub' / 'inner.txt').read_text(),
+                         'agent submodule change\n')
+        restored_state = json.loads((self.store / 'agents' / 'agent-a' / 'agent.json').read_text())
+        self.assertTrue(all(row['snapshotCommit'] is None for row in restored_state['repositories']))
 
         # A user edit to .git/config must not disable the image's fast Git settings.
         remount = pathlib.Path(start_b['mount'])
@@ -340,6 +357,8 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         conflict_user_head = self.git('rev-parse', 'HEAD').stdout.strip()
         conflict_result = images.collect('agent-conflict')
         self.assertEqual(conflict_result['state'], 'conflict', conflict_result)
+        self.assertEqual(conflict_result['path'], '.')
+        self.assertEqual(conflict_result['repositories'][0]['path'], '.')
         self.assertTrue(self.git('show-ref', '--verify', '--quiet',
                                  'refs/studio/agents/agent-conflict/raw', check=False).returncode == 0)
         self.assertNotEqual(self.git('show-ref', '--verify', '--quiet',

@@ -76,7 +76,7 @@ or repo key, so a retry after a crash or a lost response adopts or completes the
   current base exists. Safe to call many times. Also refreshes a stale base when the delta is
   large. `on_done(base_status)` runs once from the build thread when the build ends (ready or
   failed), or at once when the base is already ready or failed. No polling.
-- `create_workspace(repo_root, agent_id, *, start_commit=None) -> dict` with `mount`,
+- `create_workspace(repo_root, agent_id, *, start_commit=None, restore_heads=None) -> dict` with `mount`,
   `repoPath` (`<mount>/repo`), `branch` (`codex-agent/<id>`), `startCommit`, `snapshotCommit`
   (None when the user tree was clean). The default start commit is the user's current HEAD.
   It syncs the user's current refs into private Git metadata, updates only paths committed since
@@ -84,12 +84,15 @@ or repo key, so a retry after a crash or a lost response adopts or completes the
   Steps: clone or overlay, mount, fresh user edits, reset or create the agent branch, snapshot commit.
   With `start_commit` different from the user's HEAD, the tree
   is reset to that commit instead (ignored build output stays).
+  `restore_heads` maps repository paths from `agent.json` (for example `.` or `packages/lib`)
+  to commits collected from those repositories. Restore checks out each commit without a snapshot.
 - `ensure_mounted(agent_id) -> dict` : mount again after a restart or reboot.
 - `collect(agent_id) -> dict` : fetch the agent branch into the user repository (nested
   repositories first) as `refs/studio/agents/<id>/raw`, then replay the agent commits onto the
   start commit (the snapshot's parent, or `startCommit` when there is no snapshot) with `git merge-tree` and `git commit-tree`. The result goes to
   `refs/heads/codex-agent/<id>` in the user repository, so the lead merges the same branch name as
-  today. On a conflict the branch is not moved, and the result reports the conflict and the raw ref.
+  today. Each repository result includes its path, branch, and head. On a conflict the branch is
+  not moved, and the result reports the conflicting path, conflict, and raw ref.
   The user's working tree and HEAD never change.
 - `remove_workspace(agent_id, *, force=False) -> {"freedBytes", "state"}` : eject or unmount,
   stop processes that hold the mount (`lsof -t +f -- <mount>`, macOS) when `force`, delete the
