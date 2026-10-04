@@ -102,6 +102,39 @@ class _RuntimeFixture:
             "cause": "usage_limit",
             "failedAt": 1.0,
             "dueAt": 2.0,
+            "taskClaims": ["claim-1"],
+        }
+
+    def capacity_retry(
+        self,
+        agent_id: str,
+        retry_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        self.calls.append(("capacity_retry", (agent_id, retry_id, action)))
+        return {
+            "id": retry_id,
+            "threadId": "thread",
+            "turnId": "turn",
+            "accountKey": "default",
+            "epoch": 2,
+            "cause": "serverOverloaded",
+            "status": "scheduled",
+            "dueAt": 2.0,
+            "attempt": 1,
+            "maxAttempts": 4,
+            "cwd": "/workspace",
+            "settings": {
+                "provider": "codex",
+                "model": "open-catalog-model",
+                "effort": "high",
+                "nativeEffort": "high",
+                "fastMode": False,
+                "daybreakEnabled": False,
+            },
+            "updatedAt": 1.5,
+            "waits": 0,
+            "taskClaims": ["claim-1"],
         }
 
 
@@ -210,7 +243,24 @@ def test_usage_resume_returns_the_receipt_shape_not_an_agent_projection() -> Non
     assert response.status_code == 200
     assert response.json()["id"] == "resume"
     assert response.json()["status"] == "scheduled"
+    assert response.json()["taskClaims"] == ["claim-1"]
     assert runtime.calls == [("usage_resume", ("agent", "resume", True))]
+
+
+def test_capacity_retry_response_matches_saved_runtime_record() -> None:
+    app, runtime, _context = _app()
+    response = TestClient(app).post(
+        "/api/capacity-retry",
+        json={"id": "agent", "retry_id": "retry", "action": "retry"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "scheduled"
+    assert payload["cause"] == "serverOverloaded"
+    assert payload["dueAt"] == 2.0
+    assert payload["taskClaims"] == ["claim-1"]
+    assert runtime.calls == [("capacity_retry", ("agent", "retry", "retry"))]
 
 
 def test_context_sender_rejects_invalid_service_response_without_retry_hint() -> None:
@@ -262,6 +312,8 @@ def test_transfer_response_preserves_receipt_identity_and_filters_internal_state
         "portableHistory": {"privateOperationMarker": "secret"},
     }
 
+    transfer_calls: list[tuple[str, tuple[str, ...]]] = []
+
     class FakeTransferStore:
         def request(
             self,
@@ -270,9 +322,11 @@ def test_transfer_response_preserves_receipt_identity_and_filters_internal_state
             _request_id: str,
             _scope: str,
         ) -> dict[str, object]:
+            transfer_calls.append(("request", (str(_key), str(_account_key), _request_id, _scope)))
             return operation
 
         def action(self, _request_id: str, _action: str) -> dict[str, object]:
+            transfer_calls.append(("action", (_request_id, _action)))
             return operation
 
     api_module = SimpleNamespace(
@@ -284,8 +338,17 @@ def test_transfer_response_preserves_receipt_identity_and_filters_internal_state
             "/api/agents/account-transfer",
             json={"id": "lead", "account_key": "destination", "request_id": "durable-operation-id"},
         )
+        action_response = TestClient(app).post(
+            "/api/agents/account-transfer",
+            json={"request_id": "durable-operation-id", "action": "retry"},
+        )
 
     assert response.status_code == 200
+    assert action_response.status_code == 200
+    assert transfer_calls == [
+        ("request", ("lead", "destination", "durable-operation-id", "team")),
+        ("action", ("durable-operation-id", "retry")),
+    ]
     payload = response.json()
     assert payload["id"] == "durable-operation-id"
     assert payload["canRetry"] is True
@@ -340,6 +403,22 @@ def test_agent_routes_register_response_dto_with_sync_envelope() -> None:
     assert "_syncEntities" in schema["components"]["schemas"][response_name]["properties"]
 
 
+def test_transfer_openapi_keeps_action_body_scope_optional() -> None:
+    app, _runtime, _context = _app()
+    schema = app.openapi()
+    body_schema = schema["paths"]["/api/agents/account-transfer"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    assert body_schema["anyOf"] == [
+        {"$ref": "#/components/schemas/TransferStartRequest"},
+        {"$ref": "#/components/schemas/TransferActionRequest"},
+    ]
+    action_schema = schema["components"]["schemas"]["TransferActionRequest"]
+    assert action_schema["required"] == ["request_id", "action"]
+    assert "scope" not in action_schema["required"]
+    start_schema = schema["components"]["schemas"]["TransferStartRequest"]
+    assert start_schema["required"] == ["request_id"]
+    assert "scope" not in start_schema["required"]
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -356,6 +435,9 @@ class AgentRouterTests(unittest.TestCase):
     def test_usage_resume_returns_receipt_shape(self) -> None:
         test_usage_resume_returns_the_receipt_shape_not_an_agent_projection()
 
+    def test_capacity_retry_response_matches_saved_runtime_record(self) -> None:
+        test_capacity_retry_response_matches_saved_runtime_record()
+
     def test_context_sender_rejects_invalid_response_without_retry_hint(self) -> None:
         test_context_sender_rejects_invalid_service_response_without_retry_hint()
 
@@ -367,3 +449,6 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_agent_route_schema_includes_sync_envelope(self) -> None:
         test_agent_routes_register_response_dto_with_sync_envelope()
+
+    def test_transfer_action_request_schema_does_not_require_scope(self) -> None:
+        test_transfer_openapi_keeps_action_body_scope_optional()

@@ -350,12 +350,30 @@ class AccountSelectionRequest(ContractModel):
     cwd: str | None = None
 
 
-class AccountTransferRequest(ContractModel):
+class TransferStartRequest(ContractModel):
     id: str | None = Field(default=None, min_length=1, max_length=200)
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
     request_id: str = Field(min_length=1, max_length=200)
-    scope: TransferScope = TransferScope.TEAM
-    action: TransferAction | None = None
+    scope: TransferScope | None = None
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def explicit_scope_must_not_be_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("A transfer scope must be selected")
+        return value
+
+
+class TransferActionRequest(ContractModel):
+    request_id: str = Field(min_length=1, max_length=200)
+    action: TransferAction
+    # Legacy action callers may include these, but the route ignores them.
+    id: str | None = Field(default=None, min_length=1, max_length=200)
+    account_key: str | None = Field(default=None, min_length=1, max_length=200)
+    scope: TransferScope | None = None
+
+
+AccountTransferRequest = TransferStartRequest | TransferActionRequest
 
 
 class ActionContext(ContractModel):
@@ -457,6 +475,7 @@ class UsageResumeResponse(ResponseModel):
     startedAt: float | None = None
     lastCheckedAt: float | None = None
     waitingForAuth: bool | None = None
+    taskClaims: list[str] | None = None
     reason: str | None = None
     updatedAt: float | None = None
 

@@ -2,7 +2,7 @@
 
 import unittest
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from .models import (
     AccountTransferRequest,
@@ -17,6 +17,9 @@ from .models import (
     RecoveryResponse,
     StopRequest,
     TransferResponse,
+    TransferActionRequest,
+    TransferStartRequest,
+    AccountTransferRequest,
     UsageResumeResponse,
 )
 
@@ -66,14 +69,35 @@ class AgentRequestModelTests(unittest.TestCase):
 
     def test_existing_stop_defaults_and_account_transfer_scope(self) -> None:
         stop = StopRequest.model_validate_json('{"id":"a"}')
-        transfer = AccountTransferRequest.model_validate_json(
+        transfer: AccountTransferRequest = TypeAdapter[AccountTransferRequest](
+            AccountTransferRequest
+        ).validate_json(
             '{"id":"a","account_key":"acct","request_id":"durable",'
             '"scope":"subagents"}'
         )
 
         self.assertTrue(stop.descendants)
+        self.assertIsInstance(transfer, TransferStartRequest)
+        assert isinstance(transfer, TransferStartRequest)
+        assert transfer.scope is not None
         self.assertEqual(transfer.scope.value, "subagents")
         self.assertEqual(transfer.request_id, "durable")
+
+    def test_transfer_action_request_needs_no_scope_or_start_fields(self) -> None:
+        adapter = TypeAdapter[AccountTransferRequest](AccountTransferRequest)
+        action = adapter.validate_json('{"request_id":"durable","action":"retry"}')
+        start = adapter.validate_json('{"request_id":"durable"}')
+
+        self.assertIsInstance(action, TransferActionRequest)
+        self.assertIsInstance(start, TransferStartRequest)
+        assert isinstance(start, TransferStartRequest)
+        self.assertIsNone(start.scope)
+        with self.assertRaises(ValidationError):
+            adapter.validate_json('{"request_id":"durable","action":"replay"}')
+        with self.assertRaises(ValidationError):
+            adapter.validate_json('{"request_id":"durable","scope":null}')
+        with self.assertRaises(ValidationError):
+            adapter.validate_json('{"request_id":"durable","unknown":true}')
 
     def test_transfer_receipt_and_safety_response_have_named_shapes(self) -> None:
         transfer = TransferResponse.model_validate_json(
@@ -159,9 +183,11 @@ class AgentRequestModelTests(unittest.TestCase):
         response = UsageResumeResponse.model_validate_json(
             '{"id":"resume-id","status":"scheduled","accountKey":"acct",'
             '"threadId":"thread","epoch":3,"turnId":"turn",'
-            '"cause":"usage_limit","failedAt":10.0,"dueAt":20.0}'
+            '"cause":"usage_limit","failedAt":10.0,"dueAt":20.0,'
+            '"taskClaims":["task-1"]}'
         )
         self.assertEqual(response.status.value, "scheduled")
+        self.assertEqual(response.taskClaims, ["task-1"])
 
     def test_unknown_fields_fail_before_handler_side_effects(self) -> None:
         with self.assertRaises(ValidationError):

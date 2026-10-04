@@ -43,6 +43,8 @@ from .models import (
     CapabilitiesQuery,
     SkillsQuery,
     TransferResponse,
+    TransferActionRequest,
+    TransferScope,
     TransferMemberPhase,
     UsageResumeRequest,
     UsageResumeResponse,
@@ -182,11 +184,14 @@ def create_router(context: ApiContext) -> APIRouter:
 
         transfer_factory = cast(Callable[[AgentRuntime], TransferStore], transfer_store)
         transfers = transfer_factory(runtime)
-        if body.action is not None:
+        if isinstance(body, TransferActionRequest):
             operation = transfers.action(body.request_id, body.action.value)
         else:
             operation = transfers.request(
-                body.id, body.account_key, body.request_id, body.scope.value,
+                body.id,
+                body.account_key,
+                body.request_id,
+                body.scope.value if body.scope is not None else TransferScope.TEAM.value,
             )
         return context.send(http_request, _public_transfer(operation))
 
