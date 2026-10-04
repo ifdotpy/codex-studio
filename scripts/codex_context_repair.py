@@ -19,6 +19,10 @@ ACTIVE = {'preparing', 'submitted', 'unknown', 'ready'}
 KINDS = {'monitor_exit', 'agent_message', 'work_review', 'work_decision'}
 IDENTITY = ('id', 'accountKey', 'epoch', 'threadId')
 WAIT_SECONDS = 10
+TASK_CHECK_SECONDS = 20
+TASK_CHECK_RETRY_SECONDS = 15
+TASK_CHECK_TYPES = {'commandExecution', 'fileChange', 'dynamicToolCall', 'mcpToolCall',
+                    'computerToolCall', 'collabAgentToolCall'}
 
 
 def _held_restart_marker(agent):
@@ -1247,6 +1251,172 @@ def _optional_monitor_repair(rt, db, agent):
         return False
 
 
+def _task_check_agent(rt, db, job):
+    agent = rt.agent(job['agent'], db)
+    wait = agent.get('contextRepairWait') or {}
+    if (rt.closed or _identity(agent) != job['source']
+            or not _unsubmitted(agent, job['source']['attemptId'])
+            or agent.get('inFlight') or agent.get('turnId') != job['turnId']
+            or agent.get('startAttempt') != job['attempt']
+            or agent.get('activeTools', []) != job['activeTools']
+            or wait.get('taskCheckId') != job['id']
+            or any(wait.get(key) != job['wait'].get(key) for key in
+                   ('source', 'events', 'action', 'actionRequestId', 'actionIdentity'))):
+        return None
+    for key in wait['events']:
+        row = db.execute("SELECT 1 FROM runtime_events WHERE id=? AND agent=? AND epoch=? "
+                         "AND status='pending' AND turn_id IS NULL",
+                         (key, agent['id'], agent['epoch'])).fetchone()
+        if not row:
+            return None
+    return agent
+
+
+def _schedule_task_wait_check(rt, db, agent, error):
+    """Read only exact task items outside the dispatch lock."""
+    wait = agent['contextRepairWait']
+    owner = getattr(rt, '_context_task_check_owner', None)
+    if owner is None:
+        owner = rt._context_task_check_owner = uuid.uuid4().hex
+    if wait.get('taskCheckId') and wait.get('taskCheckOwner') == owner:
+        return
+    task = None
+    prefix = 'Context repair waits for tasks: '
+    if str(error).startswith(prefix):
+        key = str(error)[len(prefix):]
+        row = db.execute('SELECT record FROM runtime_tasks WHERE id=?', (key,)).fetchone()
+        if row:
+            candidate = json.loads(row[0])
+            if (candidate.get('agent') == agent['id'] and candidate.get('status') == 'running'
+                    and candidate.get('type') in TASK_CHECK_TYPES
+                    and isinstance(candidate.get('itemId'), str) and candidate['itemId']
+                    and isinstance(candidate.get('turnId'), str) and candidate['turnId']
+                    and candidate.get('id') == agent['id'] + ':' + candidate['itemId']):
+                task = candidate
+    tools = agent.get('activeTools') or []
+    active_check = (str(error) == 'Context repair waits for the current agent operation'
+                    and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
+                    and bool(agent.get('turnId')) and isinstance(tools, list) and 0 < len(tools) <= 32)
+    if not task and not active_check:
+        return
+    job = {'id':str(uuid.uuid4()), 'agent':agent['id'], 'source':_identity(agent),
+           'attempt':copy.deepcopy(agent['startAttempt']), 'wait':copy.deepcopy(wait),
+           'turnId':agent.get('turnId'), 'activeTools':copy.deepcopy(tools), 'task':task,
+           'checkActiveTools':active_check}
+    wait.update(taskCheckId=job['id'], taskCheckOwner=owner, taskCheckAt=time.time())
+    rt.put(db, 'agents', agent)
+    try:
+        rt.recovery_pool.submit(_run_task_wait_check, rt, job)
+    except RuntimeError:
+        wait.update(taskCheckId=None, taskCheckOwner=None, taskCheckAt=None)
+        rt.put(db, 'agents', agent)
+
+
+def _release_task_check(rt, db, job):
+    if rt.closed:
+        return
+    agent = rt.agent(job['agent'], db)
+    wait = agent.get('contextRepairWait') or {}
+    if wait.get('taskCheckId') == job['id']:
+        wait.update(taskCheckId=None, taskCheckOwner=None, taskCheckAt=None)
+        rt.put(db, 'agents', agent)
+
+
+def _completed_task_receipt(db, agent, task):
+    if not task or task.get('type') != 'dynamicToolCall':
+        return None
+    rows = db.execute("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+                      "AND json_extract(record,'$.accountKey')=? AND json_extract(record,'$.threadId')=? "
+                      "AND json_extract(record,'$.turnId')=? AND json_extract(record,'$.callId')=? LIMIT 2",
+                      (agent['id'], agent.get('accountKey', 'default'), agent['threadId'],
+                       task['turnId'], task['itemId'])).fetchall()
+    if len(rows) != 1:
+        return None
+    receipt = json.loads(rows[0][1])
+    if (receipt.get('id') != rows[0][0] or receipt.get('stage') != 'completed'
+            or receipt.get('outcome') != 'applied' or receipt.get('finished') is None):
+        return None
+    return receipt, rows[0][1]
+
+
+def _run_task_wait_check(rt, job):
+    proof, terminal_tools, error = None, [], None
+    server, connection_id, receipt = None, None, None
+    try:
+        with rt.lock, rt.db() as db:
+            agent = _task_check_agent(rt, db, job)
+            if agent is None:
+                _release_task_check(rt, db, job)
+                return
+            receipt = _completed_task_receipt(db, agent, job['task'])
+            account = agent.get('accountKey', 'default')
+            server, connection_id = rt.servers.get(account), rt.connection_ids.get(account)
+        task = job['task']
+        if receipt:
+            from codex_payloads import resolve_record, state_root
+            resolved = resolve_record(state_root(rt), receipt[0])
+            result = resolved.get('result')
+            if isinstance(result, dict) and type(result.get('success')) is bool:
+                proof = {'id':task['itemId'], 'type':task['type'], 'status':'completed',
+                         'success':result['success']}
+            else:
+                receipt = None
+        turns = set()
+        if task and not proof:
+            turns.add(task['turnId'])
+        if job['checkActiveTools']:
+            turns.add(job['turnId'])
+        if turns:
+            if server is None or connection_id is None:
+                raise _waiting('The owning native account is offline')
+            pages, deadline = {}, time.monotonic() + TASK_CHECK_SECONDS
+            for turn_id in sorted(turns):
+                pages[turn_id] = _native_items(server, job['source']['threadId'], turn_id, deadline)
+            def terminal(turn_id, item_id, kind):
+                if not isinstance(item_id, str) or not item_id or not isinstance(kind, str):
+                    return None
+                matches = [entry['item'] for entry in pages[turn_id]
+                           if entry['item'].get('id') == item_id]
+                return matches[0] if len(matches) == 1 and matches[0].get('type') == kind \
+                    and kind in TASK_CHECK_TYPES \
+                    and _terminal_native_item(matches[0]) else None
+            if task and not proof:
+                proof = terminal(task['turnId'], task['itemId'], task['type'])
+            if job['checkActiveTools']:
+                terminal_tools = [tool for tool in job['activeTools']
+                                  if terminal(job['turnId'], tool.get('id'), tool.get('type'))]
+    except Exception as caught:
+        error = str(caught)
+    with rt.lock, rt.db() as db:
+        agent = _task_check_agent(rt, db, job)
+        if agent is None:
+            _release_task_check(rt, db, job)
+            return
+        account = agent.get('accountKey', 'default')
+        if (server is not None and (rt.servers.get(account) is not server
+                or rt.connection_ids.get(account) != connection_id
+                or not rt.connection_current(account, connection_id))):
+            proof, terminal_tools, error = None, [], 'The native connection changed during the task check'
+        if proof and receipt:
+            row = db.execute('SELECT record FROM runtime_tool_requests WHERE id=?', (receipt[0]['id'],)).fetchone()
+            if not row or row[0] != receipt[1]:
+                proof, error = None, 'The exact tool receipt changed during the task check'
+        task = job['task']
+        if proof and task:
+            row = db.execute('SELECT record FROM runtime_tasks WHERE id=?', (task['id'],)).fetchone()
+            if row and json.loads(row[0]) == task:
+                rt.record_task(db, agent, 'item/completed',
+                               {'item':proof, 'turnId':task['turnId']}, stale=False)
+        if terminal_tools:
+            agent['activeTools'] = [tool for tool in job['activeTools'] if tool not in terminal_tools]
+        wait = agent['contextRepairWait']
+        wait.update(taskCheckId=None, taskCheckOwner=None, taskCheckAt=None,
+                    lastTaskCheckAt=time.time(), lastTaskCheckError=error,
+                    nextCheckAt=time.time() if proof or terminal_tools else time.time() + TASK_CHECK_RETRY_SECONDS)
+        rt.put(db, 'agents', agent)
+    rt.changed.set()
+
+
 def claim_context_wait(rt, db, agent):
     wait = agent.get('contextRepairWait')
     if not isinstance(wait, dict):
@@ -1294,6 +1464,7 @@ def claim_context_wait(rt, db, agent):
         wait.update(error=str(error), nextCheckAt=time.time() + 2)
         agent['error'] = str(error)
         rt.put(db, 'agents', agent)
+        _schedule_task_wait_check(rt, db, agent, error)
         return {'waiting':True}
     for row in rows:
         db.execute("UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'", (row['id'],))
