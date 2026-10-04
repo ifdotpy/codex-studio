@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_costs import ClaudeCostReader
-from codex_pricing import PricingCatalog, lookup, price_usage
+from codex_pricing import PricingCatalog, lookup, price_usage, valid_catalog
 from codex_session_costs import SessionCostReader
 from codex_canvas import Canvas, make_server
 
@@ -75,6 +75,71 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertTrue(tier)
         self.assertAlmostEqual(cost, (200000 * 2 + 50000 * .2 + 50000 * .25 + 10000 * 10) / 1_000_000)
         self.assertEqual(price_usage(catalog(), "openai", "missing", {})[0], None)
+
+    def test_partial_context_tiers_use_base_rates_at_the_inclusive_threshold(self):
+        usage = {"inputTokens": 1000, "cachedInputTokens": 100,
+                 "cacheWriteInputTokens": 50, "outputTokens": 100}
+        for overrides, expected in (({"input": 2}, .0022325),
+                                    ({"output": 10}, .0018825), ({}, .0013825)):
+            pricing = catalog()
+            cost = pricing["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]
+            cost.update(input=1, output=5, cache_read=.1, tiers=[{
+                "tier": {"type": "context", "size": 272000},
+                "cache_read": .2, "cache_write": .25, **overrides}])
+            self.assertTrue(valid_catalog(pricing))
+            for context in (271999, 272000, 300000):
+                with self.subTest(overrides=overrides, context=context):
+                    actual, status, tier = price_usage(pricing, "openai", "gpt-6-luna", usage,
+                                                     context_tokens=context)
+                    self.assertEqual(status, "priced")
+                    self.assertEqual(tier, context >= 272000)
+                    self.assertAlmostEqual(actual, expected if tier else .00136625)
+
+    def test_context_tier_explicit_null_and_zero_rates_keep_their_meaning(self):
+        usage = {"inputTokens": 1000, "cachedInputTokens": 100,
+                 "cacheWriteInputTokens": 50, "outputTokens": 100}
+        for overrides, expected in (({"input": None, "output": None}, .0013825),
+                                    ({"input": 0, "output": 0}, .0000325),
+                                    ({"input": 0, "output": 10}, .0010325),
+                                    ({"input": 2, "output": 0}, .0017325)):
+            with self.subTest(overrides=overrides):
+                pricing = catalog()
+                cost = pricing["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]
+                cost.update(input=1, output=5, cache_read=.1, tiers=[{
+                    "tier": {"type": "context", "size": 272000},
+                    "cache_read": .2, "cache_write": .25, **overrides}])
+                self.assertTrue(valid_catalog(pricing))
+                actual, status, tier = price_usage(pricing, "openai", "gpt-6-luna", usage,
+                                                 context_tokens=272000)
+                self.assertEqual((status, tier), ("priced", True))
+                self.assertAlmostEqual(actual, expected)
+
+    def test_partial_context_tier_keeps_incomplete_usage_unpriced(self):
+        pricing = catalog()
+        cost = pricing["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]
+        cost["tiers"] = [{"tier": {"type": "context", "size": 272000}}]
+        for missing in ("inputTokens", "outputTokens", "cachedInputTokens"):
+            with self.subTest(missing=missing):
+                usage = {"inputTokens": 1000, "cachedInputTokens": 100,
+                         "cacheWriteInputTokens": 50, "outputTokens": 100}
+                usage.pop(missing)
+                self.assertEqual(price_usage(pricing, "openai", "gpt-6-luna", usage,
+                                             context_tokens=272000), (None, "incomplete", False))
+
+    def test_partial_legacy_context_tier_keeps_its_strict_threshold(self):
+        pricing = catalog()
+        cost = pricing["providers"]["openai"]["models"]["gpt-6-luna"]["cost"]
+        cost.pop("tiers")
+        cost.update(input=1, output=5, cache_read=.1,
+                    context_over_200k={"cache_read": .2, "cache_write": .25})
+        usage = {"inputTokens": 1000, "cachedInputTokens": 100,
+                 "cacheWriteInputTokens": 50, "outputTokens": 100}
+        for context, expected, tier in ((200000, .00136625, False), (200001, .0013825, True)):
+            with self.subTest(context=context):
+                actual, status, selected = price_usage(pricing, "openai", "gpt-6-luna", usage,
+                                                     context_tokens=context)
+                self.assertEqual((status, selected), ("priced", tier))
+                self.assertAlmostEqual(actual, expected)
 
     def test_claude_reader_deduplicates_and_sums_today_and_30_days(self):
         now = time.time()
@@ -549,13 +614,22 @@ class PricingSessionCostContract(unittest.TestCase):
         db.close()
         entered, release = threading.Event(), threading.Event()
         calls = []
+        history_lock = threading.Lock()
+        history_jobs = {"active": 0, "peak": 0}
         original = SessionCostReader._compute
         def slow_compute(reader, agent_id, root):
-            calls.append(root)
-            entered.set()
-            if not release.wait(4):
-                raise RuntimeError("The fixture did not release the history read")
-            return original(reader, agent_id, root)
+            with history_lock:
+                calls.append(root)
+                history_jobs["active"] += 1
+                history_jobs["peak"] = max(history_jobs["peak"], history_jobs["active"])
+            try:
+                entered.set()
+                if not release.wait(4):
+                    raise RuntimeError("The fixture did not release the history read")
+                return original(reader, agent_id, root)
+            finally:
+                with history_lock:
+                    history_jobs["active"] -= 1
         canvas = Canvas(self.root)
         canvas.runtime = types.SimpleNamespace(lock=threading.RLock())
         with patch("codex_pricing.PricingCatalog", return_value=FixedPricing()), patch.object(
@@ -585,7 +659,14 @@ class PricingSessionCostContract(unittest.TestCase):
                 self.assertEqual(value["pricingState"], "ready")
                 self.assertEqual(value["pricedSamples"], 1)
                 self.assertEqual(value["totalUSD"], price_usage(catalog(), "openai", "gpt-6-luna", usage)[0])
-                self.assertEqual(calls, ["lead"])
+                other = read("other")
+                deadline = time.monotonic() + 3
+                while other["pricingState"] != "ready" and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    other = read("other")
+                self.assertEqual(other["pricingState"], "ready")
+                self.assertEqual(calls, ["lead", "other"])
+                self.assertEqual(history_jobs["peak"], 1)
             finally:
                 release.set()
                 server.shutdown()
@@ -603,8 +684,9 @@ class PricingSessionCostContract(unittest.TestCase):
         db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
         db.commit()
         db.close()
-        reader = SessionCostReader(db_path, FixedPricing())
-        with patch.object(reader, "_compute", side_effect=ValueError("Invalid cost data")):
+        clock = [100.0]
+        reader = SessionCostReader(db_path, FixedPricing(), clock=lambda: clock[0])
+        with patch.object(reader, "_compute", side_effect=ValueError("Invalid cost data")) as failed_compute:
             self.assertEqual(reader.snapshot("lead")["pricingState"], "loading")
             deadline = time.monotonic() + 2
             while reader.refreshing and time.monotonic() < deadline:
@@ -613,6 +695,9 @@ class PricingSessionCostContract(unittest.TestCase):
                 reader.snapshot("lead")
             while reader.refreshing and time.monotonic() < deadline:
                 time.sleep(0.005)
+            failed_compute.assert_called_once()
+        # The reader permits a new cold retry after 10 seconds.
+        clock[0] += 10
         with self.assertRaisesRegex(ValueError, "Invalid cost data"):
             reader.snapshot("lead")
         deadline = time.monotonic() + 2

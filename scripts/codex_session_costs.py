@@ -681,12 +681,15 @@ class SessionCostReader:
             if not cached:
                 cached = self._load_persisted(root, usage_state, catalog_signature,
                                               cache_source["agentsSignature"], cache_source["claudeSignature"])
+            if cached and "claudeUsageSignature" in cached[2]:
+                cache_source["claudeUsageSignature"] = cached[2]["claudeUsageSignature"]
             if cached and cached[2] == cache_source:
                 return {**cached[1], "_cacheSource": cache_source}
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
             claude_messages = {}
+            claude_usage_digest = hashlib.sha256()
             for _, (current_key, current_profile, sessions) in claude_agents.items():
                 for account_key, thread_id in sessions:
                     config = self._claude_profile(account_key)
@@ -694,7 +697,16 @@ class SessionCostReader:
                         continue
                     for path in self._thread_ids(config, account_key, thread_id):
                         for message in self._log_rows(path):
-                            claude_messages.setdefault((account_key, thread_id, message["id"]), message)
+                            key = (account_key, thread_id, message["id"])
+                            claude_messages.setdefault(key, message)
+                            claude_usage_digest.update(json.dumps([key, message], sort_keys=True,
+                                separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+                            claude_usage_digest.update(b"\n")
+            cache_source["claudeUsageSignature"] = claude_usage_digest.hexdigest()
+            # Log metadata can change without changing usage or receipt exclusions.
+            if (cached and "claudeUsageSignature" in cached[2]
+                    and {**cached[2], "claudeSignature": cache_source["claudeSignature"]} == cache_source):
+                return {**cached[1], "_cacheSource": cache_source}
             db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
             db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
                            claude_messages.keys())
