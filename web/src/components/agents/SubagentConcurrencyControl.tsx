@@ -15,6 +15,10 @@ const CONCURRENCY_SCHEMA_VERSION = 2;
 type Confirmed = { concurrency: number; revision: number };
 type PendingRequest = PostBody<"/api/conversation">;
 type Stored = { confirmed?: Confirmed; pending?: PendingRequest };
+type ConcurrencyAgent = Pick<
+  Agent,
+  "subagentConcurrencyVersion" | "concurrency" | "agentModeRevision"
+>;
 type Props = {
   lead: Agent;
   stateDir: string;
@@ -28,7 +32,7 @@ const validConcurrency = (value: unknown): value is number =>
   Number(value) <= MAX_CONCURRENCY;
 const validRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
-const stateOf = (agent: Agent): Confirmed | undefined => {
+const stateOf = (agent: ConcurrencyAgent): Confirmed | undefined => {
   if (
     !Number.isSafeInteger(agent.subagentConcurrencyVersion) ||
     agent.subagentConcurrencyVersion! < CONCURRENCY_SCHEMA_VERSION ||

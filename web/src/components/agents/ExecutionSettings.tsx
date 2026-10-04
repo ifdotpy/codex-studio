@@ -30,6 +30,17 @@ type SettingsValue = {
   daybreak_enabled: boolean;
 };
 type ReviewSettings = NonNullable<Agent["reviewDefaults"]>;
+type SettingsAgent = Pick<
+  Agent,
+  | "accountKey"
+  | "pendingSettingsAccountKey"
+  | "pendingSettings"
+  | "workerDefaults"
+  | "model"
+  | "effort"
+  | "fastMode"
+  | "daybreakEnabled"
+>;
 const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const plural = (count: number, noun: string) =>
@@ -79,13 +90,17 @@ type SettingsProps = {
   onOpenChange?: (opened: boolean) => void;
   openRequest?: number;
 };
-const accountOf = (agent: Agent) => agent.accountKey || "default";
-const queuedFor = (agent: Agent) =>
+const accountOf = (agent: Pick<Agent, "accountKey">) =>
+  agent.accountKey || "default";
+const queuedFor = (agent: SettingsAgent) =>
   agent.pendingSettingsAccountKey &&
   agent.pendingSettingsAccountKey !== accountOf(agent)
     ? null
     : agent.pendingSettings;
-const settingsFor = (agent: Agent, teamDefaults: boolean): SettingsValue => {
+const settingsFor = (
+  agent: SettingsAgent,
+  teamDefaults: boolean,
+): SettingsValue => {
   if (teamDefaults)
     return {
       account_key: agent.workerDefaults?.accountKey ?? null,
