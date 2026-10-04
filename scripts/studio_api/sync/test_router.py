@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import asyncio
+from contextlib import contextmanager
+import sqlite3
 import threading
 import unittest
 from typing import cast
@@ -95,15 +97,33 @@ class RuntimeStub:
         self.transcript_responses: list[dict[str, object]] = []
         self.transcript_reads = 0
         self.hub: ResourceHub | None = None
+        self.transcript_close_after = 2
+        self.transcript_error: Exception | None = None
+        self.active_agents = {"agent-a"}
+
+    @contextmanager
+    def db(self):
+        connection = sqlite3.connect(":memory:")
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def checked_actor(self, _db: sqlite3.Connection, agent_id: str) -> object:
+        if agent_id not in self.active_agents:
+            raise ValueError("Unknown managed agent")
+        return {"id": agent_id}
 
     def transcript(self, _agent_id: str) -> dict[str, object]:
         self.transcript_reads += 1
+        if self.transcript_error is not None:
+            raise self.transcript_error
         response = self.transcript_responses.pop(0) if self.transcript_responses else {
             "items": [], "truncated": False,
         }
-        if self.transcript_reads == 1 and self.hub is not None:
+        if self.transcript_reads < self.transcript_close_after and self.hub is not None:
             self.hub.publish(ResourceRef(TranscriptResource(kind="transcript", agentId=_agent_id)))
-        if self.transcript_reads >= 2:
+        if self.transcript_reads >= self.transcript_close_after:
             self.closed = True
         return response
 
@@ -111,6 +131,15 @@ class RuntimeStub:
 class TokenRatesStub:
     def workspace_snapshot(self) -> dict[str, object]:
         return {"rates": {"agent-a": {"rate": 8.5}}, "teams": {}}
+
+
+class ProgressWatchdogStub:
+    def __init__(self) -> None:
+        self.agents: list[str] = []
+
+    def subscribe(self, agent_id: str, _on_change: object):
+        self.agents.append(agent_id)
+        return lambda: None
 
 
 class ConnectedRequest(Request):
@@ -125,8 +154,10 @@ class ContextStub:
         self.runtime = RuntimeStub()
         self.runtime.closed = True
         self.store.runtime = self.runtime
+        self.watchdog = ProgressWatchdogStub()
         self.hub = ResourceHub(
             "workspace-a",
+            progress_watchdog=self.watchdog,
             token_rates=TokenRateSnapshot(
                 rates={"agent-a": TokenRateValue(
                     turnId="turn-a", active=True, estimated=False, rate=8.5, outputTokens=17,
@@ -270,6 +301,17 @@ class SyncRouterTests(unittest.TestCase):
         )
         self.assertIn('"reason":"reconnect"', body)
         self.assertIn('"kind":"panel","agentId":"agent-a"', body)
+
+    def test_missing_panel_agent_does_not_block_or_watch_other_resources(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([
+            {"kind": "panel", "agentId": "deleted-agent"},
+            {"kind": "state"},
+        ], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn('"kind":"panel","agentId":"deleted-agent"', body)
+        self.assertIn('"kind":"state"', body)
+        self.assertEqual(context.watchdog.agents, [])
 
     def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
         context = ContextStub()
@@ -529,6 +571,36 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(events[1]["order"], ["a", "b"])
         self.assertEqual(events[1]["items"], [{"id": "b", "append": " world"}])
         self.assertEqual(context.runtime.transcript_reads, 2)
+        self.assertNotIn("event: transcript", body)
+        self.assertTrue(body.startswith("data: "))
+
+    def test_transcript_stream_emits_metadata_only_changes(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+        context.runtime.transcript_close_after = 3
+        context.runtime.transcript_responses = [
+            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
+             "activity": {"phase": "writing"}},
+            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
+             "activity": {"phase": "completed"}},
+        ]
+
+        body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
+
+        events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
+                  if line.startswith("data: ")]
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[1]["activity"], {"phase": "completed"})
+        self.assertEqual(events[1]["items"], [])
+
+    def test_transcript_initial_read_failure_closes_subscription(self) -> None:
+        context = ContextStub()
+        context.runtime.transcript_error = OSError("transcript unavailable")
+
+        response = make_client(context).get("/api/transcript/stream?id=agent-a")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(context.hub._subscriptions, set())
 
 
 if __name__ == "__main__":

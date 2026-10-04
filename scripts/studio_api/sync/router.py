@@ -6,8 +6,8 @@ import asyncio
 import json
 import sqlite3
 import time
-from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, cast
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.sse import format_sse_event
@@ -32,6 +32,7 @@ from studio_api.sync.resources.models import (
     DraftsResource,
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
+    PanelResource,
     ResourceRef,
     ResourceTokenRatesEvent,
     TranscriptResource,
@@ -95,6 +96,33 @@ class TokenRateReader(Protocol):
     def workspace_snapshot(self) -> dict[str, object]: ...
 
 
+class PanelAgentValidator(Protocol):
+    def db(self) -> ContextManager[sqlite3.Connection]: ...
+    def checked_actor(self, db: sqlite3.Connection, agent_id: str) -> object: ...
+
+
+def _active_panel_agents(runtime: PanelAgentValidator, resources: Sequence[ResourceRef]) -> frozenset[str]:
+    """Validate panel identities before a native watcher can create their directory."""
+    agents = {
+        resource.root.agentId
+        for resource in resources
+        if isinstance(resource.root, PanelResource)
+    }
+    active: set[str] = set()
+    if not agents:
+        return frozenset()
+    with runtime.db() as db:
+        for agent_id in agents:
+            try:
+                runtime.checked_actor(db, agent_id)
+            except ValueError:
+                # Keep stale refs in the baseline so the client's targeted read
+                # can observe the normal not-found result; simply don't watch them.
+                continue
+            active.add(agent_id)
+    return frozenset(active)
+
+
 def _sync_store(context: ApiContext) -> SyncStoreContract:
     # SyncStore remains a legacy untyped service; keep that boundary explicit.
     return cast(SyncStoreContract, context.sync())
@@ -111,7 +139,12 @@ def _query_int(request: Request, key: str, default: int) -> int:
 
 
 def _event(event: str, payload: object) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+    return format_sse_event(event=event, data_str=json.dumps(payload, ensure_ascii=False))
+
+
+def _legacy_message(payload: object) -> bytes:
+    """Keep transcript updates on EventSource's default `message` channel."""
+    return format_sse_event(data_str=json.dumps(payload, ensure_ascii=False))
 
 
 def _resource_event(
@@ -271,10 +304,25 @@ def create_router(context: ApiContext) -> APIRouter:
                 ))
 
             try:
+                runtime = context.runtime
+                panel_agent_ids = frozenset(
+                    resource.root.agentId
+                    for resource in resources
+                    if isinstance(resource.root, PanelResource)
+                )
+                if panel_agent_ids and runtime is None:
+                    return cast(StreamingResponse, context.send(
+                        request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
+                    ))
+                active_panel_agents = (
+                    await run_in_threadpool(_active_panel_agents, runtime, resources)
+                    if runtime is not None and panel_agent_ids else None
+                )
                 subscription = context.resource_hub().subscribe(
                     resources,
                     loop=asyncio.get_running_loop(),
                     reconnect=last_event_id is not None,
+                    progress_agent_ids=active_panel_agents,
                 )
             except (OSError, RuntimeError, ValueError):
                 return cast(StreamingResponse, context.send(
@@ -462,13 +510,18 @@ def create_router(context: ApiContext) -> APIRouter:
         if runtime is None:
             return cast(StreamingResponse, context.send(request, {"error": "Not found"}, status=404))
         agent_id = _first(request, "id", "") or ""
+        subscription = None
         try:
             subscription = context.resource_hub().subscribe(
                 [ResourceRef(TranscriptResource(kind="transcript", agentId=agent_id))],
                 loop=asyncio.get_running_loop(),
             )
             initial_data = await run_in_threadpool(runtime.transcript, agent_id)
-        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+        except BaseException as error:
+            if subscription is not None:
+                subscription.close()
+            if not isinstance(error, (OSError, ValueError, RuntimeError, sqlite3.Error)):
+                raise
             return cast(StreamingResponse, context.send(
                 request, {"error": str(error) or "Transcript stream is unavailable"}, status=503
             ))
@@ -480,10 +533,11 @@ def create_router(context: ApiContext) -> APIRouter:
             try:
                 data = dict(initial_data)
                 records = {item["id"]: item for item in data.pop("items")}
+                previous_metadata = data
                 previous = records
                 previous_order = list(records)
                 version += 1
-                yield _event("transcript", {
+                yield _legacy_message({
                     **data, "version": version, "replace": True,
                     "items": [{"id": item_id, "replace": item} for item_id, item in records.items()],
                     "order": previous_order,
@@ -497,6 +551,7 @@ def create_router(context: ApiContext) -> APIRouter:
                         continue
                     data = await run_in_threadpool(runtime.transcript, agent_id)
                     records = {item["id"]: item for item in data.pop("items")}
+                    metadata_changed = data != previous_metadata
                     order = list(records)
                     changed: list[dict[str, object]] = []
                     for item_id, item in records.items():
@@ -513,7 +568,7 @@ def create_router(context: ApiContext) -> APIRouter:
                         else:
                             changed.append({"id": item_id, "replace": item})
                     removed = [item_id for item_id in previous if item_id not in records]
-                    if not changed and not removed and order == previous_order:
+                    if not changed and not removed and order == previous_order and not metadata_changed:
                         previous = records
                         continue
                     version += 1
@@ -526,8 +581,8 @@ def create_router(context: ApiContext) -> APIRouter:
                     }
                     if order != previous_order:
                         payload["order"] = order
-                    yield _event("transcript", payload)
-                    previous, previous_order = records, order
+                    yield _legacy_message(payload)
+                    previous, previous_order, previous_metadata = records, order, data
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
                 yield _event("unavailable", {"error": str(error)})
             finally:

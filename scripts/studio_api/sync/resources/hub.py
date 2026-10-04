@@ -211,6 +211,7 @@ class ResourceHub:
         loop: asyncio.AbstractEventLoop,
         reconnect: bool = False,
         token_rates: TokenRateSnapshot | None = None,
+        progress_agent_ids: frozenset[str] | None = None,
     ) -> ResourceSubscription:
         keyed: dict[ResourceKey, ResourceRef] = {}
         for resource in resources:
@@ -233,6 +234,8 @@ class ResourceHub:
             for key, resource in keyed.items():
                 agent_id = _panel_agent(key)
                 if agent_id is None or self._progress_watchdog is None:
+                    continue
+                if progress_agent_ids is not None and agent_id not in progress_agent_ids:
                     continue
                 detach = self._progress_watchdog.subscribe(
                     agent_id,
