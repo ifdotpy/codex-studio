@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -38,7 +38,9 @@ SYNC_HEARTBEAT_SECONDS = 15.0
 SYNC_POLL_SECONDS = 0.25
 TRANSCRIPT_COALESCE_SECONDS = 0.08
 SHARED_STREAM_POLL_SECONDS = 1.0
-ERROR_RESPONSES = {status: {"model": ErrorResponse} for status in (400, 403, 404, 409, 413, 415, 426, 500)}
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status: {"model": ErrorResponse} for status in (400, 403, 404, 409, 413, 415, 426, 500)
+}
 
 
 class SyncStreamBatch(TypedDict):
