@@ -39,7 +39,7 @@ export function useDesktopNotifications(
         document.visibilityState === "visible" &&
         document.hasFocus() &&
         (opened === alert.target.agentId ||
-          openedShared?.members.includes(alert.target.agentId))
+          openedShared?.members?.includes(alert.target.agentId))
       )
         continue;
       const { id, ...notification } = alert;

@@ -23,6 +23,9 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
+function isGenerationCounter(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
 const syncStreamQuery = {
   protocol: "2",
 } satisfies NonNullable<GetOptions<"/api/sync/stream">["query"]>;
@@ -204,7 +207,7 @@ let latestTranscriptRevisions: TranscriptRevisions | undefined;
 const revisionListeners = new Set<(value: TranscriptRevisions) => void>();
 function receiveTranscriptRevisions(value: {
   workspaceId?: string;
-  transcriptRevisions?: Record<string, number>;
+  transcriptRevisions?: Record<string, number> | null;
 }) {
   const revisions = value.transcriptRevisions;
   if (
@@ -328,42 +331,49 @@ export function watchSyncInvalidations(
         value: {
           protocol?: number;
           workspaceId?: string;
-          generations?: Record<string, number>;
-          transcriptRevisions?: Record<string, number>;
+          generations?: {
+            drafts?: number;
+            state?: number;
+            transcripts?: number;
+          };
+          transcriptRevisions?: Record<string, number> | null;
         },
         acceptRevisions = true,
       ) => {
         const generations = value?.generations;
-        const expected = ["drafts", "state", "transcripts"];
-        const valid =
-          value?.protocol === 2 &&
-          /^[a-f0-9]{32}$/.test(value.workspaceId || "") &&
-          generations &&
-          Object.keys(generations).sort().join(",") === expected.join(",") &&
-          expected.every(
-            (changedScope) =>
-              Number.isSafeInteger(generations[changedScope]) &&
-              generations[changedScope] >= 0,
-          );
-        if (!valid || (workspaceId && value.workspaceId !== workspaceId)) {
+        if (
+          value?.protocol !== 2 ||
+          !/^[a-f0-9]{32}$/.test(value.workspaceId || "") ||
+          !generations ||
+          Object.keys(generations).sort().join(",") !==
+            "drafts,state,transcripts" ||
+          !isGenerationCounter(generations.drafts) ||
+          !isGenerationCounter(generations.state) ||
+          !isGenerationCounter(generations.transcripts) ||
+          (workspaceId && value.workspaceId !== workspaceId)
+        ) {
           lastGenerations = undefined;
           lastWorkspaceId = undefined;
           notify();
           return false;
         }
+        const current = {
+          drafts: generations.drafts,
+          state: generations.state,
+          transcripts: generations.transcripts,
+        };
         if (
           (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
           (lastGenerations &&
-            expected.some(
-              (changedScope) =>
-                generations[changedScope] < lastGenerations![changedScope],
-            ))
+            (current.drafts < lastGenerations.drafts ||
+              current.state < lastGenerations.state ||
+              current.transcripts < lastGenerations.transcripts))
         ) {
           lastGenerations = undefined;
           notify();
         }
         lastWorkspaceId = value.workspaceId;
-        applyGenerations(generations!);
+        applyGenerations(current);
         if (acceptRevisions) receiveTranscriptRevisions(value);
         return true;
       };

@@ -9,7 +9,7 @@ import type { Attachment } from "../components/ComposerAttachments";
 type MessageBody = PostBody<"/api/messages">;
 type MessageDelivery = PostResult<"/api/messages">;
 type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
-  Partial<Pick<MessageDelivery, "error">>;
+  Partial<Pick<MessageDelivery, "deliveries" | "error">>;
 const acknowledgedStatuses = {
   queued: true,
   pending: true,
@@ -21,6 +21,7 @@ const acknowledgedStatuses = {
   uncertain: true,
   failed: true,
   cancelled: true,
+  stored_only: true,
 } satisfies Record<MessageDelivery["status"], true>;
 
 export function matchesMessageDelivery(value: unknown, messageId: string) {
@@ -54,7 +55,15 @@ export type OutboxEntry = Intention & { id: string };
 export type OutgoingMessage = Omit<OutboxEntry, "status"> & {
   status: OutboxEntry["status"] | "sending";
 };
-type SendResult = ReturnType<typeof intentionResult>;
+type SendResult =
+  | (MessageDelivery & { kind: "server"; queued: boolean })
+  | {
+      kind: "local";
+      id: string;
+      queued: boolean;
+      status: Intention["status"];
+      error?: string;
+    };
 const active = new Map<string, Promise<SendResult>>();
 const sendingRooms = new Set<string>();
 const queuedDocuments = (docs: any[]) =>
@@ -70,12 +79,23 @@ const updateIntention = (doc: any, change: Partial<Intention>) =>
     ...record,
     payload: JSON.stringify({ ...JSON.parse(record.payload), ...change }),
   }));
-const intentionResult = (value: Intention) =>
-  value.receipt || {
-    queued: value.status === "queued" || value.status === "paused",
-    status: value.status,
-    error: value.error,
-  };
+export const intentionResult = (value: Intention): SendResult =>
+  value.receipt
+    ? {
+        ...value.receipt,
+        ...(value.receipt.deliveries
+          ? { deliveries: value.receipt.deliveries }
+          : {}),
+        kind: "server",
+        queued: value.receipt.status === "queued",
+      }
+    : {
+        kind: "local",
+        id: value.body.id,
+        queued: value.status === "queued" || value.status === "paused",
+        status: value.status,
+        error: value.error,
+      };
 const removalFence = (workspaceId: string, id: string) =>
   `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
 async function deliver(doc: any): Promise<SendResult> {
@@ -141,7 +161,9 @@ async function deliver(doc: any): Promise<SendResult> {
       // Preserve confirmed delivery against an older queue receipt. A matching
       // later reply can still resolve queue acceptance or an uncertain outcome.
       const confirmed = (receipt: StoredMessageReceipt | undefined) =>
-        ["delivered", "accepted", "sent"].includes(receipt?.status);
+        receipt?.status === "delivered" ||
+        receipt?.status === "accepted" ||
+        receipt?.status === "sent";
       if (
         stored.status === "cancelled" ||
         (["accepted", "uncertain"].includes(stored.status) &&

@@ -48,7 +48,7 @@ export function useSnapshot() {
     if (currentScope.current !== expectedScope)
       throw new Error("The workspace changed before the new chat opened.");
     // A fresh draft has no native thread. Existing-thread retries await its projection.
-    const confirmed = {
+    const confirmed: Agent = {
       ...agent,
       source: "managed",
       kind: "agent",
@@ -283,7 +283,7 @@ export function transcriptMessages(
 ): Message[] {
   return source.flatMap((m: Message) =>
     m.inputs
-      ? m.inputs.map((r: Json, i: number) => ({
+      ? m.inputs.map((r, i) => ({
           ...m,
           id: r.id ? `${id}:${r.id}` : `${m.id}:${i}`,
           sourceId: m.id,
@@ -296,7 +296,7 @@ export function transcriptMessages(
           deliveryError: r.deliveryError,
           materialized: r.materialized ?? m.materialized,
           pending: r.pending,
-          assets: (r as Json).assets || (i === 0 ? m.assets : []),
+          assets: r.assets || (i === 0 ? m.assets : []),
           role: r.kind === "user" ? "user" : "tool",
           text: r.text,
           truncated: r.truncated,
@@ -677,9 +677,13 @@ export function useMessages(
           setNotice("");
           setLoadedId(scope);
           setItems(
-            d.map((m: Message) => ({
-              ...m,
+            d.map((m) => ({
+              id: m.id,
+              text: m.text,
+              at: m.at,
               role: m.author === "user" ? "user" : "assistant",
+              deliveryStatus: m.status ?? undefined,
+              deliveryError: m.error ?? undefined,
             })),
           );
         } else {

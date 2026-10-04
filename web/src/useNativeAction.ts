@@ -91,10 +91,16 @@ export function useNativeAction(
           "The action reply has no matching receipt. Check the saved request.",
         );
       acknowledge();
-      if (response.error || response.outcome?.error || response.result?.error)
-        notify(
-          response.error || response.outcome?.error || response.result.error,
-        );
+      const resultError =
+        response.result &&
+        typeof response.result === "object" &&
+        !Array.isArray(response.result) &&
+        "error" in response.result &&
+        typeof response.result.error === "string"
+          ? response.result.error
+          : undefined;
+      const error = response.error || response.outcome?.error || resultError;
+      if (error) notify(error);
       else if (response.replayed)
         notify("This action request was already saved. No new action starts.");
       return response;

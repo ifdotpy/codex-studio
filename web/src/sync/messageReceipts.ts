@@ -6,10 +6,13 @@ type MessageReceiptResponse = GetResult<"/api/messages/receipts">;
 export type MessageReceipt = MessageReceiptResponse["items"][number];
 
 const statuses = {
+  queued: true,
   pending: true,
   reserved: true,
   dispatching: true,
   delivered: true,
+  accepted: true,
+  sent: true,
   uncertain: true,
   failed: true,
   cancelled: true,

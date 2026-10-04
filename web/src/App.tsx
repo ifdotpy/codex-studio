@@ -58,9 +58,18 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import { get, post, ApiError, errorText, save, saved } from "./api";
+import {
+  get,
+  post,
+  ApiError,
+  errorText,
+  save,
+  saved,
+  type PostBody,
+} from "./api";
 import { useSnapshot } from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
+import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
   fontFamilies,
@@ -430,7 +439,7 @@ export default function App() {
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<Json | null>(null),
-    sends = useRef<Record<string, Json>>({}),
+    sends = useRef<Record<string, PostBody<"/api/messages">>>({}),
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
@@ -1014,7 +1023,7 @@ export default function App() {
   };
   const send = async (options?: {
     assets?: string[];
-    attachments?: Json[];
+    attachments?: Attachment[];
     onPersist?: () => void | Promise<void>;
     delivery?: "after_tool" | "after_turn";
   }) => {
@@ -1030,7 +1039,7 @@ export default function App() {
       sendingLock.current = null;
       setSending(false);
     };
-    let request: Json | undefined;
+    let request: PostBody<"/api/messages"> | undefined;
     try {
       const id = opened || (await newChat());
       if (!id) return;
@@ -1112,8 +1121,8 @@ export default function App() {
               : result.status === "uncertain"
                 ? "uncertain"
                 : "accepted",
-            receipt: result,
-            error: result.error,
+            ...(result.kind === "server" ? { receipt: result } : {}),
+            error: result.error || undefined,
           },
         }));
         if (result.status === "cancelled") {
@@ -1137,7 +1146,10 @@ export default function App() {
           delete sends.current[id];
           persistSends();
         }
-        if (Object.values(result.deliveries || {}).some((v) => v !== "queued"))
+        if (
+          result.kind === "server" &&
+          Object.values(result.deliveries || {}).some((v) => v !== "queued")
+        )
           notify("Message saved. Some deliveries are not confirmed.");
       }
       if (!request)
