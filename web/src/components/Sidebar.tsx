@@ -83,6 +83,23 @@ type Props = {
   markingRead: Set<string>;
 };
 type NavigableProject = Project & { path: string; name: string };
+export function isVisibleSidebarAgent(
+  agent: Pick<Agent, "source" | "isLead" | "deletedAt" | "sharedRoomId">,
+) {
+  return (
+    agent.source === "managed" &&
+    agent.isLead &&
+    !agent.deletedAt &&
+    !agent.sharedRoomId
+  );
+}
+export function projectDisplayName(
+  project: Pick<Project, "path" | "name">,
+): string {
+  return typeof project.name === "string" && project.name
+    ? project.name
+    : project.path || "Project";
+}
 export default function Sidebar(p: Props) {
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
@@ -141,10 +158,15 @@ export default function Sidebar(p: Props) {
   } | null>(null);
   const peerTeams =
     runtime?.peerTeamsVersion === 1 ? runtime.peerTeams || [] : [];
-  const projects = (runtime?.projects ?? []).filter(
-    (project): project is NavigableProject =>
-      typeof project.path === "string" && typeof project.name === "string",
-  );
+  const projects = (runtime?.projects ?? [])
+    .filter(
+      (project): project is Project & { path: string } =>
+        typeof project.path === "string",
+    )
+    .map((project): NavigableProject => ({
+      ...project,
+      name: projectDisplayName(project),
+    }));
   const teamMove = usePeerTeamMove(p.refresh, p.notify);
   const teamFor = (id: string) =>
     peerTeams.find((team) => (team.members ?? []).includes(id));
@@ -264,14 +286,7 @@ export default function Sidebar(p: Props) {
     });
   }, [p.data.threads]);
   const agents = p.data.threads
-    .filter(
-      (a) =>
-        a.source === "managed" &&
-        a.isLead &&
-        typeof a.name === "string" &&
-        !a.deletedAt &&
-        !a.sharedRoomId,
-    )
+    .filter(isVisibleSidebarAgent)
     .map((a) => (overrides[a.id] ? { ...a, ...overrides[a.id] } : a));
   const sharedRooms = (runtime?.rooms || []).filter(
     (r) => r.radio?.direct && !r.userHidden,
