@@ -277,6 +277,7 @@ class MobileStateHttpContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             self.runtime.put(db, "tasks", {
                 "id": "first-command", "agent": worker["id"], "status": "running",
+                "kind": "command",
                 "created": 100, "command": "first", "processId": "1",
             })
         work_path = f"/api/workspace?agent={lead['id']}&view=work"
@@ -302,6 +303,7 @@ class MobileStateHttpContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             self.runtime.put(db, "tasks", {
                 "id": "second-command", "agent": worker["id"], "status": "running",
+                "kind": "command",
                 "created": now, "command": "second", "processId": "2",
             })
         unchanged_status, unchanged_headers, unchanged_body = self.request(
