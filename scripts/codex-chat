@@ -45,7 +45,7 @@ try:
         notify_external_write(request_id, [
             ResourceRef(StateResource(kind="state")),
             ResourceRef(RoomResource(kind="room", roomId=result["id"])),
-        ])
+        ], source_root=canvas.root)
     elif args.action in ('connect', 'disconnect') and args.chat and args.agent:
         group = next((g for g in canvas.chats() if g["id"] == args.chat), None)
         if not group:
@@ -55,7 +55,7 @@ try:
         notify_external_write(str(uuid.uuid4()), [
             ResourceRef(StateResource(kind="state")),
             ResourceRef(RoomResource(kind="room", roomId=args.chat)),
-        ])
+        ], source_root=canvas.root)
     elif args.action == "read" and args.chat:
         result = canvas.agent_messages(args.chat, actor["id"]) if actor else canvas.messages(args.chat)
     elif args.action == "post" and args.chat and args.text and actor:
@@ -66,7 +66,7 @@ try:
         notify_external_write(request_id, [
             ResourceRef(StateResource(kind="state")),
             ResourceRef(RoomResource(kind="room", roomId=args.chat)),
-        ])
+        ], source_root=canvas.root)
     else:
         parser.error("create needs NAME. connect/disconnect need CHAT --agent ID. post needs CHAT TEXT and --owner or --agent.")
     print(json.dumps(result, ensure_ascii=False, indent=2))

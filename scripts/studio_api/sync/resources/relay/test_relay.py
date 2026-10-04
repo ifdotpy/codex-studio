@@ -160,7 +160,7 @@ class RelayRouteTests(unittest.TestCase):
         def request_json(_url: str, path: str, data: object = None, _token: str = "", **_kwargs: object) -> object:
             nonlocal calls
             if path == relay_client.API_STATE_ENDPOINT:
-                return {"token": "relay-test-token"}
+                return {"token": "relay-test-token", "stateDir": "/tmp/relay-test-state"}
             assert isinstance(data, dict)
             body_calls.append((path, data))
             response = _post(self.client, data)
@@ -171,7 +171,7 @@ class RelayRouteTests(unittest.TestCase):
             return response.json()
 
         with patch.object(relay_client, "request_json", side_effect=request_json):
-            ack = relay_client.ResourceRelayClient("http://testserver").notify(
+            ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
         self.assertEqual(ack.requestId, "response-loss-id")
@@ -244,6 +244,12 @@ class ExternalCliSseTests(unittest.TestCase):
                     self.post_requests.append(parsed)
                     response = self._forward(raw_body)
                     if len(self.post_requests) == 1:
+                        self.send_response(200)
+                        self.send_header("Content-Type", response[1])
+                        self.send_header("Content-Length", str(len(response[2]) + 20))
+                        self.end_headers()
+                        self.wfile.write(response[2][:max(1, len(response[2]) // 2)])
+                        self.wfile.flush()
                         self.connection.shutdown(socket.SHUT_RDWR)
                         self.connection.close()
                         return
@@ -303,6 +309,7 @@ class ExternalCliSseTests(unittest.TestCase):
                     self.assertEqual(command.returncode, 0, command.stderr)
                     self.assertEqual(len(proxy_requests), 2)
                     self.assertEqual(proxy_requests[0], proxy_requests[1])
+                    self.assertEqual(proxy_requests[0]["requestId"], proxy_requests[1]["requestId"])
                     event = self._read_frame(stream)
                     self.assertIn("event: resources", event)
                     payload = json.loads(next(line[6:] for line in event if line.startswith("data: ")))
@@ -423,6 +430,67 @@ class ExternalCliSseTests(unittest.TestCase):
                     stored = db.execute("SELECT 1 FROM graph_agents WHERE id='orphan'").fetchone()
                 self.assertIsNone(stored)
                 self.assertEqual(server._context.resource_hub()._revision, 0)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+    def test_source_and_api_state_mismatch_fails_after_commit_without_wrong_hub_event(self) -> None:
+        sys.path.insert(0, str(SCRIPTS))
+        from codex_canvas import Canvas
+        import studio_api.app as app_module
+        import studio_api.server as server_module
+        from studio_api.sync.resources.relay.router import create_router as create_relay_router
+
+        with tempfile.TemporaryDirectory(prefix="relay-mismatch-") as temporary:
+            source_root = Path(temporary) / "source-state"
+            api_root = Path(temporary) / "api-state"
+            source_canvas = Canvas(source_root)
+            api_canvas = Canvas(api_root)
+            original_create_app = app_module.create_app
+
+            def with_relay(context: ApiContext) -> ASGIApp:
+                app = original_create_app(context)
+                if not any(getattr(route, "path", None) == "/api/sync/notify" for route in app.routes):
+                    app.include_router(create_relay_router(context))
+                return app
+
+            with patch.object(server_module, "create_app", side_effect=with_relay):
+                server = server_module.make_server(api_canvas, port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not server.server.started and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(server.server.started)
+                before_revision = server._context.resource_hub()._revision
+                env = {
+                    **os.environ,
+                    "CODEX_AGENTS_STATE_DIR": str(source_root),
+                    "CODEX_CANVAS_URL": f"http://127.0.0.1:{server.server_port}",
+                    "CODEX_BOARD_OWNER": "",
+                    "CODEX_AGENT_OWNER": "",
+                    "PATH": f"{Path(sys.executable).parent}:{os.environ.get('PATH', '')}",
+                }
+                command = subprocess.run(
+                    [str(SCRIPTS / "codex-graph"), "agent", "--id", "source-agent", "--name", "Source"],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                self.assertNotEqual(command.returncode, 0)
+                self.assertIn("Source change committed", command.stderr)
+                self.assertIn("does not match Studio API state", command.stderr)
+                self.assertIn("Reconnect the event stream", command.stderr)
+                with source_canvas.connect() as db:
+                    source_rows = db.execute("SELECT count(*) FROM graph_agents WHERE id='source-agent'").fetchone()[0]
+                with api_canvas.connect() as db:
+                    api_rows = db.execute("SELECT count(*) FROM graph_agents WHERE id='source-agent'").fetchone()[0]
+                self.assertEqual(source_rows, 1)
+                self.assertEqual(api_rows, 0)
+                self.assertEqual(server._context.resource_hub()._revision, before_revision)
             finally:
                 server.shutdown()
                 thread.join(timeout=5)

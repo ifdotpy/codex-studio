@@ -318,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run(state, tables=tables, batch_rows=args.batch_rows, batch_bytes=args.batch_bytes,
                      max_batches=args.max_batches, restart_tasks=args.restart_tasks,
-                     relay=ResourceRelayClient())
+                     relay=ResourceRelayClient(state))
     except NotifyCommittedWriteError as error:
         print(
             f"Source payload batch committed; UI invalidation is unconfirmed. "

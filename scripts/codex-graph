@@ -32,7 +32,7 @@ try:
         notify_external_write(str(uuid.uuid4()), [
             ResourceRef(StateResource(kind="state")),
             ResourceRef(WorkspaceResource(kind="workspace", agentId=args.id)),
-        ])
+        ], source_root=canvas.root)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 except NotifyCommittedWriteError as error:
     sys.exit(f"Source change committed; UI invalidation is unconfirmed. Do not repeat the source operation. {error}")

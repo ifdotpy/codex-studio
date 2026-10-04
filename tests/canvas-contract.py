@@ -27,7 +27,7 @@ import codex_canvas
 
 class RelayFixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps({"token": "canvas-test-token"}).encode()
+        body = json.dumps({"token": "canvas-test-token", "stateDir": self.server.state_dir}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -54,6 +54,7 @@ class CanvasContract(unittest.TestCase):
         self.root = Path(self.temp.name) / "state"
         self.profile = Path(self.temp.name) / "profile"
         self.relay = ThreadingHTTPServer(("127.0.0.1", 0), RelayFixture)
+        self.relay.state_dir = str(self.root.resolve())
         self.relay_thread = threading.Thread(target=self.relay.serve_forever, daemon=True)
         self.relay_thread.start()
         self.env = patch.dict(os.environ, {
