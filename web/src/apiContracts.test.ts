@@ -1,11 +1,14 @@
 import { expect, it } from "vitest";
 import { serializePrimitiveParam } from "openapi-fetch";
+import { post } from "./api";
 import type {
   ApiSuccessBodyFor,
   ApiGetContract,
   ApiPostContract,
+  ApiRequestBodyFor,
   ApiSyncGetContract,
 } from "./apiContracts";
+import type { paths } from "./generated/api";
 
 type Equal<Actual, Expected> =
   (<Value>() => Value extends Actual ? 1 : 2) extends <
@@ -29,6 +32,10 @@ type StringSuccess = ApiSuccessBodyFor<{
   };
 }>;
 type EmptySuccess = ApiSuccessBodyFor<{ responses: { 204: {} } }>;
+type OptionalBody = ApiRequestBodyFor<{
+  requestBody?: { content: { "application/json": Record<string, never> } };
+}>;
+type NoBody = ApiRequestBodyFor<{ responses: { 204: {} } }>;
 type ResponseStatusAssertions = [
   Assert<Equal<NumericSuccess, { value: number }>>,
   Assert<NotNever<NumericSuccess>>,
@@ -36,8 +43,12 @@ type ResponseStatusAssertions = [
   Assert<NotNever<StringSuccess>>,
   Assert<Equal<EmptySuccess, undefined>>,
   Assert<NotNever<EmptySuccess>>,
+  Assert<Equal<OptionalBody, Record<string, never>>>,
+  Assert<Equal<NoBody, never>>,
 ];
 const responseStatusAssertions: ResponseStatusAssertions = [
+  true,
+  true,
   true,
   true,
   true,
@@ -87,6 +98,19 @@ type FixturePaths = {
       };
     };
   };
+  "/discover": {
+    post: {
+      requestBody?: {
+        content: { "application/json": Record<string, never> };
+      };
+      responses: {
+        200: { content: { "application/json": { found: boolean } } };
+      };
+    };
+  };
+  "/no-body": {
+    post: { responses: { 204: {} } };
+  };
 };
 type FixtureOptions = {
   timeoutMs?: number;
@@ -120,6 +144,7 @@ function compileTimeContractAssertions() {
   });
   fixturePost("/items", { id: "1", state: "open" });
   fixturePost("/mutation", { name: "sample" });
+  fixturePost("/discover", {});
   fixtureSyncGet("/items", { query: { cursor: "same-query" } });
   const readResult: Promise<{ healthy: boolean }> = fixtureGet("/health");
   const writeResult: Promise<{ id: string }> = fixturePost("/items", {
@@ -143,6 +168,8 @@ function compileTimeContractAssertions() {
   fixtureGet("/missing");
   // @ts-expect-error the body is required for this operation
   fixturePost("/items", undefined);
+  // @ts-expect-error this operation does not accept a request body
+  fixturePost("/no-body", {});
   // @ts-expect-error enum values are closed to the declared wire strings
   fixturePost("/items", { id: "1", state: "pending" });
   // @ts-expect-error ETag caching must retain the 304 metadata destination
@@ -151,6 +178,22 @@ function compileTimeContractAssertions() {
   fixtureSyncGet("/items");
 }
 void compileTimeContractAssertions;
+
+type GeneratedDiscoverBody = ApiRequestBodyFor<
+  NonNullable<paths["/api/accounts/discover"]["post"]>
+>;
+type GeneratedDiscoverAssertion = Assert<
+  Equal<GeneratedDiscoverBody, Record<string, never>>
+>;
+const generatedDiscoverAssertion: GeneratedDiscoverAssertion = true;
+void generatedDiscoverAssertion;
+
+function generatedFacadeRequestAssertions() {
+  post("/api/accounts/discover", {});
+  // @ts-expect-error the facade requires an explicit request body argument
+  post("/api/accounts/discover");
+}
+void generatedFacadeRequestAssertions;
 
 it("serializes a typed query scalar using OpenAPI's default encoding", () => {
   expect(serializePrimitiveParam("cursor", "next page")).toBe(

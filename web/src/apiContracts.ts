@@ -1,5 +1,9 @@
 export type ApiPathsFor<Paths, Method extends string> = {
-  [Path in keyof Paths]: Method extends keyof Paths[Path] ? Path : never;
+  [Path in keyof Paths]: Method extends keyof Paths[Path]
+    ? [NonNullable<Paths[Path][Method]>] extends [never]
+      ? never
+      : Path
+    : never;
 }[keyof Paths] &
   string;
 
@@ -7,7 +11,7 @@ export type ApiOperationFor<
   Paths,
   Path extends keyof Paths,
   Method extends string,
-> = Method extends keyof Paths[Path] ? Paths[Path][Method] : never;
+> = Method extends keyof Paths[Path] ? NonNullable<Paths[Path][Method]> : never;
 
 export type ApiQueryFor<Operation> = Operation extends {
   parameters?: { query?: infer Query };
@@ -36,9 +40,13 @@ export type ApiPathsWithRequiredQuery<Paths> = {
 }[ApiPathsFor<Paths, "get">];
 
 export type ApiRequestBodyFor<Operation> = Operation extends {
-  requestBody: { content: { "application/json": infer Body } };
+  requestBody?: infer RequestBody;
 }
-  ? Body
+  ? NonNullable<RequestBody> extends {
+      content: { "application/json": infer Body };
+    }
+    ? Body
+    : never
   : never;
 
 type IsSuccessStatus<Status> = Status extends number
@@ -52,15 +60,17 @@ type IsSuccessStatus<Status> = Status extends number
 export type ApiSuccessBodyFor<Operation> = Operation extends {
   responses: infer Responses;
 }
-  ? {
-      [Status in keyof Responses]: IsSuccessStatus<Status> extends true
-        ? Responses[Status] extends {
-            content: { "application/json": infer Body };
-          }
-          ? Body
-          : undefined
-        : never;
-    }[keyof Responses]
+  ? Readable<
+      {
+        [Status in keyof Responses]: IsSuccessStatus<Status> extends true
+          ? Responses[Status] extends { content: infer Content }
+            ? Content extends { "application/json": infer Body }
+              ? Body
+              : undefined
+            : undefined
+          : never;
+      }[keyof Responses]
+    >
   : never;
 
 export type ApiGetOptions<
@@ -148,3 +158,4 @@ export type ApiSyncGetContract<
   },
   Metadata,
 > = ApiGetContract<Paths, Omit<Options, "timeoutMs">, Metadata>;
+import type { Readable } from "openapi-typescript-helpers";

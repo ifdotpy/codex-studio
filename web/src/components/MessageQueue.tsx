@@ -10,11 +10,25 @@ import {
   Trash2,
 } from "lucide-react";
 import { errorText, saved, type QueueItemDto } from "../api";
+import type { components } from "../generated/api";
 import { writeLocalDraft } from "../sync/localDraft";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
 
-export type QueueItem = QueueItemDto;
+export type QueueItem = QueueItemDto & { localDelivery?: boolean };
+
+type QueueAsset = { id: string; name: string };
+function isQueueAsset(
+  value: components["schemas"]["JsonValue"],
+): value is QueueAsset {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof value.id === "string" &&
+    typeof value.name === "string"
+  );
+}
 
 type Props = {
   items: QueueItem[];
@@ -312,19 +326,22 @@ function ScopedMessageQueue(p: Props) {
     </div>
   );
 
-  const alternatives = Object.values(drafts.entries).filter(
-    (draft) =>
-      draft.key !== current?.key &&
-      !current?.ancestors?.some(
+  const alternatives = Object.values(drafts.entries).filter((draft) => {
+    if (draft.key === current?.key) return false;
+    if (
+      current?.ancestors?.some(
         (ancestor) =>
           ancestor.key === draft.key && ancestor.revision === draft.revision,
-      ) &&
-      !(
-        draft.item.id === current?.item.id &&
-        draft.text === current.text &&
-        draft.item.text === current.item.text
-      ),
-  );
+      )
+    )
+      return false;
+    return !(
+      current &&
+      draft.item.id === current.item.id &&
+      draft.text === current.text &&
+      draft.item.text === current.item.text
+    );
+  });
   if (
     !p.items.length &&
     !current &&
@@ -458,7 +475,7 @@ function ScopedMessageQueue(p: Props) {
                     )}
                     {!!item.assets?.length && (
                       <div className="message-queue-assets">
-                        {item.assets.map((asset) => (
+                        {item.assets.filter(isQueueAsset).map((asset) => (
                           <span key={asset.id}>
                             <Paperclip size={12} />
                             <span>{asset.name}</span>

@@ -21,15 +21,44 @@ export const complaintNeedsUserResponse = (complaint: Complaint) =>
     : complaint.author === complaint.leadId;
 
 type TranscriptWireItem = GetResult<"/api/transcript">["items"][number];
-export type Message = TranscriptWireItem & {
+type TranscriptAsset = NonNullable<TranscriptWireItem["assets"]>[number];
+export type LocalMessageAttachment = {
+  id: string;
+  name: string;
+  mime: string;
+  image: boolean;
+  size: number;
+  preview?: string;
+};
+export type Message = Omit<
+  TranscriptWireItem,
+  "assets" | "deliveryStatus" | "role" | "text" | "turnId"
+> & {
+  assets?: Array<TranscriptAsset | LocalMessageAttachment> | null;
+  deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending";
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
+  turnId?: string;
+  accountKey?: string;
+  author?: string;
+  details?: JsonValue;
+  effort?: string;
+  excerpt?: string;
+  localDelivery?: boolean;
+  model?: string;
+  nativeError?: boolean;
+  nativeHook?: boolean;
+  nativeHookQuiet?: boolean;
+  nativeNotice?: "error" | "warning";
+  nativeReview?: boolean;
   title?: string;
   pending?: boolean;
   senderName?: string;
   sender?: string;
   seq?: number;
   created?: number;
+  threadId?: string;
+  timestamp?: number | string;
 };
 export const busy = new Set(["running", "starting", "approval"]);
 export const nativeReleaseLabel = (agent: Agent) => {
@@ -85,6 +114,7 @@ export const complaintLabel = (status: string) =>
 export function agentErrorLabel(agent: Agent): string {
   if (
     agent.error === "Codex app-server is offline" &&
+    typeof agent.status === "string" &&
     ["failed", "interrupted", "paused"].includes(agent.status) &&
     !agent.inFlight
   )

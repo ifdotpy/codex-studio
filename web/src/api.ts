@@ -1,8 +1,8 @@
 import createClient from "openapi-fetch";
+import type { FetchResponse } from "openapi-fetch";
 import type { paths } from "./generated/api";
 import type {
   ApiGetOptions,
-  ApiOperationFor,
   ApiPathsFor,
   ApiPathsWithRequiredQuery,
   ApiQueryFor,
@@ -13,16 +13,52 @@ import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
 
 type Method = "get" | "post";
-type PathsFor<M extends Method> = ApiPathsFor<paths, M>;
-type Operation<Path extends keyof paths, M extends Method> = ApiOperationFor<
-  paths,
-  Path,
-  M
->;
+type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
+type Operation<
+  Path extends keyof paths,
+  M extends Method,
+> = Path extends keyof paths ? NonNullable<paths[Path][M]> : never;
 type QueryOf<Op> = ApiQueryFor<Op>;
-type SuccessBody<Op> = ApiSuccessBodyFor<Op>;
-type BodyOf<Op> = ApiRequestBodyFor<Op>;
+type QueryOfPath<Path extends PathsFor<"get">> = Path extends keyof paths
+  ? ApiQueryFor<NonNullable<paths[Path]["get"]>>
+  : never;
+type InternalGetOptions<Path extends PathsFor<"get">> = ApiOptions & {
+  query?: QueryOf<Operation<Path, "get">>;
+  etag?: string;
+  readMetadata?: ApiReadMetadata;
+};
 type PathsWithRequiredQuery = ApiPathsWithRequiredQuery<paths>;
+type DownloadInit<Path extends PathsFor<"get">> = {
+  parseAs: "blob";
+  params?: { query?: ApiQueryFor<NonNullable<paths[Path]["get"]>> };
+  headers?: Record<string, string>;
+  [key: string]: unknown;
+};
+type JsonGetInit<Path extends PathsFor<"get">> = {
+  parseAs: "json";
+  params?: { query?: ApiQueryFor<NonNullable<paths[Path]["get"]>> };
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  cache?: RequestCache;
+  [key: string]: unknown;
+};
+type JsonPostInit<Path extends PathsFor<"post">> = {
+  parseAs: "json";
+  body: ApiRequestBodyFor<NonNullable<paths[Path]["post"]>>;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+  [key: string]: unknown;
+};
+type GetFetchResponse<Path extends PathsFor<"get">> = FetchResponse<
+  NonNullable<paths[Path]["get"]>,
+  JsonGetInit<Path>,
+  "application/json"
+>;
+type PostFetchResponse<Path extends PathsFor<"post">> = FetchResponse<
+  NonNullable<paths[Path]["post"]>,
+  JsonPostInit<Path>,
+  "application/json"
+>;
 
 export type ApiReadMetadata = { etag?: string; notModified?: boolean };
 export type ApiGetPath = PathsFor<"get">;
@@ -40,14 +76,14 @@ export type GetOptions<Path extends PathsFor<"get">> = ApiGetOptions<
   ApiReadMetadata
 >;
 export type PostOptions = ApiOptions;
-export type GetResult<Path extends PathsFor<"get">> = SuccessBody<
+export type GetResult<Path extends PathsFor<"get">> = ApiSuccessBodyFor<
   Operation<Path, "get">
 >;
-export type PostResult<Path extends PathsFor<"post">> = SuccessBody<
+export type PostResult<Path extends PathsFor<"post">> = ApiSuccessBodyFor<
   Operation<Path, "post">
 >;
-export type PostBody<Path extends PathsFor<"post">> = BodyOf<
-  Operation<Path, "post">
+export type PostBody<Path extends PathsFor<"post">> = ApiRequestBodyFor<
+  NonNullable<paths[Path]["post"]>
 >;
 
 const deadlines = new Map<
@@ -70,10 +106,32 @@ let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 
-export const client = createClient<paths>({
+export const client = createClient<paths, "application/json">({
   baseUrl: globalThis.location?.origin ?? "http://localhost",
   fetch: (request) => globalThis.fetch(request),
 });
+
+// The openapi-fetch generic accepts a correlated path/init pair. TypeScript
+// cannot preserve that correlation inside the generic transport functions;
+// these adapters keep the generated path, params, body, and response types.
+const requestGet = client.GET as <Path extends PathsFor<"get">>(
+  path: Path,
+  init: JsonGetInit<Path>,
+) => Promise<GetFetchResponse<Path>>;
+const requestPost = client.POST as <Path extends PathsFor<"post">>(
+  path: Path,
+  init: JsonPostInit<Path>,
+) => Promise<PostFetchResponse<Path>>;
+const requestDownload = client.GET as <Path extends PathsFor<"get">>(
+  path: Path,
+  init: DownloadInit<Path>,
+) => Promise<
+  FetchResponse<
+    NonNullable<paths[Path]["get"]>,
+    DownloadInit<Path>,
+    "application/json"
+  >
+>;
 
 export function setWorkspace(value: string) {
   workspace = value;
@@ -161,6 +219,52 @@ function syncDocuments(value: unknown, workspaceId: string | undefined) {
   );
 }
 
+async function performGet<Path extends PathsFor<"get">>(
+  path: Path,
+  options?: InternalGetOptions<Path>,
+): Promise<GetResult<Path> | undefined> {
+  const requestOptions = options ?? {};
+  const timeoutMs = requestOptions.timeoutMs ?? 15000;
+  const controller = requestController(requestOptions, timeoutMs);
+  try {
+    const fetchOptions = {
+      parseAs: "json" as const,
+      ...(requestOptions.query === undefined
+        ? {}
+        : { params: { query: requestOptions.query } }),
+      ...(controller.signal ? { signal: controller.signal } : {}),
+      ...(requestOptions.cache ? { cache: requestOptions.cache } : {}),
+      ...(requestOptions.etag
+        ? { headers: { "If-None-Match": requestOptions.etag } }
+        : {}),
+    };
+    // openapi-fetch's path generic loses path/query correlation in this
+    // generic implementation. Public overloads validate that correlation;
+    // this assertion only maps `query` into the library's `params.query`.
+    const result = await requestGet(path, fetchOptions as JsonGetInit<Path>);
+    const response = result.response;
+    if (response.status === 304 && requestOptions.readMetadata) {
+      requestOptions.readMetadata.etag =
+        response.headers.get("ETag") || requestOptions.etag;
+      requestOptions.readMetadata.notModified = true;
+      return undefined;
+    }
+    if (requestOptions.readMetadata)
+      requestOptions.readMetadata.etag =
+        response.headers.get("ETag") || undefined;
+    if (!response.ok) throw errorPayload(result.error, response.status);
+    if (!("data" in result)) return undefined;
+    if (result.data === null)
+      throw new Error("Successful response did not contain a body.");
+    return result.data as GetResult<Path>;
+  } catch (error) {
+    if (controller.timedOut()) throw new NetworkTimeoutError();
+    throw error;
+  } finally {
+    controller.finish();
+  }
+}
+
 export function get<Path extends PathsFor<"get">>(
   path: Path,
   options: GetOptions<Path> & { readMetadata: ApiReadMetadata },
@@ -175,42 +279,11 @@ export function get<
   path: Path,
   options?: GetOptions<Path> & { readMetadata?: undefined },
 ): Promise<GetResult<Path>>;
-export async function get<Path extends PathsFor<"get">>(
+export function get<Path extends PathsFor<"get">>(
   path: Path,
-  options?: GetOptions<Path>,
+  options?: InternalGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
-  const requestOptions = options ?? {};
-  const timeoutMs = requestOptions.timeoutMs ?? 15000;
-  const controller = requestController(requestOptions, timeoutMs);
-  try {
-    const result = await client.GET(path, {
-      ...(requestOptions.query === undefined
-        ? {}
-        : { params: { query: requestOptions.query } }),
-      ...(controller.signal ? { signal: controller.signal } : {}),
-      ...(requestOptions.cache ? { cache: requestOptions.cache } : {}),
-      ...(requestOptions.etag
-        ? { headers: { "If-None-Match": requestOptions.etag } }
-        : {}),
-    });
-    const response = result.response;
-    if (response.status === 304 && requestOptions.readMetadata) {
-      requestOptions.readMetadata.etag =
-        response.headers.get("ETag") || requestOptions.etag;
-      requestOptions.readMetadata.notModified = true;
-      return undefined;
-    }
-    if (requestOptions.readMetadata)
-      requestOptions.readMetadata.etag =
-        response.headers.get("ETag") || undefined;
-    if (!response.ok) throw errorPayload(result.error, response.status);
-    return result.data;
-  } catch (error) {
-    if (controller.timedOut()) throw new NetworkTimeoutError();
-    throw error;
-  } finally {
-    controller.finish();
-  }
+  return performGet(path, options);
 }
 
 export async function post<Path extends PathsFor<"post">>(
@@ -221,7 +294,8 @@ export async function post<Path extends PathsFor<"post">>(
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
   try {
-    const result = await client.POST(path, {
+    const fetchOptions = {
+      parseAs: "json" as const,
       body,
       ...(controller.signal ? { signal: controller.signal } : {}),
       headers: {
@@ -231,11 +305,15 @@ export async function post<Path extends PathsFor<"post">>(
           ? { "X-Canvas-Workspace": options.workspaceId ?? workspace }
           : {}),
       },
-    });
+    };
+    const result = await requestPost(path, fetchOptions as JsonPostInit<Path>);
     if (!result.response.ok)
       throw errorPayload(result.error, result.response.status);
+    if (!("data" in result)) return undefined as PostResult<Path>;
+    if (result.data === null)
+      throw new Error("Successful response did not contain a body.");
     syncDocuments(result.data, options.workspaceId);
-    return result.data;
+    return result.data as PostResult<Path>;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;
@@ -246,13 +324,13 @@ export async function post<Path extends PathsFor<"post">>(
 
 export function apiDownload<Path extends PathsWithRequiredQuery>(
   path: Path,
-  query: QueryOf<Operation<Path, "get">>,
+  query: QueryOfPath<Path>,
 ): Promise<{ blob: Blob; name: string; truncated: boolean }>;
 export function apiDownload<
   Path extends Exclude<PathsFor<"get">, PathsWithRequiredQuery>,
 >(
   path: Path,
-  query?: QueryOf<Operation<Path, "get">>,
+  query?: QueryOfPath<Path>,
 ): Promise<{
   blob: Blob;
   name: string;
@@ -260,24 +338,30 @@ export function apiDownload<
 }>;
 export async function apiDownload<Path extends PathsFor<"get">>(
   path: Path,
-  query?: QueryOf<Operation<Path, "get">>,
+  query?: QueryOfPath<Path>,
 ): Promise<{
   blob: Blob;
   name: string;
   truncated: boolean;
 }> {
-  const result = await client.GET(path, {
+  const fetchOptions = {
     ...(query === undefined ? {} : { params: { query } }),
-    parseAs: "blob",
+    parseAs: "blob" as const,
     headers: {
       "X-Canvas-Token": token,
       ...(workspace ? { "X-Canvas-Workspace": workspace } : {}),
     },
-  });
+  };
+  const result = await requestDownload(
+    path,
+    fetchOptions as DownloadInit<Path>,
+  );
   const response = result.response;
   if (!response.ok) throw errorPayload(result.error, response.status);
   const disposition = response.headers.get("Content-Disposition") || "";
   const name = disposition.match(/filename="([^"]+)"/)?.[1] || "download.log";
+  if (!("data" in result) || result.data === undefined)
+    throw new Error("Download response did not contain a file.");
   return {
     blob: result.data,
     name,
@@ -308,7 +392,7 @@ export function syncGet<Path extends PathsFor<"get">>(
   path: Path,
   options?: SyncGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
-  return get(path, { ...options, timeoutMs: 15000 });
+  return performGet(path, { ...options, timeoutMs: 15000 });
 }
 export const syncPost = <Path extends PathsFor<"post">>(
   path: Path,

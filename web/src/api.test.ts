@@ -137,7 +137,9 @@ describe("OpenAPI transport facade", () => {
   });
 
   it("sends a POST once with its original request identity and workspace", async () => {
-    const fetch = vi.fn(async () => Response.json({ ok: true }));
+    const fetch = vi.fn(async (_request: Request) =>
+      Response.json({ ok: true }),
+    );
     vi.stubGlobal("fetch", fetch);
 
     await post(
