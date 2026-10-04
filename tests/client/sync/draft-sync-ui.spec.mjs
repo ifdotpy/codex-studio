@@ -189,6 +189,8 @@ test("Draft sync ui", async ({
     );
     failPull = false;
     const previousPulls = successfulPulls;
+    // Draft pulls are event-driven; resume supplies the next retry trigger.
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
     await until(() => successfulPulls > previousPulls, "empty pull recovered");
     await desktop.waitForTimeout(8500);
     assert.equal(
@@ -224,6 +226,8 @@ test("Draft sync ui", async ({
     await until(() => pushFailures > 0, "push failure observed");
     const pullsBeforeRecovery = successfulPulls;
     failPull = false;
+    // Resume retries the pull while the failed push remains in its own lane.
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
     await until(
       () => successfulPulls > pullsBeforeRecovery,
       "pull restored while push fails",
