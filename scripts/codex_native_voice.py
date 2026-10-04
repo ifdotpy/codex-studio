@@ -34,14 +34,19 @@ class NativeVoice:
             raise ValueError("Unknown voice session")
         return {"session_id": row["id"], "state": row["state"], "sdp": row["answer"], "error": row["error"], "ended": row["ended"]}
 
-    def _state(self, sid, state, error=None, ended=False):
+    def _state(self, sid, state, error=None, ended=False, *, publish=True):
         with self.runtime.db() as db:
-            row = db.execute("SELECT agent FROM voice_sessions WHERE id=?", (sid,)).fetchone()
-            db.execute("UPDATE voice_sessions SET state=?,error=?,ended=CASE WHEN ? THEN COALESCE(ended,?) ELSE ended END WHERE id=?",
-                       (state, error, ended, time.time(), sid))
-        if row:
+            row = db.execute("SELECT agent,state,error,ended FROM voice_sessions WHERE id=?", (sid,)).fetchone()
+            if not row:
+                return False
+            finished = (row["ended"] or time.time()) if ended else row["ended"]
+            changed = row["state"] != state or row["error"] != error or row["ended"] != finished
+            if changed:
+                db.execute("UPDATE voice_sessions SET state=?,error=?,ended=? WHERE id=?",
+                           (state, error, finished, sid))
+        if changed and publish:
             self._publish_voice(row["agent"])
-            self._flush_voice_publications()
+        return changed
 
     def start(self, agent, session_id, sdp):
         actor = self._agent(agent)
@@ -68,7 +73,6 @@ class NativeVoice:
                 # Preparation must not occupy the shared coordination executor.
                 threading.Thread(target=self._start_native, args=(agent, session_id, sdp), daemon=True, name="native-voice-start").start()
         self._publish_voice(agent)
-        self._flush_voice_publications()
         return self.session(agent, session_id)
 
     def _start_native(self, agent, sid, sdp):
@@ -95,11 +99,9 @@ class NativeVoice:
                 with self.runtime.db() as db:
                     db.execute("UPDATE voice_sessions SET native_thread=?,account_key=?,connection_id=? WHERE id=?",
                                (actor["threadId"], account, connection, sid))
-                self._submit_start(sid, sdp)
+            self._submit_start(sid, sdp)
         except Exception as error:
             self._state(sid, "failed", str(error), ended=True)
-        finally:
-            self._flush_voice_publications()
 
     def _submit_start(self, sid, sdp, reloaded=False):
         context = self.connections[sid]
@@ -127,7 +129,7 @@ class NativeVoice:
                 current.update(autoWake=True, turnEpoch=current["epoch"])
                 self.runtime.put(db, "agents", current)
             context["submitted"] = True
-            self._submit(context["server"], "thread/realtime/start", params, completed)
+        self._submit(context["server"], "thread/realtime/start", params, completed)
 
     def _assert_start_context(self, context, db):
         from codex_budget import budget_admission
@@ -159,9 +161,10 @@ class NativeVoice:
         try:
             with self.native_lock:
                 context = self.connections[sid]
-                if context["cancel"]:
-                    self._state(sid, "ended", ended=True)
-                    return
+                cancelled = context["cancel"]
+            if cancelled:
+                self._state(sid, "ended", ended=True)
+                return
             agent, server, tid = context["agent"], context["server"], context["thread"]
             with self.runtime.lock:
                 guard = self.runtime.prepare_locks.setdefault(agent, threading.Lock())
@@ -185,20 +188,22 @@ class NativeVoice:
             with self.native_lock:
                 if not self.runtime.connection_current(context["account"], context["connection"]):
                     raise ValueError("Codex disconnected during the voice update")
-                self._submit_start(sid, sdp, reloaded=True)
+            self._submit_start(sid, sdp, reloaded=True)
         except Exception as error:
             self._state(sid, "failed", str(error), ended=True)
-        finally:
-            self._flush_voice_publications()
 
     def _save_transcript(self, sid, role, text, partial=False):
         context = self.connections[sid]
         if role not in {"user", "assistant"} or not isinstance(text, str) or not text:
-            return
+            return False
         sequence = context.get("transcript_sequence", 0) + 1
-        self.record(context["agent"], sid, f"native:{sid}:transcript:{sequence}", role, text,
-                    payload={"native": True, "partial": partial}, _internal=True)
+        _record, inserted = self.record(
+            context["agent"], sid, f"native:{sid}:transcript:{sequence}", role, text,
+            payload={"native": True, "partial": partial}, _internal=True,
+            _publish=False, _with_status=True,
+        )
         context["transcript_sequence"] = sequence
+        return inserted
 
     def _flush_transcript(self, sid):
         context = self.connections[sid]
@@ -206,15 +211,19 @@ class NativeVoice:
             present = db.execute("SELECT 1 FROM voice_sessions WHERE id=?", (sid,)).fetchone()
         if not present:
             context["transcript_tail"] = {}
-            return
+            return False
+        changed = False
         for role, text in list(context.get("transcript_tail", {}).items()):
-            self._save_transcript(sid, role, text, partial=True)
+            changed = self._save_transcript(sid, role, text, partial=True) or changed
         context["transcript_tail"] = {}
+        return changed
 
     def native_notification(self, message, account, connection):
         method, params = message.get("method", ""), message.get("params", {})
         if not method.startswith("thread/realtime/"):
             return False
+        publish_agents = set()
+        stop_sessions = set()
         with self.native_lock:
             candidates = [(sid, c) for sid, c in self.connections.items()
                           if c.get("thread") == params.get("threadId") and c.get("account") == account and c.get("connection") == connection]
@@ -240,69 +249,109 @@ class NativeVoice:
                 tail = context.setdefault("transcript_tail", {})
                 completed = context.setdefault("transcript_completed", {})
                 if tail.get(role) or completed.get(role) != text:
-                    self._save_transcript(sid, role, text)
+                    if self._save_transcript(sid, role, text):
+                        publish_agents.add(context["agent"])
                 completed[role] = text
                 tail.pop(role, None)
             elif method == "thread/realtime/sdp":
                 with self.runtime.db() as db:
-                    db.execute("UPDATE voice_sessions SET answer=?,state=CASE WHEN ended IS NULL THEN 'ready' ELSE state END WHERE id=?",
-                               (params["sdp"], sid))
-                self._publish_voice(context["agent"])
+                    row = db.execute("SELECT answer,state,ended FROM voice_sessions WHERE id=?", (sid,)).fetchone()
+                    if row and (row["answer"] != params["sdp"]
+                                or (row["ended"] is None and row["state"] != "ready")):
+                        db.execute("UPDATE voice_sessions SET answer=?,state=CASE WHEN ended IS NULL THEN 'ready' ELSE state END WHERE id=?",
+                                   (params["sdp"], sid))
+                        publish_agents.add(context["agent"])
                 if context["cancel"]:
-                    self._stop_native(sid)
+                    stop_sessions.add(sid)
             elif method == "thread/realtime/item/completed" and item.get("type") == "transcriptSegment":
-                self.record(context["agent"], sid, "native:" + sid + ":" + item["id"],
-                            "user" if item.get("role") == "user" else "assistant", item.get("text", ""),
-                            item_id=item["id"], payload={"native": True}, _internal=True)
+                _row, inserted = self.record(
+                    context["agent"], sid, "native:" + sid + ":" + item["id"],
+                    "user" if item.get("role") == "user" else "assistant", item.get("text", ""),
+                    item_id=item["id"], payload={"native": True}, _internal=True,
+                    _publish=False, _with_status=True,
+                )
+                if inserted:
+                    publish_agents.add(context["agent"])
             elif method == "thread/realtime/error":
-                self._state(sid, "failed", params.get("message") or "Voice failed")
-                self._stop_native(sid)
+                if self._state(sid, "failed", params.get("message") or "Voice failed", publish=False):
+                    publish_agents.add(context["agent"])
+                stop_sessions.add(sid)
             elif method == "thread/realtime/closed":
-                self._flush_transcript(sid)
+                if self._flush_transcript(sid):
+                    publish_agents.add(context["agent"])
                 # Preserve a preceding specific error.
                 current = self.session(context["agent"], sid)
                 if current["state"] == "failed":
-                    self._state(sid, "failed", current["error"], ended=True)
+                    changed = self._state(sid, "failed", current["error"], ended=True, publish=False)
                 else:
                     reason = params.get("reason")
-                    self._state(sid, "ended", "Voice disconnected. The saved transcript remains." if reason and reason != "requested" else None, ended=True)
+                    changed = self._state(
+                        sid, "ended",
+                        "Voice disconnected. The saved transcript remains." if reason and reason != "requested" else None,
+                        ended=True, publish=False,
+                    )
+                if changed:
+                    publish_agents.add(context["agent"])
                 context["closed"] = True
-        self._flush_voice_publications()
+        for agent_id in publish_agents:
+            self._publish_voice(agent_id)
+        for sid in stop_sessions:
+            self._stop_native(sid)
         return True
 
     def disconnected_native(self, account, connection):
+        publish_agents = set()
         with self.native_lock:
             for sid, context in self.connections.items():
                 if context.get("account") == account and context.get("connection") == connection:
                     context["cancel"] = True
-                    self._flush_transcript(sid)
-                    self._state(sid, "lost", "Codex disconnected. The saved transcript remains.", ended=True)
-        self._flush_voice_publications()
+                    if self._flush_transcript(sid):
+                        publish_agents.add(context["agent"])
+                    if self._state(sid, "lost", "Codex disconnected. The saved transcript remains.",
+                                   ended=True, publish=False):
+                        publish_agents.add(context["agent"])
+        for agent_id in publish_agents:
+            self._publish_voice(agent_id)
 
     def end(self, agent, session_id):
         self._agent(agent)
+        publish = False
+        stop = False
         with self.native_lock:
             with self.runtime.db() as db:
-                if not db.execute("SELECT 1 FROM voice_sessions WHERE id=?", (session_id,)).fetchone():
+                exists = db.execute("SELECT 1 FROM voice_sessions WHERE id=?", (session_id,)).fetchone()
+                if not exists:
                     if not isinstance(session_id, str) or not session_id or len(session_id) > 120:
                         raise ValueError("Invalid voice session identity")
                     # Stop can arrive before a delayed HTTP start. This tombstone prevents late capture.
                     db.execute("INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?,?,?,?,?)",
                                (session_id, agent, time.time(), time.time(), "ended"))
+                    publish = True
             current = self.session(agent, session_id)
             context = self.connections.get(session_id)
-            if current["ended"] and not context:
-                return current
-            self._cancel(session_id)
-        self._flush_voice_publications()
+            if not (current["ended"] and not context):
+                changed, stop = self._cancel(session_id)
+                publish = publish or changed
+        if publish:
+            self._publish_voice(agent)
+        if stop:
+            self._stop_native(session_id)
         return self.session(agent, session_id)
 
     def end_active(self, agent):
+        publish = False
+        stop_sessions = []
         with self.native_lock:
             for sid, context in self.connections.items():
                 if context["agent"] == agent and not context.get("closed"):
-                    self._cancel(sid)
-        self._flush_voice_publications()
+                    changed, stop = self._cancel(sid)
+                    publish = publish or changed
+                    if stop:
+                        stop_sessions.append(sid)
+        if publish:
+            self._publish_voice(agent)
+        for sid in stop_sessions:
+            self._stop_native(sid)
 
     def _cancel(self, sid):
         context = self.connections.get(sid)
@@ -311,16 +360,19 @@ class NativeVoice:
         if context and context.get("submitted") and not context.get("closed"):
             current = self.session(context["agent"], sid) if not self.runtime.agent(context["agent"]).get("deletedAt") else None
             if not current or current["state"] != "failed":
-                self._state(sid, "stopping")
-            self._stop_native(sid)
+                changed = self._state(sid, "stopping", publish=False)
+            else:
+                changed = False
+            return changed, True
         else:
-            self._state(sid, "ended", ended=True)
+            return self._state(sid, "ended", ended=True, publish=False), False
 
     def _stop_native(self, sid):
-        context = self.connections[sid]
-        if context["stopping"]:
-            return
-        context["stopping"] = True
+        with self.native_lock:
+            context = self.connections[sid]
+            if context["stopping"]:
+                return
+            context["stopping"] = True
         if not self.runtime.connection_current(context["account"], context["connection"]):
             self._state(sid, "lost", "Voice connection ended", ended=True)
             return
