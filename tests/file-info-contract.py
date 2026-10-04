@@ -55,9 +55,11 @@ class FileInfo(unittest.TestCase):
         with patch('codex_workspace_images.exec_prefix',return_value=[str(wrapper),'--']):
             info=self.runtime.file_info(actor['id'],'preview.txt')
             content,mime,name=self.runtime.file_content(actor['id'],'preview.txt')
+            with self.assertRaisesRegex(ValueError,'preview limit'):
+                self.runtime.file_content(actor['id'],'preview.txt',limit=2)
         self.assertEqual(info['size'],len(b'image view'))
         self.assertEqual((content,name),(b'image view','preview.txt'))
-        self.assertEqual(log.read_text(),'xx')
+        self.assertEqual(log.read_text(),'xxx')
 
     def test_http_metadata_and_origin_boundary(self):
         from codex_canvas import Canvas,make_server
