@@ -580,6 +580,14 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertIn("ErrorResponse", json.dumps(operation["responses"]["400"]))
         self.assertNotIn("content", operation["responses"]["422"])
         self.assertNotIn("HTTPValidationError", json.dumps(operation["responses"]))
+        models_operation = self.app.openapi()["paths"]["/api/models"]["get"]
+        retry_parameter = next(
+            param for param in models_operation["parameters"] if param["name"] == "retry"
+        )
+        self.assertEqual(
+            next(value["const"] for value in retry_parameter["schema"]["anyOf"] if "const" in value),
+            "1",
+        )
 
     def test_worker_catalog_preserves_actual_unavailable_account_metadata(self) -> None:
         from codex_catalog import CatalogUnavailable

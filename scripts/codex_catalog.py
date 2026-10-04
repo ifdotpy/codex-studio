@@ -46,6 +46,7 @@ class ModelCatalogCache:
         self.entries = {}
 
     def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False,
+             retry=False,
              on_commit: Callable[[], None] | None = None):
         """stale_ok serves an expired catalog for display while it refreshes; never for admission."""
         if not current():
@@ -56,21 +57,31 @@ class ModelCatalogCache:
             entry = self.entries.get(account)
             same = (entry is not None and entry["server"] is server
                     and entry["connectionId"] == connection_id)
+            cached_success = False
             if same and entry["expires"] > self.clock():
                 if entry.get("error") is not None:
-                    raise CatalogUnavailable(entry["error"])
-                result = copy.deepcopy(entry["value"])
+                    # A deliberate user retry can replace only a completed terminal
+                    # failure. Pending requests and successful snapshots stay shared.
+                    if not (retry and entry["future"].done()):
+                        raise CatalogUnavailable(entry["error"])
+                else:
+                    result = copy.deepcopy(entry["value"])
+                    cached_success = True
+            if cached_success:
                 future = None
+            elif not same or entry["future"].done():
+                if stale_ok and same and entry.get("value") is not None:
+                    stale = copy.deepcopy(entry["value"])
+                entry = {"server": server, "connectionId": connection_id,
+                         "future": concurrent.futures.Future(),
+                         "expires": 0, "value": entry["value"] if same and entry else None,
+                         "error": None}
+                self.entries[account] = entry
+                start = True
+                future = entry["future"]
             else:
                 if stale_ok and same and entry.get("value") is not None:
                     stale = copy.deepcopy(entry["value"])
-                if not same or entry["future"].done():
-                    entry = {"server": server, "connectionId": connection_id,
-                             "future": concurrent.futures.Future(),
-                             "expires": 0, "value": entry["value"] if same and entry else None,
-                             "error": None}
-                    self.entries[account] = entry
-                    start = True
                 future = entry["future"]
         if start:
             rows, seen_cursors, seen_models = [], set(), set()
@@ -162,6 +173,7 @@ class ModelCatalogCache:
 
 # Set only by display reads (/api/models). Admission never serves an expired list.
 DISPLAY_READ = contextvars.ContextVar("studio_catalog_display_read", default=False)
+DISPLAY_RETRY = contextvars.ContextVar("studio_catalog_display_retry", default=False)
 
 
 def runtime_catalog(runtime, account, *, stale_ok=None):
@@ -195,5 +207,6 @@ def runtime_catalog(runtime, account, *, stale_ok=None):
         current,
         submit=submit,
         stale_ok=stale_ok,
+        retry=DISPLAY_RETRY.get(),
         on_commit=lambda: publish_models_change(runtime.root),
     )

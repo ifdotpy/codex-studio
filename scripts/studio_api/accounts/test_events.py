@@ -85,17 +85,18 @@ class CatalogPublicationTests(unittest.TestCase):
         self.assertEqual(cache.read("account-a", Server(), "connection-a", lambda: True),
                          {"data": [{"model": "fixture/model"}]})
 
-    def test_failed_async_catalog_is_published_once_and_cached(self) -> None:
+    def test_failed_async_catalog_is_cached_until_explicit_retry(self) -> None:
         from codex_catalog import CatalogPending, CatalogUnavailable, ModelCatalogCache
 
         native: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+        retry_native: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
         submitted = 0
 
         class Server:
             def submit(self, _method: str, _params: dict[str, object]) -> concurrent.futures.Future[dict[str, object]]:
                 nonlocal submitted
                 submitted += 1
-                return native
+                return native if submitted == 1 else retry_native
 
         cache = ModelCatalogCache(wait_seconds=0)
         publication_locks: list[bool] = []
@@ -109,6 +110,10 @@ class CatalogPublicationTests(unittest.TestCase):
         server = Server()
         with self.assertRaises(CatalogPending):
             cache.read("account-a", server, "connection-a", lambda: True, on_commit=on_commit)
+        with self.assertRaises(CatalogPending):
+            cache.read("account-a", server, "connection-a", lambda: True,
+                       retry=True, on_commit=on_commit)
+        self.assertEqual(submitted, 1)
         native.set_exception(RuntimeError("catalog offline"))
 
         for _ in range(2):
@@ -116,6 +121,21 @@ class CatalogPublicationTests(unittest.TestCase):
                 cache.read("account-a", server, "connection-a", lambda: True, on_commit=on_commit)
         self.assertEqual(submitted, 1)
         self.assertEqual(publication_locks, [True])
+
+        expected: dict[str, object] = {"data": [{"model": "fixture/recovered"}]}
+        retry_native.set_result(expected)
+        self.assertEqual(
+            cache.read("account-a", server, "connection-a", lambda: True,
+                       retry=True, on_commit=on_commit),
+            expected,
+        )
+        self.assertEqual(submitted, 2)
+        self.assertEqual(publication_locks, [True, True])
+        self.assertEqual(
+            cache.read("account-a", server, "connection-a", lambda: True, retry=True),
+            expected,
+        )
+        self.assertEqual(submitted, 2)
 
     def test_publication_failure_does_not_fail_committed_catalog_read(self) -> None:
         from codex_catalog import ModelCatalogCache

@@ -154,9 +154,12 @@ def create_router(context: ApiContext) -> APIRouter:
         query: Annotated[ModelsQuery, Query()],
     ) -> Response:
         runtime = _runtime(context)
-        from codex_catalog import CatalogPending, CatalogUnavailable, DISPLAY_READ
+        from codex_catalog import CatalogPending, CatalogUnavailable, DISPLAY_READ, DISPLAY_RETRY
 
         display = DISPLAY_READ.set(True)
+        retry = DISPLAY_RETRY.set(
+            query.retry == "1" and request.query_params.getlist("retry") == ["1"]
+        )
         try:
             account_key = first_nonempty_query(request, "account_key", query.account_key) or "default"
             workers = [value for value in request.query_params.getlist("workers") if value]
@@ -181,6 +184,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 status=400,
             )
         finally:
+            DISPLAY_RETRY.reset(retry)
             DISPLAY_READ.reset(display)
 
     @router.get("/api/limits", response_model=UsageLimitsResponse, responses=_ERROR_RESPONSES)
