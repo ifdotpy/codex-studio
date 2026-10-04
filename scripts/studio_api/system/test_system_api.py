@@ -11,7 +11,7 @@ import threading
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import Callable, cast
+from typing import TYPE_CHECKING, Callable, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -19,7 +19,6 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from studio_api.context import ApiContext
 from studio_api.models import ContractModel, JsonValue
 from .models import (
     DesktopResponse,
@@ -30,6 +29,9 @@ from .models import (
     ProcessRecord,
 )
 from .router import create_router
+
+if TYPE_CHECKING:
+    from studio_api.context import ApiContext
 
 
 class FakeContext:
@@ -68,7 +70,7 @@ class SystemApiTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.context = FakeContext(self.root)
         app = FastAPI()
-        app.include_router(create_router(cast(ApiContext, self.context)))
+        app.include_router(create_router(cast("ApiContext", self.context)))
         self.app = app
         self.client = TestClient(app)
 
