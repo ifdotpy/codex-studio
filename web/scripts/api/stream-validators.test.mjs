@@ -19,6 +19,7 @@ function document() {
           items: { $ref: "#/components/schemas/ResourceRef" },
         },
         ResourceHeartbeatEvent: { type: "integer", minimum: 0 },
+        ResourceTokenRatesEvent: { type: "boolean" },
       },
     },
   };
@@ -38,6 +39,8 @@ test("standalone guards follow references without coercing or changing input", a
   assert.equal(module.isResourceHeartbeatEvent(1), true);
   assert.equal(module.isResourceHeartbeatEvent("1"), false);
   assert.equal(module.isResourceHeartbeatEvent(-1), false);
+  assert.equal(module.isResourceTokenRatesEvent(true), true);
+  assert.equal(module.isResourceTokenRatesEvent("true"), false);
   const input = Object.freeze({ label: "a", extra: true });
   assert.equal(module.isResourceRef(input), false);
   assert.deepEqual(input, { label: "a", extra: true });

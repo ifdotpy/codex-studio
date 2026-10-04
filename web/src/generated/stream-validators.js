@@ -1,7 +1,50 @@
 // Generated from the Python OpenAPI contract. Do not edit.
 /* oxlint-disable no-unused-vars, no-unreachable -- unmodified Ajv compiler output */
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) =>
+  function __require() {
+    try {
+      return (
+        mod ||
+          (0, cb[__getOwnPropNames(cb)[0]])(
+            (mod = { exports: {} }).exports,
+            mod,
+          ),
+        mod.exports
+      );
+    } catch (e) {
+      throw ((mod = 0), e);
+    }
+  };
+
+// web/node_modules/ajv/dist/runtime/ucs2length.js
+var require_ucs2length = __commonJS({
+  "web/node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    function ucs2length(str) {
+      const len = str.length;
+      let length = 0;
+      let pos = 0;
+      let value;
+      while (pos < len) {
+        length++;
+        value = str.charCodeAt(pos++);
+        if (value >= 55296 && value <= 56319 && pos < len) {
+          value = str.charCodeAt(pos);
+          if ((value & 64512) === 56320) pos++;
+        }
+      }
+      return length;
+    }
+    exports.default = ucs2length;
+    ucs2length.code = 'require("ajv/dist/runtime/ucs2length").default';
+  },
+});
+
 // web/stream-validators.js
 var isResourceRef = validate21;
+var func1 = require_ucs2length().default;
 function validate21(
   data,
   {
@@ -106,21 +149,41 @@ function validate21(
           }
           if (valid2) {
             if (data.agentId !== void 0) {
+              let data1 = data.agentId;
               const _errs7 = errors;
-              if (typeof data.agentId !== "string") {
-                const err4 = {
-                  instancePath: instancePath + "/agentId",
-                  schemaPath: "#/$defs/PanelResource/properties/agentId/type",
-                  keyword: "type",
-                  params: { type: "string" },
-                  message: "must be string",
-                };
-                if (vErrors === null) {
-                  vErrors = [err4];
+              if (errors === _errs7) {
+                if (typeof data1 === "string") {
+                  if (func1(data1) < 1) {
+                    const err4 = {
+                      instancePath: instancePath + "/agentId",
+                      schemaPath:
+                        "#/$defs/PanelResource/properties/agentId/minLength",
+                      keyword: "minLength",
+                      params: { limit: 1 },
+                      message: "must NOT have fewer than 1 characters",
+                    };
+                    if (vErrors === null) {
+                      vErrors = [err4];
+                    } else {
+                      vErrors.push(err4);
+                    }
+                    errors++;
+                  }
                 } else {
-                  vErrors.push(err4);
+                  const err5 = {
+                    instancePath: instancePath + "/agentId",
+                    schemaPath: "#/$defs/PanelResource/properties/agentId/type",
+                    keyword: "type",
+                    params: { type: "string" },
+                    message: "must be string",
+                  };
+                  if (vErrors === null) {
+                    vErrors = [err5];
+                  } else {
+                    vErrors.push(err5);
+                  }
+                  errors++;
                 }
-                errors++;
               }
               var valid2 = _errs7 === errors;
             } else {
@@ -130,7 +193,7 @@ function validate21(
         }
       }
     } else {
-      const err5 = {
+      const err6 = {
         instancePath,
         schemaPath: "#/$defs/PanelResource/type",
         keyword: "type",
@@ -138,9 +201,9 @@ function validate21(
         message: "must be object",
       };
       if (vErrors === null) {
-        vErrors = [err5];
+        vErrors = [err6];
       } else {
-        vErrors.push(err5);
+        vErrors.push(err6);
       }
       errors++;
     }
@@ -160,7 +223,7 @@ function validate21(
         (data.kind === void 0 && (missing1 = "kind")) ||
         (data.agentId === void 0 && (missing1 = "agentId"))
       ) {
-        const err6 = {
+        const err7 = {
           instancePath,
           schemaPath: "#/$defs/QueueResource/required",
           keyword: "required",
@@ -168,16 +231,16 @@ function validate21(
           message: "must have required property '" + missing1 + "'",
         };
         if (vErrors === null) {
-          vErrors = [err6];
+          vErrors = [err7];
         } else {
-          vErrors.push(err6);
+          vErrors.push(err7);
         }
         errors++;
       } else {
         const _errs12 = errors;
         for (const key1 in data) {
           if (!(key1 === "kind" || key1 === "agentId")) {
-            const err7 = {
+            const err8 = {
               instancePath,
               schemaPath: "#/$defs/QueueResource/additionalProperties",
               keyword: "additionalProperties",
@@ -185,9 +248,9 @@ function validate21(
               message: "must NOT have additional properties",
             };
             if (vErrors === null) {
-              vErrors = [err7];
+              vErrors = [err8];
             } else {
-              vErrors.push(err7);
+              vErrors.push(err8);
             }
             errors++;
             break;
@@ -198,7 +261,7 @@ function validate21(
             let data2 = data.kind;
             const _errs13 = errors;
             if (typeof data2 !== "string") {
-              const err8 = {
+              const err9 = {
                 instancePath: instancePath + "/kind",
                 schemaPath: "#/$defs/QueueResource/properties/kind/type",
                 keyword: "type",
@@ -206,14 +269,14 @@ function validate21(
                 message: "must be string",
               };
               if (vErrors === null) {
-                vErrors = [err8];
+                vErrors = [err9];
               } else {
-                vErrors.push(err8);
+                vErrors.push(err9);
               }
               errors++;
             }
             if ("queue" !== data2) {
-              const err9 = {
+              const err10 = {
                 instancePath: instancePath + "/kind",
                 schemaPath: "#/$defs/QueueResource/properties/kind/const",
                 keyword: "const",
@@ -221,9 +284,9 @@ function validate21(
                 message: "must be equal to constant",
               };
               if (vErrors === null) {
-                vErrors = [err9];
+                vErrors = [err10];
               } else {
-                vErrors.push(err9);
+                vErrors.push(err10);
               }
               errors++;
             }
@@ -233,21 +296,41 @@ function validate21(
           }
           if (valid4) {
             if (data.agentId !== void 0) {
+              let data3 = data.agentId;
               const _errs15 = errors;
-              if (typeof data.agentId !== "string") {
-                const err10 = {
-                  instancePath: instancePath + "/agentId",
-                  schemaPath: "#/$defs/QueueResource/properties/agentId/type",
-                  keyword: "type",
-                  params: { type: "string" },
-                  message: "must be string",
-                };
-                if (vErrors === null) {
-                  vErrors = [err10];
+              if (errors === _errs15) {
+                if (typeof data3 === "string") {
+                  if (func1(data3) < 1) {
+                    const err11 = {
+                      instancePath: instancePath + "/agentId",
+                      schemaPath:
+                        "#/$defs/QueueResource/properties/agentId/minLength",
+                      keyword: "minLength",
+                      params: { limit: 1 },
+                      message: "must NOT have fewer than 1 characters",
+                    };
+                    if (vErrors === null) {
+                      vErrors = [err11];
+                    } else {
+                      vErrors.push(err11);
+                    }
+                    errors++;
+                  }
                 } else {
-                  vErrors.push(err10);
+                  const err12 = {
+                    instancePath: instancePath + "/agentId",
+                    schemaPath: "#/$defs/QueueResource/properties/agentId/type",
+                    keyword: "type",
+                    params: { type: "string" },
+                    message: "must be string",
+                  };
+                  if (vErrors === null) {
+                    vErrors = [err12];
+                  } else {
+                    vErrors.push(err12);
+                  }
+                  errors++;
                 }
-                errors++;
               }
               var valid4 = _errs15 === errors;
             } else {
@@ -257,7 +340,7 @@ function validate21(
         }
       }
     } else {
-      const err11 = {
+      const err13 = {
         instancePath,
         schemaPath: "#/$defs/QueueResource/type",
         keyword: "type",
@@ -265,9 +348,9 @@ function validate21(
         message: "must be object",
       };
       if (vErrors === null) {
-        vErrors = [err11];
+        vErrors = [err13];
       } else {
-        vErrors.push(err11);
+        vErrors.push(err13);
       }
       errors++;
     }
@@ -293,7 +376,7 @@ function validate21(
           (data.kind === void 0 && (missing2 = "kind")) ||
           (data.agentId === void 0 && (missing2 = "agentId"))
         ) {
-          const err12 = {
+          const err14 = {
             instancePath,
             schemaPath: "#/$defs/ReceiptsResource/required",
             keyword: "required",
@@ -301,16 +384,16 @@ function validate21(
             message: "must have required property '" + missing2 + "'",
           };
           if (vErrors === null) {
-            vErrors = [err12];
+            vErrors = [err14];
           } else {
-            vErrors.push(err12);
+            vErrors.push(err14);
           }
           errors++;
         } else {
           const _errs20 = errors;
           for (const key2 in data) {
             if (!(key2 === "kind" || key2 === "agentId")) {
-              const err13 = {
+              const err15 = {
                 instancePath,
                 schemaPath: "#/$defs/ReceiptsResource/additionalProperties",
                 keyword: "additionalProperties",
@@ -318,9 +401,9 @@ function validate21(
                 message: "must NOT have additional properties",
               };
               if (vErrors === null) {
-                vErrors = [err13];
+                vErrors = [err15];
               } else {
-                vErrors.push(err13);
+                vErrors.push(err15);
               }
               errors++;
               break;
@@ -331,7 +414,7 @@ function validate21(
               let data4 = data.kind;
               const _errs21 = errors;
               if (typeof data4 !== "string") {
-                const err14 = {
+                const err16 = {
                   instancePath: instancePath + "/kind",
                   schemaPath: "#/$defs/ReceiptsResource/properties/kind/type",
                   keyword: "type",
@@ -339,14 +422,14 @@ function validate21(
                   message: "must be string",
                 };
                 if (vErrors === null) {
-                  vErrors = [err14];
+                  vErrors = [err16];
                 } else {
-                  vErrors.push(err14);
+                  vErrors.push(err16);
                 }
                 errors++;
               }
               if ("receipts" !== data4) {
-                const err15 = {
+                const err17 = {
                   instancePath: instancePath + "/kind",
                   schemaPath: "#/$defs/ReceiptsResource/properties/kind/const",
                   keyword: "const",
@@ -354,9 +437,9 @@ function validate21(
                   message: "must be equal to constant",
                 };
                 if (vErrors === null) {
-                  vErrors = [err15];
+                  vErrors = [err17];
                 } else {
-                  vErrors.push(err15);
+                  vErrors.push(err17);
                 }
                 errors++;
               }
@@ -366,22 +449,42 @@ function validate21(
             }
             if (valid6) {
               if (data.agentId !== void 0) {
+                let data5 = data.agentId;
                 const _errs23 = errors;
-                if (typeof data.agentId !== "string") {
-                  const err16 = {
-                    instancePath: instancePath + "/agentId",
-                    schemaPath:
-                      "#/$defs/ReceiptsResource/properties/agentId/type",
-                    keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
-                  };
-                  if (vErrors === null) {
-                    vErrors = [err16];
+                if (errors === _errs23) {
+                  if (typeof data5 === "string") {
+                    if (func1(data5) < 1) {
+                      const err18 = {
+                        instancePath: instancePath + "/agentId",
+                        schemaPath:
+                          "#/$defs/ReceiptsResource/properties/agentId/minLength",
+                        keyword: "minLength",
+                        params: { limit: 1 },
+                        message: "must NOT have fewer than 1 characters",
+                      };
+                      if (vErrors === null) {
+                        vErrors = [err18];
+                      } else {
+                        vErrors.push(err18);
+                      }
+                      errors++;
+                    }
                   } else {
-                    vErrors.push(err16);
+                    const err19 = {
+                      instancePath: instancePath + "/agentId",
+                      schemaPath:
+                        "#/$defs/ReceiptsResource/properties/agentId/type",
+                      keyword: "type",
+                      params: { type: "string" },
+                      message: "must be string",
+                    };
+                    if (vErrors === null) {
+                      vErrors = [err19];
+                    } else {
+                      vErrors.push(err19);
+                    }
+                    errors++;
                   }
-                  errors++;
                 }
                 var valid6 = _errs23 === errors;
               } else {
@@ -391,7 +494,7 @@ function validate21(
           }
         }
       } else {
-        const err17 = {
+        const err20 = {
           instancePath,
           schemaPath: "#/$defs/ReceiptsResource/type",
           keyword: "type",
@@ -399,9 +502,9 @@ function validate21(
           message: "must be object",
         };
         if (vErrors === null) {
-          vErrors = [err17];
+          vErrors = [err20];
         } else {
-          vErrors.push(err17);
+          vErrors.push(err20);
         }
         errors++;
       }
@@ -427,7 +530,7 @@ function validate21(
             (data.kind === void 0 && (missing3 = "kind")) ||
             (data.terminalId === void 0 && (missing3 = "terminalId"))
           ) {
-            const err18 = {
+            const err21 = {
               instancePath,
               schemaPath: "#/$defs/TerminalResource/required",
               keyword: "required",
@@ -435,16 +538,16 @@ function validate21(
               message: "must have required property '" + missing3 + "'",
             };
             if (vErrors === null) {
-              vErrors = [err18];
+              vErrors = [err21];
             } else {
-              vErrors.push(err18);
+              vErrors.push(err21);
             }
             errors++;
           } else {
             const _errs28 = errors;
             for (const key3 in data) {
               if (!(key3 === "kind" || key3 === "terminalId")) {
-                const err19 = {
+                const err22 = {
                   instancePath,
                   schemaPath: "#/$defs/TerminalResource/additionalProperties",
                   keyword: "additionalProperties",
@@ -452,9 +555,9 @@ function validate21(
                   message: "must NOT have additional properties",
                 };
                 if (vErrors === null) {
-                  vErrors = [err19];
+                  vErrors = [err22];
                 } else {
-                  vErrors.push(err19);
+                  vErrors.push(err22);
                 }
                 errors++;
                 break;
@@ -465,7 +568,7 @@ function validate21(
                 let data6 = data.kind;
                 const _errs29 = errors;
                 if (typeof data6 !== "string") {
-                  const err20 = {
+                  const err23 = {
                     instancePath: instancePath + "/kind",
                     schemaPath: "#/$defs/TerminalResource/properties/kind/type",
                     keyword: "type",
@@ -473,14 +576,14 @@ function validate21(
                     message: "must be string",
                   };
                   if (vErrors === null) {
-                    vErrors = [err20];
+                    vErrors = [err23];
                   } else {
-                    vErrors.push(err20);
+                    vErrors.push(err23);
                   }
                   errors++;
                 }
                 if ("terminal" !== data6) {
-                  const err21 = {
+                  const err24 = {
                     instancePath: instancePath + "/kind",
                     schemaPath:
                       "#/$defs/TerminalResource/properties/kind/const",
@@ -489,9 +592,9 @@ function validate21(
                     message: "must be equal to constant",
                   };
                   if (vErrors === null) {
-                    vErrors = [err21];
+                    vErrors = [err24];
                   } else {
-                    vErrors.push(err21);
+                    vErrors.push(err24);
                   }
                   errors++;
                 }
@@ -501,22 +604,42 @@ function validate21(
               }
               if (valid8) {
                 if (data.terminalId !== void 0) {
+                  let data7 = data.terminalId;
                   const _errs31 = errors;
-                  if (typeof data.terminalId !== "string") {
-                    const err22 = {
-                      instancePath: instancePath + "/terminalId",
-                      schemaPath:
-                        "#/$defs/TerminalResource/properties/terminalId/type",
-                      keyword: "type",
-                      params: { type: "string" },
-                      message: "must be string",
-                    };
-                    if (vErrors === null) {
-                      vErrors = [err22];
+                  if (errors === _errs31) {
+                    if (typeof data7 === "string") {
+                      if (func1(data7) < 1) {
+                        const err25 = {
+                          instancePath: instancePath + "/terminalId",
+                          schemaPath:
+                            "#/$defs/TerminalResource/properties/terminalId/minLength",
+                          keyword: "minLength",
+                          params: { limit: 1 },
+                          message: "must NOT have fewer than 1 characters",
+                        };
+                        if (vErrors === null) {
+                          vErrors = [err25];
+                        } else {
+                          vErrors.push(err25);
+                        }
+                        errors++;
+                      }
                     } else {
-                      vErrors.push(err22);
+                      const err26 = {
+                        instancePath: instancePath + "/terminalId",
+                        schemaPath:
+                          "#/$defs/TerminalResource/properties/terminalId/type",
+                        keyword: "type",
+                        params: { type: "string" },
+                        message: "must be string",
+                      };
+                      if (vErrors === null) {
+                        vErrors = [err26];
+                      } else {
+                        vErrors.push(err26);
+                      }
+                      errors++;
                     }
-                    errors++;
                   }
                   var valid8 = _errs31 === errors;
                 } else {
@@ -526,7 +649,7 @@ function validate21(
             }
           }
         } else {
-          const err23 = {
+          const err27 = {
             instancePath,
             schemaPath: "#/$defs/TerminalResource/type",
             keyword: "type",
@@ -534,9 +657,9 @@ function validate21(
             message: "must be object",
           };
           if (vErrors === null) {
-            vErrors = [err23];
+            vErrors = [err27];
           } else {
-            vErrors.push(err23);
+            vErrors.push(err27);
           }
           errors++;
         }
@@ -559,7 +682,7 @@ function validate21(
           if (data && typeof data == "object" && !Array.isArray(data)) {
             let missing4;
             if (data.kind === void 0 && (missing4 = "kind")) {
-              const err24 = {
+              const err28 = {
                 instancePath,
                 schemaPath: "#/$defs/TerminalsResource/required",
                 keyword: "required",
@@ -567,16 +690,16 @@ function validate21(
                 message: "must have required property '" + missing4 + "'",
               };
               if (vErrors === null) {
-                vErrors = [err24];
+                vErrors = [err28];
               } else {
-                vErrors.push(err24);
+                vErrors.push(err28);
               }
               errors++;
             } else {
               const _errs36 = errors;
               for (const key4 in data) {
                 if (!(key4 === "kind")) {
-                  const err25 = {
+                  const err29 = {
                     instancePath,
                     schemaPath:
                       "#/$defs/TerminalsResource/additionalProperties",
@@ -585,9 +708,9 @@ function validate21(
                     message: "must NOT have additional properties",
                   };
                   if (vErrors === null) {
-                    vErrors = [err25];
+                    vErrors = [err29];
                   } else {
-                    vErrors.push(err25);
+                    vErrors.push(err29);
                   }
                   errors++;
                   break;
@@ -597,7 +720,7 @@ function validate21(
                 if (data.kind !== void 0) {
                   let data8 = data.kind;
                   if (typeof data8 !== "string") {
-                    const err26 = {
+                    const err30 = {
                       instancePath: instancePath + "/kind",
                       schemaPath:
                         "#/$defs/TerminalsResource/properties/kind/type",
@@ -606,14 +729,14 @@ function validate21(
                       message: "must be string",
                     };
                     if (vErrors === null) {
-                      vErrors = [err26];
+                      vErrors = [err30];
                     } else {
-                      vErrors.push(err26);
+                      vErrors.push(err30);
                     }
                     errors++;
                   }
                   if ("terminals" !== data8) {
-                    const err27 = {
+                    const err31 = {
                       instancePath: instancePath + "/kind",
                       schemaPath:
                         "#/$defs/TerminalsResource/properties/kind/const",
@@ -622,9 +745,9 @@ function validate21(
                       message: "must be equal to constant",
                     };
                     if (vErrors === null) {
-                      vErrors = [err27];
+                      vErrors = [err31];
                     } else {
-                      vErrors.push(err27);
+                      vErrors.push(err31);
                     }
                     errors++;
                   }
@@ -632,7 +755,7 @@ function validate21(
               }
             }
           } else {
-            const err28 = {
+            const err32 = {
               instancePath,
               schemaPath: "#/$defs/TerminalsResource/type",
               keyword: "type",
@@ -640,9 +763,9 @@ function validate21(
               message: "must be object",
             };
             if (vErrors === null) {
-              vErrors = [err28];
+              vErrors = [err32];
             } else {
-              vErrors.push(err28);
+              vErrors.push(err32);
             }
             errors++;
           }
@@ -665,7 +788,7 @@ function validate21(
             if (data && typeof data == "object" && !Array.isArray(data)) {
               let missing5;
               if (data.kind === void 0 && (missing5 = "kind")) {
-                const err29 = {
+                const err33 = {
                   instancePath,
                   schemaPath: "#/$defs/AccountsResource/required",
                   keyword: "required",
@@ -673,16 +796,16 @@ function validate21(
                   message: "must have required property '" + missing5 + "'",
                 };
                 if (vErrors === null) {
-                  vErrors = [err29];
+                  vErrors = [err33];
                 } else {
-                  vErrors.push(err29);
+                  vErrors.push(err33);
                 }
                 errors++;
               } else {
                 const _errs42 = errors;
                 for (const key5 in data) {
                   if (!(key5 === "kind")) {
-                    const err30 = {
+                    const err34 = {
                       instancePath,
                       schemaPath:
                         "#/$defs/AccountsResource/additionalProperties",
@@ -691,9 +814,9 @@ function validate21(
                       message: "must NOT have additional properties",
                     };
                     if (vErrors === null) {
-                      vErrors = [err30];
+                      vErrors = [err34];
                     } else {
-                      vErrors.push(err30);
+                      vErrors.push(err34);
                     }
                     errors++;
                     break;
@@ -703,7 +826,7 @@ function validate21(
                   if (data.kind !== void 0) {
                     let data9 = data.kind;
                     if (typeof data9 !== "string") {
-                      const err31 = {
+                      const err35 = {
                         instancePath: instancePath + "/kind",
                         schemaPath:
                           "#/$defs/AccountsResource/properties/kind/type",
@@ -712,14 +835,14 @@ function validate21(
                         message: "must be string",
                       };
                       if (vErrors === null) {
-                        vErrors = [err31];
+                        vErrors = [err35];
                       } else {
-                        vErrors.push(err31);
+                        vErrors.push(err35);
                       }
                       errors++;
                     }
                     if ("accounts" !== data9) {
-                      const err32 = {
+                      const err36 = {
                         instancePath: instancePath + "/kind",
                         schemaPath:
                           "#/$defs/AccountsResource/properties/kind/const",
@@ -728,9 +851,9 @@ function validate21(
                         message: "must be equal to constant",
                       };
                       if (vErrors === null) {
-                        vErrors = [err32];
+                        vErrors = [err36];
                       } else {
-                        vErrors.push(err32);
+                        vErrors.push(err36);
                       }
                       errors++;
                     }
@@ -738,7 +861,7 @@ function validate21(
                 }
               }
             } else {
-              const err33 = {
+              const err37 = {
                 instancePath,
                 schemaPath: "#/$defs/AccountsResource/type",
                 keyword: "type",
@@ -746,9 +869,9 @@ function validate21(
                 message: "must be object",
               };
               if (vErrors === null) {
-                vErrors = [err33];
+                vErrors = [err37];
               } else {
-                vErrors.push(err33);
+                vErrors.push(err37);
               }
               errors++;
             }
@@ -774,7 +897,7 @@ function validate21(
                   (data.kind === void 0 && (missing6 = "kind")) ||
                   (data.accountKey === void 0 && (missing6 = "accountKey"))
                 ) {
-                  const err34 = {
+                  const err38 = {
                     instancePath,
                     schemaPath: "#/$defs/LimitsResource/required",
                     keyword: "required",
@@ -782,16 +905,16 @@ function validate21(
                     message: "must have required property '" + missing6 + "'",
                   };
                   if (vErrors === null) {
-                    vErrors = [err34];
+                    vErrors = [err38];
                   } else {
-                    vErrors.push(err34);
+                    vErrors.push(err38);
                   }
                   errors++;
                 } else {
                   const _errs48 = errors;
                   for (const key6 in data) {
                     if (!(key6 === "kind" || key6 === "accountKey")) {
-                      const err35 = {
+                      const err39 = {
                         instancePath,
                         schemaPath:
                           "#/$defs/LimitsResource/additionalProperties",
@@ -800,9 +923,9 @@ function validate21(
                         message: "must NOT have additional properties",
                       };
                       if (vErrors === null) {
-                        vErrors = [err35];
+                        vErrors = [err39];
                       } else {
-                        vErrors.push(err35);
+                        vErrors.push(err39);
                       }
                       errors++;
                       break;
@@ -813,7 +936,7 @@ function validate21(
                       let data10 = data.kind;
                       const _errs49 = errors;
                       if (typeof data10 !== "string") {
-                        const err36 = {
+                        const err40 = {
                           instancePath: instancePath + "/kind",
                           schemaPath:
                             "#/$defs/LimitsResource/properties/kind/type",
@@ -822,14 +945,14 @@ function validate21(
                           message: "must be string",
                         };
                         if (vErrors === null) {
-                          vErrors = [err36];
+                          vErrors = [err40];
                         } else {
-                          vErrors.push(err36);
+                          vErrors.push(err40);
                         }
                         errors++;
                       }
                       if ("limits" !== data10) {
-                        const err37 = {
+                        const err41 = {
                           instancePath: instancePath + "/kind",
                           schemaPath:
                             "#/$defs/LimitsResource/properties/kind/const",
@@ -838,9 +961,9 @@ function validate21(
                           message: "must be equal to constant",
                         };
                         if (vErrors === null) {
-                          vErrors = [err37];
+                          vErrors = [err41];
                         } else {
-                          vErrors.push(err37);
+                          vErrors.push(err41);
                         }
                         errors++;
                       }
@@ -850,22 +973,43 @@ function validate21(
                     }
                     if (valid14) {
                       if (data.accountKey !== void 0) {
+                        let data11 = data.accountKey;
                         const _errs51 = errors;
-                        if (typeof data.accountKey !== "string") {
-                          const err38 = {
-                            instancePath: instancePath + "/accountKey",
-                            schemaPath:
-                              "#/$defs/LimitsResource/properties/accountKey/type",
-                            keyword: "type",
-                            params: { type: "string" },
-                            message: "must be string",
-                          };
-                          if (vErrors === null) {
-                            vErrors = [err38];
+                        if (errors === _errs51) {
+                          if (typeof data11 === "string") {
+                            if (func1(data11) < 1) {
+                              const err42 = {
+                                instancePath: instancePath + "/accountKey",
+                                schemaPath:
+                                  "#/$defs/LimitsResource/properties/accountKey/minLength",
+                                keyword: "minLength",
+                                params: { limit: 1 },
+                                message:
+                                  "must NOT have fewer than 1 characters",
+                              };
+                              if (vErrors === null) {
+                                vErrors = [err42];
+                              } else {
+                                vErrors.push(err42);
+                              }
+                              errors++;
+                            }
                           } else {
-                            vErrors.push(err38);
+                            const err43 = {
+                              instancePath: instancePath + "/accountKey",
+                              schemaPath:
+                                "#/$defs/LimitsResource/properties/accountKey/type",
+                              keyword: "type",
+                              params: { type: "string" },
+                              message: "must be string",
+                            };
+                            if (vErrors === null) {
+                              vErrors = [err43];
+                            } else {
+                              vErrors.push(err43);
+                            }
+                            errors++;
                           }
-                          errors++;
                         }
                         var valid14 = _errs51 === errors;
                       } else {
@@ -875,7 +1019,7 @@ function validate21(
                   }
                 }
               } else {
-                const err39 = {
+                const err44 = {
                   instancePath,
                   schemaPath: "#/$defs/LimitsResource/type",
                   keyword: "type",
@@ -883,9 +1027,9 @@ function validate21(
                   message: "must be object",
                 };
                 if (vErrors === null) {
-                  vErrors = [err39];
+                  vErrors = [err44];
                 } else {
-                  vErrors.push(err39);
+                  vErrors.push(err44);
                 }
                 errors++;
               }
@@ -908,7 +1052,7 @@ function validate21(
                 if (data && typeof data == "object" && !Array.isArray(data)) {
                   let missing7;
                   if (data.kind === void 0 && (missing7 = "kind")) {
-                    const err40 = {
+                    const err45 = {
                       instancePath,
                       schemaPath: "#/$defs/ModelsResource/required",
                       keyword: "required",
@@ -916,16 +1060,16 @@ function validate21(
                       message: "must have required property '" + missing7 + "'",
                     };
                     if (vErrors === null) {
-                      vErrors = [err40];
+                      vErrors = [err45];
                     } else {
-                      vErrors.push(err40);
+                      vErrors.push(err45);
                     }
                     errors++;
                   } else {
                     const _errs56 = errors;
                     for (const key7 in data) {
                       if (!(key7 === "kind")) {
-                        const err41 = {
+                        const err46 = {
                           instancePath,
                           schemaPath:
                             "#/$defs/ModelsResource/additionalProperties",
@@ -934,9 +1078,9 @@ function validate21(
                           message: "must NOT have additional properties",
                         };
                         if (vErrors === null) {
-                          vErrors = [err41];
+                          vErrors = [err46];
                         } else {
-                          vErrors.push(err41);
+                          vErrors.push(err46);
                         }
                         errors++;
                         break;
@@ -946,7 +1090,7 @@ function validate21(
                       if (data.kind !== void 0) {
                         let data12 = data.kind;
                         if (typeof data12 !== "string") {
-                          const err42 = {
+                          const err47 = {
                             instancePath: instancePath + "/kind",
                             schemaPath:
                               "#/$defs/ModelsResource/properties/kind/type",
@@ -955,14 +1099,14 @@ function validate21(
                             message: "must be string",
                           };
                           if (vErrors === null) {
-                            vErrors = [err42];
+                            vErrors = [err47];
                           } else {
-                            vErrors.push(err42);
+                            vErrors.push(err47);
                           }
                           errors++;
                         }
                         if ("models" !== data12) {
-                          const err43 = {
+                          const err48 = {
                             instancePath: instancePath + "/kind",
                             schemaPath:
                               "#/$defs/ModelsResource/properties/kind/const",
@@ -971,9 +1115,9 @@ function validate21(
                             message: "must be equal to constant",
                           };
                           if (vErrors === null) {
-                            vErrors = [err43];
+                            vErrors = [err48];
                           } else {
-                            vErrors.push(err43);
+                            vErrors.push(err48);
                           }
                           errors++;
                         }
@@ -981,7 +1125,7 @@ function validate21(
                     }
                   }
                 } else {
-                  const err44 = {
+                  const err49 = {
                     instancePath,
                     schemaPath: "#/$defs/ModelsResource/type",
                     keyword: "type",
@@ -989,9 +1133,9 @@ function validate21(
                     message: "must be object",
                   };
                   if (vErrors === null) {
-                    vErrors = [err44];
+                    vErrors = [err49];
                   } else {
-                    vErrors.push(err44);
+                    vErrors.push(err49);
                   }
                   errors++;
                 }
@@ -1017,7 +1161,7 @@ function validate21(
                       (data.kind === void 0 && (missing8 = "kind")) ||
                       (data.agentId === void 0 && (missing8 = "agentId"))
                     ) {
-                      const err45 = {
+                      const err50 = {
                         instancePath,
                         schemaPath: "#/$defs/TasksResource/required",
                         keyword: "required",
@@ -1026,16 +1170,16 @@ function validate21(
                           "must have required property '" + missing8 + "'",
                       };
                       if (vErrors === null) {
-                        vErrors = [err45];
+                        vErrors = [err50];
                       } else {
-                        vErrors.push(err45);
+                        vErrors.push(err50);
                       }
                       errors++;
                     } else {
                       const _errs62 = errors;
                       for (const key8 in data) {
                         if (!(key8 === "kind" || key8 === "agentId")) {
-                          const err46 = {
+                          const err51 = {
                             instancePath,
                             schemaPath:
                               "#/$defs/TasksResource/additionalProperties",
@@ -1044,9 +1188,9 @@ function validate21(
                             message: "must NOT have additional properties",
                           };
                           if (vErrors === null) {
-                            vErrors = [err46];
+                            vErrors = [err51];
                           } else {
-                            vErrors.push(err46);
+                            vErrors.push(err51);
                           }
                           errors++;
                           break;
@@ -1057,7 +1201,7 @@ function validate21(
                           let data13 = data.kind;
                           const _errs63 = errors;
                           if (typeof data13 !== "string") {
-                            const err47 = {
+                            const err52 = {
                               instancePath: instancePath + "/kind",
                               schemaPath:
                                 "#/$defs/TasksResource/properties/kind/type",
@@ -1066,14 +1210,14 @@ function validate21(
                               message: "must be string",
                             };
                             if (vErrors === null) {
-                              vErrors = [err47];
+                              vErrors = [err52];
                             } else {
-                              vErrors.push(err47);
+                              vErrors.push(err52);
                             }
                             errors++;
                           }
                           if ("tasks" !== data13) {
-                            const err48 = {
+                            const err53 = {
                               instancePath: instancePath + "/kind",
                               schemaPath:
                                 "#/$defs/TasksResource/properties/kind/const",
@@ -1082,9 +1226,9 @@ function validate21(
                               message: "must be equal to constant",
                             };
                             if (vErrors === null) {
-                              vErrors = [err48];
+                              vErrors = [err53];
                             } else {
-                              vErrors.push(err48);
+                              vErrors.push(err53);
                             }
                             errors++;
                           }
@@ -1094,22 +1238,43 @@ function validate21(
                         }
                         if (valid18) {
                           if (data.agentId !== void 0) {
+                            let data14 = data.agentId;
                             const _errs65 = errors;
-                            if (typeof data.agentId !== "string") {
-                              const err49 = {
-                                instancePath: instancePath + "/agentId",
-                                schemaPath:
-                                  "#/$defs/TasksResource/properties/agentId/type",
-                                keyword: "type",
-                                params: { type: "string" },
-                                message: "must be string",
-                              };
-                              if (vErrors === null) {
-                                vErrors = [err49];
+                            if (errors === _errs65) {
+                              if (typeof data14 === "string") {
+                                if (func1(data14) < 1) {
+                                  const err54 = {
+                                    instancePath: instancePath + "/agentId",
+                                    schemaPath:
+                                      "#/$defs/TasksResource/properties/agentId/minLength",
+                                    keyword: "minLength",
+                                    params: { limit: 1 },
+                                    message:
+                                      "must NOT have fewer than 1 characters",
+                                  };
+                                  if (vErrors === null) {
+                                    vErrors = [err54];
+                                  } else {
+                                    vErrors.push(err54);
+                                  }
+                                  errors++;
+                                }
                               } else {
-                                vErrors.push(err49);
+                                const err55 = {
+                                  instancePath: instancePath + "/agentId",
+                                  schemaPath:
+                                    "#/$defs/TasksResource/properties/agentId/type",
+                                  keyword: "type",
+                                  params: { type: "string" },
+                                  message: "must be string",
+                                };
+                                if (vErrors === null) {
+                                  vErrors = [err55];
+                                } else {
+                                  vErrors.push(err55);
+                                }
+                                errors++;
                               }
-                              errors++;
                             }
                             var valid18 = _errs65 === errors;
                           } else {
@@ -1119,7 +1284,7 @@ function validate21(
                       }
                     }
                   } else {
-                    const err50 = {
+                    const err56 = {
                       instancePath,
                       schemaPath: "#/$defs/TasksResource/type",
                       keyword: "type",
@@ -1127,9 +1292,9 @@ function validate21(
                       message: "must be object",
                     };
                     if (vErrors === null) {
-                      vErrors = [err50];
+                      vErrors = [err56];
                     } else {
-                      vErrors.push(err50);
+                      vErrors.push(err56);
                     }
                     errors++;
                   }
@@ -1159,7 +1324,7 @@ function validate21(
                         (data.kind === void 0 && (missing9 = "kind")) ||
                         (data.taskId === void 0 && (missing9 = "taskId"))
                       ) {
-                        const err51 = {
+                        const err57 = {
                           instancePath,
                           schemaPath: "#/$defs/TaskResource/required",
                           keyword: "required",
@@ -1168,16 +1333,16 @@ function validate21(
                             "must have required property '" + missing9 + "'",
                         };
                         if (vErrors === null) {
-                          vErrors = [err51];
+                          vErrors = [err57];
                         } else {
-                          vErrors.push(err51);
+                          vErrors.push(err57);
                         }
                         errors++;
                       } else {
                         const _errs70 = errors;
                         for (const key9 in data) {
                           if (!(key9 === "kind" || key9 === "taskId")) {
-                            const err52 = {
+                            const err58 = {
                               instancePath,
                               schemaPath:
                                 "#/$defs/TaskResource/additionalProperties",
@@ -1186,9 +1351,9 @@ function validate21(
                               message: "must NOT have additional properties",
                             };
                             if (vErrors === null) {
-                              vErrors = [err52];
+                              vErrors = [err58];
                             } else {
-                              vErrors.push(err52);
+                              vErrors.push(err58);
                             }
                             errors++;
                             break;
@@ -1199,7 +1364,7 @@ function validate21(
                             let data15 = data.kind;
                             const _errs71 = errors;
                             if (typeof data15 !== "string") {
-                              const err53 = {
+                              const err59 = {
                                 instancePath: instancePath + "/kind",
                                 schemaPath:
                                   "#/$defs/TaskResource/properties/kind/type",
@@ -1208,14 +1373,14 @@ function validate21(
                                 message: "must be string",
                               };
                               if (vErrors === null) {
-                                vErrors = [err53];
+                                vErrors = [err59];
                               } else {
-                                vErrors.push(err53);
+                                vErrors.push(err59);
                               }
                               errors++;
                             }
                             if ("task" !== data15) {
-                              const err54 = {
+                              const err60 = {
                                 instancePath: instancePath + "/kind",
                                 schemaPath:
                                   "#/$defs/TaskResource/properties/kind/const",
@@ -1224,9 +1389,9 @@ function validate21(
                                 message: "must be equal to constant",
                               };
                               if (vErrors === null) {
-                                vErrors = [err54];
+                                vErrors = [err60];
                               } else {
-                                vErrors.push(err54);
+                                vErrors.push(err60);
                               }
                               errors++;
                             }
@@ -1236,22 +1401,43 @@ function validate21(
                           }
                           if (valid20) {
                             if (data.taskId !== void 0) {
+                              let data16 = data.taskId;
                               const _errs73 = errors;
-                              if (typeof data.taskId !== "string") {
-                                const err55 = {
-                                  instancePath: instancePath + "/taskId",
-                                  schemaPath:
-                                    "#/$defs/TaskResource/properties/taskId/type",
-                                  keyword: "type",
-                                  params: { type: "string" },
-                                  message: "must be string",
-                                };
-                                if (vErrors === null) {
-                                  vErrors = [err55];
+                              if (errors === _errs73) {
+                                if (typeof data16 === "string") {
+                                  if (func1(data16) < 1) {
+                                    const err61 = {
+                                      instancePath: instancePath + "/taskId",
+                                      schemaPath:
+                                        "#/$defs/TaskResource/properties/taskId/minLength",
+                                      keyword: "minLength",
+                                      params: { limit: 1 },
+                                      message:
+                                        "must NOT have fewer than 1 characters",
+                                    };
+                                    if (vErrors === null) {
+                                      vErrors = [err61];
+                                    } else {
+                                      vErrors.push(err61);
+                                    }
+                                    errors++;
+                                  }
                                 } else {
-                                  vErrors.push(err55);
+                                  const err62 = {
+                                    instancePath: instancePath + "/taskId",
+                                    schemaPath:
+                                      "#/$defs/TaskResource/properties/taskId/type",
+                                    keyword: "type",
+                                    params: { type: "string" },
+                                    message: "must be string",
+                                  };
+                                  if (vErrors === null) {
+                                    vErrors = [err62];
+                                  } else {
+                                    vErrors.push(err62);
+                                  }
+                                  errors++;
                                 }
-                                errors++;
                               }
                               var valid20 = _errs73 === errors;
                             } else {
@@ -1261,7 +1447,7 @@ function validate21(
                         }
                       }
                     } else {
-                      const err56 = {
+                      const err63 = {
                         instancePath,
                         schemaPath: "#/$defs/TaskResource/type",
                         keyword: "type",
@@ -1269,9 +1455,9 @@ function validate21(
                         message: "must be object",
                       };
                       if (vErrors === null) {
-                        vErrors = [err56];
+                        vErrors = [err63];
                       } else {
-                        vErrors.push(err56);
+                        vErrors.push(err63);
                       }
                       errors++;
                     }
@@ -1301,7 +1487,7 @@ function validate21(
                           (data.kind === void 0 && (missing10 = "kind")) ||
                           (data.agentId === void 0 && (missing10 = "agentId"))
                         ) {
-                          const err57 = {
+                          const err64 = {
                             instancePath,
                             schemaPath: "#/$defs/WorkspaceResource/required",
                             keyword: "required",
@@ -1310,16 +1496,16 @@ function validate21(
                               "must have required property '" + missing10 + "'",
                           };
                           if (vErrors === null) {
-                            vErrors = [err57];
+                            vErrors = [err64];
                           } else {
-                            vErrors.push(err57);
+                            vErrors.push(err64);
                           }
                           errors++;
                         } else {
                           const _errs78 = errors;
                           for (const key10 in data) {
                             if (!(key10 === "kind" || key10 === "agentId")) {
-                              const err58 = {
+                              const err65 = {
                                 instancePath,
                                 schemaPath:
                                   "#/$defs/WorkspaceResource/additionalProperties",
@@ -1328,9 +1514,9 @@ function validate21(
                                 message: "must NOT have additional properties",
                               };
                               if (vErrors === null) {
-                                vErrors = [err58];
+                                vErrors = [err65];
                               } else {
-                                vErrors.push(err58);
+                                vErrors.push(err65);
                               }
                               errors++;
                               break;
@@ -1341,7 +1527,7 @@ function validate21(
                               let data17 = data.kind;
                               const _errs79 = errors;
                               if (typeof data17 !== "string") {
-                                const err59 = {
+                                const err66 = {
                                   instancePath: instancePath + "/kind",
                                   schemaPath:
                                     "#/$defs/WorkspaceResource/properties/kind/type",
@@ -1350,14 +1536,14 @@ function validate21(
                                   message: "must be string",
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err59];
+                                  vErrors = [err66];
                                 } else {
-                                  vErrors.push(err59);
+                                  vErrors.push(err66);
                                 }
                                 errors++;
                               }
                               if ("workspace" !== data17) {
-                                const err60 = {
+                                const err67 = {
                                   instancePath: instancePath + "/kind",
                                   schemaPath:
                                     "#/$defs/WorkspaceResource/properties/kind/const",
@@ -1366,9 +1552,9 @@ function validate21(
                                   message: "must be equal to constant",
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err60];
+                                  vErrors = [err67];
                                 } else {
-                                  vErrors.push(err60);
+                                  vErrors.push(err67);
                                 }
                                 errors++;
                               }
@@ -1378,22 +1564,43 @@ function validate21(
                             }
                             if (valid22) {
                               if (data.agentId !== void 0) {
+                                let data18 = data.agentId;
                                 const _errs81 = errors;
-                                if (typeof data.agentId !== "string") {
-                                  const err61 = {
-                                    instancePath: instancePath + "/agentId",
-                                    schemaPath:
-                                      "#/$defs/WorkspaceResource/properties/agentId/type",
-                                    keyword: "type",
-                                    params: { type: "string" },
-                                    message: "must be string",
-                                  };
-                                  if (vErrors === null) {
-                                    vErrors = [err61];
+                                if (errors === _errs81) {
+                                  if (typeof data18 === "string") {
+                                    if (func1(data18) < 1) {
+                                      const err68 = {
+                                        instancePath: instancePath + "/agentId",
+                                        schemaPath:
+                                          "#/$defs/WorkspaceResource/properties/agentId/minLength",
+                                        keyword: "minLength",
+                                        params: { limit: 1 },
+                                        message:
+                                          "must NOT have fewer than 1 characters",
+                                      };
+                                      if (vErrors === null) {
+                                        vErrors = [err68];
+                                      } else {
+                                        vErrors.push(err68);
+                                      }
+                                      errors++;
+                                    }
                                   } else {
-                                    vErrors.push(err61);
+                                    const err69 = {
+                                      instancePath: instancePath + "/agentId",
+                                      schemaPath:
+                                        "#/$defs/WorkspaceResource/properties/agentId/type",
+                                      keyword: "type",
+                                      params: { type: "string" },
+                                      message: "must be string",
+                                    };
+                                    if (vErrors === null) {
+                                      vErrors = [err69];
+                                    } else {
+                                      vErrors.push(err69);
+                                    }
+                                    errors++;
                                   }
-                                  errors++;
                                 }
                                 var valid22 = _errs81 === errors;
                               } else {
@@ -1403,7 +1610,7 @@ function validate21(
                           }
                         }
                       } else {
-                        const err62 = {
+                        const err70 = {
                           instancePath,
                           schemaPath: "#/$defs/WorkspaceResource/type",
                           keyword: "type",
@@ -1411,9 +1618,9 @@ function validate21(
                           message: "must be object",
                         };
                         if (vErrors === null) {
-                          vErrors = [err62];
+                          vErrors = [err70];
                         } else {
-                          vErrors.push(err62);
+                          vErrors.push(err70);
                         }
                         errors++;
                       }
@@ -1443,7 +1650,7 @@ function validate21(
                             (data.kind === void 0 && (missing11 = "kind")) ||
                             (data.agentId === void 0 && (missing11 = "agentId"))
                           ) {
-                            const err63 = {
+                            const err71 = {
                               instancePath,
                               schemaPath: "#/$defs/VoiceResource/required",
                               keyword: "required",
@@ -1454,16 +1661,16 @@ function validate21(
                                 "'",
                             };
                             if (vErrors === null) {
-                              vErrors = [err63];
+                              vErrors = [err71];
                             } else {
-                              vErrors.push(err63);
+                              vErrors.push(err71);
                             }
                             errors++;
                           } else {
                             const _errs86 = errors;
                             for (const key11 in data) {
                               if (!(key11 === "kind" || key11 === "agentId")) {
-                                const err64 = {
+                                const err72 = {
                                   instancePath,
                                   schemaPath:
                                     "#/$defs/VoiceResource/additionalProperties",
@@ -1473,9 +1680,9 @@ function validate21(
                                     "must NOT have additional properties",
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err64];
+                                  vErrors = [err72];
                                 } else {
-                                  vErrors.push(err64);
+                                  vErrors.push(err72);
                                 }
                                 errors++;
                                 break;
@@ -1486,7 +1693,7 @@ function validate21(
                                 let data19 = data.kind;
                                 const _errs87 = errors;
                                 if (typeof data19 !== "string") {
-                                  const err65 = {
+                                  const err73 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
                                       "#/$defs/VoiceResource/properties/kind/type",
@@ -1495,14 +1702,14 @@ function validate21(
                                     message: "must be string",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err65];
+                                    vErrors = [err73];
                                   } else {
-                                    vErrors.push(err65);
+                                    vErrors.push(err73);
                                   }
                                   errors++;
                                 }
                                 if ("voice" !== data19) {
-                                  const err66 = {
+                                  const err74 = {
                                     instancePath: instancePath + "/kind",
                                     schemaPath:
                                       "#/$defs/VoiceResource/properties/kind/const",
@@ -1511,9 +1718,9 @@ function validate21(
                                     message: "must be equal to constant",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err66];
+                                    vErrors = [err74];
                                   } else {
-                                    vErrors.push(err66);
+                                    vErrors.push(err74);
                                   }
                                   errors++;
                                 }
@@ -1523,22 +1730,44 @@ function validate21(
                               }
                               if (valid24) {
                                 if (data.agentId !== void 0) {
+                                  let data20 = data.agentId;
                                   const _errs89 = errors;
-                                  if (typeof data.agentId !== "string") {
-                                    const err67 = {
-                                      instancePath: instancePath + "/agentId",
-                                      schemaPath:
-                                        "#/$defs/VoiceResource/properties/agentId/type",
-                                      keyword: "type",
-                                      params: { type: "string" },
-                                      message: "must be string",
-                                    };
-                                    if (vErrors === null) {
-                                      vErrors = [err67];
+                                  if (errors === _errs89) {
+                                    if (typeof data20 === "string") {
+                                      if (func1(data20) < 1) {
+                                        const err75 = {
+                                          instancePath:
+                                            instancePath + "/agentId",
+                                          schemaPath:
+                                            "#/$defs/VoiceResource/properties/agentId/minLength",
+                                          keyword: "minLength",
+                                          params: { limit: 1 },
+                                          message:
+                                            "must NOT have fewer than 1 characters",
+                                        };
+                                        if (vErrors === null) {
+                                          vErrors = [err75];
+                                        } else {
+                                          vErrors.push(err75);
+                                        }
+                                        errors++;
+                                      }
                                     } else {
-                                      vErrors.push(err67);
+                                      const err76 = {
+                                        instancePath: instancePath + "/agentId",
+                                        schemaPath:
+                                          "#/$defs/VoiceResource/properties/agentId/type",
+                                        keyword: "type",
+                                        params: { type: "string" },
+                                        message: "must be string",
+                                      };
+                                      if (vErrors === null) {
+                                        vErrors = [err76];
+                                      } else {
+                                        vErrors.push(err76);
+                                      }
+                                      errors++;
                                     }
-                                    errors++;
                                   }
                                   var valid24 = _errs89 === errors;
                                 } else {
@@ -1548,7 +1777,7 @@ function validate21(
                             }
                           }
                         } else {
-                          const err68 = {
+                          const err77 = {
                             instancePath,
                             schemaPath: "#/$defs/VoiceResource/type",
                             keyword: "type",
@@ -1556,9 +1785,9 @@ function validate21(
                             message: "must be object",
                           };
                           if (vErrors === null) {
-                            vErrors = [err68];
+                            vErrors = [err77];
                           } else {
-                            vErrors.push(err68);
+                            vErrors.push(err77);
                           }
                           errors++;
                         }
@@ -1589,7 +1818,7 @@ function validate21(
                               (data.agentId === void 0 &&
                                 (missing12 = "agentId"))
                             ) {
-                              const err69 = {
+                              const err78 = {
                                 instancePath,
                                 schemaPath:
                                   "#/$defs/SessionCostResource/required",
@@ -1601,9 +1830,9 @@ function validate21(
                                   "'",
                               };
                               if (vErrors === null) {
-                                vErrors = [err69];
+                                vErrors = [err78];
                               } else {
-                                vErrors.push(err69);
+                                vErrors.push(err78);
                               }
                               errors++;
                             } else {
@@ -1612,7 +1841,7 @@ function validate21(
                                 if (
                                   !(key12 === "kind" || key12 === "agentId")
                                 ) {
-                                  const err70 = {
+                                  const err79 = {
                                     instancePath,
                                     schemaPath:
                                       "#/$defs/SessionCostResource/additionalProperties",
@@ -1622,9 +1851,9 @@ function validate21(
                                       "must NOT have additional properties",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err70];
+                                    vErrors = [err79];
                                   } else {
-                                    vErrors.push(err70);
+                                    vErrors.push(err79);
                                   }
                                   errors++;
                                   break;
@@ -1635,7 +1864,7 @@ function validate21(
                                   let data21 = data.kind;
                                   const _errs95 = errors;
                                   if (typeof data21 !== "string") {
-                                    const err71 = {
+                                    const err80 = {
                                       instancePath: instancePath + "/kind",
                                       schemaPath:
                                         "#/$defs/SessionCostResource/properties/kind/type",
@@ -1644,14 +1873,14 @@ function validate21(
                                       message: "must be string",
                                     };
                                     if (vErrors === null) {
-                                      vErrors = [err71];
+                                      vErrors = [err80];
                                     } else {
-                                      vErrors.push(err71);
+                                      vErrors.push(err80);
                                     }
                                     errors++;
                                   }
                                   if ("session-cost" !== data21) {
-                                    const err72 = {
+                                    const err81 = {
                                       instancePath: instancePath + "/kind",
                                       schemaPath:
                                         "#/$defs/SessionCostResource/properties/kind/const",
@@ -1660,9 +1889,9 @@ function validate21(
                                       message: "must be equal to constant",
                                     };
                                     if (vErrors === null) {
-                                      vErrors = [err72];
+                                      vErrors = [err81];
                                     } else {
-                                      vErrors.push(err72);
+                                      vErrors.push(err81);
                                     }
                                     errors++;
                                   }
@@ -1672,22 +1901,45 @@ function validate21(
                                 }
                                 if (valid26) {
                                   if (data.agentId !== void 0) {
+                                    let data22 = data.agentId;
                                     const _errs97 = errors;
-                                    if (typeof data.agentId !== "string") {
-                                      const err73 = {
-                                        instancePath: instancePath + "/agentId",
-                                        schemaPath:
-                                          "#/$defs/SessionCostResource/properties/agentId/type",
-                                        keyword: "type",
-                                        params: { type: "string" },
-                                        message: "must be string",
-                                      };
-                                      if (vErrors === null) {
-                                        vErrors = [err73];
+                                    if (errors === _errs97) {
+                                      if (typeof data22 === "string") {
+                                        if (func1(data22) < 1) {
+                                          const err82 = {
+                                            instancePath:
+                                              instancePath + "/agentId",
+                                            schemaPath:
+                                              "#/$defs/SessionCostResource/properties/agentId/minLength",
+                                            keyword: "minLength",
+                                            params: { limit: 1 },
+                                            message:
+                                              "must NOT have fewer than 1 characters",
+                                          };
+                                          if (vErrors === null) {
+                                            vErrors = [err82];
+                                          } else {
+                                            vErrors.push(err82);
+                                          }
+                                          errors++;
+                                        }
                                       } else {
-                                        vErrors.push(err73);
+                                        const err83 = {
+                                          instancePath:
+                                            instancePath + "/agentId",
+                                          schemaPath:
+                                            "#/$defs/SessionCostResource/properties/agentId/type",
+                                          keyword: "type",
+                                          params: { type: "string" },
+                                          message: "must be string",
+                                        };
+                                        if (vErrors === null) {
+                                          vErrors = [err83];
+                                        } else {
+                                          vErrors.push(err83);
+                                        }
+                                        errors++;
                                       }
-                                      errors++;
                                     }
                                     var valid26 = _errs97 === errors;
                                   } else {
@@ -1697,7 +1949,7 @@ function validate21(
                               }
                             }
                           } else {
-                            const err74 = {
+                            const err84 = {
                               instancePath,
                               schemaPath: "#/$defs/SessionCostResource/type",
                               keyword: "type",
@@ -1705,9 +1957,9 @@ function validate21(
                               message: "must be object",
                             };
                             if (vErrors === null) {
-                              vErrors = [err74];
+                              vErrors = [err84];
                             } else {
-                              vErrors.push(err74);
+                              vErrors.push(err84);
                             }
                             errors++;
                           }
@@ -1737,7 +1989,7 @@ function validate21(
                                 data.kind === void 0 &&
                                 (missing13 = "kind")
                               ) {
-                                const err75 = {
+                                const err85 = {
                                   instancePath,
                                   schemaPath: "#/$defs/CostsResource/required",
                                   keyword: "required",
@@ -1748,16 +2000,16 @@ function validate21(
                                     "'",
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err75];
+                                  vErrors = [err85];
                                 } else {
-                                  vErrors.push(err75);
+                                  vErrors.push(err85);
                                 }
                                 errors++;
                               } else {
                                 const _errs102 = errors;
                                 for (const key13 in data) {
                                   if (!(key13 === "kind")) {
-                                    const err76 = {
+                                    const err86 = {
                                       instancePath,
                                       schemaPath:
                                         "#/$defs/CostsResource/additionalProperties",
@@ -1767,9 +2019,9 @@ function validate21(
                                         "must NOT have additional properties",
                                     };
                                     if (vErrors === null) {
-                                      vErrors = [err76];
+                                      vErrors = [err86];
                                     } else {
-                                      vErrors.push(err76);
+                                      vErrors.push(err86);
                                     }
                                     errors++;
                                     break;
@@ -1779,7 +2031,7 @@ function validate21(
                                   if (data.kind !== void 0) {
                                     let data23 = data.kind;
                                     if (typeof data23 !== "string") {
-                                      const err77 = {
+                                      const err87 = {
                                         instancePath: instancePath + "/kind",
                                         schemaPath:
                                           "#/$defs/CostsResource/properties/kind/type",
@@ -1788,14 +2040,14 @@ function validate21(
                                         message: "must be string",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err77];
+                                        vErrors = [err87];
                                       } else {
-                                        vErrors.push(err77);
+                                        vErrors.push(err87);
                                       }
                                       errors++;
                                     }
                                     if ("costs" !== data23) {
-                                      const err78 = {
+                                      const err88 = {
                                         instancePath: instancePath + "/kind",
                                         schemaPath:
                                           "#/$defs/CostsResource/properties/kind/const",
@@ -1804,9 +2056,9 @@ function validate21(
                                         message: "must be equal to constant",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err78];
+                                        vErrors = [err88];
                                       } else {
-                                        vErrors.push(err78);
+                                        vErrors.push(err88);
                                       }
                                       errors++;
                                     }
@@ -1814,7 +2066,7 @@ function validate21(
                                 }
                               }
                             } else {
-                              const err79 = {
+                              const err89 = {
                                 instancePath,
                                 schemaPath: "#/$defs/CostsResource/type",
                                 keyword: "type",
@@ -1822,9 +2074,9 @@ function validate21(
                                 message: "must be object",
                               };
                               if (vErrors === null) {
-                                vErrors = [err79];
+                                vErrors = [err89];
                               } else {
-                                vErrors.push(err79);
+                                vErrors.push(err89);
                               }
                               errors++;
                             }
@@ -1854,7 +2106,7 @@ function validate21(
                                   data.kind === void 0 &&
                                   (missing14 = "kind")
                                 ) {
-                                  const err80 = {
+                                  const err90 = {
                                     instancePath,
                                     schemaPath:
                                       "#/$defs/DesktopResource/required",
@@ -1866,16 +2118,16 @@ function validate21(
                                       "'",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err80];
+                                    vErrors = [err90];
                                   } else {
-                                    vErrors.push(err80);
+                                    vErrors.push(err90);
                                   }
                                   errors++;
                                 } else {
                                   const _errs108 = errors;
                                   for (const key14 in data) {
                                     if (!(key14 === "kind")) {
-                                      const err81 = {
+                                      const err91 = {
                                         instancePath,
                                         schemaPath:
                                           "#/$defs/DesktopResource/additionalProperties",
@@ -1885,9 +2137,9 @@ function validate21(
                                           "must NOT have additional properties",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err81];
+                                        vErrors = [err91];
                                       } else {
-                                        vErrors.push(err81);
+                                        vErrors.push(err91);
                                       }
                                       errors++;
                                       break;
@@ -1897,7 +2149,7 @@ function validate21(
                                     if (data.kind !== void 0) {
                                       let data24 = data.kind;
                                       if (typeof data24 !== "string") {
-                                        const err82 = {
+                                        const err92 = {
                                           instancePath: instancePath + "/kind",
                                           schemaPath:
                                             "#/$defs/DesktopResource/properties/kind/type",
@@ -1906,14 +2158,14 @@ function validate21(
                                           message: "must be string",
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err82];
+                                          vErrors = [err92];
                                         } else {
-                                          vErrors.push(err82);
+                                          vErrors.push(err92);
                                         }
                                         errors++;
                                       }
                                       if ("desktop" !== data24) {
-                                        const err83 = {
+                                        const err93 = {
                                           instancePath: instancePath + "/kind",
                                           schemaPath:
                                             "#/$defs/DesktopResource/properties/kind/const",
@@ -1922,9 +2174,9 @@ function validate21(
                                           message: "must be equal to constant",
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err83];
+                                          vErrors = [err93];
                                         } else {
-                                          vErrors.push(err83);
+                                          vErrors.push(err93);
                                         }
                                         errors++;
                                       }
@@ -1932,7 +2184,7 @@ function validate21(
                                   }
                                 }
                               } else {
-                                const err84 = {
+                                const err94 = {
                                   instancePath,
                                   schemaPath: "#/$defs/DesktopResource/type",
                                   keyword: "type",
@@ -1940,9 +2192,9 @@ function validate21(
                                   message: "must be object",
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err84];
+                                  vErrors = [err94];
                                 } else {
-                                  vErrors.push(err84);
+                                  vErrors.push(err94);
                                 }
                                 errors++;
                               }
@@ -1974,7 +2226,7 @@ function validate21(
                                     (data.agentId === void 0 &&
                                       (missing15 = "agentId"))
                                   ) {
-                                    const err85 = {
+                                    const err95 = {
                                       instancePath,
                                       schemaPath:
                                         "#/$defs/WorktreeDiskResource/required",
@@ -1986,9 +2238,9 @@ function validate21(
                                         "'",
                                     };
                                     if (vErrors === null) {
-                                      vErrors = [err85];
+                                      vErrors = [err95];
                                     } else {
-                                      vErrors.push(err85);
+                                      vErrors.push(err95);
                                     }
                                     errors++;
                                   } else {
@@ -2000,7 +2252,7 @@ function validate21(
                                           key15 === "agentId"
                                         )
                                       ) {
-                                        const err86 = {
+                                        const err96 = {
                                           instancePath,
                                           schemaPath:
                                             "#/$defs/WorktreeDiskResource/additionalProperties",
@@ -2010,9 +2262,9 @@ function validate21(
                                             "must NOT have additional properties",
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err86];
+                                          vErrors = [err96];
                                         } else {
-                                          vErrors.push(err86);
+                                          vErrors.push(err96);
                                         }
                                         errors++;
                                         break;
@@ -2023,7 +2275,7 @@ function validate21(
                                         let data25 = data.kind;
                                         const _errs115 = errors;
                                         if (typeof data25 !== "string") {
-                                          const err87 = {
+                                          const err97 = {
                                             instancePath:
                                               instancePath + "/kind",
                                             schemaPath:
@@ -2033,14 +2285,14 @@ function validate21(
                                             message: "must be string",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err87];
+                                            vErrors = [err97];
                                           } else {
-                                            vErrors.push(err87);
+                                            vErrors.push(err97);
                                           }
                                           errors++;
                                         }
                                         if ("worktree-disk" !== data25) {
-                                          const err88 = {
+                                          const err98 = {
                                             instancePath:
                                               instancePath + "/kind",
                                             schemaPath:
@@ -2053,9 +2305,9 @@ function validate21(
                                               "must be equal to constant",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err88];
+                                            vErrors = [err98];
                                           } else {
-                                            vErrors.push(err88);
+                                            vErrors.push(err98);
                                           }
                                           errors++;
                                         }
@@ -2065,25 +2317,45 @@ function validate21(
                                       }
                                       if (valid32) {
                                         if (data.agentId !== void 0) {
+                                          let data26 = data.agentId;
                                           const _errs117 = errors;
-                                          if (
-                                            typeof data.agentId !== "string"
-                                          ) {
-                                            const err89 = {
-                                              instancePath:
-                                                instancePath + "/agentId",
-                                              schemaPath:
-                                                "#/$defs/WorktreeDiskResource/properties/agentId/type",
-                                              keyword: "type",
-                                              params: { type: "string" },
-                                              message: "must be string",
-                                            };
-                                            if (vErrors === null) {
-                                              vErrors = [err89];
+                                          if (errors === _errs117) {
+                                            if (typeof data26 === "string") {
+                                              if (func1(data26) < 1) {
+                                                const err99 = {
+                                                  instancePath:
+                                                    instancePath + "/agentId",
+                                                  schemaPath:
+                                                    "#/$defs/WorktreeDiskResource/properties/agentId/minLength",
+                                                  keyword: "minLength",
+                                                  params: { limit: 1 },
+                                                  message:
+                                                    "must NOT have fewer than 1 characters",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err99];
+                                                } else {
+                                                  vErrors.push(err99);
+                                                }
+                                                errors++;
+                                              }
                                             } else {
-                                              vErrors.push(err89);
+                                              const err100 = {
+                                                instancePath:
+                                                  instancePath + "/agentId",
+                                                schemaPath:
+                                                  "#/$defs/WorktreeDiskResource/properties/agentId/type",
+                                                keyword: "type",
+                                                params: { type: "string" },
+                                                message: "must be string",
+                                              };
+                                              if (vErrors === null) {
+                                                vErrors = [err100];
+                                              } else {
+                                                vErrors.push(err100);
+                                              }
+                                              errors++;
                                             }
-                                            errors++;
                                           }
                                           var valid32 = _errs117 === errors;
                                         } else {
@@ -2093,7 +2365,7 @@ function validate21(
                                     }
                                   }
                                 } else {
-                                  const err90 = {
+                                  const err101 = {
                                     instancePath,
                                     schemaPath:
                                       "#/$defs/WorktreeDiskResource/type",
@@ -2102,9 +2374,9 @@ function validate21(
                                     message: "must be object",
                                   };
                                   if (vErrors === null) {
-                                    vErrors = [err90];
+                                    vErrors = [err101];
                                   } else {
-                                    vErrors.push(err90);
+                                    vErrors.push(err101);
                                   }
                                   errors++;
                                 }
@@ -2136,7 +2408,7 @@ function validate21(
                                       (data.roomId === void 0 &&
                                         (missing16 = "roomId"))
                                     ) {
-                                      const err91 = {
+                                      const err102 = {
                                         instancePath,
                                         schemaPath:
                                           "#/$defs/RoomResource/required",
@@ -2148,9 +2420,9 @@ function validate21(
                                           "'",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err91];
+                                        vErrors = [err102];
                                       } else {
-                                        vErrors.push(err91);
+                                        vErrors.push(err102);
                                       }
                                       errors++;
                                     } else {
@@ -2162,7 +2434,7 @@ function validate21(
                                             key16 === "roomId"
                                           )
                                         ) {
-                                          const err92 = {
+                                          const err103 = {
                                             instancePath,
                                             schemaPath:
                                               "#/$defs/RoomResource/additionalProperties",
@@ -2174,9 +2446,9 @@ function validate21(
                                               "must NOT have additional properties",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err92];
+                                            vErrors = [err103];
                                           } else {
-                                            vErrors.push(err92);
+                                            vErrors.push(err103);
                                           }
                                           errors++;
                                           break;
@@ -2187,7 +2459,7 @@ function validate21(
                                           let data27 = data.kind;
                                           const _errs123 = errors;
                                           if (typeof data27 !== "string") {
-                                            const err93 = {
+                                            const err104 = {
                                               instancePath:
                                                 instancePath + "/kind",
                                               schemaPath:
@@ -2197,14 +2469,14 @@ function validate21(
                                               message: "must be string",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err93];
+                                              vErrors = [err104];
                                             } else {
-                                              vErrors.push(err93);
+                                              vErrors.push(err104);
                                             }
                                             errors++;
                                           }
                                           if ("room" !== data27) {
-                                            const err94 = {
+                                            const err105 = {
                                               instancePath:
                                                 instancePath + "/kind",
                                               schemaPath:
@@ -2215,9 +2487,9 @@ function validate21(
                                                 "must be equal to constant",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err94];
+                                              vErrors = [err105];
                                             } else {
-                                              vErrors.push(err94);
+                                              vErrors.push(err105);
                                             }
                                             errors++;
                                           }
@@ -2227,25 +2499,45 @@ function validate21(
                                         }
                                         if (valid34) {
                                           if (data.roomId !== void 0) {
+                                            let data28 = data.roomId;
                                             const _errs125 = errors;
-                                            if (
-                                              typeof data.roomId !== "string"
-                                            ) {
-                                              const err95 = {
-                                                instancePath:
-                                                  instancePath + "/roomId",
-                                                schemaPath:
-                                                  "#/$defs/RoomResource/properties/roomId/type",
-                                                keyword: "type",
-                                                params: { type: "string" },
-                                                message: "must be string",
-                                              };
-                                              if (vErrors === null) {
-                                                vErrors = [err95];
+                                            if (errors === _errs125) {
+                                              if (typeof data28 === "string") {
+                                                if (func1(data28) < 1) {
+                                                  const err106 = {
+                                                    instancePath:
+                                                      instancePath + "/roomId",
+                                                    schemaPath:
+                                                      "#/$defs/RoomResource/properties/roomId/minLength",
+                                                    keyword: "minLength",
+                                                    params: { limit: 1 },
+                                                    message:
+                                                      "must NOT have fewer than 1 characters",
+                                                  };
+                                                  if (vErrors === null) {
+                                                    vErrors = [err106];
+                                                  } else {
+                                                    vErrors.push(err106);
+                                                  }
+                                                  errors++;
+                                                }
                                               } else {
-                                                vErrors.push(err95);
+                                                const err107 = {
+                                                  instancePath:
+                                                    instancePath + "/roomId",
+                                                  schemaPath:
+                                                    "#/$defs/RoomResource/properties/roomId/type",
+                                                  keyword: "type",
+                                                  params: { type: "string" },
+                                                  message: "must be string",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err107];
+                                                } else {
+                                                  vErrors.push(err107);
+                                                }
+                                                errors++;
                                               }
-                                              errors++;
                                             }
                                             var valid34 = _errs125 === errors;
                                           } else {
@@ -2255,7 +2547,7 @@ function validate21(
                                       }
                                     }
                                   } else {
-                                    const err96 = {
+                                    const err108 = {
                                       instancePath,
                                       schemaPath: "#/$defs/RoomResource/type",
                                       keyword: "type",
@@ -2263,9 +2555,9 @@ function validate21(
                                       message: "must be object",
                                     };
                                     if (vErrors === null) {
-                                      vErrors = [err96];
+                                      vErrors = [err108];
                                     } else {
-                                      vErrors.push(err96);
+                                      vErrors.push(err108);
                                     }
                                     errors++;
                                   }
@@ -2295,7 +2587,7 @@ function validate21(
                                         data.kind === void 0 &&
                                         (missing17 = "kind")
                                       ) {
-                                        const err97 = {
+                                        const err109 = {
                                           instancePath,
                                           schemaPath:
                                             "#/$defs/StateResource/required",
@@ -2309,16 +2601,16 @@ function validate21(
                                             "'",
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err97];
+                                          vErrors = [err109];
                                         } else {
-                                          vErrors.push(err97);
+                                          vErrors.push(err109);
                                         }
                                         errors++;
                                       } else {
                                         const _errs130 = errors;
                                         for (const key17 in data) {
                                           if (!(key17 === "kind")) {
-                                            const err98 = {
+                                            const err110 = {
                                               instancePath,
                                               schemaPath:
                                                 "#/$defs/StateResource/additionalProperties",
@@ -2330,9 +2622,9 @@ function validate21(
                                                 "must NOT have additional properties",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err98];
+                                              vErrors = [err110];
                                             } else {
-                                              vErrors.push(err98);
+                                              vErrors.push(err110);
                                             }
                                             errors++;
                                             break;
@@ -2342,7 +2634,7 @@ function validate21(
                                           if (data.kind !== void 0) {
                                             let data29 = data.kind;
                                             if (typeof data29 !== "string") {
-                                              const err99 = {
+                                              const err111 = {
                                                 instancePath:
                                                   instancePath + "/kind",
                                                 schemaPath:
@@ -2352,14 +2644,14 @@ function validate21(
                                                 message: "must be string",
                                               };
                                               if (vErrors === null) {
-                                                vErrors = [err99];
+                                                vErrors = [err111];
                                               } else {
-                                                vErrors.push(err99);
+                                                vErrors.push(err111);
                                               }
                                               errors++;
                                             }
                                             if ("state" !== data29) {
-                                              const err100 = {
+                                              const err112 = {
                                                 instancePath:
                                                   instancePath + "/kind",
                                                 schemaPath:
@@ -2372,9 +2664,9 @@ function validate21(
                                                   "must be equal to constant",
                                               };
                                               if (vErrors === null) {
-                                                vErrors = [err100];
+                                                vErrors = [err112];
                                               } else {
-                                                vErrors.push(err100);
+                                                vErrors.push(err112);
                                               }
                                               errors++;
                                             }
@@ -2382,7 +2674,7 @@ function validate21(
                                         }
                                       }
                                     } else {
-                                      const err101 = {
+                                      const err113 = {
                                         instancePath,
                                         schemaPath:
                                           "#/$defs/StateResource/type",
@@ -2391,9 +2683,9 @@ function validate21(
                                         message: "must be object",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err101];
+                                        vErrors = [err113];
                                       } else {
-                                        vErrors.push(err101);
+                                        vErrors.push(err113);
                                       }
                                       errors++;
                                     }
@@ -2423,7 +2715,7 @@ function validate21(
                                           data.kind === void 0 &&
                                           (missing18 = "kind")
                                         ) {
-                                          const err102 = {
+                                          const err114 = {
                                             instancePath,
                                             schemaPath:
                                               "#/$defs/DraftsResource/required",
@@ -2437,16 +2729,16 @@ function validate21(
                                               "'",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err102];
+                                            vErrors = [err114];
                                           } else {
-                                            vErrors.push(err102);
+                                            vErrors.push(err114);
                                           }
                                           errors++;
                                         } else {
                                           const _errs136 = errors;
                                           for (const key18 in data) {
                                             if (!(key18 === "kind")) {
-                                              const err103 = {
+                                              const err115 = {
                                                 instancePath,
                                                 schemaPath:
                                                   "#/$defs/DraftsResource/additionalProperties",
@@ -2458,9 +2750,9 @@ function validate21(
                                                   "must NOT have additional properties",
                                               };
                                               if (vErrors === null) {
-                                                vErrors = [err103];
+                                                vErrors = [err115];
                                               } else {
-                                                vErrors.push(err103);
+                                                vErrors.push(err115);
                                               }
                                               errors++;
                                               break;
@@ -2470,7 +2762,7 @@ function validate21(
                                             if (data.kind !== void 0) {
                                               let data30 = data.kind;
                                               if (typeof data30 !== "string") {
-                                                const err104 = {
+                                                const err116 = {
                                                   instancePath:
                                                     instancePath + "/kind",
                                                   schemaPath:
@@ -2480,14 +2772,14 @@ function validate21(
                                                   message: "must be string",
                                                 };
                                                 if (vErrors === null) {
-                                                  vErrors = [err104];
+                                                  vErrors = [err116];
                                                 } else {
-                                                  vErrors.push(err104);
+                                                  vErrors.push(err116);
                                                 }
                                                 errors++;
                                               }
                                               if ("drafts" !== data30) {
-                                                const err105 = {
+                                                const err117 = {
                                                   instancePath:
                                                     instancePath + "/kind",
                                                   schemaPath:
@@ -2500,9 +2792,9 @@ function validate21(
                                                     "must be equal to constant",
                                                 };
                                                 if (vErrors === null) {
-                                                  vErrors = [err105];
+                                                  vErrors = [err117];
                                                 } else {
-                                                  vErrors.push(err105);
+                                                  vErrors.push(err117);
                                                 }
                                                 errors++;
                                               }
@@ -2510,7 +2802,7 @@ function validate21(
                                           }
                                         }
                                       } else {
-                                        const err106 = {
+                                        const err118 = {
                                           instancePath,
                                           schemaPath:
                                             "#/$defs/DraftsResource/type",
@@ -2519,9 +2811,9 @@ function validate21(
                                           message: "must be object",
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err106];
+                                          vErrors = [err118];
                                         } else {
-                                          vErrors.push(err106);
+                                          vErrors.push(err118);
                                         }
                                         errors++;
                                       }
@@ -2551,7 +2843,7 @@ function validate21(
                                             data.kind === void 0 &&
                                             (missing19 = "kind")
                                           ) {
-                                            const err107 = {
+                                            const err119 = {
                                               instancePath,
                                               schemaPath:
                                                 "#/$defs/TranscriptsResource/required",
@@ -2565,16 +2857,16 @@ function validate21(
                                                 "'",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err107];
+                                              vErrors = [err119];
                                             } else {
-                                              vErrors.push(err107);
+                                              vErrors.push(err119);
                                             }
                                             errors++;
                                           } else {
                                             const _errs142 = errors;
                                             for (const key19 in data) {
                                               if (!(key19 === "kind")) {
-                                                const err108 = {
+                                                const err120 = {
                                                   instancePath,
                                                   schemaPath:
                                                     "#/$defs/TranscriptsResource/additionalProperties",
@@ -2587,9 +2879,9 @@ function validate21(
                                                     "must NOT have additional properties",
                                                 };
                                                 if (vErrors === null) {
-                                                  vErrors = [err108];
+                                                  vErrors = [err120];
                                                 } else {
-                                                  vErrors.push(err108);
+                                                  vErrors.push(err120);
                                                 }
                                                 errors++;
                                                 break;
@@ -2601,7 +2893,7 @@ function validate21(
                                                 if (
                                                   typeof data31 !== "string"
                                                 ) {
-                                                  const err109 = {
+                                                  const err121 = {
                                                     instancePath:
                                                       instancePath + "/kind",
                                                     schemaPath:
@@ -2611,14 +2903,14 @@ function validate21(
                                                     message: "must be string",
                                                   };
                                                   if (vErrors === null) {
-                                                    vErrors = [err109];
+                                                    vErrors = [err121];
                                                   } else {
-                                                    vErrors.push(err109);
+                                                    vErrors.push(err121);
                                                   }
                                                   errors++;
                                                 }
                                                 if ("transcripts" !== data31) {
-                                                  const err110 = {
+                                                  const err122 = {
                                                     instancePath:
                                                       instancePath + "/kind",
                                                     schemaPath:
@@ -2632,9 +2924,9 @@ function validate21(
                                                       "must be equal to constant",
                                                   };
                                                   if (vErrors === null) {
-                                                    vErrors = [err110];
+                                                    vErrors = [err122];
                                                   } else {
-                                                    vErrors.push(err110);
+                                                    vErrors.push(err122);
                                                   }
                                                   errors++;
                                                 }
@@ -2642,7 +2934,7 @@ function validate21(
                                             }
                                           }
                                         } else {
-                                          const err111 = {
+                                          const err123 = {
                                             instancePath,
                                             schemaPath:
                                               "#/$defs/TranscriptsResource/type",
@@ -2651,9 +2943,9 @@ function validate21(
                                             message: "must be object",
                                           };
                                           if (vErrors === null) {
-                                            vErrors = [err111];
+                                            vErrors = [err123];
                                           } else {
-                                            vErrors.push(err111);
+                                            vErrors.push(err123);
                                           }
                                           errors++;
                                         }
@@ -2685,7 +2977,7 @@ function validate21(
                                               (data.agentId === void 0 &&
                                                 (missing20 = "agentId"))
                                             ) {
-                                              const err112 = {
+                                              const err124 = {
                                                 instancePath,
                                                 schemaPath:
                                                   "#/$defs/TranscriptResource/required",
@@ -2699,9 +2991,9 @@ function validate21(
                                                   "'",
                                               };
                                               if (vErrors === null) {
-                                                vErrors = [err112];
+                                                vErrors = [err124];
                                               } else {
-                                                vErrors.push(err112);
+                                                vErrors.push(err124);
                                               }
                                               errors++;
                                             } else {
@@ -2713,7 +3005,7 @@ function validate21(
                                                     key20 === "agentId"
                                                   )
                                                 ) {
-                                                  const err113 = {
+                                                  const err125 = {
                                                     instancePath,
                                                     schemaPath:
                                                       "#/$defs/TranscriptResource/additionalProperties",
@@ -2726,9 +3018,9 @@ function validate21(
                                                       "must NOT have additional properties",
                                                   };
                                                   if (vErrors === null) {
-                                                    vErrors = [err113];
+                                                    vErrors = [err125];
                                                   } else {
-                                                    vErrors.push(err113);
+                                                    vErrors.push(err125);
                                                   }
                                                   errors++;
                                                   break;
@@ -2741,7 +3033,7 @@ function validate21(
                                                   if (
                                                     typeof data32 !== "string"
                                                   ) {
-                                                    const err114 = {
+                                                    const err126 = {
                                                       instancePath:
                                                         instancePath + "/kind",
                                                       schemaPath:
@@ -2753,14 +3045,14 @@ function validate21(
                                                       message: "must be string",
                                                     };
                                                     if (vErrors === null) {
-                                                      vErrors = [err114];
+                                                      vErrors = [err126];
                                                     } else {
-                                                      vErrors.push(err114);
+                                                      vErrors.push(err126);
                                                     }
                                                     errors++;
                                                   }
                                                   if ("transcript" !== data32) {
-                                                    const err115 = {
+                                                    const err127 = {
                                                       instancePath:
                                                         instancePath + "/kind",
                                                       schemaPath:
@@ -2774,9 +3066,9 @@ function validate21(
                                                         "must be equal to constant",
                                                     };
                                                     if (vErrors === null) {
-                                                      vErrors = [err115];
+                                                      vErrors = [err127];
                                                     } else {
-                                                      vErrors.push(err115);
+                                                      vErrors.push(err127);
                                                     }
                                                     errors++;
                                                   }
@@ -2787,30 +3079,60 @@ function validate21(
                                                 }
                                                 if (valid42) {
                                                   if (data.agentId !== void 0) {
+                                                    let data33 = data.agentId;
                                                     const _errs151 = errors;
-                                                    if (
-                                                      typeof data.agentId !==
-                                                      "string"
-                                                    ) {
-                                                      const err116 = {
-                                                        instancePath:
-                                                          instancePath +
-                                                          "/agentId",
-                                                        schemaPath:
-                                                          "#/$defs/TranscriptResource/properties/agentId/type",
-                                                        keyword: "type",
-                                                        params: {
-                                                          type: "string",
-                                                        },
-                                                        message:
-                                                          "must be string",
-                                                      };
-                                                      if (vErrors === null) {
-                                                        vErrors = [err116];
+                                                    if (errors === _errs151) {
+                                                      if (
+                                                        typeof data33 ===
+                                                        "string"
+                                                      ) {
+                                                        if (func1(data33) < 1) {
+                                                          const err128 = {
+                                                            instancePath:
+                                                              instancePath +
+                                                              "/agentId",
+                                                            schemaPath:
+                                                              "#/$defs/TranscriptResource/properties/agentId/minLength",
+                                                            keyword:
+                                                              "minLength",
+                                                            params: {
+                                                              limit: 1,
+                                                            },
+                                                            message:
+                                                              "must NOT have fewer than 1 characters",
+                                                          };
+                                                          if (
+                                                            vErrors === null
+                                                          ) {
+                                                            vErrors = [err128];
+                                                          } else {
+                                                            vErrors.push(
+                                                              err128,
+                                                            );
+                                                          }
+                                                          errors++;
+                                                        }
                                                       } else {
-                                                        vErrors.push(err116);
+                                                        const err129 = {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/agentId",
+                                                          schemaPath:
+                                                            "#/$defs/TranscriptResource/properties/agentId/type",
+                                                          keyword: "type",
+                                                          params: {
+                                                            type: "string",
+                                                          },
+                                                          message:
+                                                            "must be string",
+                                                        };
+                                                        if (vErrors === null) {
+                                                          vErrors = [err129];
+                                                        } else {
+                                                          vErrors.push(err129);
+                                                        }
+                                                        errors++;
                                                       }
-                                                      errors++;
                                                     }
                                                     var valid42 =
                                                       _errs151 === errors;
@@ -2821,7 +3143,7 @@ function validate21(
                                               }
                                             }
                                           } else {
-                                            const err117 = {
+                                            const err130 = {
                                               instancePath,
                                               schemaPath:
                                                 "#/$defs/TranscriptResource/type",
@@ -2830,9 +3152,9 @@ function validate21(
                                               message: "must be object",
                                             };
                                             if (vErrors === null) {
-                                              vErrors = [err117];
+                                              vErrors = [err130];
                                             } else {
-                                              vErrors.push(err117);
+                                              vErrors.push(err130);
                                             }
                                             errors++;
                                           }
@@ -2870,7 +3192,7 @@ function validate21(
     }
   }
   if (!valid0) {
-    const err118 = {
+    const err131 = {
       instancePath,
       schemaPath: "#/oneOf",
       keyword: "oneOf",
@@ -2878,9 +3200,9 @@ function validate21(
       message: "must match exactly one schema in oneOf",
     };
     if (vErrors === null) {
-      vErrors = [err118];
+      vErrors = [err131];
     } else {
-      vErrors.push(err118);
+      vErrors.push(err131);
     }
     errors++;
     validate21.errors = vErrors;
@@ -2907,8 +3229,8 @@ var schema54 = {
     "Named `resources` SSE payload. A change invalidates the listed refs.",
   properties: {
     protocol: { const: 3, title: "Protocol", type: "integer" },
-    workspaceId: { title: "Workspaceid", type: "string" },
-    epoch: { title: "Epoch", type: "string" },
+    workspaceId: { minLength: 1, title: "Workspaceid", type: "string" },
+    epoch: { minLength: 1, title: "Epoch", type: "string" },
     revision: {
       maximum: 9007199254740991,
       minimum: 0,
@@ -3044,18 +3366,34 @@ function validate22(
           }
           if (valid0) {
             if (data.workspaceId !== void 0) {
+              let data1 = data.workspaceId;
               const _errs4 = errors;
-              if (typeof data.workspaceId !== "string") {
-                validate22.errors = [
-                  {
-                    instancePath: instancePath + "/workspaceId",
-                    schemaPath: "#/properties/workspaceId/type",
-                    keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
-                  },
-                ];
-                return false;
+              if (errors === _errs4) {
+                if (typeof data1 === "string") {
+                  if (func1(data1) < 1) {
+                    validate22.errors = [
+                      {
+                        instancePath: instancePath + "/workspaceId",
+                        schemaPath: "#/properties/workspaceId/minLength",
+                        keyword: "minLength",
+                        params: { limit: 1 },
+                        message: "must NOT have fewer than 1 characters",
+                      },
+                    ];
+                    return false;
+                  }
+                } else {
+                  validate22.errors = [
+                    {
+                      instancePath: instancePath + "/workspaceId",
+                      schemaPath: "#/properties/workspaceId/type",
+                      keyword: "type",
+                      params: { type: "string" },
+                      message: "must be string",
+                    },
+                  ];
+                  return false;
+                }
               }
               var valid0 = _errs4 === errors;
             } else {
@@ -3063,18 +3401,34 @@ function validate22(
             }
             if (valid0) {
               if (data.epoch !== void 0) {
+                let data2 = data.epoch;
                 const _errs6 = errors;
-                if (typeof data.epoch !== "string") {
-                  validate22.errors = [
-                    {
-                      instancePath: instancePath + "/epoch",
-                      schemaPath: "#/properties/epoch/type",
-                      keyword: "type",
-                      params: { type: "string" },
-                      message: "must be string",
-                    },
-                  ];
-                  return false;
+                if (errors === _errs6) {
+                  if (typeof data2 === "string") {
+                    if (func1(data2) < 1) {
+                      validate22.errors = [
+                        {
+                          instancePath: instancePath + "/epoch",
+                          schemaPath: "#/properties/epoch/minLength",
+                          keyword: "minLength",
+                          params: { limit: 1 },
+                          message: "must NOT have fewer than 1 characters",
+                        },
+                      ];
+                      return false;
+                    }
+                  } else {
+                    validate22.errors = [
+                      {
+                        instancePath: instancePath + "/epoch",
+                        schemaPath: "#/properties/epoch/type",
+                        keyword: "type",
+                        params: { type: "string" },
+                        message: "must be string",
+                      },
+                    ];
+                    return false;
+                  }
                 }
                 var valid0 = _errs6 === errors;
               } else {
@@ -3360,18 +3714,34 @@ function validate24(
           }
           if (valid0) {
             if (data.workspaceId !== void 0) {
+              let data1 = data.workspaceId;
               const _errs4 = errors;
-              if (typeof data.workspaceId !== "string") {
-                validate24.errors = [
-                  {
-                    instancePath: instancePath + "/workspaceId",
-                    schemaPath: "#/properties/workspaceId/type",
-                    keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
-                  },
-                ];
-                return false;
+              if (errors === _errs4) {
+                if (typeof data1 === "string") {
+                  if (func1(data1) < 1) {
+                    validate24.errors = [
+                      {
+                        instancePath: instancePath + "/workspaceId",
+                        schemaPath: "#/properties/workspaceId/minLength",
+                        keyword: "minLength",
+                        params: { limit: 1 },
+                        message: "must NOT have fewer than 1 characters",
+                      },
+                    ];
+                    return false;
+                  }
+                } else {
+                  validate24.errors = [
+                    {
+                      instancePath: instancePath + "/workspaceId",
+                      schemaPath: "#/properties/workspaceId/type",
+                      keyword: "type",
+                      params: { type: "string" },
+                      message: "must be string",
+                    },
+                  ];
+                  return false;
+                }
               }
               var valid0 = _errs4 === errors;
             } else {
@@ -3379,18 +3749,34 @@ function validate24(
             }
             if (valid0) {
               if (data.epoch !== void 0) {
+                let data2 = data.epoch;
                 const _errs6 = errors;
-                if (typeof data.epoch !== "string") {
-                  validate24.errors = [
-                    {
-                      instancePath: instancePath + "/epoch",
-                      schemaPath: "#/properties/epoch/type",
-                      keyword: "type",
-                      params: { type: "string" },
-                      message: "must be string",
-                    },
-                  ];
-                  return false;
+                if (errors === _errs6) {
+                  if (typeof data2 === "string") {
+                    if (func1(data2) < 1) {
+                      validate24.errors = [
+                        {
+                          instancePath: instancePath + "/epoch",
+                          schemaPath: "#/properties/epoch/minLength",
+                          keyword: "minLength",
+                          params: { limit: 1 },
+                          message: "must NOT have fewer than 1 characters",
+                        },
+                      ];
+                      return false;
+                    }
+                  } else {
+                    validate24.errors = [
+                      {
+                        instancePath: instancePath + "/epoch",
+                        schemaPath: "#/properties/epoch/type",
+                        keyword: "type",
+                        params: { type: "string" },
+                        message: "must be string",
+                      },
+                    ];
+                    return false;
+                  }
                 }
                 var valid0 = _errs6 === errors;
               } else {
@@ -3481,4 +3867,1570 @@ validate24.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-export { isResourceChangeEvent, isResourceHeartbeatEvent, isResourceRef };
+var isResourceTokenRatesEvent = validate25;
+function validate25(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate25.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = void 0;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = void 0;
+  }
+  if (errors === 0) {
+    if (data && typeof data == "object" && !Array.isArray(data)) {
+      let missing0;
+      if (
+        (data.protocol === void 0 && (missing0 = "protocol")) ||
+        (data.workspaceId === void 0 && (missing0 = "workspaceId")) ||
+        (data.epoch === void 0 && (missing0 = "epoch")) ||
+        (data.revision === void 0 && (missing0 = "revision")) ||
+        (data.rates === void 0 && (missing0 = "rates")) ||
+        (data.teams === void 0 && (missing0 = "teams"))
+      ) {
+        validate25.errors = [
+          {
+            instancePath,
+            schemaPath: "#/required",
+            keyword: "required",
+            params: { missingProperty: missing0 },
+            message: "must have required property '" + missing0 + "'",
+          },
+        ];
+        return false;
+      } else {
+        const _errs1 = errors;
+        for (const key0 in data) {
+          if (
+            !(
+              key0 === "protocol" ||
+              key0 === "workspaceId" ||
+              key0 === "epoch" ||
+              key0 === "revision" ||
+              key0 === "rates" ||
+              key0 === "teams"
+            )
+          ) {
+            validate25.errors = [
+              {
+                instancePath,
+                schemaPath: "#/additionalProperties",
+                keyword: "additionalProperties",
+                params: { additionalProperty: key0 },
+                message: "must NOT have additional properties",
+              },
+            ];
+            return false;
+            break;
+          }
+        }
+        if (_errs1 === errors) {
+          if (data.protocol !== void 0) {
+            let data0 = data.protocol;
+            const _errs2 = errors;
+            if (
+              !(
+                typeof data0 == "number" &&
+                !(data0 % 1) &&
+                !isNaN(data0) &&
+                isFinite(data0)
+              )
+            ) {
+              validate25.errors = [
+                {
+                  instancePath: instancePath + "/protocol",
+                  schemaPath: "#/properties/protocol/type",
+                  keyword: "type",
+                  params: { type: "integer" },
+                  message: "must be integer",
+                },
+              ];
+              return false;
+            }
+            if (3 !== data0) {
+              validate25.errors = [
+                {
+                  instancePath: instancePath + "/protocol",
+                  schemaPath: "#/properties/protocol/const",
+                  keyword: "const",
+                  params: { allowedValue: 3 },
+                  message: "must be equal to constant",
+                },
+              ];
+              return false;
+            }
+            var valid0 = _errs2 === errors;
+          } else {
+            var valid0 = true;
+          }
+          if (valid0) {
+            if (data.workspaceId !== void 0) {
+              let data1 = data.workspaceId;
+              const _errs4 = errors;
+              if (errors === _errs4) {
+                if (typeof data1 === "string") {
+                  if (func1(data1) < 1) {
+                    validate25.errors = [
+                      {
+                        instancePath: instancePath + "/workspaceId",
+                        schemaPath: "#/properties/workspaceId/minLength",
+                        keyword: "minLength",
+                        params: { limit: 1 },
+                        message: "must NOT have fewer than 1 characters",
+                      },
+                    ];
+                    return false;
+                  }
+                } else {
+                  validate25.errors = [
+                    {
+                      instancePath: instancePath + "/workspaceId",
+                      schemaPath: "#/properties/workspaceId/type",
+                      keyword: "type",
+                      params: { type: "string" },
+                      message: "must be string",
+                    },
+                  ];
+                  return false;
+                }
+              }
+              var valid0 = _errs4 === errors;
+            } else {
+              var valid0 = true;
+            }
+            if (valid0) {
+              if (data.epoch !== void 0) {
+                let data2 = data.epoch;
+                const _errs6 = errors;
+                if (errors === _errs6) {
+                  if (typeof data2 === "string") {
+                    if (func1(data2) < 1) {
+                      validate25.errors = [
+                        {
+                          instancePath: instancePath + "/epoch",
+                          schemaPath: "#/properties/epoch/minLength",
+                          keyword: "minLength",
+                          params: { limit: 1 },
+                          message: "must NOT have fewer than 1 characters",
+                        },
+                      ];
+                      return false;
+                    }
+                  } else {
+                    validate25.errors = [
+                      {
+                        instancePath: instancePath + "/epoch",
+                        schemaPath: "#/properties/epoch/type",
+                        keyword: "type",
+                        params: { type: "string" },
+                        message: "must be string",
+                      },
+                    ];
+                    return false;
+                  }
+                }
+                var valid0 = _errs6 === errors;
+              } else {
+                var valid0 = true;
+              }
+              if (valid0) {
+                if (data.revision !== void 0) {
+                  let data3 = data.revision;
+                  const _errs8 = errors;
+                  if (
+                    !(
+                      typeof data3 == "number" &&
+                      !(data3 % 1) &&
+                      !isNaN(data3) &&
+                      isFinite(data3)
+                    )
+                  ) {
+                    validate25.errors = [
+                      {
+                        instancePath: instancePath + "/revision",
+                        schemaPath: "#/properties/revision/type",
+                        keyword: "type",
+                        params: { type: "integer" },
+                        message: "must be integer",
+                      },
+                    ];
+                    return false;
+                  }
+                  if (errors === _errs8) {
+                    if (typeof data3 == "number" && isFinite(data3)) {
+                      if (data3 > 9007199254740991 || isNaN(data3)) {
+                        validate25.errors = [
+                          {
+                            instancePath: instancePath + "/revision",
+                            schemaPath: "#/properties/revision/maximum",
+                            keyword: "maximum",
+                            params: {
+                              comparison: "<=",
+                              limit: 9007199254740991,
+                            },
+                            message: "must be <= 9007199254740991",
+                          },
+                        ];
+                        return false;
+                      } else {
+                        if (data3 < 0 || isNaN(data3)) {
+                          validate25.errors = [
+                            {
+                              instancePath: instancePath + "/revision",
+                              schemaPath: "#/properties/revision/minimum",
+                              keyword: "minimum",
+                              params: { comparison: ">=", limit: 0 },
+                              message: "must be >= 0",
+                            },
+                          ];
+                          return false;
+                        }
+                      }
+                    }
+                  }
+                  var valid0 = _errs8 === errors;
+                } else {
+                  var valid0 = true;
+                }
+                if (valid0) {
+                  if (data.rates !== void 0) {
+                    let data4 = data.rates;
+                    const _errs10 = errors;
+                    if (errors === _errs10) {
+                      if (
+                        data4 &&
+                        typeof data4 == "object" &&
+                        !Array.isArray(data4)
+                      ) {
+                        for (const key1 in data4) {
+                          const _errs12 = errors;
+                          if (typeof key1 === "string") {
+                            if (func1(key1) < 1) {
+                              const err0 = {
+                                instancePath: instancePath + "/rates",
+                                schemaPath:
+                                  "#/properties/rates/propertyNames/minLength",
+                                keyword: "minLength",
+                                params: { limit: 1 },
+                                message:
+                                  "must NOT have fewer than 1 characters",
+                                propertyName: key1,
+                              };
+                              if (vErrors === null) {
+                                vErrors = [err0];
+                              } else {
+                                vErrors.push(err0);
+                              }
+                              errors++;
+                            }
+                          }
+                          var valid1 = _errs12 === errors;
+                          if (!valid1) {
+                            const err1 = {
+                              instancePath: instancePath + "/rates",
+                              schemaPath: "#/properties/rates/propertyNames",
+                              keyword: "propertyNames",
+                              params: { propertyName: key1 },
+                              message: "property name must be valid",
+                            };
+                            if (vErrors === null) {
+                              vErrors = [err1];
+                            } else {
+                              vErrors.push(err1);
+                            }
+                            errors++;
+                            validate25.errors = vErrors;
+                            return false;
+                            break;
+                          }
+                        }
+                        if (valid1) {
+                          for (const key2 in data4) {
+                            let data5 = data4[key2];
+                            const _errs14 = errors;
+                            const _errs15 = errors;
+                            if (errors === _errs15) {
+                              if (
+                                data5 &&
+                                typeof data5 == "object" &&
+                                !Array.isArray(data5)
+                              ) {
+                                let missing1;
+                                if (
+                                  (data5.turnId === void 0 &&
+                                    (missing1 = "turnId")) ||
+                                  (data5.active === void 0 &&
+                                    (missing1 = "active")) ||
+                                  (data5.estimated === void 0 &&
+                                    (missing1 = "estimated")) ||
+                                  (data5.rate === void 0 &&
+                                    (missing1 = "rate")) ||
+                                  (data5.outputTokens === void 0 &&
+                                    (missing1 = "outputTokens"))
+                                ) {
+                                  validate25.errors = [
+                                    {
+                                      instancePath:
+                                        instancePath +
+                                        "/rates/" +
+                                        key2
+                                          .replace(/~/g, "~0")
+                                          .replace(/\//g, "~1"),
+                                      schemaPath:
+                                        "#/$defs/TokenRateValue/required",
+                                      keyword: "required",
+                                      params: { missingProperty: missing1 },
+                                      message:
+                                        "must have required property '" +
+                                        missing1 +
+                                        "'",
+                                    },
+                                  ];
+                                  return false;
+                                } else {
+                                  const _errs17 = errors;
+                                  for (const key3 in data5) {
+                                    if (
+                                      !(
+                                        key3 === "turnId" ||
+                                        key3 === "active" ||
+                                        key3 === "estimated" ||
+                                        key3 === "rate" ||
+                                        key3 === "outputTokens"
+                                      )
+                                    ) {
+                                      validate25.errors = [
+                                        {
+                                          instancePath:
+                                            instancePath +
+                                            "/rates/" +
+                                            key2
+                                              .replace(/~/g, "~0")
+                                              .replace(/\//g, "~1"),
+                                          schemaPath:
+                                            "#/$defs/TokenRateValue/additionalProperties",
+                                          keyword: "additionalProperties",
+                                          params: { additionalProperty: key3 },
+                                          message:
+                                            "must NOT have additional properties",
+                                        },
+                                      ];
+                                      return false;
+                                      break;
+                                    }
+                                  }
+                                  if (_errs17 === errors) {
+                                    if (data5.turnId !== void 0) {
+                                      let data6 = data5.turnId;
+                                      const _errs18 = errors;
+                                      if (errors === _errs18) {
+                                        if (typeof data6 === "string") {
+                                          if (func1(data6) < 1) {
+                                            validate25.errors = [
+                                              {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/rates/" +
+                                                  key2
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/turnId",
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/properties/turnId/minLength",
+                                                keyword: "minLength",
+                                                params: { limit: 1 },
+                                                message:
+                                                  "must NOT have fewer than 1 characters",
+                                              },
+                                            ];
+                                            return false;
+                                          }
+                                        } else {
+                                          validate25.errors = [
+                                            {
+                                              instancePath:
+                                                instancePath +
+                                                "/rates/" +
+                                                key2
+                                                  .replace(/~/g, "~0")
+                                                  .replace(/\//g, "~1") +
+                                                "/turnId",
+                                              schemaPath:
+                                                "#/$defs/TokenRateValue/properties/turnId/type",
+                                              keyword: "type",
+                                              params: { type: "string" },
+                                              message: "must be string",
+                                            },
+                                          ];
+                                          return false;
+                                        }
+                                      }
+                                      var valid4 = _errs18 === errors;
+                                    } else {
+                                      var valid4 = true;
+                                    }
+                                    if (valid4) {
+                                      if (data5.active !== void 0) {
+                                        const _errs20 = errors;
+                                        if (typeof data5.active !== "boolean") {
+                                          validate25.errors = [
+                                            {
+                                              instancePath:
+                                                instancePath +
+                                                "/rates/" +
+                                                key2
+                                                  .replace(/~/g, "~0")
+                                                  .replace(/\//g, "~1") +
+                                                "/active",
+                                              schemaPath:
+                                                "#/$defs/TokenRateValue/properties/active/type",
+                                              keyword: "type",
+                                              params: { type: "boolean" },
+                                              message: "must be boolean",
+                                            },
+                                          ];
+                                          return false;
+                                        }
+                                        var valid4 = _errs20 === errors;
+                                      } else {
+                                        var valid4 = true;
+                                      }
+                                      if (valid4) {
+                                        if (data5.estimated !== void 0) {
+                                          const _errs22 = errors;
+                                          if (
+                                            typeof data5.estimated !== "boolean"
+                                          ) {
+                                            validate25.errors = [
+                                              {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/rates/" +
+                                                  key2
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/estimated",
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/properties/estimated/type",
+                                                keyword: "type",
+                                                params: { type: "boolean" },
+                                                message: "must be boolean",
+                                              },
+                                            ];
+                                            return false;
+                                          }
+                                          var valid4 = _errs22 === errors;
+                                        } else {
+                                          var valid4 = true;
+                                        }
+                                        if (valid4) {
+                                          if (data5.rate !== void 0) {
+                                            let data9 = data5.rate;
+                                            const _errs24 = errors;
+                                            const _errs25 = errors;
+                                            let valid5 = false;
+                                            const _errs26 = errors;
+                                            if (
+                                              !(
+                                                typeof data9 == "number" &&
+                                                !(data9 % 1) &&
+                                                !isNaN(data9) &&
+                                                isFinite(data9)
+                                              )
+                                            ) {
+                                              const err2 = {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/rates/" +
+                                                  key2
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/rate",
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/properties/rate/anyOf/0/type",
+                                                keyword: "type",
+                                                params: { type: "integer" },
+                                                message: "must be integer",
+                                              };
+                                              if (vErrors === null) {
+                                                vErrors = [err2];
+                                              } else {
+                                                vErrors.push(err2);
+                                              }
+                                              errors++;
+                                            }
+                                            var _valid0 = _errs26 === errors;
+                                            valid5 = valid5 || _valid0;
+                                            const _errs28 = errors;
+                                            if (
+                                              !(
+                                                typeof data9 == "number" &&
+                                                isFinite(data9)
+                                              )
+                                            ) {
+                                              const err3 = {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/rates/" +
+                                                  key2
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/rate",
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
+                                                keyword: "type",
+                                                params: { type: "number" },
+                                                message: "must be number",
+                                              };
+                                              if (vErrors === null) {
+                                                vErrors = [err3];
+                                              } else {
+                                                vErrors.push(err3);
+                                              }
+                                              errors++;
+                                            }
+                                            var _valid0 = _errs28 === errors;
+                                            valid5 = valid5 || _valid0;
+                                            if (!valid5) {
+                                              const err4 = {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/rates/" +
+                                                  key2
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/rate",
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/properties/rate/anyOf",
+                                                keyword: "anyOf",
+                                                params: {},
+                                                message:
+                                                  "must match a schema in anyOf",
+                                              };
+                                              if (vErrors === null) {
+                                                vErrors = [err4];
+                                              } else {
+                                                vErrors.push(err4);
+                                              }
+                                              errors++;
+                                              validate25.errors = vErrors;
+                                              return false;
+                                            } else {
+                                              errors = _errs25;
+                                              if (vErrors !== null) {
+                                                if (_errs25) {
+                                                  vErrors.length = _errs25;
+                                                } else {
+                                                  vErrors = null;
+                                                }
+                                              }
+                                            }
+                                            var valid4 = _errs24 === errors;
+                                          } else {
+                                            var valid4 = true;
+                                          }
+                                          if (valid4) {
+                                            if (data5.outputTokens !== void 0) {
+                                              let data10 = data5.outputTokens;
+                                              const _errs30 = errors;
+                                              const _errs31 = errors;
+                                              let valid6 = false;
+                                              const _errs32 = errors;
+                                              if (
+                                                !(
+                                                  typeof data10 == "number" &&
+                                                  !(data10 % 1) &&
+                                                  !isNaN(data10) &&
+                                                  isFinite(data10)
+                                                )
+                                              ) {
+                                                const err5 = {
+                                                  instancePath:
+                                                    instancePath +
+                                                    "/rates/" +
+                                                    key2
+                                                      .replace(/~/g, "~0")
+                                                      .replace(/\//g, "~1") +
+                                                    "/outputTokens",
+                                                  schemaPath:
+                                                    "#/$defs/TokenRateValue/properties/outputTokens/anyOf/0/type",
+                                                  keyword: "type",
+                                                  params: { type: "integer" },
+                                                  message: "must be integer",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err5];
+                                                } else {
+                                                  vErrors.push(err5);
+                                                }
+                                                errors++;
+                                              }
+                                              var _valid1 = _errs32 === errors;
+                                              valid6 = valid6 || _valid1;
+                                              const _errs34 = errors;
+                                              if (
+                                                !(
+                                                  typeof data10 == "number" &&
+                                                  isFinite(data10)
+                                                )
+                                              ) {
+                                                const err6 = {
+                                                  instancePath:
+                                                    instancePath +
+                                                    "/rates/" +
+                                                    key2
+                                                      .replace(/~/g, "~0")
+                                                      .replace(/\//g, "~1") +
+                                                    "/outputTokens",
+                                                  schemaPath:
+                                                    "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
+                                                  keyword: "type",
+                                                  params: { type: "number" },
+                                                  message: "must be number",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err6];
+                                                } else {
+                                                  vErrors.push(err6);
+                                                }
+                                                errors++;
+                                              }
+                                              var _valid1 = _errs34 === errors;
+                                              valid6 = valid6 || _valid1;
+                                              if (!valid6) {
+                                                const err7 = {
+                                                  instancePath:
+                                                    instancePath +
+                                                    "/rates/" +
+                                                    key2
+                                                      .replace(/~/g, "~0")
+                                                      .replace(/\//g, "~1") +
+                                                    "/outputTokens",
+                                                  schemaPath:
+                                                    "#/$defs/TokenRateValue/properties/outputTokens/anyOf",
+                                                  keyword: "anyOf",
+                                                  params: {},
+                                                  message:
+                                                    "must match a schema in anyOf",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err7];
+                                                } else {
+                                                  vErrors.push(err7);
+                                                }
+                                                errors++;
+                                                validate25.errors = vErrors;
+                                                return false;
+                                              } else {
+                                                errors = _errs31;
+                                                if (vErrors !== null) {
+                                                  if (_errs31) {
+                                                    vErrors.length = _errs31;
+                                                  } else {
+                                                    vErrors = null;
+                                                  }
+                                                }
+                                              }
+                                              var valid4 = _errs30 === errors;
+                                            } else {
+                                              var valid4 = true;
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              } else {
+                                validate25.errors = [
+                                  {
+                                    instancePath:
+                                      instancePath +
+                                      "/rates/" +
+                                      key2
+                                        .replace(/~/g, "~0")
+                                        .replace(/\//g, "~1"),
+                                    schemaPath: "#/$defs/TokenRateValue/type",
+                                    keyword: "type",
+                                    params: { type: "object" },
+                                    message: "must be object",
+                                  },
+                                ];
+                                return false;
+                              }
+                            }
+                            var valid2 = _errs14 === errors;
+                            if (!valid2) {
+                              break;
+                            }
+                          }
+                        }
+                      } else {
+                        validate25.errors = [
+                          {
+                            instancePath: instancePath + "/rates",
+                            schemaPath: "#/properties/rates/type",
+                            keyword: "type",
+                            params: { type: "object" },
+                            message: "must be object",
+                          },
+                        ];
+                        return false;
+                      }
+                    }
+                    var valid0 = _errs10 === errors;
+                  } else {
+                    var valid0 = true;
+                  }
+                  if (valid0) {
+                    if (data.teams !== void 0) {
+                      let data11 = data.teams;
+                      const _errs36 = errors;
+                      if (errors === _errs36) {
+                        if (
+                          data11 &&
+                          typeof data11 == "object" &&
+                          !Array.isArray(data11)
+                        ) {
+                          for (const key4 in data11) {
+                            const _errs38 = errors;
+                            if (typeof key4 === "string") {
+                              if (func1(key4) < 1) {
+                                const err8 = {
+                                  instancePath: instancePath + "/teams",
+                                  schemaPath:
+                                    "#/properties/teams/propertyNames/minLength",
+                                  keyword: "minLength",
+                                  params: { limit: 1 },
+                                  message:
+                                    "must NOT have fewer than 1 characters",
+                                  propertyName: key4,
+                                };
+                                if (vErrors === null) {
+                                  vErrors = [err8];
+                                } else {
+                                  vErrors.push(err8);
+                                }
+                                errors++;
+                              }
+                            }
+                            var valid7 = _errs38 === errors;
+                            if (!valid7) {
+                              const err9 = {
+                                instancePath: instancePath + "/teams",
+                                schemaPath: "#/properties/teams/propertyNames",
+                                keyword: "propertyNames",
+                                params: { propertyName: key4 },
+                                message: "property name must be valid",
+                              };
+                              if (vErrors === null) {
+                                vErrors = [err9];
+                              } else {
+                                vErrors.push(err9);
+                              }
+                              errors++;
+                              validate25.errors = vErrors;
+                              return false;
+                              break;
+                            }
+                          }
+                          if (valid7) {
+                            for (const key5 in data11) {
+                              let data12 = data11[key5];
+                              const _errs40 = errors;
+                              if (errors === _errs40) {
+                                if (
+                                  data12 &&
+                                  typeof data12 == "object" &&
+                                  !Array.isArray(data12)
+                                ) {
+                                  for (const key6 in data12) {
+                                    const _errs42 = errors;
+                                    if (typeof key6 === "string") {
+                                      if (func1(key6) < 1) {
+                                        const err10 = {
+                                          instancePath:
+                                            instancePath +
+                                            "/teams/" +
+                                            key5
+                                              .replace(/~/g, "~0")
+                                              .replace(/\//g, "~1"),
+                                          schemaPath:
+                                            "#/properties/teams/additionalProperties/propertyNames/minLength",
+                                          keyword: "minLength",
+                                          params: { limit: 1 },
+                                          message:
+                                            "must NOT have fewer than 1 characters",
+                                          propertyName: key6,
+                                        };
+                                        if (vErrors === null) {
+                                          vErrors = [err10];
+                                        } else {
+                                          vErrors.push(err10);
+                                        }
+                                        errors++;
+                                      }
+                                    }
+                                    var valid9 = _errs42 === errors;
+                                    if (!valid9) {
+                                      const err11 = {
+                                        instancePath:
+                                          instancePath +
+                                          "/teams/" +
+                                          key5
+                                            .replace(/~/g, "~0")
+                                            .replace(/\//g, "~1"),
+                                        schemaPath:
+                                          "#/properties/teams/additionalProperties/propertyNames",
+                                        keyword: "propertyNames",
+                                        params: { propertyName: key6 },
+                                        message: "property name must be valid",
+                                      };
+                                      if (vErrors === null) {
+                                        vErrors = [err11];
+                                      } else {
+                                        vErrors.push(err11);
+                                      }
+                                      errors++;
+                                      validate25.errors = vErrors;
+                                      return false;
+                                      break;
+                                    }
+                                  }
+                                  if (valid9) {
+                                    for (const key7 in data12) {
+                                      let data13 = data12[key7];
+                                      const _errs44 = errors;
+                                      const _errs45 = errors;
+                                      if (errors === _errs45) {
+                                        if (
+                                          data13 &&
+                                          typeof data13 == "object" &&
+                                          !Array.isArray(data13)
+                                        ) {
+                                          let missing2;
+                                          if (
+                                            (data13.turnId === void 0 &&
+                                              (missing2 = "turnId")) ||
+                                            (data13.active === void 0 &&
+                                              (missing2 = "active")) ||
+                                            (data13.estimated === void 0 &&
+                                              (missing2 = "estimated")) ||
+                                            (data13.rate === void 0 &&
+                                              (missing2 = "rate")) ||
+                                            (data13.outputTokens === void 0 &&
+                                              (missing2 = "outputTokens"))
+                                          ) {
+                                            validate25.errors = [
+                                              {
+                                                instancePath:
+                                                  instancePath +
+                                                  "/teams/" +
+                                                  key5
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1") +
+                                                  "/" +
+                                                  key7
+                                                    .replace(/~/g, "~0")
+                                                    .replace(/\//g, "~1"),
+                                                schemaPath:
+                                                  "#/$defs/TokenRateValue/required",
+                                                keyword: "required",
+                                                params: {
+                                                  missingProperty: missing2,
+                                                },
+                                                message:
+                                                  "must have required property '" +
+                                                  missing2 +
+                                                  "'",
+                                              },
+                                            ];
+                                            return false;
+                                          } else {
+                                            const _errs47 = errors;
+                                            for (const key8 in data13) {
+                                              if (
+                                                !(
+                                                  key8 === "turnId" ||
+                                                  key8 === "active" ||
+                                                  key8 === "estimated" ||
+                                                  key8 === "rate" ||
+                                                  key8 === "outputTokens"
+                                                )
+                                              ) {
+                                                validate25.errors = [
+                                                  {
+                                                    instancePath:
+                                                      instancePath +
+                                                      "/teams/" +
+                                                      key5
+                                                        .replace(/~/g, "~0")
+                                                        .replace(/\//g, "~1") +
+                                                      "/" +
+                                                      key7
+                                                        .replace(/~/g, "~0")
+                                                        .replace(/\//g, "~1"),
+                                                    schemaPath:
+                                                      "#/$defs/TokenRateValue/additionalProperties",
+                                                    keyword:
+                                                      "additionalProperties",
+                                                    params: {
+                                                      additionalProperty: key8,
+                                                    },
+                                                    message:
+                                                      "must NOT have additional properties",
+                                                  },
+                                                ];
+                                                return false;
+                                                break;
+                                              }
+                                            }
+                                            if (_errs47 === errors) {
+                                              if (data13.turnId !== void 0) {
+                                                let data14 = data13.turnId;
+                                                const _errs48 = errors;
+                                                if (errors === _errs48) {
+                                                  if (
+                                                    typeof data14 === "string"
+                                                  ) {
+                                                    if (func1(data14) < 1) {
+                                                      validate25.errors = [
+                                                        {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/teams/" +
+                                                            key5
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/" +
+                                                            key7
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/turnId",
+                                                          schemaPath:
+                                                            "#/$defs/TokenRateValue/properties/turnId/minLength",
+                                                          keyword: "minLength",
+                                                          params: { limit: 1 },
+                                                          message:
+                                                            "must NOT have fewer than 1 characters",
+                                                        },
+                                                      ];
+                                                      return false;
+                                                    }
+                                                  } else {
+                                                    validate25.errors = [
+                                                      {
+                                                        instancePath:
+                                                          instancePath +
+                                                          "/teams/" +
+                                                          key5
+                                                            .replace(/~/g, "~0")
+                                                            .replace(
+                                                              /\//g,
+                                                              "~1",
+                                                            ) +
+                                                          "/" +
+                                                          key7
+                                                            .replace(/~/g, "~0")
+                                                            .replace(
+                                                              /\//g,
+                                                              "~1",
+                                                            ) +
+                                                          "/turnId",
+                                                        schemaPath:
+                                                          "#/$defs/TokenRateValue/properties/turnId/type",
+                                                        keyword: "type",
+                                                        params: {
+                                                          type: "string",
+                                                        },
+                                                        message:
+                                                          "must be string",
+                                                      },
+                                                    ];
+                                                    return false;
+                                                  }
+                                                }
+                                                var valid12 =
+                                                  _errs48 === errors;
+                                              } else {
+                                                var valid12 = true;
+                                              }
+                                              if (valid12) {
+                                                if (data13.active !== void 0) {
+                                                  const _errs50 = errors;
+                                                  if (
+                                                    typeof data13.active !==
+                                                    "boolean"
+                                                  ) {
+                                                    validate25.errors = [
+                                                      {
+                                                        instancePath:
+                                                          instancePath +
+                                                          "/teams/" +
+                                                          key5
+                                                            .replace(/~/g, "~0")
+                                                            .replace(
+                                                              /\//g,
+                                                              "~1",
+                                                            ) +
+                                                          "/" +
+                                                          key7
+                                                            .replace(/~/g, "~0")
+                                                            .replace(
+                                                              /\//g,
+                                                              "~1",
+                                                            ) +
+                                                          "/active",
+                                                        schemaPath:
+                                                          "#/$defs/TokenRateValue/properties/active/type",
+                                                        keyword: "type",
+                                                        params: {
+                                                          type: "boolean",
+                                                        },
+                                                        message:
+                                                          "must be boolean",
+                                                      },
+                                                    ];
+                                                    return false;
+                                                  }
+                                                  var valid12 =
+                                                    _errs50 === errors;
+                                                } else {
+                                                  var valid12 = true;
+                                                }
+                                                if (valid12) {
+                                                  if (
+                                                    data13.estimated !== void 0
+                                                  ) {
+                                                    const _errs52 = errors;
+                                                    if (
+                                                      typeof data13.estimated !==
+                                                      "boolean"
+                                                    ) {
+                                                      validate25.errors = [
+                                                        {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/teams/" +
+                                                            key5
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/" +
+                                                            key7
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/estimated",
+                                                          schemaPath:
+                                                            "#/$defs/TokenRateValue/properties/estimated/type",
+                                                          keyword: "type",
+                                                          params: {
+                                                            type: "boolean",
+                                                          },
+                                                          message:
+                                                            "must be boolean",
+                                                        },
+                                                      ];
+                                                      return false;
+                                                    }
+                                                    var valid12 =
+                                                      _errs52 === errors;
+                                                  } else {
+                                                    var valid12 = true;
+                                                  }
+                                                  if (valid12) {
+                                                    if (
+                                                      data13.rate !== void 0
+                                                    ) {
+                                                      let data17 = data13.rate;
+                                                      const _errs54 = errors;
+                                                      const _errs55 = errors;
+                                                      let valid13 = false;
+                                                      const _errs56 = errors;
+                                                      if (
+                                                        !(
+                                                          typeof data17 ==
+                                                            "number" &&
+                                                          !(data17 % 1) &&
+                                                          !isNaN(data17) &&
+                                                          isFinite(data17)
+                                                        )
+                                                      ) {
+                                                        const err12 = {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/teams/" +
+                                                            key5
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/" +
+                                                            key7
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/rate",
+                                                          schemaPath:
+                                                            "#/$defs/TokenRateValue/properties/rate/anyOf/0/type",
+                                                          keyword: "type",
+                                                          params: {
+                                                            type: "integer",
+                                                          },
+                                                          message:
+                                                            "must be integer",
+                                                        };
+                                                        if (vErrors === null) {
+                                                          vErrors = [err12];
+                                                        } else {
+                                                          vErrors.push(err12);
+                                                        }
+                                                        errors++;
+                                                      }
+                                                      var _valid2 =
+                                                        _errs56 === errors;
+                                                      valid13 =
+                                                        valid13 || _valid2;
+                                                      const _errs58 = errors;
+                                                      if (
+                                                        !(
+                                                          typeof data17 ==
+                                                            "number" &&
+                                                          isFinite(data17)
+                                                        )
+                                                      ) {
+                                                        const err13 = {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/teams/" +
+                                                            key5
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/" +
+                                                            key7
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/rate",
+                                                          schemaPath:
+                                                            "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
+                                                          keyword: "type",
+                                                          params: {
+                                                            type: "number",
+                                                          },
+                                                          message:
+                                                            "must be number",
+                                                        };
+                                                        if (vErrors === null) {
+                                                          vErrors = [err13];
+                                                        } else {
+                                                          vErrors.push(err13);
+                                                        }
+                                                        errors++;
+                                                      }
+                                                      var _valid2 =
+                                                        _errs58 === errors;
+                                                      valid13 =
+                                                        valid13 || _valid2;
+                                                      if (!valid13) {
+                                                        const err14 = {
+                                                          instancePath:
+                                                            instancePath +
+                                                            "/teams/" +
+                                                            key5
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/" +
+                                                            key7
+                                                              .replace(
+                                                                /~/g,
+                                                                "~0",
+                                                              )
+                                                              .replace(
+                                                                /\//g,
+                                                                "~1",
+                                                              ) +
+                                                            "/rate",
+                                                          schemaPath:
+                                                            "#/$defs/TokenRateValue/properties/rate/anyOf",
+                                                          keyword: "anyOf",
+                                                          params: {},
+                                                          message:
+                                                            "must match a schema in anyOf",
+                                                        };
+                                                        if (vErrors === null) {
+                                                          vErrors = [err14];
+                                                        } else {
+                                                          vErrors.push(err14);
+                                                        }
+                                                        errors++;
+                                                        validate25.errors =
+                                                          vErrors;
+                                                        return false;
+                                                      } else {
+                                                        errors = _errs55;
+                                                        if (vErrors !== null) {
+                                                          if (_errs55) {
+                                                            vErrors.length =
+                                                              _errs55;
+                                                          } else {
+                                                            vErrors = null;
+                                                          }
+                                                        }
+                                                      }
+                                                      var valid12 =
+                                                        _errs54 === errors;
+                                                    } else {
+                                                      var valid12 = true;
+                                                    }
+                                                    if (valid12) {
+                                                      if (
+                                                        data13.outputTokens !==
+                                                        void 0
+                                                      ) {
+                                                        let data18 =
+                                                          data13.outputTokens;
+                                                        const _errs60 = errors;
+                                                        const _errs61 = errors;
+                                                        let valid14 = false;
+                                                        const _errs62 = errors;
+                                                        if (
+                                                          !(
+                                                            typeof data18 ==
+                                                              "number" &&
+                                                            !(data18 % 1) &&
+                                                            !isNaN(data18) &&
+                                                            isFinite(data18)
+                                                          )
+                                                        ) {
+                                                          const err15 = {
+                                                            instancePath:
+                                                              instancePath +
+                                                              "/teams/" +
+                                                              key5
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/" +
+                                                              key7
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/outputTokens",
+                                                            schemaPath:
+                                                              "#/$defs/TokenRateValue/properties/outputTokens/anyOf/0/type",
+                                                            keyword: "type",
+                                                            params: {
+                                                              type: "integer",
+                                                            },
+                                                            message:
+                                                              "must be integer",
+                                                          };
+                                                          if (
+                                                            vErrors === null
+                                                          ) {
+                                                            vErrors = [err15];
+                                                          } else {
+                                                            vErrors.push(err15);
+                                                          }
+                                                          errors++;
+                                                        }
+                                                        var _valid3 =
+                                                          _errs62 === errors;
+                                                        valid14 =
+                                                          valid14 || _valid3;
+                                                        const _errs64 = errors;
+                                                        if (
+                                                          !(
+                                                            typeof data18 ==
+                                                              "number" &&
+                                                            isFinite(data18)
+                                                          )
+                                                        ) {
+                                                          const err16 = {
+                                                            instancePath:
+                                                              instancePath +
+                                                              "/teams/" +
+                                                              key5
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/" +
+                                                              key7
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/outputTokens",
+                                                            schemaPath:
+                                                              "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
+                                                            keyword: "type",
+                                                            params: {
+                                                              type: "number",
+                                                            },
+                                                            message:
+                                                              "must be number",
+                                                          };
+                                                          if (
+                                                            vErrors === null
+                                                          ) {
+                                                            vErrors = [err16];
+                                                          } else {
+                                                            vErrors.push(err16);
+                                                          }
+                                                          errors++;
+                                                        }
+                                                        var _valid3 =
+                                                          _errs64 === errors;
+                                                        valid14 =
+                                                          valid14 || _valid3;
+                                                        if (!valid14) {
+                                                          const err17 = {
+                                                            instancePath:
+                                                              instancePath +
+                                                              "/teams/" +
+                                                              key5
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/" +
+                                                              key7
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/outputTokens",
+                                                            schemaPath:
+                                                              "#/$defs/TokenRateValue/properties/outputTokens/anyOf",
+                                                            keyword: "anyOf",
+                                                            params: {},
+                                                            message:
+                                                              "must match a schema in anyOf",
+                                                          };
+                                                          if (
+                                                            vErrors === null
+                                                          ) {
+                                                            vErrors = [err17];
+                                                          } else {
+                                                            vErrors.push(err17);
+                                                          }
+                                                          errors++;
+                                                          validate25.errors =
+                                                            vErrors;
+                                                          return false;
+                                                        } else {
+                                                          errors = _errs61;
+                                                          if (
+                                                            vErrors !== null
+                                                          ) {
+                                                            if (_errs61) {
+                                                              vErrors.length =
+                                                                _errs61;
+                                                            } else {
+                                                              vErrors = null;
+                                                            }
+                                                          }
+                                                        }
+                                                        var valid12 =
+                                                          _errs60 === errors;
+                                                      } else {
+                                                        var valid12 = true;
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        } else {
+                                          validate25.errors = [
+                                            {
+                                              instancePath:
+                                                instancePath +
+                                                "/teams/" +
+                                                key5
+                                                  .replace(/~/g, "~0")
+                                                  .replace(/\//g, "~1") +
+                                                "/" +
+                                                key7
+                                                  .replace(/~/g, "~0")
+                                                  .replace(/\//g, "~1"),
+                                              schemaPath:
+                                                "#/$defs/TokenRateValue/type",
+                                              keyword: "type",
+                                              params: { type: "object" },
+                                              message: "must be object",
+                                            },
+                                          ];
+                                          return false;
+                                        }
+                                      }
+                                      var valid10 = _errs44 === errors;
+                                      if (!valid10) {
+                                        break;
+                                      }
+                                    }
+                                  }
+                                } else {
+                                  validate25.errors = [
+                                    {
+                                      instancePath:
+                                        instancePath +
+                                        "/teams/" +
+                                        key5
+                                          .replace(/~/g, "~0")
+                                          .replace(/\//g, "~1"),
+                                      schemaPath:
+                                        "#/properties/teams/additionalProperties/type",
+                                      keyword: "type",
+                                      params: { type: "object" },
+                                      message: "must be object",
+                                    },
+                                  ];
+                                  return false;
+                                }
+                              }
+                              var valid8 = _errs40 === errors;
+                              if (!valid8) {
+                                break;
+                              }
+                            }
+                          }
+                        } else {
+                          validate25.errors = [
+                            {
+                              instancePath: instancePath + "/teams",
+                              schemaPath: "#/properties/teams/type",
+                              keyword: "type",
+                              params: { type: "object" },
+                              message: "must be object",
+                            },
+                          ];
+                          return false;
+                        }
+                      }
+                      var valid0 = _errs36 === errors;
+                    } else {
+                      var valid0 = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } else {
+      validate25.errors = [
+        {
+          instancePath,
+          schemaPath: "#/type",
+          keyword: "type",
+          params: { type: "object" },
+          message: "must be object",
+        },
+      ];
+      return false;
+    }
+  }
+  validate25.errors = vErrors;
+  return errors === 0;
+}
+validate25.evaluated = {
+  props: true,
+  dynamicProps: false,
+  dynamicItems: false,
+};
+export {
+  isResourceChangeEvent,
+  isResourceHeartbeatEvent,
+  isResourceRef,
+  isResourceTokenRatesEvent,
+};

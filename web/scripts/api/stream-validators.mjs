@@ -10,6 +10,7 @@ const schemaExports = {
   isResourceRef: "ResourceRef",
   isResourceChangeEvent: "ResourceChangeEvent",
   isResourceHeartbeatEvent: "ResourceHeartbeatEvent",
+  isResourceTokenRatesEvent: "ResourceTokenRatesEvent",
 };
 const banner = "// Generated from the Python OpenAPI contract. Do not edit.\n";
 

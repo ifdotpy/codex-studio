@@ -8010,6 +8010,33 @@ export interface components {
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["TranscriptResource"];
     /**
+     * ResourceTokenRatesEvent
+     * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
+     */
+    ResourceTokenRatesEvent: {
+      /** Epoch */
+      epoch: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 3;
+      /** Rates */
+      rates: {
+        [key: string]: components["schemas"]["TokenRateValue"];
+      };
+      /** Revision */
+      revision: number;
+      /** Teams */
+      teams: {
+        [key: string]: {
+          [key: string]: components["schemas"]["TokenRateValue"];
+        };
+      };
+      /** Workspaceid */
+      workspaceId: string;
+    };
+    /**
      * RestartEnvironmentKey
      * @enum {string}
      */
@@ -10641,6 +10668,22 @@ export interface components {
      * @enum {string}
      */
     TerminalState: "running" | "exited" | "closed";
+    /**
+     * TokenRateValue
+     * @description One active or completed agent turn's volatile token-rate snapshot.
+     */
+    TokenRateValue: {
+      /** Active */
+      active: boolean;
+      /** Estimated */
+      estimated: boolean;
+      /** Outputtokens */
+      outputTokens: number;
+      /** Rate */
+      rate: number;
+      /** Turnid */
+      turnId: string;
+    };
     /** TombstoneMigration */
     TombstoneMigration: {
       /** Count */
@@ -18734,7 +18777,8 @@ export interface operations {
         content: {
           "text/event-stream":
             | components["schemas"]["ResourceChangeEvent"]
-            | components["schemas"]["ResourceHeartbeatEvent"];
+            | components["schemas"]["ResourceHeartbeatEvent"]
+            | components["schemas"]["ResourceTokenRatesEvent"];
         };
       };
       /** @description Bad Request */

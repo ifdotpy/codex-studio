@@ -9,3 +9,6 @@ export declare function isResourceChangeEvent(
 export declare function isResourceHeartbeatEvent(
   value: unknown,
 ): value is components["schemas"]["ResourceHeartbeatEvent"];
+export declare function isResourceTokenRatesEvent(
+  value: unknown,
+): value is components["schemas"]["ResourceTokenRatesEvent"];
