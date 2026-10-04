@@ -4090,8 +4090,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def schedule(self):
         first_tick = True
+        last_dispatch = 0.0
         while not self.closed:
-            self.changed.wait(1)
+            woke = self.changed.wait(1)
             self.changed.clear()
             if self.closed:
                 break
@@ -4100,7 +4101,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.rules_tick()
                 self.capacity_tick()
                 self.usage_resume_tick()
-                self.dispatch()
+                now = time.monotonic()
+                if woke or now - last_dispatch >= 5:
+                    self.dispatch()
+                    last_dispatch = now
                 if first_tick:
                     startup_memory_mark("scheduler-first-tick")
                     first_tick = False
