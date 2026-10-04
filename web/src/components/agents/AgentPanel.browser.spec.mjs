@@ -262,7 +262,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
       )
         statusGets.push(url.pathname);
     });
-    page.on("response", (response) => {
+    context.on("response", (response) => {
       const url = new URL(response.url());
       if (url.pathname === "/api/sync/stream")
         streamResponses.push({ url: url.href, status: response.status() });
@@ -516,12 +516,13 @@ test("an active AgentPanel follows native progress changes without polling", asy
       .poll(() => page.evaluate(() => document.visibilityState))
       .toBe("visible");
     const beforeResume = panelGets.length;
-    const eventsBeforeResume = await page.evaluate(() =>
-      (window.__resourceEventSources || []).reduce(
+    const eventsBeforeResume = await page.evaluate(() => ({
+      direct: (window.__resourceEventSources || []).reduce(
         (total, source) => total + source.__resourceEvents.length,
         0,
       ),
-    );
+      relayed: window.__broadcastReceived.length,
+    }));
     await page.evaluate(() => {
       Object.defineProperty(navigator, "onLine", {
         configurable: true,
@@ -537,24 +538,26 @@ test("an active AgentPanel follows native progress changes without polling", asy
     });
     await page.waitForFunction(
       ({ previousCount, agentId }) => {
-        const events = (window.__resourceEventSources || []).flatMap(
-          (source) => source.__resourceEvents,
-        );
-        return (
-          events.length > previousCount &&
-          events
-            .slice(previousCount)
-            .some(
-              (event) =>
-                ["initial", "reconnect"].includes(event.reason) &&
-                event.resources.some(
-                  (resource) =>
-                    resource.kind === "panel" && resource.agentId === agentId,
-                ),
-            )
+        const events = [
+          ...(window.__resourceEventSources || [])
+            .flatMap((source) => source.__resourceEvents)
+            .slice(previousCount.direct),
+          ...window.__broadcastReceived
+            .slice(previousCount.relayed)
+            .filter((message) => message.kind === "resource-event")
+            .map((message) => message.event),
+        ];
+        return events.some(
+          (event) =>
+            ["initial", "reconnect"].includes(event.reason) &&
+            event.resources.some(
+              (resource) =>
+                resource.kind === "panel" && resource.agentId === agentId,
+            ),
         );
       },
       { previousCount: eventsBeforeResume, agentId: lead.id },
+      { timeout: 5_000 },
     );
     await expect.poll(() => panelGets.length).toBe(beforeResume + 1);
     console.log(
@@ -564,6 +567,26 @@ test("an active AgentPanel follows native progress changes without polling", asy
     await page.waitForTimeout(100);
     expect(panelGets.length).toBe(beforeResume + 1);
     expect(statusGets).toEqual([]);
+
+    // Recovery can transfer the native stream lock to the other visible tab.
+    const pages = [page, follower];
+    let ownerIndex = -1;
+    await expect
+      .poll(async () => {
+        const ownsStream = await Promise.all(
+          pages.map((tab) =>
+            tab.evaluate(() =>
+              (window.__resourceEventSources || []).some(
+                (source) => source.readyState === 1,
+              ),
+            ),
+          ),
+        );
+        ownerIndex = ownsStream.indexOf(true);
+        return ownsStream.filter(Boolean).length;
+      })
+      .toBe(1);
+    const streamOwner = pages[ownerIndex];
 
     const beforeReplace = panelGets.length;
     const followerBeforeReplace = followerPanelGets.length;
@@ -634,7 +657,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
       .toBe(true);
     await expect
       .poll(() =>
-        page.evaluate(
+        streamOwner.evaluate(
           ({ leadId, otherId }) =>
             (window.__resourceEventSources || []).some((source) => {
               const url = new URL(source.__trackedUrl, location.href);
@@ -655,7 +678,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
       .toBe(true);
     await expect
       .poll(() =>
-        page.evaluate(
+        streamOwner.evaluate(
           (agentId) =>
             (window.__resourceEventSources || []).some((source) =>
               source.__resourceEvents.some(
@@ -678,7 +701,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
         observerAlive: true,
       });
     } catch (error) {
-      const streams = await page.evaluate(() =>
+      const streams = await streamOwner.evaluate(() =>
         (window.__resourceEventSources || []).map((source) => ({
           url: source.__trackedUrl,
           readyState: source.readyState,
@@ -715,7 +738,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
     );
     await expect
       .poll(() =>
-        page.evaluate(
+        streamOwner.evaluate(
           ({ leadId, otherId }) =>
             (window.__resourceEventSources || []).some((source) => {
               const url = new URL(source.__trackedUrl, location.href);
@@ -741,7 +764,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
     });
     expect((await watchState()).activeAgentIds).not.toContain(lead.id);
     expect(
-      await page.evaluate(
+      await streamOwner.evaluate(
         (leadId) =>
           (window.__resourceEventSources || []).some((source) => {
             const resources = JSON.parse(
