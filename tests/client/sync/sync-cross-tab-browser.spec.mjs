@@ -178,6 +178,7 @@ test("sync-cross-tab-browser @performance", async ({
         window.workspace = identity.workspaceId;
         window.syncDb = identity.db;
         window.counts = { state: 0, transcripts: 0 };
+        window.hasStateWatch = true;
         window.stopState = client.watchResourceChanges(
           { kind: "state" },
           () => {
@@ -232,6 +233,7 @@ test("sync-cross-tab-browser @performance", async ({
       const client = await import("/src/sync/client.ts");
       window.lateCount = 0;
       window.counts = { state: 0, transcripts: 0 };
+      window.hasStateWatch = false;
       window.stopLate = client.watchResourceChanges(
         { kind: "transcript", agentId: "session-one" },
         () => {
@@ -351,7 +353,19 @@ test("sync-cross-tab-browser @performance", async ({
       stablePanelCallbacks,
       "Peer subscription heartbeats do not replay unchanged resources after unrelated traffic",
     );
-    await pages[1].evaluate(async () => {
+    const initialOwnerIndex = await Promise.any(
+      pages.map(async (page, index) =>
+        (await page.evaluate(() =>
+          window.__syncDiagnostics.sources.some(
+            (source) => source.readyState === EventSource.OPEN,
+          ),
+        ))
+          ? index
+          : Promise.reject(),
+      ),
+    );
+    const takeoverSubscriberIndex = initialOwnerIndex === 1 ? 0 : 1;
+    await pages[takeoverSubscriberIndex].evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.takeoverPanelCallbacks = 0;
       window.stopTakeoverPanel = client.watchResourceChanges(
@@ -373,17 +387,6 @@ test("sync-cross-tab-browser @performance", async ({
     await pages[0].evaluate(() => window.stopPanelCallbacks());
     await pages[2].evaluate(() => window.stopCostCallbacks());
     await panelFollower.evaluate(() => window.stopLatePanel());
-    const initialOwnerIndex = await Promise.any(
-      pages.map(async (page, index) =>
-        (await page.evaluate(() =>
-          window.__syncDiagnostics.sources.some(
-            (source) => source.readyState === EventSource.OPEN,
-          ),
-        ))
-          ? index
-          : Promise.reject(),
-      ),
-    );
     const streamsBeforeHidingOwner = streamsOpened;
     await pages[initialOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
@@ -427,6 +430,10 @@ test("sync-cross-tab-browser @performance", async ({
       "a visible peer did not take ownership after the active owner was hidden",
       5000,
     );
+    assert.ok(
+      Date.now() - visibilityFailoverStarted <= 5000,
+      "visible-peer ownership recovery exceeded five seconds",
+    );
     await waitFor(
       () =>
         [...streamResources.values()].some((resources) =>
@@ -438,30 +445,28 @@ test("sync-cross-tab-browser @performance", async ({
         ),
       "the replacement owner did not rediscover the surviving peer's unique panel",
     );
-    const takeoverPanelBefore = await pages[1].evaluate(
+    const takeoverPanelBefore = await pages[takeoverSubscriberIndex].evaluate(
       () => window.takeoverPanelCallbacks,
     );
     sendChange(workspaceId, {
       kind: "panel",
       agentId: "takeover-unique-panel",
     });
-    await pages[1].waitForFunction(
+    await pages[takeoverSubscriberIndex].waitForFunction(
       (previous) => window.takeoverPanelCallbacks > previous,
       takeoverPanelBefore,
       { timeout: 5000 },
     );
-    const takeoverPanelAfterChange = await pages[1].evaluate(
-      () => window.takeoverPanelCallbacks,
-    );
-    await pages[1].waitForTimeout(3500);
+    const takeoverPanelAfterChange = await pages[
+      takeoverSubscriberIndex
+    ].evaluate(() => window.takeoverPanelCallbacks);
+    await pages[takeoverSubscriberIndex].waitForTimeout(3500);
     assert.equal(
-      await pages[1].evaluate(() => window.takeoverPanelCallbacks),
+      await pages[takeoverSubscriberIndex].evaluate(
+        () => window.takeoverPanelCallbacks,
+      ),
       takeoverPanelAfterChange,
       "quiet peer heartbeats do not refetch the surviving panel after takeover",
-    );
-    assert.ok(
-      Date.now() - visibilityFailoverStarted <= 5000,
-      "visible-peer ownership recovery exceeded five seconds",
     );
     const resumedOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
@@ -548,10 +553,27 @@ test("sync-cross-tab-browser @performance", async ({
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
+    const resumedOwnerDiagnostic = await Promise.all(
+      pages.map((page, index) =>
+        page.evaluate(
+          (index) => ({
+            index,
+            hidden: document.hidden,
+            states: window.states,
+            sources: window.__syncDiagnostics.sources.map((source) => ({
+              readyState: source.readyState,
+              url: source.url,
+            })),
+            received: window.__syncDiagnostics.received.slice(-6),
+          }),
+          index,
+        ),
+      ),
+    );
     assert.equal(
       streams.size,
       1,
-      "a resumed former owner cannot duplicate the current SSE",
+      `a resumed former owner cannot duplicate the current SSE: ${JSON.stringify({ streamsOpened, streamResources: [...streamResources.values()], resumedOwnerDiagnostic })}`,
     );
     const beforeOffline = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
@@ -653,7 +675,7 @@ test("sync-cross-tab-browser @performance", async ({
         pages.map((page, index) =>
           page.waitForFunction(
             (prior) =>
-              window.counts.state > prior.state &&
+              (!window.hasStateWatch || window.counts.state > prior.state) &&
               window.counts.transcripts > prior.transcripts,
             beforeWorkspaceMove[index],
             { timeout: 4500 },
