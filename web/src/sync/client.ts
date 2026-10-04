@@ -6,15 +6,14 @@ import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
 import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
 import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
-import type { GetOptions } from "../api";
+import {
+  watchResourceChanges,
+  watchResourceConnection,
+  type ResourceRef,
+} from "./resourceEvents";
 
 import { onResume } from "./resume";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
-import {
-  clearWorkspaceTokenRates,
-  receiveWorkspaceTokenRates,
-} from "../usage/tokenRate";
-import type { TokenRate } from "../usage/tokenRate";
 import {
   cacheTranscript,
   cacheTranscriptValue,
@@ -24,12 +23,6 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
-function isGenerationCounter(value: number | undefined): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-const syncStreamQuery = {
-  protocol: "2",
-} satisfies NonNullable<GetOptions<"/api/sync/stream">["query"]>;
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -183,7 +176,9 @@ async function pull(
   verifyWorkspace: () => Promise<void>,
   initialHigh?: number,
   priorityId?: string | null,
+  signal?: AbortSignal,
 ) {
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   await verifyWorkspace();
   const result = await syncGet("/api/sync/pull", {
     query: {
@@ -194,60 +189,25 @@ async function pull(
       ...(scope === "state:entities:v1" ? { reset: "1" } : {}),
       ...(priorityId ? { priorityId } : {}),
     },
+    ...(signal ? { signal } : {}),
   });
   if (result.workspaceId !== workspaceId) throw new WorkspaceMismatchError();
   return result;
 }
-// All projections and drafts share one stream with scope-aware callbacks.
-// A background PWA must not retain one HTTP connection per conversation.
-type TranscriptRevisions = {
-  workspaceId: string;
-  revisions: Record<string, number> | null;
-};
-let latestTranscriptRevisions: TranscriptRevisions | undefined;
-const revisionListeners = new Set<(value: TranscriptRevisions) => void>();
-function receiveTranscriptRevisions(value: {
-  workspaceId?: string;
-  transcriptRevisions?: Record<string, number> | null;
-}) {
-  const revisions = value.transcriptRevisions;
-  if (
-    revisions &&
-    (typeof revisions !== "object" ||
-      Array.isArray(revisions) ||
-      Object.entries(revisions).some(
-        ([id, revision]) =>
-          !id ||
-          id.length >= 300 ||
-          !Number.isSafeInteger(revision) ||
-          revision < 0,
-      ))
-  )
-    return;
-  latestTranscriptRevisions = {
-    workspaceId: value.workspaceId!,
-    revisions: revisions ?? null,
-  };
-  for (const listener of revisionListeners) listener(latestTranscriptRevisions);
+export {
+  watchResourceChanges,
+  watchResourceConnection,
+  type ResourceConnectionState,
+} from "./resourceEvents";
+export type { ResourceRef } from "./resourceEvents";
+
+function resourceForScope(scope: string): ResourceRef {
+  if (scope === "drafts") return { kind: "drafts" };
+  if (scope.startsWith("transcript:"))
+    return { kind: "transcript", agentId: scope.slice("transcript:".length) };
+  return { kind: "state" };
 }
-/** Use the existing workspace stream to identify chats that need a fresh page. */
-export function watchTranscriptRevisions(
-  workspaceId: string,
-  accept: (revisions: Record<string, number> | null) => void,
-) {
-  const listener = (value: TranscriptRevisions) => {
-    if (value.workspaceId === workspaceId) accept(value.revisions);
-  };
-  revisionListeners.add(listener);
-  if (latestTranscriptRevisions) listener(latestTranscriptRevisions);
-  const stop = watchSyncInvalidations("state", () => {});
-  return () => {
-    revisionListeners.delete(listener);
-    stop();
-  };
-}
-const invalidations = new Map<() => void, string>();
-let stopInvalidations: (() => void) | undefined;
+
 export function watchSyncInvalidations(
   resync: () => void,
   scope?: string,
@@ -261,411 +221,12 @@ export function watchSyncInvalidations(
   second: string | (() => void) = "legacy",
 ) {
   const scope = typeof first === "string" ? first : String(second);
-  const resync = (typeof first === "function" ? first : second) as () => void;
-  const generationScope =
-    scope === "state" ||
-    scope === "state:chat" ||
-    scope === "entities" ||
-    scope === "legacy"
-      ? "state"
-      : scope.startsWith("transcript:")
-        ? "transcripts"
-        : scope;
-  // One origin-wide stream leaves HTTP connections for reads and commands.
-  // All scopes reconcile through their existing workspace-guarded pull.
-  invalidations.set(resync, generationScope);
-  const ensureCoordinator = () => {
-    if (!stopInvalidations) {
-      const fallbackPollMs = 3000;
-      const heartbeatMs = 1000;
-      const coordinatorTimeoutMs = 3500;
-      let stopped = false;
-      let source: EventSource | undefined;
-      let channel: BroadcastChannel | undefined;
-      let flushTimer: ReturnType<typeof setTimeout> | undefined;
-      let pollTimer: ReturnType<typeof setInterval> | undefined;
-      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-      let watchdogTimer: ReturnType<typeof setInterval> | undefined;
-      let lastGenerations: Record<string, number> | undefined;
-      let latestTokenRates: {
-        rates: Record<string, TokenRate | null>;
-        teams: Record<string, Record<string, TokenRate | null>>;
-      } = { rates: {}, teams: {} };
-      let lastWorkspaceId: string | undefined;
-      let pendingScopes = new Set<string>();
-      let pendingFullRefresh = false;
-      let openedStream = false;
-      let workspaceId: string | undefined;
-      let isOwner = false;
-      let lastHeartbeatAt = 0;
-      let ownerLockPending = false;
-      let releaseOwnerLock: (() => void) | undefined;
-      const available = () => !document.hidden && navigator.onLine !== false;
-      const notify = (changed?: Set<string>) => {
-        if (!available()) return;
-        if (changed)
-          for (const changedScope of changed) pendingScopes.add(changedScope);
-        else pendingFullRefresh = true;
-        if (flushTimer !== undefined) return;
-        flushTimer = setTimeout(() => {
-          flushTimer = undefined;
-          const fullRefresh = pendingFullRefresh;
-          const scopes = pendingScopes;
-          pendingFullRefresh = false;
-          pendingScopes = new Set();
-          if (available())
-            for (const [callback, subscribed] of invalidations)
-              if (fullRefresh || scopes.has(subscribed)) callback();
-        }, 50);
-      };
-      const applyGenerations = (current: Record<string, number>) => {
-        const changed = new Set(
-          Object.keys(current).filter(
-            (changedScope) =>
-              lastGenerations?.[changedScope] !== current[changedScope],
-          ),
-        );
-        lastGenerations = current;
-        notify(changed);
-      };
-      const applyGenerationState = (
-        value: {
-          protocol?: number;
-          workspaceId?: string;
-          generations?: {
-            drafts?: number;
-            state?: number;
-            transcripts?: number;
-          };
-          transcriptRevisions?: Record<string, number> | null;
-        },
-        acceptRevisions = true,
-      ) => {
-        const generations = value?.generations;
-        if (
-          value?.protocol !== 2 ||
-          !/^[a-f0-9]{32}$/.test(value.workspaceId || "") ||
-          !generations ||
-          Object.keys(generations).sort().join(",") !==
-            "drafts,state,transcripts" ||
-          !isGenerationCounter(generations.drafts) ||
-          !isGenerationCounter(generations.state) ||
-          !isGenerationCounter(generations.transcripts) ||
-          (workspaceId && value.workspaceId !== workspaceId)
-        ) {
-          lastGenerations = undefined;
-          lastWorkspaceId = undefined;
-          notify();
-          return false;
-        }
-        const current = {
-          drafts: generations.drafts,
-          state: generations.state,
-          transcripts: generations.transcripts,
-        };
-        if (
-          (lastWorkspaceId && lastWorkspaceId !== value.workspaceId) ||
-          (lastGenerations &&
-            (current.drafts < lastGenerations.drafts ||
-              current.state < lastGenerations.state ||
-              current.transcripts < lastGenerations.transcripts))
-        ) {
-          lastGenerations = undefined;
-          notify();
-        }
-        lastWorkspaceId = value.workspaceId;
-        applyGenerations(current);
-        if (acceptRevisions) receiveTranscriptRevisions(value);
-        return true;
-      };
-      const broadcast = (message: Record<string, unknown>) => {
-        try {
-          channel?.postMessage({ protocol: 2, ...message, workspaceId });
-        } catch {
-          // A closed channel is treated as a lost coordinator; polling recovers it.
-          releaseStreamLease();
-          startFallbackPolling();
-        }
-      };
-      const stopFallbackPolling = () => {
-        if (pollTimer !== undefined) clearInterval(pollTimer);
-        pollTimer = undefined;
-      };
-      const pollGenerations = () => {
-        if (!available()) return;
-        void syncGet("/api/sync/generations")
-          .then((value) => {
-            if (stopped) return;
-            const accepted = applyGenerationState(value);
-            if (isOwner)
-              broadcast(
-                accepted
-                  ? { kind: "generations", ...value }
-                  : { kind: "invalidate" },
-              );
-          })
-          .catch(() => {});
-      };
-      const startFallbackPolling = () => {
-        if (pollTimer !== undefined || stopped) return;
-        pollGenerations();
-        pollTimer = setInterval(pollGenerations, fallbackPollMs);
-      };
-      const publishHeartbeat = () => {
-        if (!isOwner || stopped || !available()) return;
-        broadcast({
-          kind: "heartbeat",
-          generations: lastGenerations,
-          tokenRates: latestTokenRates,
-          ...(latestTranscriptRevisions &&
-          latestTranscriptRevisions.workspaceId === workspaceId &&
-          latestTranscriptRevisions.revisions
-            ? { transcriptRevisions: latestTranscriptRevisions.revisions }
-            : {}),
-        });
-      };
-      const closeSource = () => {
-        if (source) {
-          clearWorkspaceTokenRates();
-          latestTokenRates = { rates: {}, teams: {} };
-        }
-        source?.close();
-        source = undefined;
-      };
-      const releaseStreamLease = () => {
-        isOwner = false;
-        closeSource();
-        const release = releaseOwnerLock;
-        releaseOwnerLock = undefined;
-        release?.();
-        if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
-        heartbeatTimer = undefined;
-        stopFallbackPolling();
-      };
-      const connect = () => {
-        if (!available() || !isOwner || source) return;
-        let connectedSource: EventSource;
-        try {
-          connectedSource = new EventSource(
-            `/api/sync/stream?${new URLSearchParams(syncStreamQuery)}`,
-          );
-          source = connectedSource;
-        } catch {
-          // The elected lock holder already polls the compact generation row.
-          return;
-        }
-        connectedSource.addEventListener("token-rates", (event) => {
-          if (source !== connectedSource) return;
-          try {
-            const message = JSON.parse((event as MessageEvent).data);
-            if (
-              message.protocol === 2 &&
-              message.workspaceId === workspaceId &&
-              receiveWorkspaceTokenRates(message)
-            ) {
-              latestTokenRates = { rates: message.rates, teams: message.teams };
-              broadcast({ ...message, kind: "token-rates" });
-            }
-          } catch {
-            // Malformed telemetry cannot invalidate sync projections.
-          }
-        });
-        connectedSource.onopen = () => {
-          if (openedStream) {
-            notify();
-            broadcast({ kind: "invalidate" });
-          }
-          openedStream = true;
-        };
-        connectedSource.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            if (
-              message?.protocol === 2 &&
-              message.generations &&
-              typeof message.generations === "object"
-            ) {
-              const accepted = applyGenerationState(message);
-              broadcast(
-                accepted
-                  ? { kind: "generations", ...message }
-                  : { kind: "invalidate" },
-              );
-              return;
-            }
-          } catch {
-            // Legacy RESYNC data and unknown protocol values invalidate all.
-          }
-          lastGenerations = undefined;
-          lastWorkspaceId = undefined;
-          notify();
-          broadcast({ kind: "invalidate" });
-        };
-      };
-      const resume = () => {
-        if (available() && isOwner) {
-          // A socket can remain OPEN after mobile suspension but never deliver again.
-          closeSource();
-          connect();
-          notify();
-          broadcast({ kind: "invalidate" });
-        } else if (available()) {
-          notify();
-          if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs)
-            startFallbackPolling();
-          if (channel) startAsOwner();
-        } else closeSource();
-      };
-      const stopResume = onResume(resume);
-      const suspend = () => {
-        if (!available()) {
-          if (document.hidden && isOwner) releaseStreamLease();
-          else closeSource();
-        }
-      };
-      window.addEventListener("offline", suspend);
-      document.addEventListener("visibilitychange", suspend);
-      const startAsOwner = () => {
-        if (stopped || isOwner || ownerLockPending) return;
-        const locks = navigator.locks;
-        if (!locks || !workspaceId) {
-          startFallbackPolling();
-          return;
-        }
-        ownerLockPending = true;
-        void locks
-          .request(
-            `codex-sync-stream:${location.origin}:${workspaceId}`,
-            { mode: "exclusive", ifAvailable: true },
-            async (lock) => {
-              ownerLockPending = false;
-              if (stopped || !lock || !available()) {
-                if (!stopped) startFallbackPolling();
-                return;
-              }
-              isOwner = true;
-              stopFallbackPolling();
-              publishHeartbeat();
-              heartbeatTimer = setInterval(publishHeartbeat, heartbeatMs);
-              pollGenerations();
-              pollTimer = setInterval(pollGenerations, fallbackPollMs);
-              connect();
-              await new Promise<void>((resolve) => {
-                releaseOwnerLock = resolve;
-              });
-              releaseOwnerLock = undefined;
-              isOwner = false;
-              closeSource();
-              if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
-              heartbeatTimer = undefined;
-            },
-          )
-          .catch(() => {
-            ownerLockPending = false;
-            startFallbackPolling();
-          });
-      };
-      const receive = (event: MessageEvent) => {
-        if (stopped) return;
-        const message = event.data;
-        if (
-          !message ||
-          message.workspaceId !== workspaceId ||
-          message.protocol !== 2 ||
-          typeof message.kind !== "string"
-        ) {
-          notify();
-          return;
-        }
-        lastHeartbeatAt = Date.now();
-        stopFallbackPolling();
-        if (message.kind === "token-rates") {
-          receiveWorkspaceTokenRates(message);
-          return;
-        }
-        if (message.kind === "heartbeat") {
-          if (message.generations) applyGenerationState(message, false);
-          if (
-            message.tokenRates &&
-            receiveWorkspaceTokenRates(message.tokenRates)
-          )
-            latestTokenRates = message.tokenRates;
-          return;
-        }
-        if (message.kind === "invalidate") {
-          lastGenerations = undefined;
-          lastWorkspaceId = undefined;
-          notify();
-          return;
-        }
-        if (message.kind === "generations") applyGenerationState(message);
-        else notify();
-      };
-      const initialize = async () => {
-        try {
-          const identity = await syncDatabase();
-          if (stopped) return;
-          workspaceId = identity.workspaceId;
-          if (typeof BroadcastChannel === "undefined") {
-            startFallbackPolling();
-            return;
-          }
-          try {
-            channel = new BroadcastChannel(
-              `codex-sync-${location.origin}-${workspaceId}`,
-            );
-            channel.onmessage = receive;
-          } catch {
-            channel = undefined;
-            startFallbackPolling();
-            return;
-          }
-          watchdogTimer = setInterval(() => {
-            if (stopped || isOwner || !available()) return;
-            if (Date.now() - lastHeartbeatAt >= coordinatorTimeoutMs) {
-              clearWorkspaceTokenRates();
-              startFallbackPolling();
-              startAsOwner();
-            }
-          }, heartbeatMs);
-          startAsOwner();
-        } catch {
-          // Cached clients remain useful offline; bounded polling retries discovery.
-          startFallbackPolling();
-        }
-      };
-      stopInvalidations = () => {
-        stopped = true;
-        clearWorkspaceTokenRates();
-        releaseStreamLease();
-        clearTimeout(flushTimer);
-        stopFallbackPolling();
-        if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);
-        if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
-        stopResume();
-        window.removeEventListener("offline", suspend);
-        document.removeEventListener("visibilitychange", suspend);
-        if (channel) {
-          channel.onmessage = null;
-          channel.close();
-          channel = undefined;
-        }
-      };
-      notify();
-      void initialize();
-    }
-  };
-  ensureCoordinator();
-  return () => {
-    invalidations.delete(resync);
-    if (!invalidations.size) {
-      stopInvalidations?.();
-      stopInvalidations = undefined;
-    }
-  };
+  const resync = typeof first === "function" ? first : second;
+  if (typeof resync !== "function") return () => {};
+  return watchResourceChanges(resourceForScope(scope), resync);
 }
 function watchTranscriptInvalidations(id: string, resync: () => void) {
-  return watchSyncInvalidations(`transcript:${id}`, resync);
+  return watchResourceChanges({ kind: "transcript", agentId: id }, resync);
 }
 // Pull-only projections never run RxDB's upstream scan of every cached chat.
 // The storage revision is a compare-and-swap across tabs; retry conflicts against
@@ -1006,17 +567,13 @@ type ProjectionState = {
   users: number;
   foreground: number;
   stop: () => Promise<unknown>;
-  refresh: () => Promise<void>;
+  refresh: (signal?: AbortSignal) => Promise<void>;
   activateInvalidation: () => void;
   listeners: Set<(error: unknown | null) => void>;
 };
 const scopes = new Map<string, ProjectionState>();
 const closingScopes = new Map<string, Promise<unknown>>();
 const ENTITY_BATCH_SIZE = 500;
-// Projection refresh retries only read-only pulls, never send or draft writes.
-const syncReadRetryBaseMs = 250;
-const syncReadRetryMaxMs = 8000;
-const syncReadRetryMaxExponent = 5;
 const isTransientSyncReadFailure = (error: unknown) =>
   error instanceof TypeError ||
   (error instanceof ApiError &&
@@ -1039,58 +596,26 @@ async function acquireProjection(
     let pending: Promise<void> | undefined;
     let invalidated = false;
     let resetReadySeq: number | undefined;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    let retryAttempt = 0;
-    let retryableError: unknown;
     let invalidationBlocked = false;
-    const retryAvailable = () => !document.hidden && navigator.onLine !== false;
-    const clearRetry = () => {
-      if (retryTimer !== undefined) clearTimeout(retryTimer);
-      retryTimer = undefined;
-    };
-    const retry = () => {
-      if (
-        stopped ||
-        retryTimer !== undefined ||
-        retryableError === undefined ||
-        !retryAvailable()
-      )
-        return;
-      const exponent = Math.min(retryAttempt, syncReadRetryMaxExponent);
-      const delay = Math.min(
-        syncReadRetryBaseMs * 2 ** exponent,
-        syncReadRetryMaxMs,
-      );
-      retryAttempt++;
-      retryTimer = setTimeout(() => {
-        retryTimer = undefined;
-        if (retryAvailable()) void refresh().catch(() => {});
-      }, delay);
-    };
-    const retryWhenAvailable = () => {
-      if (retryableError !== undefined && retryAvailable()) retry();
-    };
-    window.addEventListener("online", retryWhenAvailable);
-    document.addEventListener("visibilitychange", retryWhenAvailable);
+    let readFailed = false;
     const report = (error: unknown | null) => {
       invalidationBlocked =
         error instanceof WorkspaceMismatchError ||
         (error instanceof ApiError && !isTransientSyncReadFailure(error));
-      if (error === null) {
-        retryableError = undefined;
-        retryAttempt = 0;
-        clearRetry();
-      }
+      if (error === null) readFailed = false;
+      else readFailed = isTransientSyncReadFailure(error);
       listeners.forEach((listener) => listener(error));
     };
 
     const checkpointId =
       remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
-    const refresh = (): Promise<void> => {
+    const refresh = (signal?: AbortSignal): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
         do {
+          if (signal?.aborted && scopes.get(scope)?.foreground === 0)
+            throw new DOMException("Aborted", "AbortError");
           invalidated = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
@@ -1166,6 +691,9 @@ async function acquireProjection(
                 window.matchMedia("(max-width: 760px)").matches
                 ? saved<string | null>("codex-mobile-opened", null)
                 : null,
+              signal && scopes.get(scope)?.foreground === 0
+                ? signal
+                : undefined,
             );
             if (stopped) return;
             if (isEntityResetResponse(result, remoteScope)) {
@@ -1224,6 +752,11 @@ async function acquireProjection(
                       100,
                       workspaceId,
                       verifyWorkspace,
+                      undefined,
+                      undefined,
+                      signal && scopes.get(scope)?.foreground === 0
+                        ? signal
+                        : undefined,
                     );
                     if (full.reset === true)
                       throw new Error(
@@ -1304,15 +837,11 @@ async function acquireProjection(
         }
       })()
         .catch((error) => {
-          retryableError = isTransientSyncReadFailure(error)
-            ? error
-            : undefined;
           report(error);
           throw error;
         })
         .finally(() => {
           pending = undefined;
-          retry();
         });
       return pending;
     };
@@ -1335,7 +864,11 @@ async function acquireProjection(
             invalidate,
             remoteScope === "state:entities:v1" ? "entities" : "legacy",
           );
+      stopResume = onResume(() => {
+        if (readFailed && !invalidationBlocked) void refresh().catch(() => {});
+      });
     };
+    let stopResume: (() => void) | undefined;
     if (!background || !transcriptId) activateInvalidation();
     state = {
       users: 0,
@@ -1345,10 +878,8 @@ async function acquireProjection(
       activateInvalidation,
       stop: async () => {
         stopped = true;
-        clearRetry();
-        window.removeEventListener("online", retryWhenAvailable);
-        document.removeEventListener("visibilitychange", retryWhenAvailable);
         stopInvalidation?.();
+        stopResume?.();
         await pending?.catch(() => {});
       },
     };
@@ -1473,7 +1004,9 @@ const pendingPrefetches = new Map<string, Promise<boolean>>();
 export function prefetchTranscript(
   workspaceId: string,
   id: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
   if (document.hidden || navigator.onLine === false)
     return Promise.resolve(false);
   const key = `${workspaceId}:${id}`;
@@ -1503,7 +1036,7 @@ export function prefetchTranscript(
             );
         });
       stopCache = () => subscription.unsubscribe();
-      await handle.state.refresh();
+      await handle.state.refresh(signal);
       return true;
     } finally {
       stopCache();
@@ -1523,19 +1056,40 @@ export async function startDraftReplication(
   const { db, workspaceId, verifyWorkspace } = await syncDatabase();
   const failures = new Map<string, unknown>();
   let stopped = false;
+  let pullFailed = false;
+  let pullTriggered = false;
+  let releasePullWait: ((ready: boolean) => void) | undefined;
   const state = (direction: string, error: unknown | null) => {
     if (stopped) return;
     if (error === null) failures.delete(direction);
     else failures.set(direction, error);
     report(failures.size ? failures.values().next().value : null);
   };
+  const wakePullRetry = () => {
+    if (pullFailed) pullTriggered = true;
+    const release = releasePullWait;
+    releasePullWait = undefined;
+    release?.(true);
+  };
+  const waitForPullTrigger = () => {
+    if (stopped) return Promise.resolve(false);
+    if (!pullFailed || pullTriggered) {
+      pullTriggered = false;
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      releasePullWait = resolve;
+    });
+  };
   const attempt = async <T>(direction: string, request: () => Promise<T>) => {
     try {
       const result = await request();
       // Empty pulls also prove recovery. One direction cannot clear the other.
       state(direction, null);
+      if (direction === "pull") pullFailed = false;
       return result;
     } catch (error) {
+      if (direction === "pull") pullFailed = true;
       state(direction, error);
       throw error;
     }
@@ -1546,8 +1100,10 @@ export async function startDraftReplication(
     live: true,
     retryTime: 3000,
     pull: {
-      handler: (checkpoint, batchSize) =>
-        attempt("pull", async () => {
+      handler: async (checkpoint, batchSize) => {
+        if (!(await waitForPullTrigger()))
+          throw new DOMException("Draft replication stopped.", "AbortError");
+        return attempt("pull", async () => {
           const result = await pull(
             "drafts",
             checkpoint?.seq || 0,
@@ -1558,7 +1114,8 @@ export async function startDraftReplication(
           if (result.reset === true)
             throw new Error("The server reset draft sync unexpectedly.");
           return { documents: result.documents, checkpoint: result.checkpoint };
-        }),
+        });
+      },
       batchSize: 100,
     },
     push: {
@@ -1570,10 +1127,14 @@ export async function startDraftReplication(
       batchSize: 100,
     },
   });
-  const stopInvalidation = watchSyncInvalidations(
-    () => replication.reSync(),
-    "drafts",
-  );
+  const stopInvalidation = watchSyncInvalidations(() => {
+    wakePullRetry();
+    replication.reSync();
+  }, "drafts");
+  const stopConnection = watchResourceConnection((status) => {
+    if (status === "live") wakePullRetry();
+  });
+  const stopResume = onResume(wakePullRetry);
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"
@@ -1585,7 +1146,12 @@ export async function startDraftReplication(
   });
   return () => {
     stopped = true;
+    const release = releasePullWait;
+    releasePullWait = undefined;
+    release?.(false);
     stopInvalidation();
+    stopConnection();
+    stopResume();
     errors.unsubscribe();
     void replication.cancel();
   };
@@ -1601,10 +1167,8 @@ export function subscribeProjection(
     connecting = false,
     attached = false;
   let dispose = () => {};
-  let timer: ReturnType<typeof setTimeout> | undefined;
   const connect = async () => {
     if (stopped || connecting || attached) return;
-    clearTimeout(timer);
     connecting = true;
     try {
       const stop = await watchProjection(
@@ -1624,18 +1188,20 @@ export function subscribeProjection(
     } catch (error) {
       if (!stopped) {
         report(error);
-        timer = setTimeout(() => void connect(), 3000);
       }
     } finally {
       connecting = false;
     }
   };
   const stopResume = onResume(() => void connect());
+  const stopConnection = watchResourceConnection((status) => {
+    if (status === "live" && !attached) void connect();
+  });
   void connect();
   return () => {
     stopped = true;
-    clearTimeout(timer);
     stopResume();
+    stopConnection();
     dispose();
   };
 }

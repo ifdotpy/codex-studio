@@ -16,7 +16,9 @@ import {
 import {
   refreshProjection,
   subscribeProjection,
+  watchResourceConnection,
   syncDatabase,
+  watchResourceChanges,
 } from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
@@ -30,6 +32,7 @@ export function useSnapshot() {
   const [data, setData] = useState<StateSnapshot | null>(null),
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
+  const [transportError, setTransportError] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
   const [created, setCreated] = useState<{ scope: string; agents: Agent[] }>(
     () => {
@@ -182,17 +185,8 @@ export function useSnapshot() {
     [],
   );
   useEffect(() => {
-    let stopped = false,
-      polling = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      if (stopped || polling) return;
-      if (document.hidden || navigator.onLine === false) {
-        timer = setTimeout(poll, 30000);
-        return;
-      }
-      clearTimeout(timer);
-      polling = true;
+    let stopped = false;
+    const initialize = async () => {
       try {
         const storage = await syncDatabase();
         if (stopped) return;
@@ -201,27 +195,37 @@ export function useSnapshot() {
       } catch (error) {
         if (stopped) return;
         setError(errorText(error));
-        if (!replicated.current) await refresh(false);
+        if (!replicated.current) await refresh(true);
       }
-      polling = false;
-      if (!stopped) timer = setTimeout(poll, replicated.current ? 30000 : 5000);
     };
     const offline = () =>
       setError("Offline. Your chats and drafts are saved here.");
     window.addEventListener("offline", offline);
     if (navigator.onLine === false) offline();
-    const stopResume = onResume(() => void poll());
-    void poll();
+    const stopResume = onResume(() => void refresh(true));
+    void initialize();
     return () => {
       stopped = true;
       generation.current++;
-      clearTimeout(timer);
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
       stopResume();
       window.removeEventListener("offline", offline);
     };
   }, [refresh]);
+  useEffect(
+    () =>
+      watchResourceConnection((status) => {
+        setTransportError(
+          status === "degraded"
+            ? "Live updates are reconnecting."
+            : status === "offline"
+              ? "Offline. Live updates will resume when connected."
+              : "",
+        );
+      }),
+    [],
+  );
   useEffect(
     () =>
       subscribeProjection(
@@ -254,7 +258,7 @@ export function useSnapshot() {
   );
   return {
     data: visibleData,
-    error: error || syncError,
+    error: error || syncError || transportError,
     refresh,
     workspaceId,
     rememberCreated,
@@ -746,23 +750,19 @@ export function useMessages(
       return;
     }
     let stopped = false;
-    let streamLive = false;
-    let polling = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (polling || stopped || streamLive) return;
-      polling = true;
-      await load(() => !stopped && !streamLive);
-      polling = false;
-      if (!stopped && !streamLive)
-        timer = setTimeout(poll, managed || kind === "room" ? 2000 : 900);
-    };
-    // Managed sessions use the shared sync transport. Until its first page is
-    // available, bounded HTTP reads keep the selected conversation visible.
-    void poll();
+    if (!id) return;
+    if (managed && kind === "agent" && syncWorkspaceId) return;
+    const resource =
+      kind === "room"
+        ? ({ kind: "room", roomId: id } as const)
+        : ({ kind: "transcript", agentId: id } as const);
+    const stopWatch = watchResourceChanges(
+      resource,
+      () => void load(() => !stopped),
+    );
     return () => {
       stopped = true;
-      clearTimeout(timer);
+      stopWatch();
     };
   }, [load, id, kind, managed, accept, syncId, scope, syncWorkspaceId]);
   useEffect(() => {
