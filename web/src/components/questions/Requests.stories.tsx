@@ -7,6 +7,7 @@ import type { components } from "../../generated/api";
 type RequestDto = components["schemas"]["RequestEntityDto"];
 
 const agent = {
+  kind: "agent",
   id: "worker-1",
   name: "Release worker",
   source: "managed",
