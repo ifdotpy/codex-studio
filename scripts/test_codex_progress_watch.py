@@ -296,6 +296,86 @@ class ProgressWatchdogTests(unittest.TestCase):
         self.assertIsNone(watcher._dispatcher)
         self.assertIsNone(watcher._observer)
 
+    def test_same_agent_resubscribe_waits_for_native_unschedule(self):
+        self.patch_observer.stop()
+        watcher = ProgressFileWatchdog(self.root)
+        readded_callback = threading.Event()
+        first_detach = watcher.subscribe("first", lambda: None)
+        second_detach = watcher.subscribe("second", lambda: None)
+        observer = watcher._observer
+        first_watch = watcher._watches["first"][0]
+        entered_unschedule = threading.Event()
+        continue_unschedule = threading.Event()
+        schedule_first_again = threading.Event()
+        resubscribe_started = threading.Event()
+        resubscribe_done = threading.Event()
+        replacement_detach = []
+        failures = []
+        original_unschedule = observer.unschedule
+        original_schedule = observer.schedule
+
+        def pause_unschedule(watch):
+            if watch is first_watch:
+                entered_unschedule.set()
+                if not continue_unschedule.wait(timeout=5):
+                    raise RuntimeError("test did not release native unschedule")
+            return original_unschedule(watch)
+
+        def observe_schedule(event_handler, path, *, recursive=False):
+            if path == str(self.first.parent):
+                schedule_first_again.set()
+            return original_schedule(event_handler, path, recursive=recursive)
+
+        observer.unschedule = pause_unschedule
+        observer.schedule = observe_schedule
+
+        def resubscribe():
+            resubscribe_started.set()
+            try:
+                replacement_detach.append(watcher.subscribe("first", readded_callback.set))
+            except Exception as error:
+                failures.append(error)
+            finally:
+                resubscribe_done.set()
+
+        detach_thread = threading.Thread(target=first_detach)
+        resubscribe_thread = threading.Thread(target=resubscribe)
+        def cleanup_threads():
+            continue_unschedule.set()
+            for thread in (detach_thread, resubscribe_thread):
+                if thread.is_alive():
+                    thread.join(timeout=5)
+
+        self.addCleanup(cleanup_threads)
+        self.addCleanup(continue_unschedule.set)
+        self.addCleanup(lambda: [detach() for detach in replacement_detach])
+        self.addCleanup(second_detach)
+
+        detach_thread.start()
+        self.assertTrue(entered_unschedule.wait(timeout=2))
+        resubscribe_thread.start()
+        try:
+            self.assertTrue(resubscribe_started.wait(timeout=1))
+            self.assertFalse(schedule_first_again.wait(timeout=0.1))
+        finally:
+            continue_unschedule.set()
+
+        detach_thread.join(timeout=2)
+        resubscribe_thread.join(timeout=2)
+        self.assertFalse(detach_thread.is_alive())
+        self.assertFalse(resubscribe_thread.is_alive())
+        self.assertEqual(failures, [])
+        self.assertTrue(resubscribe_done.is_set())
+        self.assertTrue(schedule_first_again.is_set())
+
+        self.first.write_text("Fresh watch after detach.\n", encoding="utf-8")
+        self.assertTrue(readded_callback.wait(timeout=5))
+        replacement_detach[0]()
+        second_detach()
+        self.assertEqual(watcher._watches, {})
+        self.assertIsNone(watcher._observer)
+        self.assertIsNone(watcher._dispatcher)
+
     def test_unsupported_platform_does_not_leave_a_subscription(self):
         watcher = ProgressFileWatchdog(self.root)
         with patch("codex_progress_watch._observer_class", side_effect=RuntimeError("unsupported")):

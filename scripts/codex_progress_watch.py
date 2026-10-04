@@ -59,11 +59,6 @@ class _ProgressSnapshot(TypedDict):
 class _ProgressEventHandler(FileSystemEventHandler):
     """Small watchdog event handler bound to one validated agent directory."""
 
-    def __init__(self, watcher: ProgressFileWatchdog, agent_id: str, directory: Path):
-        self._watcher = watcher
-        self._agent_id = agent_id
-        self._directory = directory
-
     def __init__(self, enqueue: Callable[[str], None], agent_id: str, directory: Path):
         super().__init__()
         self._enqueue = enqueue
@@ -92,6 +87,7 @@ class ProgressFileWatchdog:
         self._watches: dict[str, tuple[object, _ProgressEventHandler]] = {}
         self._subscribers: dict[str, dict[str, Callable[[], None]]] = {}
         self._states: dict[str, tuple[str | None, str | None, bool]] = {}
+        self._detaching: set[str] = set()
         self._pending_condition = threading.Condition()
         self._active_ids: set[str] = set()
         self._pending_ids: set[str] = set()
@@ -115,6 +111,10 @@ class ProgressFileWatchdog:
 
         token = uuid.uuid4().hex
         with self._condition:
+            while agent_id in self._detaching:
+                self._condition.wait(timeout=WATCHDOG_JOIN_TIMEOUT_SECONDS)
+                if agent_id in self._detaching:
+                    raise RuntimeError("Timed out waiting for progress watch detachment")
             while self._stopping:
                 if self._dispatcher is threading.current_thread():
                     # A callback may unsubscribe the final resource and
@@ -253,6 +253,7 @@ class ProgressFileWatchdog:
             self._subscribers.pop(agent_id, None)
             watch, _ = self._watches.pop(agent_id)
             self._states.pop(agent_id, None)
+            self._detaching.add(agent_id)
             with self._pending_condition:
                 self._active_ids.discard(agent_id)
                 self._pending_ids.discard(agent_id)
@@ -264,6 +265,9 @@ class ProgressFileWatchdog:
                 self._stopping = True
                 stop_observer = True
         if observer_to_update is None or watch is None:
+            with self._condition:
+                self._detaching.discard(agent_id)
+                self._condition.notify_all()
             return
         try:
             observer_to_update.unschedule(watch)
@@ -273,15 +277,20 @@ class ProgressFileWatchdog:
                 if observer_to_update.is_alive():
                     raise RuntimeError("Progress file watcher did not stop before its deadline")
         finally:
-            if stop_observer:
-                with self._pending_condition:
-                    self._pending_stop = True
-                    self._pending_ids.clear()
-                    self._pending_condition.notify_all()
-                if dispatcher is not None and dispatcher is not threading.current_thread():
-                    dispatcher.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
-                    if dispatcher.is_alive():
-                        raise RuntimeError("Progress change dispatcher did not stop before its deadline")
+            try:
+                if stop_observer:
+                    with self._pending_condition:
+                        self._pending_stop = True
+                        self._pending_ids.clear()
+                        self._pending_condition.notify_all()
+                    if dispatcher is not None and dispatcher is not threading.current_thread():
+                        dispatcher.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
+                        if dispatcher.is_alive():
+                            raise RuntimeError("Progress change dispatcher did not stop before its deadline")
+            finally:
+                with self._condition:
+                    self._detaching.discard(agent_id)
+                    self._condition.notify_all()
 
     def close(self) -> None:
         with self._condition:
