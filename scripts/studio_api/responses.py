@@ -108,7 +108,7 @@ def install_error_response_docs(app: FastAPI) -> None:
                     schema_value = generated_validation.get("content", {})
                     application_json = schema_value.get("application/json", {}) if isinstance(schema_value, dict) else {}
                     detail_schema = application_json.get("schema", {}) if isinstance(application_json, dict) else {}
-                    if isinstance(detail_schema, dict) and detail_schema.get("$ref", "").endswith("#/HTTPValidationError"):
+                    if isinstance(detail_schema, dict) and detail_schema.get("$ref") == "#/components/schemas/HTTPValidationError":
                         responses.pop("422", None)
         app.openapi_schema = schema
         return cast(dict[str, JsonValue], schema)

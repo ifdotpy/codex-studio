@@ -7,6 +7,7 @@ import json
 import secrets
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, get_args, get_origin
 
@@ -17,7 +18,7 @@ from starlette.responses import Response
 
 from codex_remote import RemoteAccess
 
-from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
+from studio_api.models import ErrorResponse, JsonValue, ResponseModel
 
 if TYPE_CHECKING:
     from codex_canvas import Canvas
@@ -84,7 +85,10 @@ class ApiContext:
     @property
     def runtime(self) -> Runtime | None:
         """Return the attached runtime, which may not exist during startup."""
-        return cast("Runtime | None", self.canvas.runtime)
+        runtime = cast("Runtime | None", self.canvas.runtime)
+        if runtime is not None and self._sync_store is not None:
+            setattr(runtime, "sync_store", self._sync_store)
+        return runtime
 
     def terminals(self) -> TerminalManager:
         self._require_runtime()
@@ -157,6 +161,11 @@ class ApiContext:
                     setattr(self.runtime, "sync_store", self._sync_store)
             return self._sync_store
 
+    def initialize(self) -> None:
+        """Prepare durable workspace identity before accepting requests."""
+        if not self.schema_only:
+            self.sync()
+
     def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
         if self.runtime:
             with self.runtime.read_db() as db:
@@ -171,7 +180,7 @@ class ApiContext:
         """Read the sync cursor without constructing services or mutating state."""
         uri = self.canvas.db.absolute().as_uri() + "?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True, timeout=1) as db:
+            with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
                 row = db.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_entities").fetchone()
                 return int(row[0]) if row is not None else 0
         except sqlite3.OperationalError as error:
@@ -182,7 +191,7 @@ class ApiContext:
     def workspace_id(self) -> str:
         """Read the durable workspace identity without initializing SyncStore."""
         uri = self.canvas.db.absolute().as_uri() + "?mode=ro"
-        with sqlite3.connect(uri, uri=True, timeout=1) as db:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
             row = db.execute("SELECT id FROM sync_identity LIMIT 1").fetchone()
         if row is None:
             raise RuntimeError("The server workspace identity is unavailable")
@@ -262,8 +271,8 @@ class ApiContext:
                 adapter: TypeAdapter[object] = TypeAdapter(response_model)
                 validated = adapter.validate_python(body_value)
                 body_value = adapter.dump_python(validated, mode="json", by_alias=True, exclude_unset=True)
-                if not isinstance(body_value, (dict, list)):
-                    raise TypeError("Response contract must produce a JSON object or array")
+                if not isinstance(body_value, (dict, list, str, int, float, bool)) and body_value is not None:
+                    raise TypeError("Response contract must produce a JSON value")
                 data = json.dumps(body_value, ensure_ascii=False, separators=(",", ":")).encode()
             except Exception as error:
                 # The handler may already have performed a durable write. This is
@@ -314,7 +323,9 @@ class ApiContext:
 
     @staticmethod
     def _dump_json(value: object) -> object:
-        if isinstance(value, ContractModel):
+        if isinstance(value, ResponseModel):
+            return value.wire_dump()
+        if isinstance(value, BaseModel):
             return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
         if isinstance(value, dict):
             return dict(value)
@@ -324,6 +335,8 @@ class ApiContext:
 
     @staticmethod
     def _response_contract(candidate: object) -> bool:
+        if candidate is JsonValue:
+            return True
         if isinstance(candidate, type):
             if issubclass(candidate, ResponseModel):
                 return True
@@ -343,6 +356,8 @@ class ApiContext:
         if candidate is type(None):
             return True
         if isinstance(candidate, type):
+            if candidate in (str, int, float, bool):
+                return True
             return issubclass(candidate, BaseModel)
         members = get_args(candidate)
         origin = get_origin(candidate)

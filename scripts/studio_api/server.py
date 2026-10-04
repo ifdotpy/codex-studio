@@ -181,6 +181,7 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
             unix_handle = BoundServer(unix_socket_fd, UnixScopeApp(app), context, owned_unix=identity)
         tcp = BoundServer(tcp_socket, app, context)
         tcp.unix_server = unix_handle
+        context.initialize()
         return CanvasServer(tcp, unix_handle, context)
     except BaseException:
         if unix_handle is not None:

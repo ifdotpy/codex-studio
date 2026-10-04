@@ -14,7 +14,6 @@ from studio_api.core_models import SessionResponse
 from studio_api.middleware import RequestBoundary
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.responses import error_response, install_error_response_docs
-from studio_api.models import JsonValue
 
 STATIC_ALLOWLIST = frozenset({
     "index.html", "studio-sw.js", "manifest.webmanifest", "apple-touch-icon.png",

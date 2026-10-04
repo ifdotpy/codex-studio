@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import sqlite3
+import time
 from collections.abc import Awaitable, Callable
 from typing import TypeAlias
 
@@ -119,9 +121,13 @@ class RequestBoundary:
 
         body = bytearray()
         more = True
+        deadline = time.monotonic() + REQUEST_READ_TIMEOUT_SECONDS
         while more:
             try:
-                message = await asyncio.wait_for(receive(), REQUEST_READ_TIMEOUT_SECONDS)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                message = await asyncio.wait_for(receive(), remaining)
             except TimeoutError:
                 await _reject(send, 408, "Request body timed out")
                 return
@@ -154,7 +160,7 @@ class RequestBoundary:
             if workspace is not None or path == "/api/sync/drafts":
                 try:
                     workspace_id = await asyncio.to_thread(self.context.workspace_id)
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, sqlite3.Error):
                     await _reject(send, 400, "The server workspace identity is unavailable")
                     return
                 if workspace != workspace_id:
@@ -165,7 +171,7 @@ class RequestBoundary:
             if not self.context.schema_only:
                 try:
                     scope["studio_sync_entities_after"] = await asyncio.to_thread(self.context.entity_sequence)
-                except OSError:
+                except (OSError, sqlite3.Error):
                     await _reject(send, 400, "The server sync state is unavailable")
                     return
         delivered = False
