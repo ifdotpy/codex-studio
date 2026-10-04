@@ -368,6 +368,17 @@ class QueueView(ResponseModel):
     capabilities: QueueCapabilities
 
 
+class NativePlanPayload(ContractModel):
+    """Known fields from native turn/plan/updated provider notifications."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue]
+    threadId: StrictStr | None = None
+    turnId: StrictStr | None = None
+    explanation: StrictStr | None = None
+    plan: list[JsonValue] = Field(default_factory=list)
+
+
 class PlanView(ResponseModel):
     id: StrictStr
     rootId: StrictStr
@@ -375,6 +386,7 @@ class PlanView(ResponseModel):
     version: StrictInt
     updated: StrictInt | StrictFloat | None
     steps: list[JsonValue] = Field(default_factory=list)
+    native: NativePlanPayload | None = None
 
 
 class QuestionEntry(ContractModel):

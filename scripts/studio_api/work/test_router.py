@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -246,6 +246,34 @@ class WorkRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), complaint)
+
+    def test_plan_response_preserves_native_report_separately_from_legacy_text(self) -> None:
+        context = FakeContext()
+        legacy_plan = {
+            "id": "agent-1", "rootId": "agent-1", "text": "Saved editor text",
+            "version": 1, "updated": 2.0, "steps": [],
+        }
+        native_plan = {
+            **legacy_plan,
+            "native": {
+                "threadId": "thread-1", "turnId": "turn-1",
+                "explanation": "Review the evidence.",
+                "plan": [{"step": "Inspect evidence", "status": "completed"}],
+            },
+        }
+        context.runtime.plan_action = Mock(side_effect=[legacy_plan, native_plan])
+        client = make_client(context)
+
+        legacy_response = client.get("/api/plan?agent=agent-1")
+        native_response = client.get("/api/plan?agent=agent-1")
+
+        self.assertEqual(legacy_response.status_code, 200, legacy_response.text)
+        self.assertEqual(legacy_response.json()["text"], "Saved editor text")
+        self.assertNotIn("native", legacy_response.json())
+        self.assertEqual(native_response.status_code, 200, native_response.text)
+        self.assertEqual(native_response.json()["text"], "Saved editor text")
+        self.assertEqual(native_response.json()["native"], native_plan["native"])
+        context.runtime.plan_action.assert_has_calls([call("agent-1"), call("agent-1")])
 
     def test_post_work_list_action_preserves_legacy_list_response(self) -> None:
         context = FakeContext()
