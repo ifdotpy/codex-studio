@@ -524,6 +524,7 @@ class SnapshotStartAttempt(AgentStartAttempt):
     modelSettings: SnapshotModelSettingsDto | None = None
     executionOutcome: Literal["unknown", "unsent", "rejected"] | None = None
     notSubmittedReason: str | None = None
+    retiredEvents: list[str] | None = None
     completedAt: float | None = None
 
 

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import sqlite3
 import sys
 import tempfile
 import unittest
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -39,6 +41,19 @@ class RuntimeFixture(Protocol):
     def create(self, data: dict[str, object], parent: str | None = None, defer: bool = False,
                parent_epoch: int | None = None, draft: bool = False) -> dict[str, JsonValue]: ...
     def close(self) -> None: ...
+
+
+class ReconcileRuntimeFixture(Protocol):
+    def create(self, data: dict[str, JsonValue], parent: str | None = None, defer: bool = False,
+               parent_epoch: int | None = None, draft: bool = False) -> dict[str, JsonValue]: ...
+    def close(self) -> None: ...
+    def db(self) -> AbstractContextManager[sqlite3.Connection]: ...
+    def agent(
+        self, agent_id: str, db: sqlite3.Connection | None = None
+    ) -> dict[str, JsonValue]: ...
+    def put(self, db: sqlite3.Connection, table: str, record: dict[str, JsonValue]) -> None: ...
+    def enqueue(self, db: sqlite3.Connection, agent: dict[str, JsonValue], kind: str,
+                text: str, key: str) -> None: ...
 
 
 class RadioFixture(Protocol):
@@ -155,6 +170,74 @@ class SyncEntityContractTests(unittest.TestCase):
                 if not isinstance(projected, dict):
                     self.fail("runtime agent did not project")
                 self.assertIs(projected.get("worktree"), False)
+            finally:
+                runtime.close()
+
+    def test_reconcile_start_projects_retired_event_ids(self) -> None:
+        from codex_wakeups import reconcile_start as raw_reconcile_start
+
+        repository = Path(__file__).resolve().parents[3]
+        test_directory = repository / "tests"
+        test_path = test_directory / "runtime-contract.py"
+        sys.path.insert(0, str(test_directory))
+        try:
+            spec = importlib.util.spec_from_file_location("sync_reconcile_runtime_fixture", test_path)
+            if spec is None or spec.loader is None:
+                self.fail("runtime fixture could not be loaded")
+            fixture = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fixture)
+        finally:
+            sys.path.remove(str(test_directory))
+
+        runtime_factory = cast(
+            Callable[[Path, Callable[..., object]], ReconcileRuntimeFixture],
+            getattr(fixture, "Runtime"),
+        )
+        reconcile_start = cast(
+            Callable[[ReconcileRuntimeFixture, sqlite3.Connection, dict[str, JsonValue],
+                     list[dict[str, JsonValue]]], bool],
+            raw_reconcile_start,
+        )
+        fake_server = cast(Callable[..., object], getattr(fixture, "FakeServer"))
+        with tempfile.TemporaryDirectory(prefix="sync-reconcile-projection-") as temporary:
+            runtime = runtime_factory(Path(temporary), fake_server)
+            try:
+                created = runtime.create(
+                    {"name": "Draft Lead", "prompt": "", "cwd": temporary}, draft=True
+                )
+                agent_id = created.get("id")
+                if not isinstance(agent_id, str):
+                    self.fail("runtime fixture did not create an agent")
+                complaint: dict[str, JsonValue] = {
+                    "id": "resolved-complaint", "leadId": agent_id, "recipient": "lead",
+                    "status": "resolved", "responses": [],
+                }
+                event_id = "retired-complaint-event"
+                event_text = json.dumps({"complaints": [{"complaint_id": complaint["id"]}]})
+                with runtime.db() as db:
+                    runtime.put(db, "complaints", complaint)
+                    agent = runtime.agent(agent_id, db)
+                    runtime.enqueue(db, agent, "complaint", event_text, event_id)
+                    db.execute("UPDATE runtime_events SET status='reserved' WHERE id=?", (event_id,))
+                    agent["startAttempt"] = {
+                        "id": "reconciled-attempt", "epoch": agent["epoch"],
+                        "events": [event_id], "submitted": False,
+                        "activeAtReservation": False,
+                    }
+                    runtime.put(db, "agents", agent)
+                    rows = cast(list[dict[str, JsonValue]], [dict(db.execute(
+                        "SELECT * FROM runtime_events WHERE id=?", (event_id,)
+                    ).fetchone())])
+                    self.assertTrue(reconcile_start(runtime, db, agent, rows))
+
+                runtime_view = {"kind": "agent", **runtime.agent(agent_id)}
+                projected = project("agent", runtime_view)
+                if not isinstance(projected, dict):
+                    self.fail("reconciled runtime agent did not project")
+                snapshot_agent = SnapshotAgentDto.model_validate(projected)
+                self.assertIsNotNone(snapshot_agent.startAttempt)
+                assert snapshot_agent.startAttempt is not None
+                self.assertEqual(snapshot_agent.startAttempt.retiredEvents, [event_id])
             finally:
                 runtime.close()
 

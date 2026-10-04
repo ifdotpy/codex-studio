@@ -96,7 +96,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 "nativeState", "restartTurnStatus", "readError",
             ),
             "readState": ("threadId", "turnId", "read", "revision"),
-            "startAttempt": ("prepareError", "responseError"),
+            "startAttempt": ("prepareError", "responseError", "retiredEvents"),
         }.items():
             value = record.get(field)
             if isinstance(value, dict):
