@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -31,6 +32,21 @@ class LinuxBackendUnitTests(unittest.TestCase):
             (upper / "data").write_bytes(b"abc")
             (upper / "link").symlink_to("data")
             self.assertEqual(linux.Backend().private_bytes(Path(temp)), 7)
+
+    def test_sync_delta_uses_filters_without_walking_repo(self):
+        backend = linux.Backend()
+        source = Path("/repo/source")
+        target = Path("/repo/target")
+        output = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(backend, "_ensure_namespace", return_value=123), \
+                patch.object(linux, "_git_object_stores",
+                             side_effect=AssertionError("delta must not walk the source")), \
+                patch.object(linux, "_run", return_value=output) as run:
+            backend.sync_delta(source, target, None,
+                               excludes=(".worktrees", ".git/modules/nested/objects"))
+        args = run.call_args.args[0]
+        self.assertIn("--exclude=**/.git/objects/***", args)
+        self.assertIn("--exclude=/.git/modules/nested/objects/***", args)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux")
@@ -139,6 +155,24 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
                                     check=False, capture_output=True)
             self.assertEqual(absent.returncode, 0)
 
+        # Measure a small delta after rsync scans a 200,000-file source tree.
+        (source / ".git" / "info" / "exclude").write_text("/bulk/\n", encoding="utf-8")
+        bulk = source / "bulk"
+        bulk.mkdir()
+        for index in range(200_000):
+            (bulk / f"{index:06d}.txt").write_bytes(b"base\n")
+        baseline = self.backend.sync_delta(source, repo_a, delta, excludes=excludes)
+        changed = []
+        for index in range(100):
+            relative = f"bulk/{index:06d}.txt"
+            (source / relative).write_bytes(b"changed\n")
+            changed.append(relative)
+        started = time.perf_counter()
+        measured = self.backend.sync_delta(source, repo_a, baseline, excludes=excludes)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(set(measured["changedPaths"]), set(changed))
+        print(f"RSYNC_DELTA_TIMING files=200000 changed=100 elapsed_seconds={elapsed:.3f}")
+
         # Git commands that address the mounted repository must enter its namespace.
         prefix = self.backend.exec_prefix()
         subprocess.run(prefix + ["git", "-C", str(repo_a), "status", "--short"], check=True,
@@ -167,7 +201,6 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         for _ in range(100):
             if linux._proc_start_time(original_pid) is None:
                 break
-            import time
             time.sleep(0.02)
         self.backend.mount_workspace(layer_a, mount_a, base_image=image)
         restarted_pid = int(json.loads(holder.read_text())["pid"])

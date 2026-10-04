@@ -244,11 +244,11 @@ class Backend:
         pid = self._ensure_namespace()
         args = self._nsenter(pid) + ["rsync", "-a", "--delete"]
         excluded = _relative_excludes(repo_root, excludes)
+        # Linked worktrees and submodules can store objects below a .git
+        # directory. Exclude these without walking the source tree.
+        args.append("--exclude=**/.git/objects/***")
         for path in sorted(excluded, key=lambda item: item.as_posix()):
             relative = "" if path == Path(".") else path.as_posix()
-            args.append(f"--exclude=/{relative}/***")
-        for store in _git_object_stores(repo_root, excluded):
-            relative = store.relative_to(repo_root).as_posix()
             args.append(f"--exclude=/{relative}/***")
         args.extend([str(repo_root) + "/", str(target_repo) + "/"])
         _run(args)
