@@ -177,14 +177,28 @@ test("Token rate ui", async ({
       other.id,
     );
     await page.waitForTimeout(500);
-    const heldFooterRate = await meter.getAttribute("data-rate");
-    const heldFooterSample = await page.evaluate(
+    let heldFooterSample = await page.evaluate(
       () =>
         window.__lastRateBatch?.rates[
           document.querySelector(".token-rate")?.dataset.agent
         ],
     );
     assert.ok(heldFooterSample?.outputTokens > 80);
+    await page.waitForTimeout(3000);
+    assert.equal(await meter.innerText(), "", "silence hides the old sample");
+    notify(actor, "item/agentMessage/delta", {
+      itemId: "rate-answer",
+      delta: "New output after silence.",
+    });
+    await page.waitForFunction(() =>
+      document.querySelector(".token-rate")?.textContent.includes("tok/s"),
+    );
+    heldFooterSample = await page.evaluate(
+      () =>
+        window.__lastRateBatch?.rates[
+          document.querySelector(".token-rate")?.dataset.agent
+        ],
+    );
     notify(actor, "item/started", {
       item: { id: "rate-tool-wait", type: "commandExecution", command: "wait" },
     });
@@ -195,24 +209,21 @@ test("Token rate ui", async ({
           document.querySelector(".token-rate")?.dataset.agent
         ],
     );
-    assert.equal(await meter.getAttribute("data-rate"), heldFooterRate);
+    assert.equal(await meter.getAttribute("data-rate"), "");
     assert.equal(footerSampleAfterGap?.rate, heldFooterSample.rate);
     assert.equal(
       footerSampleAfterGap?.outputTokens,
       heldFooterSample.outputTokens,
     );
     assert.equal(await meter.getAttribute("data-active"), "true");
-    assert.match(await meter.innerText(), /tok\/s$/);
+    assert.equal(await meter.innerText(), "");
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await page.waitForFunction(
       (id) => document.querySelector(".token-rate")?.dataset.agent === id,
       lead.id,
     );
     await page.locator(`[data-chat="${other.id}"]`).click();
-    await page.waitForFunction(() =>
-      document.querySelector(".token-rate")?.textContent.includes("tok/s"),
-    );
-    assert.doesNotMatch(await meter.innerText(), /^0 tok\/s$/);
+    assert.equal(await meter.innerText(), "");
     meterOffConnections = await connections();
     notify(actor, "turn/completed", {
       turn: { id: actor.turnId, status: "completed" },
@@ -220,11 +231,7 @@ test("Token rate ui", async ({
     await page.waitForFunction(
       () => document.querySelector(".token-rate")?.dataset.active === "false",
     );
-    assert.match(
-      await meter.innerText(),
-      /tok\/s$/,
-      "footer keeps the dim last value",
-    );
+    assert.equal(await meter.innerText(), "");
     await page.waitForFunction(
       (id) => window.__lastRateBatch?.rates[id]?.active === false,
       other.id,
@@ -246,7 +253,8 @@ test("Token rate ui", async ({
                   ...window.__lastRateBatch.rates,
                   [id]: {
                     turnId,
-                    active: false,
+                    active: true,
+                    generating: true,
                     estimated: false,
                     rate,
                     outputTokens: 100,

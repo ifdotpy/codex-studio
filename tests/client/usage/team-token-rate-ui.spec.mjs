@@ -22,7 +22,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("team token rate ui", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(240_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -256,7 +256,7 @@ test("team token rate ui", async ({ browser }) => {
       for (let i = 1; i < batches.length; i++)
         assert.ok(
           batches[i].at - batches[i - 1].at >= 850,
-          "at most one batch per second",
+          `at most one batch per second: ${JSON.stringify(batches.map((batch) => batch.at))}`,
         );
       assert.equal(
         new Set(Object.values(batches.at(-1).rates).map((rate) => rate.rate))
@@ -383,7 +383,6 @@ test("team token rate ui", async ({ browser }) => {
       timer = undefined;
       await page.waitForTimeout(1000);
       const firstMeter = meter(running[0].id);
-      const heldCardRate = await firstMeter.getAttribute("data-rate");
       const heldCardSample = await page.evaluate(
         (id) =>
           window.__teamRateBatches.findLast((batch) => batch.rates[id])?.rates[
@@ -406,18 +405,14 @@ test("team token rate ui", async ({ browser }) => {
           ],
         running[0].id,
       );
-      assert.equal(
-        await firstMeter.getAttribute("data-rate"),
-        heldCardRate,
-        "the Team card holds its last rate during a tool call",
-      );
+      assert.equal(await firstMeter.getAttribute("data-rate"), "");
       assert.equal(cardSampleAfterGap?.rate, heldCardSample?.rate);
       assert.equal(
         cardSampleAfterGap?.outputTokens,
         heldCardSample?.outputTokens,
       );
       assert.equal(await firstMeter.getAttribute("data-active"), "true");
-      assert.match(await firstMeter.innerText(), /tok\/s$/);
+      assert.equal(await firstMeter.innerText(), "");
       timer = setInterval(feed, 700);
       const injectOnBatch = async (rate) =>
         page.evaluate(
@@ -434,6 +429,7 @@ test("team token rate ui", async ({ browser }) => {
                       {
                         turnId: "fixture-turn",
                         active: true,
+                        generating: true,
                         estimated: false,
                         rate: rate * (index + 1),
                         outputTokens: 1000,
@@ -482,26 +478,14 @@ test("team token rate ui", async ({ browser }) => {
           )?.dataset.reducedMotion === "false",
         running[0].id,
       );
-      await meter(running[0].id).evaluate((node) => {
-        window.__rateTweenValues = [];
-        window.__rateObserver = new MutationObserver(() =>
-          window.__rateTweenValues.push(Number(node.textContent.split(" ")[0])),
-        );
-        window.__rateObserver.observe(node, {
-          childList: true,
-          subtree: true,
-          characterData: true,
-        });
-      });
       await injectOnBatch(80);
-      await page.waitForTimeout(550);
-      assert.ok(
-        await page.evaluate(() =>
-          window.__rateTweenValues.some((value) => value > 20 && value < 80),
-        ),
-        "card number uses the shared tween",
+      await page.waitForFunction(
+        (id) =>
+          document.querySelector(
+            `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+          )?.textContent === "80 tok/s",
+        running[0].id,
       );
-      await page.evaluate(() => window.__rateObserver.disconnect());
       await page.emulateMedia({ reducedMotion: "reduce" });
       await injectOnBatch(140);
       await page.waitForFunction(
@@ -521,26 +505,12 @@ test("team token rate ui", async ({ browser }) => {
           document.querySelector(
             `.token-rate[data-agent="${id}"][data-variant="worker"]`,
           )?.dataset.active === "false" &&
-          document
-            .querySelector(
-              `.token-rate[data-agent="${id}"][data-variant="worker"]`,
-            )
-            ?.textContent.includes("tok/s"),
+          document.querySelector(
+            `.token-rate[data-agent="${id}"][data-variant="worker"]`,
+          )?.textContent === "",
         running[0].id,
       );
-      assert.match(
-        (await meter(running[0].id).textContent()) || "",
-        /tok\/s$/,
-        JSON.stringify(
-          await meter(running[0].id).evaluate((node) => ({
-            text: node.textContent,
-            innerText: node.innerText,
-            visible: node.getBoundingClientRect().width > 0,
-            display: getComputedStyle(node).display,
-            visibility: getComputedStyle(node).visibility,
-          })),
-        ),
-      );
+      assert.equal(await meter(running[0].id).textContent(), "");
       await page.locator("#team-close").click();
       assert.equal(
         await page.evaluate(

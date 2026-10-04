@@ -22,6 +22,115 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_codex_rollout_usage_after_tool_result_uses_generation_span(self):
+        # rollout: token_usage_record precedes a tool call; token_count arrives after its result.
+        rates = TokenRates(lambda: 100.1)
+        agent = {'id': 'luna', 'threadId': 'native', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.observe(agent, 'item/started', {'turnId': 'turn',
+            'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 10)
+        rates.observe(agent, 'item/completed', {'turnId': 'turn',
+            'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 100)
+        rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn',
+            'tokenUsage': {'total': {'inputTokens': 110000, 'cachedInputTokens': 108000,
+                                     'outputTokens': 320},
+                           'last': {'inputTokens': 110000, 'cachedInputTokens': 108000,
+                                    'outputTokens': 320, 'reasoningOutputTokens': 120}}},
+            'a', 'c', 100.1)
+        sample = rates.snapshot('luna')
+        self.assertEqual(sample['rate'], 32)
+        self.assertEqual(sample['outputTokens'], 320)
+        self.assertTrue(sample['generating'])
+        self.assertFalse(rates.snapshot('luna')['estimated'])
+
+    def test_batched_codex_receipts_keep_response_order_and_time(self):
+        rates = TokenRates(lambda: 30.2)
+        agent = {'id': 'sol', 'threadId': 'native', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        for item_id, start, finish in (('first', 10, 20), ('second', 28, 30)):
+            item = {'id': item_id, 'type': 'commandExecution'}
+            rates.observe(agent, 'item/started', {'turnId': 'turn', 'item': item}, 'a', 'c', start)
+            rates.observe(agent, 'item/completed', {'turnId': 'turn', 'item': item}, 'a', 'c', finish)
+        for at, total, last in ((30.1, 320, 320), (30.2, 480, 160)):
+            rates.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn',
+                'tokenUsage': {'total': {'outputTokens': total},
+                               'last': {'outputTokens': last}}}, 'a', 'c', at)
+        self.assertEqual(rates.snapshot('sol')['rate'], 20)
+        self.assertEqual(rates.snapshot('sol')['outputTokens'], 480)
+
+    def test_late_usage_preserves_next_response_stream_estimate(self):
+        rate = TurnRate('turn', 0)
+        rate.text('x' * 40, 1)
+        rate.start_tool('exec', 2)
+        self.assertEqual(rate.snapshot(2)['outputTokens'], 10)
+        rate.finish_tool('exec', 10)
+        rate.text('x' * 80, 11)
+        self.assertEqual(rate.snapshot(11)['outputTokens'], 30)
+        rate.response(100, 11.1, 'previous-response')
+        sample = rate.snapshot(11.1)
+        self.assertEqual(sample['rate'], 20)
+        self.assertTrue(sample['estimated'])
+        self.assertEqual(sample['outputTokens'], 120)
+        self.assertEqual(rate.messages['previous-response'][2], 50)
+
+    def test_tool_wait_silence_and_completion_hide_previous_rate(self):
+        now = [2]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'sol', 'threadId': 'native', 'inFlight': True}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        rates.stream('item/reasoning/textDelta', {'threadId': 'native', 'turnId': 'turn',
+            'delta': 'x' * 400}, 'a', 'c', 2)
+        self.assertTrue(rates.snapshot('sol')['generating'])
+        rates.observe(agent, 'item/started', {'turnId': 'turn',
+            'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 2)
+        self.assertFalse(rates.snapshot('sol')['generating'])
+        rates.observe(agent, 'item/completed', {'turnId': 'turn',
+            'item': {'id': 'tool', 'type': 'dynamicToolCall'}}, 'a', 'c', 20)
+        now[0] = 20
+        self.assertFalse(rates.snapshot('sol')['generating'])
+        rates.stream('item/agentMessage/delta', {'threadId': 'native', 'turnId': 'turn',
+            'delta': 'x' * 40}, 'a', 'c', 21)
+        now[0] = 24
+        self.assertFalse(rates.snapshot('sol')['generating'])
+        rates.observe(agent, 'turn/completed', {'turn': {'id': 'turn'}}, 'a', 'c', 25)
+        self.assertFalse(rates.snapshot('sol')['generating'])
+
+    def test_text_estimate_tracks_recent_stream_not_elapsed_turn(self):
+        rate = TurnRate('turn', 0)
+        rate.text('x' * 80, 1)
+        rate.text('x' * 80, 101)
+        self.assertEqual(rate.snapshot(101)['rate'], 20)
+        self.assertTrue(rate.snapshot(101)['generating'])
+        self.assertFalse(rate.snapshot(104)['generating'])
+
+    def test_claude_response_usage_arrives_at_message_end(self):
+        now = [0]
+        rates = TokenRates(lambda: now[0])
+        agent = {'id': 'opus', 'threadId': 'claude'}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        now[0] = 4
+        self.assertFalse(rates.snapshot('opus')['generating'])
+        rates.observe(agent, 'item/completed', {'turnId': 'turn',
+            'item': {'id': 'msg_1', 'type': 'agentMessage', 'text': 'Done'},
+            'tokenRateUsage': {'responseId': 'msg_1', 'outputTokens': 400}}, 'a', 'c', 5)
+        now[0] = 5
+        self.assertEqual(rates.snapshot('opus')['rate'], 80)
+        self.assertTrue(rates.snapshot('opus')['generating'])
+        now[0] = 8
+        self.assertFalse(rates.snapshot('opus')['generating'])
+
+    def test_claude_message_start_excludes_turn_queue_and_is_deduplicated(self):
+        rates = TokenRates(lambda: 105)
+        agent = {'id': 'opus', 'threadId': 'claude'}
+        rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+        params = {'threadId': 'claude', 'turnId': 'turn', 'responseId': 'msg_1'}
+        rates.stream('provider/generationStarted', params, 'a', 'c', 100)
+        rates.stream('provider/generationStarted', params, 'a', 'c', 102)
+        rates.observe(agent, 'item/completed', {'turnId': 'turn',
+            'item': {'id': 'msg_1', 'type': 'agentMessage', 'text': 'Done'},
+            'tokenRateUsage': {'responseId': 'msg_1', 'outputTokens': 400}}, 'a', 'c', 105)
+        self.assertEqual(rates.snapshot('opus')['rate'], 80)
+
     def test_reasoning_heavy_response_uses_full_model_generation_time_and_holds(self):
         rates = TokenRates(lambda: 0)
         agent = {'id': 'worker', 'threadId': 'thread', 'inFlight': True}
@@ -40,14 +149,20 @@ class RateContract(unittest.TestCase):
         rates = TokenRates(lambda: 0)
         agent = {'id': 'worker', 'threadId': 'thread', 'inFlight': True}
         rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
-        spans = [('commandExecution', 2, 4), ('mcpToolCall', 5, 8), ('dynamicToolCall', 10, 15)]
-        for index, (kind, started, completed) in enumerate(spans):
+        spans = [('commandExecution', 2, 4, 200), ('mcpToolCall', 5, 8, 100),
+                 ('dynamicToolCall', 10, 15, 200)]
+        for index, (kind, started, completed, output) in enumerate(spans):
             item = {'id': 'tool-' + str(index), 'type': kind}
             rates.observe(agent, 'item/started', {'turnId': 'turn', 'item': item}, 'a', 'c', started)
             rates.observe(agent, 'item/completed', {'turnId': 'turn', 'item': item}, 'a', 'c', completed)
+            rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn',
+                'responseId': 'r' + str(index), 'outputTokens': output}, 'a', 'c', completed)
         rates.request_started('a', 'c', 'thread', 'question', 20)
         rates.request_finished('a', 'c', 'question', 30)
-        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn', 'responseId': 'r', 'outputTokens': 1300}, 'a', 'c', 33)
+        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn',
+            'responseId': 'r3', 'outputTokens': 500}, 'a', 'c', 30)
+        rates.stream('provider/outputUsage', {'threadId': 'thread', 'turnId': 'turn',
+            'responseId': 'r4', 'outputTokens': 300}, 'a', 'c', 33)
         self.assertEqual(rates.snapshot('worker')['rate'], 100)
         self.assertEqual(rates.snapshot('worker')['outputTokens'], 1300)
 
@@ -348,6 +463,12 @@ class WriteContract(unittest.TestCase):
                             stack.enter_context(patch.object(rates, 'observe'))
                             stack.enter_context(patch.object(rates, 'stream'))
                         send('turn/started', turn={'id': 'one'})
+                        before_start = len(writes)
+                        send('provider/generationStarted', responseId='fixture-response')
+                        self.assertEqual(len(writes), before_start, 'Provider start writes nothing')
+                        if enabled:
+                            self.assertEqual(rates.entries[('default', None, 'fixture-thread')]
+                                             ['rate'].generation_response_id, 'fixture-response')
                         send('item/started', item={'id': 'answer', 'type': 'agentMessage', 'text': ''})
                         for _ in range(2000):
                             send('item/agentMessage/delta', itemId='answer', delta='x' * 20)

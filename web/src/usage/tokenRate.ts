@@ -2,6 +2,7 @@
 export type TokenRate = {
   turnId: string;
   active: boolean;
+  generating?: boolean;
   estimated: boolean;
   rate: number;
   outputTokens: number;
@@ -14,6 +15,8 @@ function validRate(value: TokenRate | null) {
     value === null ||
     (typeof value.turnId === "string" &&
       typeof value.active === "boolean" &&
+      (value.generating === undefined ||
+        typeof value.generating === "boolean") &&
       typeof value.estimated === "boolean" &&
       Number.isFinite(value.rate) &&
       value.rate >= 0 &&

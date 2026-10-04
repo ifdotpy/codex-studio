@@ -178,6 +178,7 @@ test("chat samples accept null and reject malformed or out-of-range fields", () 
   for (const invalid of [
     { ...valid, turnId: 1 },
     { ...valid, active: 1 },
+    { ...valid, generating: "yes" },
     { ...valid, estimated: 1 },
     { ...valid, rate: -1 },
     { ...valid, rate: Infinity },
