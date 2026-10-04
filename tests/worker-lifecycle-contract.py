@@ -224,6 +224,7 @@ class LifecycleContract(unittest.TestCase):
         self.runtime.servers['secondary-fixture'].complete(
             result_worker['threadId'], result_worker['turnId'], 'Saved child result')
         self.action(task_worker, task, 'submit', result='Task result', checks='Passed', revision='rev')
+        task_worker = self.runtime.agent(task_worker['id'])
         task_worker = self.agent_update(task_worker, status='interrupted', autoWake=False,
             restartRecovery={'stage': 'pending', 'autoWake': True, 'epoch': task_worker['epoch'],
                 'accountKey': task_worker.get('accountKey', 'default'),
@@ -359,6 +360,13 @@ class LifecycleContract(unittest.TestCase):
             self.agent_update(worker, role='implementer', cwd=str(path), worktree=True,
                               worktreeReady=True, status='completed')
             task = self.work(lead, 'Task', owner=worker['id'])
+            # This archive fixture starts after the assigned worker has read its task.
+            with self.runtime.lock, self.runtime.db() as db:
+                db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=? AND kind='work_ready'",
+                           (worker['id'],))
+                current = self.runtime.agent(worker['id'], db)
+                current['status'] = 'completed'
+                self.runtime.put(db, 'agents', current)
             self.action(worker, task, 'submit', result='Done', checks='Checked', revision=commit)
             if dirty:
                 (path / 'untracked.txt').write_text('keep me\n')

@@ -333,7 +333,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None):
         import queue
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -395,6 +395,13 @@ class AppServer:
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
+            try:
+                monitor_bindings = (supervisor_monitor_bindings(self.proc) if self.supervisor_resumed
+                                    and supervisor_monitor_bindings else [])
+            except Exception:
+                self.proc.detach()
+                self.log.close()
+                raise
             if supervisor_reattached:
                 self.supervisor_reattach_future = concurrent.futures.Future()
                 def restore(_message):
@@ -406,6 +413,21 @@ class AppServer:
                     self.supervisor_reattach_future.set_result(None)
                 # Restore before native events, outside the startup gate.
                 self.callbacks.put((restore, {"_studioReattachBarrier": True}))
+            for binding in monitor_bindings:
+                self.sequence += 1
+                local_id = self.sequence
+                future = concurrent.futures.Future()
+                self.pending[local_id] = future
+                self.proc.remote_to_local[binding["nativeId"]] = local_id
+                if supervisor_monitor_result:
+                    future.add_done_callback(lambda done, binding=binding: self.enqueue(
+                        lambda _: supervisor_monitor_result(binding, done), {}))
+                response = binding.get("response")
+                if response is not None:
+                    if "error" in response:
+                        future.set_exception(NativeRpcError(response["error"]))
+                    else:
+                        future.set_result(response.get("result", {}))
         else:
             self.proc = subprocess.Popen(
                 command, env=env,
@@ -2388,7 +2410,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
                                                       "account:" + account_key, sequence),
                                                   supervisor_reattached=lambda resumed: self.supervisor_reattached(
-                                                      account_key, connection_id, resumed))
+                                                      account_key, connection_id, resumed),
+                                                  supervisor_monitor_bindings=lambda proxy: self.supervisor_monitor_bindings(
+                                                      account_key, connection_id, proxy),
+                                                  supervisor_monitor_result=lambda binding, future: self.supervisor_monitor_result(
+                                                      account_key, connection_id, binding, future))
                             if selected:
                                 server.native_binary = selected
                         else:
@@ -2413,6 +2439,91 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self)
+
+    def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
+        """Bind exact accepted monitor RPCs before replay reads their replies."""
+        if not proxy.resumed or not self.connection_current(account_key, connection_id):
+            return []
+        with self.read_db() as db:
+            rows = db.execute("SELECT record FROM runtime_monitors WHERE "
+                "json_extract(record,'$.status')='lost' AND "
+                "json_extract(record,'$.reattachRecovery.status')='running'").fetchall()
+        bindings = []
+        for row in rows:
+            monitor = json.loads(row[0])
+            operation = monitor.get("operation") or {}
+            if (not isinstance(operation, dict) or operation.get("accountKey") != account_key
+                    or operation.get("agent") != monitor.get("agent")
+                    or operation.get("epoch") != monitor.get("epoch")
+                    or not operation.get("connectionId")
+                    or operation["connectionId"] == connection_id):
+                continue
+            try:
+                proof = proxy.call("operationStatus", operationId="monitor:" + monitor["id"])
+            except RuntimeError as error:
+                if "Unknown supervisor action" not in str(error):
+                    raise
+                proof = {"accepted": False, "reason": "operation_lookup_unsupported"}
+            if not proof.get("accepted"):
+                with self.lock, self.db() as db:
+                    saved = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],)).fetchone()
+                    if saved:
+                        current = json.loads(saved[0])
+                        receipt = current.get("reattachRecovery") or {}
+                        if current.get("status") == "lost" and current.get("operation") == operation:
+                            receipt.update(status="not_reattachable", proof=proof.get("reason"))
+                            current["reattachRecovery"] = receipt
+                            self.put(db, "monitors", current)
+                continue
+            with self.lock, self.db() as db:
+                saved = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],)).fetchone()
+                if not saved:
+                    continue
+                current = json.loads(saved[0])
+                owner = self.agent(monitor["agent"], db)
+                receipt = current.get("reattachRecovery") or {}
+                if (current.get("status") != "lost" or current.get("operation") != operation
+                        or receipt.get("status") != "running" or receipt.get("epoch") != owner.get("epoch")
+                        or owner.get("deletedAt") or owner.get("status") == "paused"
+                        or owner.get("accountKey", "default") != account_key
+                        or not self.connection_current(account_key, connection_id)):
+                    continue
+                current.update(status="running", error=receipt.get("error"),
+                               reattachedConnectionId=connection_id)
+                if receipt.get("finished") is None:
+                    current.pop("finished", None)
+                else:
+                    current["finished"] = receipt["finished"]
+                current.pop("reattachRecovery", None)
+                self.put(db, "monitors", current)
+                notice = db.execute("SELECT status,text FROM runtime_events WHERE id=?",
+                                    ("monitor:" + current["id"],)).fetchone()
+                if notice and notice["status"] == "pending":
+                    try:
+                        previous = json.loads(notice["text"])
+                    except (TypeError, ValueError):
+                        previous = {}
+                    if previous.get("id") == current["id"] and previous.get("status") == "lost":
+                        db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
+                                   ("Native command reattached; discard the provisional disconnect notice.",
+                                    "monitor:" + current["id"]))
+            bindings.append({"key": monitor["id"], "operation": operation,
+                             "nativeId": proof["nativeId"], "response": proof.get("response")})
+        return bindings
+
+    def supervisor_monitor_result(self, account_key, connection_id, binding, future):
+        if self.closed or not self.connection_current(account_key, connection_id):
+            return
+        try:
+            result = future.result()
+            code = result.get("exitCode")
+            if type(code) is not int:
+                code, error = None, "Command returned no exit code; outcome unknown"
+            else:
+                error = None
+        except Exception as cause:
+            code, error = None, str(cause)
+        self.finish_monitor(binding["key"], code, error, operation=binding["operation"])
 
     def supervisor_reattached(self, account_key, connection_id, resumed):
         """Restore only work whose native child was proven to survive this restart."""
@@ -2469,9 +2580,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "accountKey": account_key, "at": now, "turnId": recovery["turnId"],
                         "threadId": recovery.get("threadId"), "epoch": recovery.get("epoch")}
                     self.put(db, "agents", agent)
-            # Task results arrive on the resumed native stream. Standalone
-            # monitor results require their original command RPC Future, which
-            # a new transport cannot reconstruct from the surviving child.
+            # Task results arrive on the resumed native stream. Monitor RPC
+            # replies use the supervisor's saved operation identity and receipt.
             rows = db.execute("SELECT record FROM runtime_tasks WHERE "
                 "json_extract(record,'$.status') IN ('lost','running','starting','approval') "
                 "AND json_extract(record,'$.reattachRecovery.accountKey')=? "
@@ -2525,7 +2635,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pending = [a for a in self.records(db, "agents")
                        if not a.get("deletedAt")
                        and (a.get("restartRecovery") or {}).get("stage") == "pending"]
-        accounts = sorted({a.get("accountKey", "default") for a in pending})
+            monitors = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' "
+                "AND json_extract(record,'$.reattachRecovery.status')='running' "
+                "AND json_type(record,'$.operation')='object'")]
+        accounts = sorted(({a.get("accountKey", "default") for a in pending}
+                           | {(m.get("operation") or {}).get("accountKey") for m in monitors}) - {None})
         if not self.supervisor_mode:
             for account in accounts:
                 self._record_supervisor_restore(account, "not_restored", "supervisor_mode_disabled")
@@ -7349,10 +7464,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 return
             operation = receipt["operation"]
+            reattached = False
             if operation and not self.operation_current(self.agent(operation["agent"]), operation, epoch=False):
-                self.pending_monitor_results.pop(key, None)
-                return
-            self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
+                with self.read_db() as db:
+                    row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
+                monitor = json.loads(row[0]) if row else {}
+                account = operation["accountKey"]
+                connection = self.connection_ids.get(account)
+                if (monitor.get("status") != "running" or monitor.get("operation") != operation
+                        or monitor.get("reattachedConnectionId") != connection
+                        or not connection or not self.connection_current(account, connection)):
+                    self.pending_monitor_results.pop(key, None)
+                    return
+                reattached = True
+            if reattached:
+                from codex_monitor_recovery import recover_monitor_results
+                with self.db() as db:
+                    recovered = recover_monitor_results(self, db, keys=[key])
+                    if key not in recovered["acknowledge"]:
+                        raise OSError("The reattached monitor result is not committed")
+            else:
+                self._finish_monitor(key, receipt["code"], receipt["error"], finished=receipt["finished"])
             acknowledge_monitor_result(self.root, key)
         except (sqlite3.Error, OSError) as error:
             receipt["attempts"] += 1
@@ -7449,6 +7581,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 AND json_type(m.record,'$.operation.connectionId')='text'
                 AND json_extract(m.record,'$.operation.connectionId')<>''
                 AND json_extract(m.record,'$.operation.connectionId')<>c.connection
+                AND (json_extract(m.record,'$.reattachedConnectionId') IS NULL
+                     OR json_extract(m.record,'$.reattachedConnectionId')<>c.connection)
                 AND json_extract(m.record,'$.operation.accountKey')=c.account
                 AND json_extract(m.record,'$.operation.agent')=a.id
                 AND json_extract(m.record,'$.operation.epoch')=json_extract(a.record,'$.epoch')
@@ -7520,6 +7654,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     continue
                 if (m.get("status") not in {"running", "lost"} or m.get("ruleId")
                         or m.get("exitCode") is not None
+                        or m.get("reattachedConnectionId") == self.connection_ids.get(
+                            operation.get("accountKey"))
                         or (m.get("status") == "running" and m.get("finished") is not None)
                         or event["kind"] != "monitor_exit" or event["status"] != "cancelled"):
                     continue

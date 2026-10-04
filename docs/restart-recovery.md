@@ -30,10 +30,15 @@ menu can disable that service without stopping the server or its active work.
   one continuation when no operation or input has an unknown outcome.
 - In supervisor mode, a replacement backend first opens each stable native
   handle. When the supervisor confirms that the same live child resumed, Studio
-  restores that handle's exact in-flight turns, monitors, and background tasks
+  restores that handle's exact in-flight turns, accepted monitor commands, and background tasks
   before it consumes journal replay. The existing turn continues; Studio does
   not submit it again. The journal cursor and transcript item identities keep
   replayed output and completion idempotent.
+- The supervisor saves each monitor command reply under its accepted operation ID.
+  A replacement backend uses that ID to bind the reply to the original monitor.
+  It keeps the monitor running while the native command waits to finish.
+  If no matching operation exists in the same native generation, the monitor
+  stays lost. Studio does not run the command again.
 - A new child generation, dead or unverified child, fallback backend, disabled
   supervisor, or failed handle open does not grant reattachment. Existing
   interrupted or uncertain recovery remains in force, and accepted input is
