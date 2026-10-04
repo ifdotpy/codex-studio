@@ -1001,12 +1001,13 @@ export function useMessages(
     if (kind === "room") {
       const page = roomPages.current.get(scope);
       if (!page) return;
+      const cursor =
+        page.before ?? (typeof before === "number" ? before : Number(before));
+      if (!Number.isSafeInteger(cursor) || cursor < 0) return;
       const d = await syncGet("/api/agent-chat", {
         query: {
           room: id,
-          before:
-            page.before ??
-            (typeof before === "number" ? before : Number(before)),
+          before: cursor,
           limit: 100,
         },
       });
