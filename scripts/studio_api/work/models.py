@@ -96,7 +96,6 @@ class WorkBody(OperationBody):
 
 class QueueCancelBody(OperationBody):
     action: Literal["cancel"]
-    id: StrictStr | None = None
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
@@ -111,7 +110,6 @@ class QueueCancelBody(OperationBody):
 
 class QueueEditBody(OperationBody):
     action: Literal["edit"]
-    id: StrictStr | None = None
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
@@ -127,7 +125,6 @@ class QueueEditBody(OperationBody):
 
 class QueueFirstBody(OperationBody):
     action: Literal["first", "send_now"]
-    id: StrictStr | None = None
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
