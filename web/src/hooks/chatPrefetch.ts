@@ -33,7 +33,6 @@ export function useChatPrefetch(
     let preferred: string | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const running = new Map<string, AbortController>();
-    const checked = new Set<string>();
     const failedHistory = new Set<string>();
     const pendingHistory = new Set<string>();
     const pendingProgress = new Set<string>();
@@ -49,7 +48,7 @@ export function useChatPrefetch(
     const watchForegroundTranscript = () => {
       const snapshot = current.current;
       const id = snapshot.data?.threads.some(
-        (agent) => agent.id === snapshot.opened,
+        (agent) => agent.id === snapshot.opened && agent.source === "managed",
       )
         ? snapshot.opened
         : null;
@@ -69,7 +68,6 @@ export function useChatPrefetch(
       const stop = watchResourceChanges(
         { kind: "transcript", agentId: id },
         () => {
-          checked.delete(id);
           failedHistory.delete(id);
           pendingHistory.add(id);
           schedule();
@@ -95,10 +93,7 @@ export function useChatPrefetch(
               id,
               controller.signal,
             );
-            if (done && !controller.signal.aborted) {
-              if (pendingHistory.has(id)) failedHistory.delete(id);
-              else checked.add(id);
-            } else if (!controller.signal.aborted) failedHistory.add(id);
+            if (!done && !controller.signal.aborted) failedHistory.add(id);
           }
           if (progress && !controller.signal.aborted) {
             pendingProgress.delete(id);
@@ -147,7 +142,6 @@ export function useChatPrefetch(
         if (!targets.has(id)) {
           stop();
           transcriptStops.delete(id);
-          checked.delete(id);
           pendingHistory.delete(id);
           failedHistory.delete(id);
           running.get(id)?.abort();
@@ -184,7 +178,6 @@ export function useChatPrefetch(
       if (current.current.opened === id) return;
       preferred = id;
       if (!peekTranscript(workspaceId, id)) {
-        checked.delete(id);
         failedHistory.delete(id);
         pendingHistory.add(id);
       }

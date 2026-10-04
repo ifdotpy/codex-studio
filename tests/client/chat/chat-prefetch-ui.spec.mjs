@@ -114,12 +114,11 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       streams = [],
       entityStreams = [],
       held = [];
+    const initializedResources = new Set();
     let holdNetwork = false,
       holdWorkspaceB = false,
       staleB = false;
     let staleReplies = 0,
-      delayedA = false,
-      rawA,
       releaseA;
     let notificationRevision = 0;
     context = await browser.newContext({
@@ -159,6 +158,27 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       }
       if (url.pathname === "/api/sync/stream") {
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const newlySubscribed = resources.some((resource) => {
+          const key = JSON.stringify(resource);
+          if (initializedResources.has(key)) return false;
+          initializedResources.add(key);
+          return true;
+        });
+        if (newlySubscribed) {
+          notificationRevision++;
+          return route.fulfill({
+            status: 200,
+            contentType: "text/event-stream",
+            body: `event: resources\ndata: ${JSON.stringify({
+              protocol: 3,
+              workspaceId,
+              epoch: "prefetch-epoch",
+              revision: notificationRevision,
+              reason: "initial",
+              resources,
+            })}\n\n`,
+          });
+        }
         if (resources.some((resource) => resource.kind === "state")) {
           entityStreams.push(route);
           return;
@@ -205,10 +225,6 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       }
       if (url.pathname === "/api/transcript") {
         const id = url.searchParams.get("id");
-        if (id === a.id && !rawA) {
-          rawA = route;
-          return;
-        }
         if (holdWorkspaceB && id === b.id) {
           held.push(route);
           return;
@@ -245,12 +261,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         held.push(route);
         return;
       }
-      if (id === a.id && !delayedA) {
-        delayedA = true;
+      if (id === a.id && !releaseA)
         await new Promise((resolve) => {
           releaseA = resolve;
         });
-      }
       let value = values.get(id);
       if (!value)
         return route.fulfill({
@@ -283,7 +297,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       });
     };
     await page.route("**/api/**", handle);
-    const emitResourceChange = async (resources) => {
+    const emitResourceChange = async (resources, reason = "change") => {
       await until(() => entityStreams.length > 0, "A resource stream is ready");
       notificationRevision = Math.max(notificationRevision, entityMaxSeq) + 1;
       for (const stream of entityStreams.splice(0))
@@ -296,7 +310,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               workspaceId,
               epoch: "prefetch-epoch",
               revision: notificationRevision,
-              reason: "change",
+              reason,
               resources,
             })}\n\n`,
           })
@@ -336,30 +350,30 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
     await page.goto(origin);
     await until(() => !!releaseA, "The first foreground request must start");
+    const selectedBeforeForegroundRelease = await selected();
     await page.waitForTimeout(1250);
     assert.equal(
       reads.some((read) => read.id === b.id),
       false,
-      "Background requests wait for the first foreground transcript",
+      `Background requests wait for ${selectedBeforeForegroundRelease}: ${JSON.stringify(reads)}`,
     );
     assert.equal(streams.includes(b.id), false);
     releaseA();
     await marker("A-current").waitFor();
     await until(
-      () => !!rawA,
-      "The delayed initial projection exercised raw HTTP",
-    );
-    await rawA.fulfill({ json: payload(a, "raw-obsolete") });
-    await page.waitForTimeout(100);
-    assert.equal(
-      await marker("raw-obsolete").count(),
-      0,
-      "Late raw HTTP cannot replace a projection",
-    );
-    await until(
       () => reads.some((read) => read.id === b.id && read.seq === 300),
       "Never-opened B must load in the background",
     );
+    let stableBReads = reads.filter((read) => read.id === b.id).length;
+    let stableSince = Date.now();
+    while (Date.now() - stableSince < 400) {
+      await page.waitForTimeout(25);
+      const currentBReads = reads.filter((read) => read.id === b.id).length;
+      if (currentBReads !== stableBReads) {
+        stableBReads = currentBReads;
+        stableSince = Date.now();
+      }
+    }
     assert.equal(await selected(), a.name);
     assert.equal(
       streams.includes(b.id),
@@ -399,6 +413,47 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       bReads,
       "Stable chat revisions do not trigger periodic history pulls",
     );
+    const beforePause = reads.filter((read) => read.id === b.id).length;
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: false,
+      });
+      window.dispatchEvent(new Event("offline"));
+    });
+    values.set(b.id, { seq: 302, data: payload(b, "B-resume") });
+    await page.waitForTimeout(200);
+    assert.equal(
+      reads.filter((read) => read.id === b.id).length,
+      beforePause,
+      "Hidden/offline prefetch stops history reads",
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: true,
+      });
+      window.dispatchEvent(new Event("online"));
+    });
+    await emitResourceChange(
+      [{ kind: "state" }, { kind: "transcript", agentId: b.id }],
+      "reconnect",
+    );
+    await until(
+      () => reads.some((read) => read.id === b.id && read.seq === 302),
+      "A resumed transcript baseline must refetch the changed cached chat",
+    );
+    const readsAfterResume = reads.filter((read) => read.id === b.id).length;
     await page.evaluate(() =>
       window.dispatchEvent(
         new PageTransitionEvent("pageshow", { persisted: true }),
@@ -407,7 +462,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await page.waitForTimeout(750);
     assert.equal(
       reads.filter((read) => read.id === b.id).length,
-      bReads,
+      readsAfterResume,
       "Resume keeps unchanged chat revisions instead of pulling every history again",
     );
     assert.equal(await selected(), a.name);
@@ -443,7 +498,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           {
             databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
             documentId: `transcript:${b.id}`,
-            sequence: 301,
+            sequence: 302,
           },
         ),
       "RxDB must persist B's refreshed projection before network interruption",
@@ -471,8 +526,9 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           const frame = () => {
             if (window.captureSwitch !== capture) return;
             if (
-              document.querySelector("#conversation-title")?.textContent ===
-              title
+              document
+                .querySelector("#conversation-title")
+                ?.textContent?.trim() === title.trim()
             ) {
               const ids = [
                 ...document.querySelectorAll("#messages [data-message]"),
@@ -527,7 +583,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         );
       return elapsed;
     };
-    const coldCached = await switchCached(b.id, currentBName, "B-newest", "A-");
+    const coldCached = await switchCached(b.id, currentBName, "B-resume", "A-");
     assert.equal(await marker("B-first").count(), 0);
     await page.locator("#messages").evaluate((element) => {
       element.scrollTop = 1100;
@@ -550,7 +606,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           .evaluate((element) => element.scrollTop)) - savedA,
       ) < 2,
     );
-    const revisitB = await switchCached(b.id, currentBName, "B-newest", "A-");
+    const revisitB = await switchCached(b.id, currentBName, "B-resume", "A-");
     assert.ok(
       Math.abs(
         (await page
@@ -578,7 +634,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       0,
       "A late lower-sequence RxDB reply cannot roll history back",
     );
-    assert.equal(await marker("B-newest").count(), 1);
+    assert.equal(await marker("B-resume").count(), 1);
 
     // Both appended and focused history must survive a return before any HTTP reply.
     await page.locator(`[data-chat="${a.id}"]`).click();
@@ -598,7 +654,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         "The historical page has a measurable scroll position",
       );
       holdNetwork = true;
-      await switchCached(b.id, currentBName, "B-newest", "A-");
+      await switchCached(b.id, currentBName, "B-resume", "A-");
       const elapsed = await switchCached(a.id, a.name, tag, "B-", saved);
       holdNetwork = false;
       for (const route of held.splice(0)) await handle(route).catch(() => {});
@@ -647,7 +703,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await page.locator(`[data-chat="${b.id}"]`).click();
     await page.waitForTimeout(200);
     assert.equal(
-      await marker("B-newest").count(),
+      await marker("B-resume").count(),
       0,
       "An old workspace cannot supply a same-ID chat",
     );

@@ -639,7 +639,9 @@ export function useMessages(
                 }),
               current,
             );
-            if (!current() || !result || result.checkpoint === cursor) return;
+            if (!current() || !result) return;
+            setNotice("");
+            if (result.checkpoint === cursor) return;
             const bounded = boundTranscriptItems(
               result.items,
               sizeOfMessage,

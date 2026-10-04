@@ -32,6 +32,7 @@ type TabSubscriptions = {
   tabId: string;
   resources: unknown;
   tokenRates: unknown;
+  reset: unknown;
 };
 type TabEvent = {
   kind: "resource-event";
@@ -69,7 +70,12 @@ type TabMessage =
   | LeaderHeartbeat
   | TabStatus;
 type OutgoingMessage =
-  | { kind: "subscriptions"; resources: ResourceRef[]; tokenRates: boolean }
+  | {
+      kind: "subscriptions";
+      resources: ResourceRef[];
+      tokenRates: boolean;
+      reset: boolean;
+    }
   | { kind: "resource-event"; event: ResourceChangeEvent }
   | { kind: "token-rates"; event: ResourceTokenRatesEvent }
   | { kind: "tab-heartbeat" }
@@ -211,7 +217,7 @@ function dispatchResource(resource: ResourceRef, version: Version) {
   const previous = resourceValues.get(key);
   if (
     previous?.epoch === version.epoch &&
-    previous.revision === version.revision
+    previous.revision >= version.revision
   )
     return;
   resourceValues.set(key, version);
@@ -232,9 +238,10 @@ function dispatchEvent(event: ResourceChangeEvent) {
     lastTokenEvent = undefined;
     resourceValues.clear();
   }
-  if (lastRevision !== undefined && event.revision < lastRevision) return;
+  const staleRevision =
+    lastRevision !== undefined && event.revision < lastRevision;
   const isDuplicate = event.revision === lastRevision;
-  if (!isDuplicate) lastRevision = event.revision;
+  if (!staleRevision && !isDuplicate) lastRevision = event.revision;
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
@@ -247,6 +254,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
   const local = localResources().map(resourceKey);
   if (
     event.reason !== "change" &&
+    !staleRevision &&
     !isDuplicate &&
     local.every((key) =>
       event.resources.some((resource) => resourceKey(resource) === key),
@@ -380,6 +388,13 @@ function receiveChannelMessage(value: unknown) {
     )
       return;
     const previous = peerSubscriptions.get(record.tabId);
+    const priorResources = new Set(
+      (previous?.resources || []).map(resourceKey),
+    );
+    const reset = record.reset === true;
+    const added = record.resources.filter(
+      (resource) => reset || !priorResources.has(resourceKey(resource)),
+    );
     peerSubscriptions.set(record.tabId, {
       resources: record.resources,
       tokenRates: record.tokenRates === true,
@@ -387,8 +402,12 @@ function receiveChannelMessage(value: unknown) {
     });
     if (owner) {
       updateOwnerStream();
-      replayResourceBaseline(record.resources);
-      if (record.tokenRates === true && !previous?.tokenRates && lastTokenEvent)
+      replayResourceBaseline(added);
+      if (
+        record.tokenRates === true &&
+        (!previous?.tokenRates || reset) &&
+        lastTokenEvent
+      )
         broadcast({ kind: "token-rates", event: lastTokenEvent });
     }
   } else if (record.kind === "tab-heartbeat") {
@@ -423,29 +442,39 @@ function receiveChannelMessage(value: unknown) {
 
 function replayResourceBaseline(resources: ResourceRef[]) {
   if (!lastEpoch || lastRevision === undefined) return;
-  const known = resources.filter((resource) =>
-    resourceValues.has(resourceKey(resource)),
-  );
-  if (!known.length) return;
-  broadcast({
-    kind: "resource-event",
-    event: {
-      protocol: 3,
-      workspaceId: workspaceId!,
-      epoch: lastEpoch,
-      revision: lastRevision,
-      reason: "initial",
-      resources: known,
-    },
-  });
+  const groups = new Map<
+    string,
+    { version: Version; resources: ResourceRef[] }
+  >();
+  for (const resource of resources) {
+    const version = resourceValues.get(resourceKey(resource));
+    if (!version) continue;
+    const key = `${version.epoch}:${version.revision}`;
+    const group = groups.get(key) || { version, resources: [] };
+    group.resources.push(resource);
+    groups.set(key, group);
+  }
+  for (const { version, resources: known } of groups.values())
+    broadcast({
+      kind: "resource-event",
+      event: {
+        protocol: 3,
+        workspaceId: workspaceId!,
+        epoch: version.epoch,
+        revision: version.revision,
+        reason: "initial",
+        resources: known,
+      },
+    });
 }
 
-function announceSubscriptions() {
+function announceSubscriptions(reset = false) {
   if (!coordinatorReady || !workspaceId) return;
   broadcast({
     kind: "subscriptions",
     resources: localResources(),
     tokenRates: tokenRateListeners.size > 0,
+    reset,
   });
   if (owner || independent) updateOwnerStream();
 }
@@ -585,11 +614,6 @@ function updateOwnerStream() {
 function sendPeerHeartbeat() {
   if (!coordinatorReady || document.hidden || navigator.onLine === false)
     return;
-  broadcast({
-    kind: "subscriptions",
-    resources: localResources(),
-    tokenRates: tokenRateListeners.size > 0,
-  });
   broadcast({ kind: "tab-heartbeat" });
   if (owner) {
     broadcast({ kind: "leader-heartbeat" });
@@ -725,7 +749,7 @@ function resumeTransport() {
     if (!owner && !independent) startAsOwner();
   }
   if (owner || independent) openSource();
-  announceSubscriptions();
+  announceSubscriptions(true);
 }
 
 function stopCoordinator() {
@@ -774,7 +798,12 @@ function startCoordinator() {
     if (document.hidden) {
       setStatus("degraded");
       releaseStream();
-      broadcast({ kind: "subscriptions", resources: [], tokenRates: false });
+      broadcast({
+        kind: "subscriptions",
+        resources: [],
+        tokenRates: false,
+        reset: false,
+      });
     } else resumeTransport();
   };
   window.addEventListener("offline", onlineHandler);
@@ -799,7 +828,10 @@ export function watchResourceChanges(
   const known = resourceValues.get(key);
   if (known) callback();
   startCoordinator();
-  announceSubscriptions();
+  // A first local listener may attach after another tab already added this
+  // resource to the shared stream union. Ask the owner for its baseline even
+  // when the resource is not new to this tab's aggregate subscription list.
+  announceSubscriptions(!known);
   let stopped = false;
   return () => {
     if (stopped) return;

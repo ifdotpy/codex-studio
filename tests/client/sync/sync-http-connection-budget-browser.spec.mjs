@@ -18,15 +18,27 @@ test("Sync http connection budget browser", async ({
   const cache = await mkdtemp(join(tmpdir(), "studio-sync-connection-budget-"));
   const workspaceId = "b".repeat(32);
   const streams = new Set();
+  const streamResources = new Map();
   const held = new Set();
   const requests = [];
   const messages = new Map();
   let revision = 1;
-  const generationState = () => ({
-    protocol: 2,
-    workspaceId,
-    generations: { drafts: revision, state: revision, transcripts: revision },
-  });
+  const changeState = () => {
+    for (const response of streams) {
+      const refs = streamResources.get(response) || [];
+      if (!refs.some((resource) => resource.kind === "state")) continue;
+      response.write(
+        `event: resources\ndata: ${JSON.stringify({
+          protocol: 3,
+          workspaceId,
+          epoch: "budget-epoch",
+          revision,
+          reason: "change",
+          resources: [{ kind: "state" }],
+        })}\n\n`,
+      );
+    }
+  };
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),
@@ -55,11 +67,9 @@ test("Sync http connection budget browser", async ({
           import {createRoot} from "react-dom/client";
           import {useSnapshot} from "/src/hooks.ts";
           import {useSyncedDrafts} from "/src/sync/drafts.ts";
-          import {subscribeProjection,watchTranscriptRevisions,prefetchTranscript} from "/src/sync/client.ts";
-          import {syncApi} from "/src/api.ts";
+          import {subscribeProjection,watchResourceChanges,prefetchTranscript} from "/src/sync/client.ts";
           import {durableSend} from "/src/sync/send.ts";
           window.prefetchTranscript = prefetchTranscript;
-          window.syncApi = syncApi;
           window.durableSend = durableSend;
           window.mount = selected => createRoot(document.getElementById("app")).render(
             React.createElement(function Fixture() {
@@ -67,7 +77,7 @@ test("Sync http connection budget browser", async ({
               useSyncedDrafts();
               useEffect(() => subscribeProjection("transcript:" + selected, () => {}, () => {}), []);
               useEffect(() => window.snapshot.workspaceId ?
-                watchTranscriptRevisions(window.snapshot.workspaceId, () => {}) : undefined,
+                watchResourceChanges({kind:"transcript",agentId:selected}, () => {}) : undefined,
                 [window.snapshot.workspaceId]);
               return React.createElement("div",{id:"error"}, window.snapshot.error);
             })
@@ -106,8 +116,6 @@ test("Sync http connection budget browser", async ({
             supportedVersions: [1, 2],
             capabilities: ["streamChanges"],
           });
-        else if (url.pathname === "/api/sync/generations")
-          json(generationState());
         else if (url.pathname === "/api/sync/stream") {
           res.writeHead(200, {
             "Content-Type": "text/event-stream",
@@ -115,7 +123,22 @@ test("Sync http connection budget browser", async ({
           });
           res.write(": connected\n\n");
           streams.add(res);
-          res.on("close", () => streams.delete(res));
+          const refs = JSON.parse(url.searchParams.get("resources") || "[]");
+          streamResources.set(res, refs);
+          res.write(
+            `event: resources\ndata: ${JSON.stringify({
+              protocol: 3,
+              workspaceId,
+              epoch: "budget-epoch",
+              revision,
+              reason: "initial",
+              resources: refs,
+            })}\n\n`,
+          );
+          res.on("close", () => {
+            streams.delete(res);
+            streamResources.delete(res);
+          });
         } else if (url.pathname === "/api/sync/pull") {
           const scope = url.searchParams.get("scope");
           if (scope.startsWith("transcript:warm-")) {
@@ -181,7 +204,15 @@ test("Sync http connection budget browser", async ({
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     await Promise.all(pages.map((page) => page.goto(origin + "/check")));
     await Promise.all(
-      pages.map((page) => page.waitForFunction(() => window.mount)),
+      pages.map((page) =>
+        page
+          .waitForFunction(() => window.mount, undefined, { timeout: 15_000 })
+          .catch(async (error) => {
+            throw new Error(
+              `${error.message}; page errors: ${JSON.stringify(errors)}`,
+            );
+          }),
+      ),
     );
     await Promise.all(
       pages.map((page, index) =>
@@ -240,8 +271,7 @@ test("Sync http connection budget browser", async ({
       (request) => request.path === "/api/sync/pull",
     ).length;
     revision++;
-    for (const response of streams)
-      response.write(`data: ${JSON.stringify(generationState())}\n\n`);
+    changeState();
     await Promise.all(
       pages.map((page) =>
         page.waitForFunction(

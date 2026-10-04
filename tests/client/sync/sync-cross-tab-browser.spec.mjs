@@ -23,23 +23,36 @@ test("sync-cross-tab-browser @performance", async ({
   const otherWorkspaceId = "a".repeat(32);
   const workspaceFor = (req) =>
     req.headers.host?.startsWith("localhost:") ? otherWorkspaceId : workspaceId;
-  const generationsByWorkspace = new Map([
-    [workspaceId, { drafts: 0, state: 0, transcripts: 0 }],
-    [otherWorkspaceId, { drafts: 0, state: 0, transcripts: 0 }],
-  ]);
-  let generationsWorkspaceOverride;
   const streams = new Set();
   let streamsOpened = 0;
   const streamWorkspaces = new Map();
-  const sendGeneration = (currentWorkspace = workspaceId) => {
-    const value = JSON.stringify({
-      protocol: 2,
-      workspaceId: currentWorkspace,
-      generations: generationsByWorkspace.get(currentWorkspace),
-    });
-    for (const response of streams)
-      if (streamWorkspaces.get(response) === currentWorkspace)
-        response.write(`data: ${value}\n\n`);
+  const streamResources = new Map();
+  const revisions = new Map();
+  const sendResourceEvent = (response, currentWorkspace, reason, resources) => {
+    const revision = (revisions.get(currentWorkspace) || 0) + 1;
+    revisions.set(currentWorkspace, revision);
+    response.write(
+      `event: resources\ndata: ${JSON.stringify({
+        protocol: 3,
+        workspaceId: currentWorkspace,
+        epoch: "tab-epoch",
+        revision,
+        reason,
+        resources,
+      })}\n\n`,
+    );
+  };
+  const sendChange = (currentWorkspace, resource) => {
+    for (const response of streams) {
+      if (streamWorkspaces.get(response) !== currentWorkspace) continue;
+      const resources = streamResources.get(response) || [];
+      if (
+        resources.some(
+          (entry) => JSON.stringify(entry) === JSON.stringify(resource),
+        )
+      )
+        sendResourceEvent(response, currentWorkspace, "change", [resource]);
+    }
   };
   const apiFixture = (req, res, next) => {
     const path = new URL(req.url || "/", "http://localhost").pathname;
@@ -50,19 +63,6 @@ test("sync-cross-tab-browser @performance", async ({
       const currentWorkspace = workspaceFor(req);
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ workspaceId: currentWorkspace }));
-    } else if (path === "/api/sync/generations") {
-      const currentWorkspace =
-        workspaceFor(req) === workspaceId
-          ? (generationsWorkspaceOverride ?? workspaceId)
-          : otherWorkspaceId;
-      res.setHeader("Content-Type", "application/json");
-      res.end(
-        JSON.stringify({
-          protocol: 2,
-          workspaceId: currentWorkspace,
-          generations: generationsByWorkspace.get(currentWorkspace),
-        }),
-      );
     } else if (path === "/api/sync/pull") {
       const currentWorkspace = workspaceFor(req);
       res.setHeader("Content-Type", "application/json");
@@ -83,10 +83,17 @@ test("sync-cross-tab-browser @performance", async ({
       });
       streams.add(res);
       streamWorkspaces.set(res, currentWorkspace);
-      sendGeneration(currentWorkspace);
+      const resources = JSON.parse(
+        new URL(req.url || "/", "http://localhost").searchParams.get(
+          "resources",
+        ) || "[]",
+      );
+      streamResources.set(res, resources);
+      sendResourceEvent(res, currentWorkspace, "initial", resources);
       res.on("close", () => {
         streams.delete(res);
         streamWorkspaces.delete(res);
+        streamResources.delete(res);
       });
     } else next();
   };
@@ -141,6 +148,10 @@ test("sync-cross-tab-browser @performance", async ({
           this.addEventListener("message", (event) =>
             window.__syncDiagnostics.sse.push(event.data),
           );
+          for (const name of ["resources", "heartbeat", "token-rates"])
+            this.addEventListener(name, (event) =>
+              window.__syncDiagnostics.sse.push(event.data),
+            );
         }
       };
       const NativeChannel = window.BroadcastChannel;
@@ -167,14 +178,21 @@ test("sync-cross-tab-browser @performance", async ({
         window.workspace = identity.workspaceId;
         window.syncDb = identity.db;
         window.counts = { state: 0, transcripts: 0 };
-        window.stopState = client.watchSyncInvalidations("state", () => {
-          window.counts.state++;
-        });
-        window.stopTranscript = client.watchSyncInvalidations(
-          "transcript:session-one",
+        window.stopState = client.watchResourceChanges(
+          { kind: "state" },
+          () => {
+            window.counts.state++;
+          },
+        );
+        window.stopTranscript = client.watchResourceChanges(
+          { kind: "transcript", agentId: "session-one" },
           () => {
             window.counts.transcripts++;
           },
+        );
+        window.states = [];
+        window.stopConnection = client.watchResourceConnection((state) =>
+          window.states.push(state),
         );
       });
     }
@@ -189,6 +207,7 @@ test("sync-cross-tab-browser @performance", async ({
     await waitFor(
       () => streams.size === 1 && streamsOpened >= 1,
       "the eight tabs did not settle on exactly one server stream",
+      18_000,
     );
     await Promise.all(
       pages.map((page) =>
@@ -196,11 +215,8 @@ test("sync-cross-tab-browser @performance", async ({
           () =>
             window.workspace &&
             window.counts &&
-            (window.__syncDiagnostics.sse.length > 0 ||
-              window.__syncDiagnostics.received.some(
-                (message) =>
-                  message.kind === "heartbeat" && message.generations,
-              )),
+            window.counts.state > 0 &&
+            window.counts.transcripts > 0,
           null,
           { timeout: 5000 },
         ),
@@ -210,8 +226,27 @@ test("sync-cross-tab-browser @performance", async ({
     const before = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
     );
-    generationsByWorkspace.get(workspaceId).transcripts++;
-    sendGeneration();
+    const lateSubscriber = await context.newPage();
+    await lateSubscriber.goto(`${origin}/sync-check`);
+    await lateSubscriber.evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.lateCount = 0;
+      window.counts = { state: 0, transcripts: 0 };
+      window.stopLate = client.watchResourceChanges(
+        { kind: "transcript", agentId: "session-one" },
+        () => {
+          window.lateCount++;
+          window.counts.transcripts++;
+        },
+      );
+    });
+    await lateSubscriber.waitForFunction(() => window.lateCount > 0);
+    pages.push(lateSubscriber);
+    before.push(await lateSubscriber.evaluate(() => ({ ...window.counts })));
+    sendChange(workspaceId, {
+      kind: "transcript",
+      agentId: "session-one",
+    });
     try {
       await Promise.all(
         pages.map((page, index) =>
@@ -240,6 +275,85 @@ test("sync-cross-tab-browser @performance", async ({
       );
       throw error;
     }
+    await pages[0].evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.panelCallbacks = 0;
+      window.stopPanelCallbacks = client.watchResourceChanges(
+        { kind: "panel", agentId: "stable-panel" },
+        () => window.panelCallbacks++,
+      );
+    });
+    await pages[2].evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.costCallbacks = 0;
+      window.stopCostCallbacks = client.watchResourceChanges(
+        { kind: "costs" },
+        () => window.costCallbacks++,
+      );
+    });
+    await Promise.all([
+      pages[0].waitForFunction(() => window.panelCallbacks > 0),
+      pages[2].waitForFunction(() => window.costCallbacks > 0),
+    ]);
+    const costBeforeUnrelated = await pages[2].evaluate(
+      () => window.costCallbacks,
+    );
+    sendChange(workspaceId, { kind: "costs" });
+    await pages[2].waitForFunction(
+      (prior) => window.costCallbacks > prior,
+      costBeforeUnrelated,
+    );
+    const panelFollower = pages[1];
+    await panelFollower.evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.latePanelCallbacks = 0;
+      window.stopLatePanel = client.watchResourceChanges(
+        { kind: "panel", agentId: "stable-panel" },
+        () => window.latePanelCallbacks++,
+      );
+    });
+    await panelFollower.waitForFunction(
+      () => window.latePanelCallbacks > 0,
+      undefined,
+      { timeout: 5000 },
+    );
+    const latePanelBaseline = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
+    );
+    const latePanelAfterUnrelated = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
+    );
+    assert.equal(
+      latePanelAfterUnrelated,
+      latePanelBaseline,
+      "An unrelated resource event does not change the panel callback version",
+    );
+    sendChange(workspaceId, { kind: "panel", agentId: "stable-panel" });
+    await panelFollower.waitForFunction(
+      (prior) => window.latePanelCallbacks > prior,
+      latePanelAfterUnrelated,
+      { timeout: 5000 },
+    );
+    const stablePanelCallbacks = await panelFollower.evaluate(
+      () => window.latePanelCallbacks,
+    );
+    const costBeforeHeartbeat = await pages[2].evaluate(
+      () => window.costCallbacks,
+    );
+    sendChange(workspaceId, { kind: "costs" });
+    await pages[2].waitForFunction(
+      (prior) => window.costCallbacks > prior,
+      costBeforeHeartbeat,
+    );
+    await panelFollower.waitForTimeout(3500);
+    assert.equal(
+      await panelFollower.evaluate(() => window.latePanelCallbacks),
+      stablePanelCallbacks,
+      "Peer subscription heartbeats do not replay unchanged resources after unrelated traffic",
+    );
+    await pages[0].evaluate(() => window.stopPanelCallbacks());
+    await pages[2].evaluate(() => window.stopCostCallbacks());
+    await panelFollower.evaluate(() => window.stopLatePanel());
     const initialOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
         (await page.evaluate(() =>
@@ -251,6 +365,7 @@ test("sync-cross-tab-browser @performance", async ({
           : Promise.reject(),
       ),
     );
+    const streamsBeforeHidingOwner = streamsOpened;
     await pages[initialOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -258,13 +373,38 @@ test("sync-cross-tab-browser @performance", async ({
       });
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await waitFor(
-      () => streams.size === 0,
-      "a hidden stream owner did not release its SSE and lease",
-    );
+    try {
+      await pages[initialOwnerIndex].waitForFunction(
+        () =>
+          window.__syncDiagnostics.sources.every(
+            (source) => source.readyState === EventSource.CLOSED,
+          ),
+        null,
+        { timeout: 5000 },
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        pages.map((page) =>
+          page.evaluate(() => ({
+            hidden: document.hidden,
+            states: window.states,
+            sources: window.__syncDiagnostics.sources.map((source) => ({
+              readyState: source.readyState,
+              url: source.url,
+            })),
+            sent: window.__syncDiagnostics.sent,
+            received: window.__syncDiagnostics.received,
+          })),
+        ),
+      );
+      process.stderr.write(
+        `owner release diagnostic: ${JSON.stringify({ streamsOpened, streamCount: streams.size, diagnostics })}\n`,
+      );
+      throw error;
+    }
     const visibilityFailoverStarted = Date.now();
     await waitFor(
-      () => streams.size === 1,
+      () => streams.size === 1 && streamsOpened > streamsBeforeHidingOwner,
       "a visible peer did not take ownership after the active owner was hidden",
       5000,
     );
@@ -272,6 +412,82 @@ test("sync-cross-tab-browser @performance", async ({
       Date.now() - visibilityFailoverStarted <= 5000,
       "visible-peer ownership recovery exceeded five seconds",
     );
+    const resumedOwnerIndex = await Promise.any(
+      pages.map(async (page, index) =>
+        (await page.evaluate(() =>
+          window.__syncDiagnostics.sources.some(
+            (source) => source.readyState === EventSource.OPEN,
+          ),
+        ))
+          ? index
+          : Promise.reject(),
+      ),
+    );
+    const followerIndex = pages.findIndex(
+      (_, index) => index !== resumedOwnerIndex && index !== initialOwnerIndex,
+    );
+    const follower = pages[followerIndex];
+    await follower.evaluate(async () => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: true,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await follower.waitForTimeout(100);
+    await follower.evaluate(async () => {
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        value: false,
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      const client = await import("/src/sync/client.ts");
+      window.resumedPanelCount = 0;
+      window.stopResumedPanel = client.watchResourceChanges(
+        { kind: "panel", agentId: "resumed-follower" },
+        () => window.resumedPanelCount++,
+      );
+    });
+    await waitFor(
+      () =>
+        [...streamResources.values()].some((resources) =>
+          resources.some(
+            (resource) =>
+              resource.kind === "panel" &&
+              resource.agentId === "resumed-follower",
+          ),
+        ),
+      "the resumed follower's new ref was not added to the owner's stream",
+    );
+    await follower.waitForFunction(
+      () => window.resumedPanelCount > 0,
+      undefined,
+      { timeout: 5000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 11_000));
+    assert.ok(
+      [...streamResources.values()].some((resources) =>
+        resources.some(
+          (resource) =>
+            resource.kind === "panel" &&
+            resource.agentId === "resumed-follower",
+        ),
+      ),
+      "the resumed follower kept its ref advertised past peer expiry",
+    );
+    const resumedBefore = await follower.evaluate(
+      () => window.resumedPanelCount,
+    );
+    sendChange(workspaceId, {
+      kind: "panel",
+      agentId: "resumed-follower",
+    });
+    await follower.waitForFunction(
+      (previous) => window.resumedPanelCount > previous,
+      resumedBefore,
+      { timeout: 5000 },
+    );
+    await follower.evaluate(() => window.stopResumedPanel());
     await pages[initialOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -299,17 +515,35 @@ test("sync-cross-tab-browser @performance", async ({
       "the owner stream did not reconnect when the profile returned online",
       5000,
     );
-    await Promise.all(
-      pages.map((page, index) =>
-        page.waitForFunction(
-          (prior) =>
-            window.counts.state > prior.state &&
-            window.counts.transcripts > prior.transcripts,
-          beforeOffline[index],
-          { timeout: 5000 },
+    try {
+      await Promise.all(
+        pages.map((page, index) =>
+          page.waitForFunction(
+            ({ prior, needsState }) =>
+              (!needsState || window.counts.state > prior.state) &&
+              window.counts.transcripts > prior.transcripts,
+            { prior: beforeOffline[index], needsState: index < 8 },
+            { timeout: 5000 },
+          ),
         ),
-      ),
-    );
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        pages.map((page) =>
+          page.evaluate(() => ({
+            hidden: document.hidden,
+            counts: window.counts,
+            states: window.states,
+            sse: window.__syncDiagnostics.sse.slice(-5),
+            received: window.__syncDiagnostics.received.slice(-8),
+          })),
+        ),
+      );
+      process.stderr.write(
+        `resume baseline diagnostic: ${JSON.stringify({ beforeOffline, streamsOpened, diagnostics })}\n`,
+      );
+      throw error;
+    }
     const streamOwnerIndex = await Promise.any(
       pages.map(async (page, index) =>
         (await page.evaluate(() =>
@@ -357,21 +591,41 @@ test("sync-cross-tab-browser @performance", async ({
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
     );
     const restartedWorkspaceId = "c".repeat(32);
-    generationsByWorkspace.set(restartedWorkspaceId, {
-      ...generationsByWorkspace.get(workspaceId),
-    });
-    generationsWorkspaceOverride = restartedWorkspaceId;
-    await Promise.all(
-      pages.map((page, index) =>
-        page.waitForFunction(
-          (prior) =>
-            window.counts.state > prior.state &&
-            window.counts.transcripts > prior.transcripts,
-          beforeWorkspaceMove[index],
-          { timeout: 4500 },
+    for (const response of streams)
+      if (streamWorkspaces.get(response) === workspaceId)
+        sendResourceEvent(response, restartedWorkspaceId, "workspace", [
+          { kind: "state" },
+          { kind: "transcript", agentId: "session-one" },
+        ]);
+    try {
+      await Promise.all(
+        pages.map((page, index) =>
+          page.waitForFunction(
+            (prior) =>
+              window.states?.at(-1) === "degraded" &&
+              window.counts.state === prior.state &&
+              window.counts.transcripts === prior.transcripts,
+            beforeWorkspaceMove[index],
+            { timeout: 4500 },
+          ),
         ),
-      ),
-    );
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        pages.map((page) =>
+          page.evaluate(() => ({
+            counts: window.counts,
+            states: window.states,
+            sent: window.__syncDiagnostics.sent.slice(-5),
+            received: window.__syncDiagnostics.received.slice(-8),
+          })),
+        ),
+      );
+      process.stderr.write(
+        `workspace identity diagnostic: ${JSON.stringify({ beforeWorkspaceMove, diagnostics })}\n`,
+      );
+      throw error;
+    }
     await context.close();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(streams.size).toBe(0);
@@ -387,16 +641,16 @@ test("sync-cross-tab-browser @performance", async ({
     });
     await noCoordination.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.stop = client.watchSyncInvalidations("state", () => {});
+      window.stop = client.watchResourceChanges({ kind: "state" }, () => {});
     });
     await waitFor(
-      () => generationPollCount > 0,
-      "generation polling did not take over when BroadcastChannel was unavailable",
+      () => streams.size === 1,
+      "independent EventSource did not remain available when BroadcastChannel was unavailable",
     );
     assert.equal(
-      streams.size,
+      generationPollCount,
       0,
-      "uncoordinated mode must not open an SSE stream",
+      "uncoordinated mode must not poll generations",
     );
     await noCoordination.close();
     process.stdout.write(
