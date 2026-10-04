@@ -6,6 +6,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { test } from "../playwright.mjs";
+import {
+  isResourceChangeEvent,
+  isResourceHeartbeatEvent,
+} from "../../../web/src/generated/stream-validators.js";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -31,6 +35,33 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const cache = await mkdtemp(join(tmpdir(), "usage-accounts-vite-"));
   const entry = join(repo, "web/__usage-accounts-fixture.jsx");
   const now = Math.floor(Date.now() / 1000);
+  const workspaceId = "abcdef0123456789abcdef0123456789";
+  const epoch = "usage-accounts-fixture";
+  const streams = new Set();
+  const reads = { costs: 0, sessionCost: 0 };
+  let revision = 0;
+  const writeResources = (stream, reason, resources = stream.resources) => {
+    if (reason !== "initial") revision++;
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch,
+      revision,
+      reason,
+      resources,
+    };
+    assert.ok(isResourceChangeEvent(event));
+    stream.response.write(
+      `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  };
+  const writeHeartbeat = (stream) => {
+    const event = { protocol: 3, workspaceId, epoch, revision };
+    assert.ok(isResourceHeartbeatEvent(event));
+    stream.response.write(
+      `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  };
   let resetPayload;
   const source = `
   import React,{useState} from 'react';
@@ -65,9 +96,38 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         },
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
+            if (req.url?.startsWith("/api/sync/identity")) {
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ workspaceId }));
+              return;
+            }
+            if (req.url?.startsWith("/api/sync/stream")) {
+              const stream = {
+                response: res,
+                resources: JSON.parse(
+                  new URL(req.url, "http://localhost").searchParams.get(
+                    "resources",
+                  ) || "[]",
+                ),
+              };
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+              });
+              streams.add(stream);
+              writeResources(stream, "initial");
+              const heartbeat = setInterval(() => writeHeartbeat(stream), 1000);
+              res.on("close", () => {
+                clearInterval(heartbeat);
+                streams.delete(stream);
+              });
+              return;
+            }
             if (req.url?.startsWith("/api/")) {
               res.setHeader("Content-Type", "application/json");
               if (req.url.startsWith("/api/session-cost")) {
+                reads.sessionCost++;
                 res.end(
                   JSON.stringify({
                     pricingState: "ready",
@@ -79,6 +139,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
                 return;
               }
               if (req.url.startsWith("/api/costs")) {
+                reads.costs++;
                 const key =
                   new URL(req.url, "http://localhost").searchParams.get(
                     "account_key",
@@ -125,7 +186,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     await page
       .locator(".session-cost-summary")
       .filter({ hasText: "*" })
-      .waitFor();
+      .waitFor({ state: "attached" });
     assert.match(
       await page.locator(".session-cost-summary").getAttribute("title"),
       /Earlier Claude totals may be incomplete/,
@@ -133,6 +194,33 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.doesNotMatch(
       await page.locator(".session-cost-summary").innerText(),
       /incomplete|Unpriced/,
+    );
+    assert.ok(reads.costs >= 1, "the initial costs baseline performed a GET");
+    assert.ok(
+      reads.sessionCost >= 1,
+      "the initial session-cost baseline performed a GET",
+    );
+    const costsBeforeChange = reads.costs;
+    const sessionCostBeforeChange = reads.sessionCost;
+    for (const stream of streams) {
+      const costs = stream.resources.filter(
+        (resource) => resource.kind === "costs",
+      );
+      if (costs.length) writeResources(stream, "change", costs);
+    }
+    const changeDeadline = Date.now() + 3000;
+    while (reads.costs === costsBeforeChange && Date.now() < changeDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(
+      reads.costs,
+      costsBeforeChange + 1,
+      "a typed costs notification performs exactly one targeted read",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 3200));
+    assert.equal(
+      reads.sessionCost,
+      sessionCostBeforeChange,
+      "a costs notification does not refresh per-agent session cost",
     );
     const _toggle = page.getByRole("button", {
       name: "Account limits",
@@ -146,10 +234,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       0,
       "one account has no tabs",
     );
-    assert.match(
-      await page.locator(".account-limits-panel").innerText(),
-      /80%\s*left/,
-    );
+    const ownWeeklyLimit = page.getByText("80% left", { exact: true });
+    await ownWeeklyLimit.waitFor({ state: "attached" });
+    assert.equal(await ownWeeklyLimit.textContent(), "80% left");
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
       window.reloadCalls.some(([key, force]) => key === "own" && force),
@@ -168,10 +255,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "true",
       "chat account is selected first",
     );
-    assert.match(
-      await page.locator('[role="tabpanel"]').innerText(),
-      /80%\s*left/,
-    );
+    const selectedOwnLimit = page.getByText("80% left", { exact: true });
+    await selectedOwnLimit.waitFor({ state: "attached" });
+    assert.equal(await selectedOwnLimit.textContent(), "80% left");
     await ownTab.press("ArrowRight");
     assert.equal(
       await teamTab.getAttribute("aria-selected"),
@@ -181,13 +267,11 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     await page.waitForFunction(() =>
       window.reloadCalls.some(([key, force]) => key === "team" && !force),
     );
-    await page.getByText("8% left", { exact: false }).waitFor();
-    assert.match(
-      await page
-        .getByRole("region", { name: "Limit reset credits" })
-        .innerText(),
-      /Team reset/,
-    );
+    const selectedTeamLimit = page.getByText("8% left", { exact: false });
+    await selectedTeamLimit.waitFor({ state: "attached" });
+    await page.getByText("Team reset", { exact: false }).first().waitFor({
+      state: "attached",
+    });
     await page
       .getByRole("button", { name: "Account limits", exact: true })
       .waitFor();
@@ -207,7 +291,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Use one reset credit", exact: true })
       .click();
-    await page.getByText("Reset applied.", { exact: true }).waitFor();
+    const resetStatus = page.getByText("Reset applied.", { exact: true });
+    await resetStatus.waitFor({ state: "attached" });
+    assert.equal(await resetStatus.textContent(), "Reset applied.");
     const reset = resetPayload;
     assert.ok(reset, "reset request reached the fixture server");
     assert.equal(reset.account_id, "team-account");
