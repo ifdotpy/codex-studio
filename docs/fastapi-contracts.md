@@ -1,7 +1,7 @@
 # FastAPI boundary migration contract
 
 **Audience:** maintainers migrating the local Python HTTP boundary and renderer API.
-**Status:** approved design; implementation and runtime evidence pending.
+**Status:** approved design; implementation in progress; live runtime evidence pending.
 
 This page records the compatibility contract for replacing the Python
 `BaseHTTPRequestHandler` boundary with FastAPI. The implementation owns the
