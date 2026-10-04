@@ -514,4 +514,7 @@ def create_router(context: ApiContext) -> APIRouter:
         body_rows = body.model_dump(mode="json", by_alias=True, exclude_unset=True)["rows"]
         return context.send(request, store.push_drafts(body_rows))
 
+    from studio_api.sync.resources.relay.router import create_router as create_resource_notify_router
+
+    router.include_router(create_resource_notify_router(context))
     return router
