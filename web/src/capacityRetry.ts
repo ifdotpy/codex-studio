@@ -1,7 +1,17 @@
-import type { Agent, Json } from "./types";
+import type { Agent, JsonValue } from "./types";
 
-export function currentCapacityRetry(agent: Agent): Json | null {
-  const retry = agent.capacityRetry;
+function jsonRecord(
+  value: JsonValue | null | undefined,
+): Record<string, JsonValue> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : null;
+}
+
+export function currentCapacityRetry(
+  agent: Agent,
+): Record<string, JsonValue> | null {
+  const retry = jsonRecord(agent.capacityRetry);
   if (
     !retry ||
     typeof retry.id !== "string" ||

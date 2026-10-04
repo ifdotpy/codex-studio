@@ -1,4 +1,5 @@
 import { errorDetails } from "./errorPresentation.ts";
+import type { Agent } from "./types";
 
 // Codex 0.153.4 CodexErrorInfo, including unknown future variants.
 export const nativeErrorHints: Record<string, string> = {
@@ -34,7 +35,7 @@ export const nativeErrorHints: Record<string, string> = {
 const MAX_ERROR_JSON_LENGTH = 65_536;
 const MAX_ERROR_DEPTH = 8;
 
-function parseError(value: unknown): any {
+function parseError(value: unknown): unknown {
   if (typeof value !== "string" || value.length > MAX_ERROR_JSON_LENGTH)
     return value;
   try {
@@ -46,7 +47,9 @@ function parseError(value: unknown): any {
 
 export function nativeErrorKind(value: unknown): string {
   const data = parseError(value);
-  const info = data?.codexErrorInfo ?? data?.data?.codexErrorInfo;
+  const dataRecord = objectRecord(data);
+  const nestedData = objectRecord(dataRecord?.data);
+  const info = dataRecord?.codexErrorInfo ?? nestedData?.codexErrorInfo;
   return (
     (typeof info === "string"
       ? info
@@ -54,6 +57,12 @@ export function nativeErrorKind(value: unknown): string {
         ? Object.keys(info)[0]
         : "") || ""
   );
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function biologicalPrefix(text: string) {
@@ -116,7 +125,8 @@ function readableError(value: unknown, depth = 0): ReadableError | undefined {
   }
   if (!value || typeof value !== "object" || Array.isArray(value))
     return undefined;
-  const data = value as Record<string, unknown>;
+  const data = objectRecord(value);
+  if (!data) return undefined;
   const nested = readableError(data.error, depth + 1);
   const own = nested || readableError(data.message, depth + 1);
   if (own)
@@ -129,13 +139,12 @@ function readableError(value: unknown, depth = 0): ReadableError | undefined {
   return undefined;
 }
 
-export function nativeThreadError(agent?: {
-  threadId?: string;
-  nativeThreadBlock?: { threadId?: string; error?: unknown };
-  error?: unknown;
-}): unknown {
-  if (agent?.threadId && agent.nativeThreadBlock?.threadId === agent.threadId)
-    return agent.nativeThreadBlock.error;
+export function nativeThreadError(
+  agent?: Pick<Agent, "threadId" | "nativeThreadBlock" | "error">,
+): unknown {
+  const block = objectRecord(agent?.nativeThreadBlock);
+  if (agent?.threadId && block?.threadId === agent.threadId && "error" in block)
+    return block.error;
   return nativeErrorKind(agent?.error) === "misalignmentPolicyViolation"
     ? agent?.error
     : undefined;
@@ -143,7 +152,8 @@ export function nativeThreadError(agent?: {
 
 export function nativeErrorView(value: unknown, planType?: string) {
   const data = parseError(value);
-  const structured = data && typeof data === "object";
+  const record = objectRecord(data);
+  const structured = record !== null;
   const kind = nativeErrorKind(data);
   const readable = readableError(data);
   const rawMessage =
@@ -218,8 +228,8 @@ export function nativeErrorView(value: unknown, planType?: string) {
           ? errorDetails(data)
           : "",
     additionalDetails:
-      structured && typeof data.additionalDetails === "string"
-        ? data.additionalDetails
+      record && typeof record.additionalDetails === "string"
+        ? record.additionalDetails
         : "",
     links,
   };

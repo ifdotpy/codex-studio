@@ -28,37 +28,41 @@ export function chatSnapshot(
   rootId?: string,
 ): Snapshot | null {
   if (!data) return null;
+  const runtime = data.runtime;
   const members = data.threads.filter(
     (agent) => !!rootId && (agent.id === rootId || agent.rootId === rootId),
   );
   const ids = new Set(members.map((agent) => agent.id));
   const owns = (id?: string) => !!id && ids.has(id);
+  if (!runtime) return { ...data, threads: members, chats: [] };
   return {
     ...data,
     threads: members,
     chats: [],
     runtime: {
-      ...data.runtime,
-      agents: data.runtime.agents.filter((agent) => owns(agent.id)),
-      rooms: data.runtime.rooms.filter(
+      ...runtime,
+      agents: runtime.agents.filter((agent) => owns(agent.id)),
+      rooms: runtime.rooms.filter(
         (room) => !!rootId && roomLeadIds(room, data.threads).includes(rootId),
       ),
-      requests: data.runtime.requests.filter((request) => owns(request.agent)),
-      complaints: data.runtime.complaints.filter(
+      requests: runtime.requests.filter((request) =>
+        owns(request.agent || undefined),
+      ),
+      complaints: runtime.complaints.filter(
         (complaint) => !!rootId && complaint.leadId === rootId,
       ),
-      monitors: data.runtime.monitors.filter((monitor) => owns(monitor.agent)),
-      tasks: data.runtime.tasks?.filter((task) => owns(task.agent)),
-      work: data.runtime.work?.filter(
-        (task) => !!rootId && task.rootId === rootId,
+      monitors: runtime.monitors.filter((monitor) =>
+        owns(monitor.agent || undefined),
       ),
-      rules: data.runtime.rules?.filter((rule) => owns(rule.agent)),
+      tasks: runtime.tasks?.filter((task) => owns(task.agent || undefined)),
+      work: runtime.work?.filter((task) => !!rootId && task.rootId === rootId),
+      rules: runtime.rules?.filter((rule) => owns(rule.agent || undefined)),
     },
   };
 }
 
 export function messageAttentionCount(data: Snapshot | null): number {
-  if (!data) return 0;
+  if (!data?.runtime) return 0;
   return (
     data.runtime.requests.filter((request) => !request.deferred).length +
     data.runtime.complaints.filter(complaintNeedsUserResponse).length
