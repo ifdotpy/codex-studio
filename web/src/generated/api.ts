@@ -6621,8 +6621,6 @@ export interface components {
     };
     /** PeerTeamConvertRequest */
     PeerTeamConvertRequest: {
-      /** Account Key */
-      account_key?: string | null;
       /**
        * Action
        * @constant
@@ -6632,16 +6630,12 @@ export interface components {
       expected_revision: number;
       /** Member */
       member: string;
-      /** Model */
-      model?: string | null;
       /** Path */
       path: string;
-      /** Reasoning Effort */
-      reasoning_effort?: string | null;
       /** Request Id */
       request_id: string;
-      /** Team Id */
-      team_id: string;
+      /** Target */
+      target: string;
     };
     /** PeerTeamDeleteRequest */
     PeerTeamDeleteRequest: {
