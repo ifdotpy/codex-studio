@@ -92,6 +92,8 @@ NON_TESTS = {
     "tests/simple-ui-fixture.py": "browser fixture helper",
     "tests/native-action-ui-fixture.py": "browser fixture helper",
     "tests/provider-replay-server.py": "provider subprocess fixture, not a test entrypoint",
+    "tests/skill-catalog-live-update-contract.py":
+        "parameterized helper; requires --patch and --baseline",
     "tests/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
     "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
@@ -283,6 +285,7 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
     supervisor = (
         "import os, signal, subprocess, sys\n"
         "status_fd = int(sys.argv[1])\n"
+        "os.environ.pop('CODEX_SERVER_GROUP_KILL_HOOK', None)\n"
         "try:\n"
         "    result = subprocess.call(sys.argv[2:])\n"
         "except BaseException:\n"
@@ -315,10 +318,18 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
             process.wait()
 
     try:
-        ready, _, _ = select.select([read_fd], [], [], timeout)
-        if not ready:
-            terminate_group()
-            return None, f"timed out after {timeout:g}s"
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_group()
+                return None, f"timed out after {timeout:g}s"
+            try:
+                ready, _, _ = select.select([read_fd], [], [], min(remaining, 1.0))
+            except InterruptedError:
+                continue
+            if ready:
+                break
         payload = os.read(read_fd, 64)
         if not payload:
             terminate_group()

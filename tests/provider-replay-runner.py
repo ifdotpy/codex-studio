@@ -78,7 +78,7 @@ class ProviderReplay(unittest.TestCase):
                     "STUDIO_CLAUDE_BIN": "claude-replay", "STUDIO_REPLAY_FIXTURE": str(fixture_path)})
         return [node, str(bridge_root / "bridge.mjs"), str(root / "claude-state")], env
 
-    def run_supervisor_fixture(self, root, executable, fixture_path, transcript_path):
+    def run_supervisor_fixture(self, root, executable, fixture_path, transcript_path, fixture):
         from codex_process_supervisor import status
         state = root / "state"
         phase, release = root / "provider-phase", root / "provider-release"
@@ -110,6 +110,20 @@ class ProviderReplay(unittest.TestCase):
                 second = Runtime(state, AppServer)
                 second.connect()
                 eventually(lambda: second.agent(agent["id"])["status"] == "completed", timeout=15)
+                def provider_capture_settled():
+                    if not transcript_path.exists():
+                        return False
+                    raw_frames = transcript_path.read_text()
+                    complete_lines = [line for line in raw_frames.splitlines(keepends=True)
+                                      if line.endswith("\n")]
+                    frames = [json.loads(line) for line in complete_lines]
+                    missing, orphaned = self.assert_replay_rpc_contract(
+                        frames, json.loads((fixture_path.parent / "codex-rpc-replies.json").read_text()),
+                        fixture, allow_pending=True)
+                    expected_missing = fixture.get("expectedMissingReplies", [])
+                    expected_orphans = fixture.get("allowedOrphanResponses", [])
+                    return (missing == expected_missing and orphaned == expected_orphans)
+                eventually(provider_capture_settled, timeout=15)
                 with second.db() as db:
                     saved = second.agent(agent["id"], db)
                     events = [dict(row) for row in db.execute(
@@ -146,7 +160,7 @@ class ProviderReplay(unittest.TestCase):
             if fixture.get("supervisorReplay"):
                 transcript_path = root / "captured.jsonl"
                 _saved, _events, answer_items = self.run_supervisor_fixture(
-                    root, executable, fixture_path, transcript_path)
+                    root, executable, fixture_path, transcript_path, fixture)
                 frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
@@ -332,7 +346,7 @@ class ProviderReplay(unittest.TestCase):
                          sorted(expected_observed, key=lambda item: (item["owner"], item["id"])),
                          "unexpected or missing durable assistant answer item")
 
-    def assert_replay_rpc_contract(self, frames, recorded_replies, fixture):
+    def assert_replay_rpc_contract(self, frames, recorded_replies, fixture, allow_pending=False):
         recorded_replies = {**recorded_replies, **fixture.get("rpcReplies", {})}
         def matches_template(actual, template):
             if isinstance(template, dict):
@@ -394,8 +408,12 @@ class ProviderReplay(unittest.TestCase):
                 continue
             candidates[0]["responses"][message["id"]] = message
         allowed_orphans = fixture.get("allowedOrphanResponses", [])
-        self.assertEqual(unmatched_responses, allowed_orphans,
-                         "provider returned a duplicate or unrequested response")
+        if allow_pending:
+            self.assertTrue(all(response in allowed_orphans for response in unmatched_responses),
+                            "provider returned a duplicate or unrequested response")
+        else:
+            self.assertEqual(unmatched_responses, allowed_orphans,
+                             "provider returned a duplicate or unrequested response")
 
         missing_replies = []
         for epoch in epochs:
@@ -455,11 +473,14 @@ class ProviderReplay(unittest.TestCase):
                                  f"exact provider RPC result mismatch for {method}; "
                                  f"request={request!r}; response={response!r}")
         expected_missing = fixture.get("expectedMissingReplies")
+        missing = [{"method": method, "id": request_id}
+                   for method, request_id in missing_replies]
+        if allow_pending:
+            return missing, unmatched_responses
         if expected_missing is not None:
-            self.assertEqual([{"method": method, "id": request_id}
-                              for method, request_id in missing_replies], expected_missing)
+            self.assertEqual(missing, expected_missing)
         else:
-            self.assertEqual(missing_replies, [], "every outbound RPC requires exactly one reply")
+            self.assertEqual(missing, [], "every outbound RPC requires exactly one reply")
 
     def test_all_recorded_fixtures(self):
         fixture_dir = ROOT / "tests" / "fixtures" / "provider-replay"

@@ -4,6 +4,7 @@ import contextlib
 import ctypes
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -29,6 +30,8 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("scripts/benchmarks/runtime_load/test_runtime_load.py", paths)
         self.assertNotIn("tests/delivery-latency-fixture.py", paths)
         self.assertNotIn("tests/remaining-delivery-latency-fixture.py", paths)
+        self.assertNotIn("tests/skill-catalog-live-update-contract.py", paths)
+        self.assertIn("tests/skill-catalog-live-update-contract.py", RUNNER.NON_TESTS)
         self.assertIn("tests/portable-smoke.mjs", paths)
         self.assertIn("tests/state-contract-smoke.mjs", paths)
         self.assertIn("tests/swarm-retry-contract.mjs", paths)
@@ -75,6 +78,31 @@ class ServerSuiteRunner(unittest.TestCase):
                 RUNNER.validate_deadlines(parser, type("Args", (), {
                     "timeout": deadline, "expensive_timeout": 1.0})())
 
+    def test_fallback_bounds_large_finite_select_timeout(self):
+        class FakeProcess:
+            pid = 321
+
+            def wait(self, timeout=None):
+                return -9
+
+            def kill(self):
+                pass
+
+        intervals = []
+
+        def ready_now(_readers, _writers, _errors, interval):
+            intervals.append(interval)
+            return ([42], [], [])
+
+        with (mock.patch.object(RUNNER.subprocess, "Popen", return_value=FakeProcess()),
+              mock.patch.object(RUNNER.os, "pipe", return_value=(42, 43)),
+              mock.patch.object(RUNNER.os, "read", return_value=b"0"),
+              mock.patch.object(RUNNER.os, "close"),
+              mock.patch.object(RUNNER.select, "select", side_effect=ready_now)):
+            result = RUNNER._run_process_with_group_supervisor(["suite.py"], ROOT, 1e100, {})
+        self.assertEqual(result, (0, None))
+        self.assertEqual(intervals, [1.0])
+
     def test_deadline_kills_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-timeout-") as temp:
             marker = Path(temp) / "child-output"
@@ -111,14 +139,29 @@ class ServerSuiteRunner(unittest.TestCase):
     def test_posix_fallback_cleans_process_group_after_reaping_leader(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-fallback-cleanup-") as temp:
             marker = Path(temp) / "child-output"
+            kill_record = Path(temp) / "group-kill.json"
+            sitecustomize = Path(temp) / "sitecustomize.py"
+            sitecustomize.write_text(
+                "import json, os\n"
+                "if os.environ.get('CODEX_SERVER_GROUP_KILL_HOOK'):\n"
+                "    _killpg = os.killpg\n"
+                "    def _record_kill(group, sig):\n"
+                f"        open({str(kill_record)!r}, 'w').write(json.dumps({{'pid': os.getpid(), 'pgid': os.getpgid(0), 'target': group}}))\n"
+                "        return _killpg(group, sig)\n"
+                "    os.killpg = _record_kill\n",
+                encoding="utf-8")
             child = ("import pathlib,time\np=pathlib.Path(" + repr(str(marker)) + ")\n"
                      "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
             parent = ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
                       repr(child) + "]); p=pathlib.Path(" + repr(str(marker)) +
                       "); deadline=time.monotonic()+2\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)")
+            environment = os.environ.copy()
+            environment["CODEX_SERVER_GROUP_KILL_HOOK"] = str(kill_record)
+            environment["PYTHONPATH"] = os.pathsep.join(
+                (temp, environment.get("PYTHONPATH", "")))
             with mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False):
                 returncode, error = RUNNER.run_process(
-                    [sys.executable, "-c", parent], ROOT, 3, os.environ.copy())
+                    [sys.executable, "-c", parent], ROOT, 3, environment)
             self.assertEqual(returncode, 0)
             self.assertIsNone(error)
             self.assertTrue(marker.exists())
@@ -126,6 +169,10 @@ class ServerSuiteRunner(unittest.TestCase):
             time.sleep(.08)
             self.assertEqual(marker.stat().st_size, size,
                              "fallback suite process group retained its grandchild")
+            killed_by = json.loads(kill_record.read_text(encoding="utf-8"))
+            self.assertEqual(killed_by["pid"], killed_by["pgid"])
+            self.assertEqual(killed_by["target"], killed_by["pgid"])
+            self.assertNotEqual(killed_by["pid"], os.getpid())
 
     def test_windows_job_assignment_failure_kills_suspended_suite(self):
         class ApiFunction:
@@ -224,6 +271,26 @@ class ServerSuiteRunner(unittest.TestCase):
                 RUNNER.run_process(["suite.exe"], ROOT, 1, {})
         close_job.assert_called_once_with(456)
         self.assertEqual(process.wait_calls, 2)
+
+    def test_windows_termination_failure_still_closes_job_once(self):
+        class ApiFunction:
+            def __init__(self, result):
+                self.result = result
+                self.calls = 0
+
+            def __call__(self, *_args):
+                self.calls += 1
+                return self.result
+
+        class FakeKernel:
+            TerminateJobObject = ApiFunction(0)
+            CloseHandle = ApiFunction(1)
+
+        kernel = FakeKernel()
+        with mock.patch.object(RUNNER, "_windows_kernel32", return_value=kernel):
+            RUNNER._close_windows_job(456)
+        self.assertEqual(kernel.TerminateJobObject.calls, 1)
+        self.assertEqual(kernel.CloseHandle.calls, 1)
 
 
 if __name__ == "__main__":
