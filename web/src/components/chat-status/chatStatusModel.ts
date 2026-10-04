@@ -34,6 +34,15 @@ export interface ChatActivity {
 
 export const endedWaitLabel = "Turn ended. Send a message to continue.";
 
+function epochMatches(epoch: unknown, agentEpoch: number | null | undefined) {
+  if (epoch == null) return true;
+  return (
+    typeof epoch === "number" &&
+    Number.isFinite(epoch) &&
+    (agentEpoch == null || epoch === agentEpoch)
+  );
+}
+
 export interface ChatWaitState {
   live: boolean;
   label: string;
@@ -78,9 +87,10 @@ export function chatWaitState(
         request.agent === agent.id &&
         (!request.status || request.status === "pending") &&
         !request.deferred &&
-        (!("epoch" in request && typeof request.epoch === "number") ||
-          agent.epoch == null ||
-          request.epoch === agent.epoch),
+        epochMatches(
+          "epoch" in request ? request.epoch : undefined,
+          agent.epoch,
+        ),
     ).length ?? 0;
   const event = agent.parkedEvent || undefined;
   const count = (value: number, name: string) =>
@@ -140,10 +150,10 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
     const agent = byId.get(record.agent || "");
     if (
       !agent ||
-      ("epoch" in record &&
-        typeof record.epoch === "number" &&
-        agent.epoch != null &&
-        record.epoch !== agent.epoch) ||
+      !epochMatches(
+        "epoch" in record ? record.epoch : undefined,
+        agent.epoch,
+      ) ||
       !["starting", "running", "approval"].includes(record.status || "")
     )
       continue;
@@ -280,10 +290,10 @@ export function chatIndicators(
       const agent = byId.get(request.agent || "");
       if (
         !agent ||
-        ("epoch" in request &&
-          typeof request.epoch === "number" &&
-          agent.epoch != null &&
-          request.epoch !== agent.epoch)
+        !epochMatches(
+          "epoch" in request ? request.epoch : undefined,
+          agent.epoch,
+        )
       )
         continue;
       if (request.deferred) deferred.add(agent.id);
