@@ -21,8 +21,8 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { errorText, get, post, type GetResult } from "../api";
-import type { Agent, Json } from "../types";
+import { errorText, get, post, type GetResult, type PostResult } from "../api";
+import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
@@ -232,7 +232,7 @@ export function AccountTransferStatus({
   showCompleted = false,
   onAction,
 }: {
-  transfer?: Json;
+  transfer?: PostResult<"/api/agents/account-transfer">;
   targetLabel?: string;
   pending?: boolean;
   showCompleted?: boolean;
@@ -272,17 +272,17 @@ export function AccountTransferStatus({
         )}
         {!!transfer.movingNow && <small>{transfer.movingNow} moving now</small>}
         {transfer.waiting && <small>{transfer.waiting}</small>}
-        {interrupted.map((member: Json) => (
+        {interrupted.map((member) => (
           <small key={String(member.id)}>
             {member.name || "Agent"}: {member.reason}
           </small>
         ))}
-        {blocked.map((member: Json) => (
+        {blocked.map((member) => (
           <small key={String(member.id)} role="alert">
             {member.name || "Agent"} blocked: {member.reason}
           </small>
         ))}
-        {left.map((member: Json) => (
+        {left.map((member) => (
           <small key={String(member.id)}>
             {member.name || "Agent"} left on source ({member.provider}):{" "}
             {member.reason}
