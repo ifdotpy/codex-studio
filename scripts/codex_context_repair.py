@@ -123,11 +123,51 @@ def _unsettled_inputs(db, a, attempt_id):
     return historical
 
 
+def _historical_input_wait(agent):
+    wait = agent.get('contextRepairWait') or {}
+    attempt = agent.get('startAttempt') or {}
+    prefix = 'Context repair waits for a confirmed input receipt: '
+    error = wait.get('error') or ''
+    return (error.startswith(prefix) and error[len(prefix):] not in attempt.get('events', [])
+            and agent.get('status') != 'paused' and not agent.get('inFlight')
+            and _unsubmitted(agent, (wait.get('source') or {}).get('attemptId'))
+            and wait.get('source') == _identity(agent)
+            and wait.get('events') == attempt.get('events')
+            and all(wait.get(key) == attempt.get(key) for key in
+                    ('action', 'actionRequestId', 'actionIdentity')))
+
+
+def _historical_input_rows(db, agent):
+    if not _historical_input_wait(agent):
+        return None
+    ids = (agent.get('startAttempt') or {}).get('events')
+    if not isinstance(ids, list) or len(ids) > 32 or len(ids) != len(set(ids)):
+        return None
+    rows = []
+    for key in ids:
+        row = db.execute("SELECT * FROM runtime_events WHERE id=? AND agent=? AND epoch=? "
+                         "AND status='pending' AND turn_id IS NULL",
+                         (key, agent['id'], agent['epoch'])).fetchone()
+        if not row:
+            return None
+        rows.append(dict(row))
+    return rows
+
+
+def _accepted_input_turn(turn, key):
+    if (not isinstance(turn, dict) or not isinstance(turn.get('id'), str) or not turn['id']
+            or turn.get('startOutcome') not in {None, 'accepted'}):
+        return False
+    return (turn.get('clientUserMessageId') == key
+            or any(isinstance(item, dict) and item.get('type') == 'userMessage'
+                   and item.get('clientId') == key for item in turn.get('items') or []))
+
+
 def recover_unconfirmed_inputs(rt, agent_id):
     """Resolve only exact pending input identities from native thread history."""
     with rt.lock, rt.db() as db:
         a = rt.agent(agent_id, db)
-        if a.get('deletedAt') or not a.get('threadId'):
+        if rt.closed or a.get('deletedAt') or not a.get('threadId'):
             return {'status': 'waiting', 'reason': 'The native thread is unavailable', 'inputs': []}
         wait = a.get('contextRepairWait') or {}
         if not wait:
@@ -136,6 +176,9 @@ def recover_unconfirmed_inputs(rt, agent_id):
         prefix = 'Context repair waits for a confirmed input receipt: '
         restart = a.get('restartRecovery') or {}
         restart_wait = _held_restart_marker(a)
+        if not restart_wait and (not a.get('autoWake') or a.get('status') == 'paused'
+                                 or a.get('nativeFailureHold')):
+            return {'status': 'waiting', 'reason': 'The worker is stopped or held', 'inputs': []}
         if not restart_wait and wait.get('source') != _identity(a):
             return {'status': 'waiting', 'reason': 'The worker changed since the input became uncertain', 'inputs': []}
         if not error.startswith(prefix) and not restart_wait:
@@ -155,16 +198,22 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 ids = [row['id'] for row in rows]
         else:
             ids = [error[len(prefix):]]
+        historical_wait = not restart_wait and _historical_input_wait(a)
+        pending_rows = _historical_input_rows(db, a) if historical_wait else None
         if restart_wait and not ids:
             # No input left the queue after the restart, so no native receipt can exist.
             _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
             return {'status': 'resolved', 'reason': None, 'inputs': []}
         if (not isinstance(ids, list) or not ids or
-                (not restart_wait and any(key not in attempt.get('events', []) for key in ids))):
+                (not restart_wait and not historical_wait
+                 and any(key not in attempt.get('events', []) for key in ids))):
             return {'status': 'waiting', 'reason': 'The unconfirmed input is outside the current start attempt', 'inputs': []}
+        if historical_wait and pending_rows is None:
+            return {'status': 'waiting', 'reason': 'The newer input changed before history recovery', 'inputs': []}
         marks = ','.join('?' for _ in ids)
-        events = db.execute("SELECT id,status FROM runtime_events WHERE id IN (" + marks + ") AND agent=? AND epoch=? "
-            "AND status IN ('reserved','dispatching','uncertain') ORDER BY id", (*ids, agent_id, a['epoch'])).fetchall()
+        events = db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e "
+            "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id IN (" + marks + ") AND e.agent=? AND e.epoch=? "
+            "AND e.status IN ('reserved','dispatching','uncertain') ORDER BY e.id", (*ids, agent_id, a['epoch'])).fetchall()
         if not events:
             if restart_wait:
                 _finish_restart_wait(rt, db, a, error, queue=not a.get('inFlight'))
@@ -173,21 +222,44 @@ def recover_unconfirmed_inputs(rt, agent_id):
         identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
         server = rt.servers.get(identity[2])
         connection_id = rt.connection_ids.get(identity[2])
+        if historical_wait:
+            for row in events:
+                meta = json.loads(row['metadata']) if row['metadata'] else {}
+                native = meta.get('native') or {}
+                manifest_scope = (meta.get('contextManifest') or {}).get('epoch')
+                if ((native and any(native.get(key) != value for key, value in
+                        (('agent', agent_id), ('epoch', identity[0]), ('threadId', identity[1]),
+                         ('accountKey', identity[2]))))
+                        or (manifest_scope and manifest_scope[0] != identity[1])):
+                    return {'status': 'waiting', 'reason': 'The old input belongs to another native scope',
+                            'inputs': [{'id': row['id'], 'decision': 'waiting'}]}
     if server is None:
         return {'status': 'waiting', 'reason': 'The owning native account is offline',
                 'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
     try:
-        thread = server.call('thread/read', {'threadId': identity[1], 'includeTurns': False}, timeout=10).get('thread')
+        deadline = time.monotonic() + TASK_CHECK_SECONDS if historical_wait else None
+        def read(method, params):
+            remaining = deadline - time.monotonic() if deadline is not None else 10
+            if remaining <= 0:
+                raise TimeoutError('Native input history check timed out')
+            return server.call(method, params, timeout=min(10, remaining))
+        thread = read('thread/read', {'threadId': identity[1], 'includeTurns': False}).get('thread')
         if not isinstance(thread, dict) or thread.get('id') != identity[1]:
             raise ValueError('Native thread identity did not match')
         state = (thread.get('status') or {}).get('type')
         turns, cursor, seen = [], None, set()
-        for _ in range(100):
-            params = {'threadId': identity[1], 'limit': 100, 'sortDirection': 'asc', 'itemsView': 'full'}
+        for _ in range(16 if historical_wait else 100):
+            params = {'threadId': identity[1], 'limit': 100,
+                      'sortDirection': 'desc' if historical_wait else 'asc', 'itemsView': 'full'}
             if cursor:
                 params['cursor'] = cursor
-            page = server.call('thread/turns/list', params, timeout=10)
-            turns.extend(page.get('data', []))
+            page = read('thread/turns/list', params)
+            data = page.get('data')
+            if not isinstance(data, list) or any(not isinstance(turn, dict) for turn in data):
+                raise ValueError('Native input history has no verified turn list')
+            turns.extend(data)
+            if historical_wait and any(_accepted_input_turn(turn, ids[0]) for turn in turns):
+                break
             cursor = page.get('nextCursor')
             if not cursor:
                 break
@@ -205,6 +277,8 @@ def recover_unconfirmed_inputs(rt, agent_id):
     supported_identity = False
     unidentified_input = False
     for turn in turns:
+        if historical_wait and turn.get('startOutcome') not in {None, 'accepted', 'preparing', 'not_applied'}:
+            continue
         message_id = turn.get('clientUserMessageId')
         outcome = turn.get('startOutcome')
         if outcome in {'preparing', 'not_applied'}:
@@ -245,8 +319,11 @@ def recover_unconfirmed_inputs(rt, agent_id):
     with rt.lock, rt.db() as db:
         current = rt.agent(agent_id, db)
         current_wait = current.get('contextRepairWait') or {}
-        if ((current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
+        if (rt.closed or current.get('deletedAt') or current.get('status') == 'paused'
+                or (not restart_wait and current.get('nativeFailureHold'))
+                or (current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
                 or rt.connection_ids.get(identity[2]) != connection_id
+                or rt.servers.get(identity[2]) is not server
                 or current_wait.get('error') != error
                 or current_wait.get('source') != wait_source
                 or current_wait.get('events') != wait_events
@@ -258,10 +335,17 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 or not (current.get('autoWake') or restart_wait)):
             return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
                     'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
+        if historical_wait and (_historical_input_rows(db, current) != pending_rows
+                or rt.closed or current.get('deletedAt')):
+            return {'status': 'waiting', 'reason': 'The newer input changed during native history recovery',
+                    'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
         for item in decisions:
-            row = db.execute("SELECT status FROM runtime_events WHERE id=? AND agent=? AND epoch=?",
+            row = db.execute("SELECT e.*,m.record AS metadata FROM runtime_events e "
+                             "LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=? AND e.agent=? AND e.epoch=?",
                              (item['id'], agent_id, identity[0])).fetchone()
-            if not row or row['status'] not in {'reserved', 'dispatching', 'uncertain'}:
+            original = next(event for event in events if event['id'] == item['id'])
+            if (not row or row['status'] not in {'reserved', 'dispatching', 'uncertain'}
+                    or dict(row) != dict(original)):
                 item['decision'] = 'waiting'
                 item['reason'] = 'The input changed during native history recovery'
                 continue
@@ -1418,6 +1502,26 @@ def _run_task_wait_check(rt, job):
     rt.changed.set()
 
 
+def _schedule_input_wait_check(rt, db, agent):
+    """Check an older input without submitting the newer pending batch."""
+    if not _historical_input_wait(agent):
+        return
+    wait = agent['contextRepairWait']
+    owner = getattr(rt, '_restart_history_check_owner', None)
+    if owner is None:
+        owner = rt._restart_history_check_owner = uuid.uuid4().hex
+    if wait.get('historyCheckId') and wait.get('historyCheckOwner') == owner:
+        return
+    check_id = str(uuid.uuid4())
+    wait.update(historyCheckId=check_id, historyCheckOwner=owner, historyCheckAt=time.time())
+    rt.put(db, 'agents', agent)
+    try:
+        rt.recovery_pool.submit(_run_restart_input_check, rt, agent['id'], check_id)
+    except RuntimeError:
+        wait.update(historyCheckId=None, historyCheckOwner=None, historyCheckAt=None)
+        rt.put(db, 'agents', agent)
+
+
 def claim_context_wait(rt, db, agent):
     wait = agent.get('contextRepairWait')
     if not isinstance(wait, dict):
@@ -1466,6 +1570,7 @@ def claim_context_wait(rt, db, agent):
         agent['error'] = str(error)
         rt.put(db, 'agents', agent)
         _schedule_task_wait_check(rt, db, agent, error)
+        _schedule_input_wait_check(rt, db, agent)
         return {'waiting':True}
     for row in rows:
         db.execute("UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'", (row['id'],))
