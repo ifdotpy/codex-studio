@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "api:generate": "python3 scripts/codex_python.py --exec -m studio_api.generate_types",
+    "api:check": "python3 scripts/codex_python.py --exec -m studio_api.generate_types --check",
     "test:client": "npm --prefix web test",
     "test:client:unit": "npm --prefix web run test:unit",
     "test:client:browser": "npm --prefix web run test:browser",
@@ -25,6 +27,7 @@
     "test:pre-commit": "node tests/pre-commit-hook.mjs"
   },
   "devDependencies": {
+    "openapi-typescript": "7.13.0",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0"
   }
