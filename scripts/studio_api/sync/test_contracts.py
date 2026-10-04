@@ -19,9 +19,11 @@ from codex_sync_entities import COLLECTION_FIELDS, project, validate_entity_payl
 from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
+    AgentNativeStatus,
     DraftPushRequest,
     EntityCollection,
     RuntimeSnapshot,
+    RequestEntityDto,
     RoomRadioSeen,
     SnapshotAgentDto,
     StateSnapshot,
@@ -44,6 +46,7 @@ class RadioFixture(Protocol):
     def room(self) -> dict[str, JsonValue]: ...
     def action(self, action: str, **extra: JsonValue) -> JsonValue: ...
     def start(self) -> tuple[str, str]: ...
+    def tick(self) -> dict[str, JsonValue]: ...
     def answer(
         self,
         key: str,
@@ -137,6 +140,21 @@ class SyncEntityContractTests(unittest.TestCase):
                 updated_radio.get("seen"),
                 {agent_id: {"identity": ["native-" + agent_id, 1, 0], "seq": 1}},
             )
+
+            radio.action("send", text="Stop while this shared turn is running")
+            radio.start()
+            radio.action("stop")
+            radio.tick()
+            stopping = project("room", radio.room())
+            if not isinstance(stopping, dict):
+                self.fail("stopping shared radio did not project")
+            public_radio = stopping.get("radio")
+            if not isinstance(public_radio, dict):
+                self.fail("stopping shared radio did not project")
+            active = public_radio.get("active")
+            self.assertIsInstance(active, dict)
+            assert isinstance(active, dict)
+            self.assertIs(active.get("interruptRequested"), True)
         finally:
             radio.tearDown()
             radio.doCleanups()
@@ -163,6 +181,122 @@ class SyncEntityContractTests(unittest.TestCase):
         if resumed.nativeRelease is None or resumed.nativeRelease.phase is None:
             self.fail("resumed native release phase was omitted")
         self.assertEqual(resumed.nativeRelease.phase.value, "resumed")
+
+    def test_projection_preserves_typed_runtime_and_request_receipts(self) -> None:
+        provider_error: dict[str, JsonValue] = {
+            "code": -32000, "message": "Native thread is blocked",
+            "codexErrorInfo": "misalignmentPolicyViolation",
+            "providerDetail": {"phase": "policy"},
+        }
+        source: dict[str, JsonValue] = {
+            "id": "agent-a", "status": "interrupted", "threadId": "thread-a",
+            "turnId": "turn-a", "epoch": 4, "accountKey": "default",
+            "contextUsage": {"tokens": 120, "window": None, "at": 10.5},
+            "nativeThreadBlock": {"threadId": "thread-a", "error": provider_error},
+            "nativeTurnError": {"turnId": "turn-a", "error": provider_error},
+            "nativeSafetyBuffering": {
+                "turnId": "turn-a", "threadId": "thread-a", "showBufferingUi": True,
+                "responseStarted": False, "dismissed": False, "at": 10.0,
+                "fasterModel": "gpt-6-mini", "accountKey": "default", "connectionId": "c-1",
+            },
+            "nativeSafetyRetry": {
+                "id": "retry-a", "stage": "failed", "model": "gpt-6-mini",
+                "turnId": "turn-a", "epoch": 4, "accountKey": "default",
+                "error": "No retry was sent", "rpcMethod": "thread/fork",
+            },
+            "connectionCheck": {
+                "epoch": 4, "accountKey": "default", "threadId": "thread-a",
+                "turnId": "turn-a", "at": 11.0, "previousError": "Codex disconnected.",
+                "nativeState": "idle", "restartTurnStatus": "completed",
+            },
+            "readState": {"threadId": "thread-a", "turnId": "turn-a", "read": True, "revision": 3},
+            "nativeLimitErrorAt": 12.0,
+            "activity": {"phase": "tool", "at": 12.5,
+                         "tools": [{"id": "tool-a", "type": "commandExecution", "name": "exec"}]},
+            "nativeStatus": {"phase": "retrying", "error": provider_error,
+                             "turnId": "turn-a", "at": 12.5},
+            "capacityRetry": {
+                "id": "capacity-a", "threadId": "thread-a", "turnId": "turn-a",
+                "accountKey": "default", "epoch": 4, "cause": "serverOverloaded",
+                "status": "scheduled", "dueAt": 20.0, "attempt": 1, "maxAttempts": 4,
+                "settings": {"model": "gpt-6-mini"}, "taskClaims": ["work-a"],
+            },
+            "usageResume": {
+                "id": "usage-a", "status": "scheduled", "accountKey": "default",
+                "threadId": "thread-a", "epoch": 4, "turnId": "turn-a",
+                "cause": "usage_limit", "failedAt": 10.0, "dueAt": 30.0,
+                "taskClaims": ["work-a"],
+            },
+            "lastEvent": "2026-10-04T03:00:00Z",
+            "privateRuntimeField": "not projected",
+        }
+        projected = project("agent", source)
+        if not isinstance(projected, dict):
+            self.fail("runtime agent did not project")
+        self.assertNotIn("privateRuntimeField", projected)
+        parsed = AgentEntityDto.model_validate(projected)
+        self.assertIsNotNone(parsed.contextUsage)
+        self.assertIsNotNone(parsed.nativeSafetyRetry)
+        self.assertIsNotNone(parsed.nativeStatus)
+        assert parsed.contextUsage is not None
+        assert parsed.nativeSafetyRetry is not None
+        assert parsed.nativeStatus is not None
+        self.assertIsNone(parsed.contextUsage.window)
+        self.assertEqual(parsed.nativeSafetyRetry.stage, "failed")
+        self.assertIsInstance(parsed.nativeStatus, AgentNativeStatus)
+        assert isinstance(parsed.nativeStatus, AgentNativeStatus)
+        self.assertEqual(parsed.nativeStatus.phase, "retrying")
+
+        snapshot_source = {key: value for key, value in source.items() if key != "privateRuntimeField"}
+        snapshot = SnapshotAgentDto.model_validate(snapshot_source)
+        parsed = snapshot
+        self.assertIsNotNone(parsed.capacityRetry)
+        self.assertIsNotNone(parsed.usageResume)
+        assert parsed.capacityRetry is not None
+        assert parsed.usageResume is not None
+        self.assertEqual(parsed.capacityRetry.taskClaims, ["work-a"])
+        self.assertEqual(parsed.usageResume.cause, "usage_limit")
+        self.assertEqual(parsed.lastEvent, "2026-10-04T03:00:00Z")
+
+        request_source: dict[str, JsonValue] = {
+            "id": "request-a", "method": "mcpServer/elicitation/request", "agent": "agent-a",
+            "epoch": 4, "status": "pending", "deferred": False,
+            "params": {
+                "threadId": "thread-a", "mode": "form",
+                "requestedSchema": {"type": "object", "required": ["scope"], "properties": {
+                    "scope": {"type": "string", "title": "Scope"},
+                    "features": {"type": "array", "items": {"type": "string", "enum": ["Tests"]}},
+                }},
+            },
+            "preview": {"command": ["git", "status"], "cwd": "/workspace"},
+        }
+        request = project("request", request_source)
+        self.assertIsInstance(request, dict)
+        RequestEntityDto.model_validate(request)
+
+        runtime_snapshot = RuntimeSnapshot.model_validate({
+            "agents": [snapshot_source], "projects": [], "projectOrganizationVersion": 1,
+            "peerTeamsVersion": 1, "peerTeams": [], "tasks": [], "tasksHistoryLimit": 100,
+            "monitors": [], "requests": [request_source], "rooms": [], "complaints": [],
+            "rules": [], "rateLimits": {}, "nativeNotices": [],
+            "rateLimitsByAccount": {"default": {
+                "accountKey": "default", "at": None, "data": None, "error": None,
+            }},
+            "events": [], "connected": True,
+        })
+        self.assertEqual(runtime_snapshot.requests[0].epoch, 4)
+        state = StateSnapshot.model_validate({
+            "token": "session", "stateDir": "/state", "threads": [snapshot_source],
+            "chats": [], "nodes": [snapshot_source], "edges": [], "at": 15.0,
+            "runtime": runtime_snapshot.model_dump(mode="json"),
+        })
+        self.assertIsNotNone(state.runtime)
+
+    def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
+        with self.assertRaises(ValidationError):
+            project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}})
+        with self.assertRaises(ValidationError):
+            project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}})
 
     def test_legacy_status_file_public_row_has_named_external_fields(self) -> None:
         row = {

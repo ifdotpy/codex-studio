@@ -78,8 +78,24 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
     result = {key: _bounded(value, key) for key, value in record.items() if key in fields}
     if collection == "agent":
         for field, allowed in {
-            "activity": ("phase",),
-            "nativeStatus": ("error",),
+            "activity": ("phase", "at", "tools"),
+            "nativeStatus": ("phase", "error", "message", "turnId", "at"),
+            "nativeSafetyBuffering": (
+                "turnId", "threadId", "accountKey", "connectionId", "at",
+                "dismissed", "responseStarted", "showBufferingUi", "fasterModel",
+            ),
+            "nativeSafetyRetry": (
+                "id", "stage", "model", "turnId", "created", "updated",
+                "epoch", "accountKey", "error", "newThreadId", "acceptedTurnId",
+                "requestId", "rpcMethod",
+            ),
+            "nativeTurnError": ("turnId", "error"),
+            "nativeThreadBlock": ("threadId", "error"),
+            "connectionCheck": (
+                "epoch", "accountKey", "threadId", "turnId", "at", "previousError",
+                "nativeState", "restartTurnStatus", "readError",
+            ),
+            "readState": ("threadId", "turnId", "read", "revision"),
             "startAttempt": ("prepareError", "responseError"),
         }.items():
             value = record.get(field)

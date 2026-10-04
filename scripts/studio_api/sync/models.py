@@ -73,8 +73,253 @@ class AgentActivity(ContractModel):
     tools: list[ActiveToolDto] | None = None
 
 
+class NativeProviderError(ContractModel):
+    """Known app-server error fields plus JSON-safe provider extensions."""
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    code: int | str | None = None
+    message: str | None = None
+    data: JsonValue | None = None
+    codexErrorInfo: str | dict[str, JsonValue] | list[JsonValue] | None = None
+    additionalDetails: str | None = None
+
+
 class AgentNativeStatus(ContractModel):
+    phase: Literal["safety", "retrying", "auth"] | None = None
+    error: NativeProviderError | str | None = None
+    message: str | None = None
+    turnId: str | None = None
+    at: float | None = None
+
+
+class NativeThreadBlockDto(ContractModel):
+    threadId: str | None = None
+    error: NativeProviderError | None = None
+
+
+class NativeTurnErrorDto(ContractModel):
+    turnId: str | None = None
+    error: NativeProviderError | None = None
+
+
+class NativeSafetyStage(ContractStrEnum):
+    TURNS = "turns"
+    ITEMS = "items"
+    INTERRUPT = "interrupt"
+    VERIFY_TURNS = "verify_turns"
+    VERIFY_ITEMS = "verify_items"
+    FORK = "fork"
+    START = "start"
+    UNKNOWN = "unknown"
+    RUNNING = "running"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class NativeSafetyRetryDto(ContractModel):
+    id: str | None = None
+    stage: NativeSafetyStage | None = None
+    model: str | None = None
+    turnId: str | None = None
+    epoch: int | None = None
+    accountKey: str | None = None
+    created: float | None = None
+    updated: float | None = None
     error: str | None = None
+    newThreadId: str | None = None
+    acceptedTurnId: str | None = None
+    requestId: str | None = None
+    rpcMethod: str | None = None
+
+
+class NativeSafetyBufferingDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    turnId: str | None = None
+    threadId: str | None = None
+    accountKey: str | None = None
+    connectionId: str | None = None
+    at: float | None = None
+    dismissed: bool | None = None
+    responseStarted: bool | None = None
+    showBufferingUi: bool | None = None
+    fasterModel: str | None = None
+
+
+class ContextUsageDto(ContractModel):
+    tokens: int | None
+    window: int | None
+    at: float | None = None
+
+
+class ReadStateDto(ContractModel):
+    threadId: str
+    turnId: str
+    read: bool
+    revision: int
+
+
+class ContextRepairWaitDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    error: str
+    scope: str
+    at: float | None = None
+    readOnly: bool | None = None
+    action: str | None = None
+
+
+class ConnectionCheckDto(ContractModel):
+    epoch: int | None = None
+    accountKey: str | None = None
+    threadId: str | None = None
+    turnId: str | None = None
+    at: float
+    previousError: str | None = None
+    nativeState: str | None = None
+    restartTurnStatus: str | None = None
+    readError: str | None = None
+
+
+class CapacityRetryCause(ContractStrEnum):
+    SERVER_OVERLOADED = "serverOverloaded"
+    INTERNAL_SERVER_ERROR = "internalServerError"
+    HTTP_CONNECTION_FAILED = "httpConnectionFailed"
+    RESPONSE_STREAM_CONNECTION_FAILED = "responseStreamConnectionFailed"
+    RESPONSE_STREAM_DISCONNECTED = "responseStreamDisconnected"
+    RESPONSE_TOO_MANY_FAILED_ATTEMPTS = "responseTooManyFailedAttempts"
+
+
+class CapacityRetryStatus(ContractStrEnum):
+    SCHEDULED = "scheduled"
+    STARTING = "starting"
+    FINISHED = "finished"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+    EXHAUSTED = "exhausted"
+    FAILED = "failed"
+
+
+class CapacityRetryDto(ContractModel):
+    id: str | None = None
+    threadId: str | None = None
+    turnId: str | None = None
+    accountKey: str | None = None
+    epoch: int | None = None
+    cause: CapacityRetryCause | None = None
+    status: CapacityRetryStatus | None = None
+    dueAt: float | None = None
+    retryAt: float | None = None
+    acceptedTurnId: str | None = None
+    claimedAt: float | None = None
+    attempt: int | None = None
+    maxAttempts: int | None = None
+    cwd: str | None = None
+    settings: ExecutionSettingsDto | None = None
+    updatedAt: float | None = None
+    waits: int | None = None
+    taskClaims: list[str] | None = None
+    reason: str | None = None
+
+
+class UsageResumeCause(ContractStrEnum):
+    USAGE_LIMIT = "usage_limit"
+    RATE_LIMIT = "rate_limit"
+    AUTH = "auth"
+
+
+class UsageResumeStatus(ContractStrEnum):
+    SCHEDULED = "scheduled"
+    STARTED = "started"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+class UsageResumeDto(ContractModel):
+    id: str | None = None
+    status: UsageResumeStatus | None = None
+    accountKey: str | None = None
+    threadId: str | None = None
+    epoch: int | None = None
+    turnId: str | None = None
+    cause: UsageResumeCause | None = None
+    failedAt: float | None = None
+    authAttempt: int | None = None
+    authRefreshMarker: str | None = None
+    dueAt: float | None = None
+    plannedAt: float | None = None
+    resetAt: float | None = None
+    proofAt: float | None = None
+    startedAt: float | None = None
+    lastCheckedAt: float | None = None
+    waitingForAuth: bool | None = None
+    reason: str | None = None
+    updatedAt: float | None = None
+    taskClaims: list[str] | None = None
+
+
+class RequestQuestionOptionDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    label: str | None = None
+    value: JsonValue | None = None
+    description: str | None = None
+
+
+class RequestQuestionDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    id: str
+    question: str
+    options: list[RequestQuestionOptionDto] | None = None
+    multiSelect: bool | None = None
+    isSecret: bool | None = None
+
+
+class RequestSchemaPropertyDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    title: str | None = None
+    type: str | list[str] | None = None
+    enum: list[JsonValue] | None = None
+    items: RequestSchemaPropertyDto | None = None
+    isSecret: bool | None = None
+    writeOnly: bool | None = None
+    format: str | None = None
+
+
+class RequestSchemaDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    properties: dict[str, RequestSchemaPropertyDto]
+    required: list[str] | None = None
+
+
+class RequestParamsDto(ContractModel):
+    """Known request UI fields and typed JSON-safe native protocol extensions."""
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    threadId: str | None = None
+    turnId: str | None = None
+    questions: list[RequestQuestionDto] | None = None
+    requestedSchema: RequestSchemaDto | None = None
+    reason: str | None = None
+    message: str | None = None
+    command: str | list[str] | None = None
+    cwd: str | None = None
+    permissions: dict[str, JsonValue] | None = None
+    changes: JsonValue | None = None
+    url: str | None = None
+
+
+class RequestPreviewDto(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    command: str | list[str] | None = None
+    cwd: str | None = None
+    permissions: dict[str, JsonValue] | None = None
+    changes: JsonValue | None = None
+    url: str | None = None
 
 
 class AgentStartAttempt(ContractModel):
@@ -206,8 +451,8 @@ class AgentEntityDto(ContractModel):
     inFlight: bool | None = None
     compactions: int | None = None
     tokensUsed: int | None = None
-    contextUsage: JsonValue | None = None
-    error: JsonValue | None = None
+    contextUsage: ContextUsageDto | None = None
+    error: NativeProviderError | str | None = None
     tail: str | None = None
     canSend: bool | None = None
     launcherAlive: bool | None = None
@@ -224,13 +469,19 @@ class AgentEntityDto(ContractModel):
     pendingSettingsAccountKey: str | None = None
     queuedSettings: ExecutionSettingsDto | None = None
     quickCreate: JsonValue | None = None
-    nativeThreadBlock: JsonValue | None = None
+    nativeThreadBlock: NativeThreadBlockDto | None = None
     daybreakEnabled: bool | None = None
     accountTransfer: JsonValue | None = None
     overview: AgentOverview | None = None
     nativeRelease: SnapshotNativeRelease | None = None
     activity: AgentActivity | None = None
     nativeStatus: AgentNativeStatus | AgentNativeStatusValue | None = None
+    nativeSafetyBuffering: NativeSafetyBufferingDto | None = None
+    nativeSafetyRetry: NativeSafetyRetryDto | None = None
+    nativeTurnError: NativeTurnErrorDto | None = None
+    connectionCheck: ConnectionCheckDto | None = None
+    readState: ReadStateDto | None = None
+    nativeLimitErrorAt: float | None = None
     startAttempt: SnapshotStartAttempt | None = None
     panelVersion: int | None = None
     panelDataVersion: int | None = None
@@ -308,26 +559,27 @@ class SnapshotAgentDto(AgentEntityDto):
     budgetActionWait: JsonValue | None = None
     budgetBlocked: JsonValue | None = None
     cancelledPark: JsonValue | None = None
-    capacityRetry: JsonValue | None = None
+    capacityRetry: CapacityRetryDto | None = None
+    usageResume: UsageResumeDto | None = None
     claudeOptions: JsonValue | None = None
     complaintMisses: int | None = None
     complaintsPresented: list[str] | None = None
     content: str | None = None
-    contextRepairWait: JsonValue | None = None
+    contextRepairWait: ContextRepairWaitDto | None = None
     cyberAccessProgram: str | None = None
     decision: str | None = None
     delivery: JsonValue | None = None
     disconnectRecovery: JsonValue | None = None
     expectedModeRevision: int | None = None
     lastCompletedTurnError: str | None = None
-    lastEvent: JsonValue | None = None
+    lastEvent: str | None = None
     lastUpdated: float | None = None
     lazyAccountTransfer: JsonValue | None = None
     liveSteerAttempt: JsonValue | None = None
     liveSteerRejectedTurnId: str | None = None
     livenessCommand: str | None = None
     nativeReview: JsonValue | None = None
-    nativeSafetyRetry: JsonValue | None = None
+    nativeSafetyRetry: NativeSafetyRetryDto | None = None
     nativeToolRefreshId: str | None = None
     nativeToolUpdate: JsonValue | None = None
     nextTurn: JsonValue | None = None
@@ -403,6 +655,8 @@ class RoomRadioActive(_RoomRadioIdentity):
     threadId: str | None
     through: int
     turnId: str | None = None
+    interruptRequested: bool | None = None
+    questionContinuationPlanned: bool | None = None
 
 
 class RoomRadioSeen(_RoomRadioIdentity):
@@ -575,6 +829,11 @@ class SnapshotComplaintDto(ComplaintEntityDto):
 
 class RequestStatus(ContractStrEnum):
     PENDING = "pending"
+    BLOCKED = "blocked"
+    ANSWERING = "answering"
+    ANSWERED = "answered"
+    DECLINED = "declined"
+    RESOLVED = "resolved"
     EXPIRED = "expired"
     SUBMITTED = "submitted"
     ACKNOWLEDGED = "acknowledged"
@@ -586,6 +845,11 @@ class RequestEntityDto(ContractModel):
     id: str
     method: str | None = None
     agent: str | None = None
+    accountKey: str | None = None
+    connectionId: str | None = None
+    epoch: int | None = None
+    threadId: str | None = None
+    turnId: str | None = None
     status: RequestStatus | None = None
     created: float | None = None
     createdAt: float | None = None
@@ -595,7 +859,8 @@ class RequestEntityDto(ContractModel):
     deferred: bool | None = None
     error: str | None = None
     result: JsonValue | None = None
-    params: JsonValue | None = None
+    params: RequestParamsDto | None = None
+    preview: RequestPreviewDto | None = None
     title: str | None = None
 
 
@@ -746,10 +1011,18 @@ class WorkSnapshotDto(WorkEntityDto):
     displayStatus: str | None = None
 
 
+class AccountRateLimitsDto(ContractModel):
+    """Account-specific read envelope; provider rate-limit data stays JSON."""
+    accountKey: str
+    at: float | None
+    data: JsonValue | None = None
+    error: str | None = None
+
+
 class WorkspaceEntityDto(ContractModel):
     connected: bool | None = None
     rateLimits: JsonValue | None = None
-    rateLimitsByAccount: JsonValue | None = None
+    rateLimitsByAccount: dict[str, AccountRateLimitsDto] | None = None
     nativeNotices: list[JsonValue] | None = None
     projectOrganizationVersion: int | None = None
     peerTeamsVersion: int | None = None
@@ -786,7 +1059,7 @@ class RuntimeSnapshot(ResponseModel):
     rules: list[RuleSnapshotDto]
     rateLimits: JsonValue
     nativeNotices: list[JsonValue]
-    rateLimitsByAccount: dict[str, JsonValue]
+    rateLimitsByAccount: dict[str, AccountRateLimitsDto]
     events: list[EventEntityDto]
     connected: bool
 
