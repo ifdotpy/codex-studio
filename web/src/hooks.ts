@@ -19,26 +19,11 @@ import {
 } from "./sync/client";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
+import { agentChatMessages } from "./hooks/agentChatMessages";
 import type { GetResult } from "./api";
 import type { Message, Agent, Json } from "./types";
 type StateSnapshot = GetResult<"/api/state">;
 type TranscriptPageData = GetResult<"/api/transcript">;
-type AgentChatRecord = GetResult<"/api/agent-chat">["messages"][number];
-
-function agentChatMessages(records: AgentChatRecord[]): Message[] {
-  return records.map((record) => ({
-    id: record.id,
-    text: record.text,
-    role: "assistant",
-    kind: "message",
-    at: record.created,
-    created: record.created,
-    seq: record.seq,
-    sender: record.sender,
-    senderName: record.senderName,
-    sourceId: record.sender,
-  }));
-}
 export function useSnapshot() {
   const [data, setData] = useState<StateSnapshot | null>(null),
     [error, setError] = useState("");
