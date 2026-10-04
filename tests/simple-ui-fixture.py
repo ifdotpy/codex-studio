@@ -170,6 +170,37 @@ if os.environ.get('MESSAGES_UI_FIXTURE'):
 if os.environ.get('BACKGROUND_UI_FIXTURE'):
     c.runtime.monitor(lead['id'], {'command': 'watch-fixture --deploy production'}, approved=False)
 server = make_server(c, port=int(sys.argv[2]) if len(sys.argv) > 2 else 0, unix_socket=True)
+if os.environ.get('PROGRESS_PUSH_UI_FIXTURE'):
+    def progress_watch_state():
+        hub = server.context._resource_hub
+        if hub is None:
+            return {'activeAgentIds': [], 'dispatcherAlive': False, 'observerAlive': False}
+        lazy_watchdog = hub._progress_watchdog
+        watchdog = lazy_watchdog._watchdog
+        if watchdog is None:
+            return {
+                'activeAgentIds': [], 'dispatcherAlive': False,
+                'observerAlive': False, 'errorAgentIds': [],
+            }
+        with watchdog._condition:
+            dispatcher = watchdog._dispatcher
+            observer = watchdog._observer
+            return {
+                'activeAgentIds': sorted(watchdog._watches),
+                'dispatcherAlive': bool(dispatcher and dispatcher.is_alive()),
+                'observerAlive': bool(observer and observer.is_alive()),
+                'errorAgentIds': sorted(
+                    agent_id for agent_id, state in watchdog._states.items()
+                    if state[1] is not None
+                ),
+            }
+
+    server.app.add_api_route(
+        '/api/test/progress-watch-state', progress_watch_state,
+        methods=['GET'], include_in_schema=False,
+    )
+    fixture_route = server.app.routes.pop()
+    server.app.routes.insert(-1, fixture_route)
 # Test-only notification input drives the real runtime and HTTP stream.
 import json
 import threading

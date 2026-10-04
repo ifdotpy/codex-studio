@@ -106,7 +106,10 @@ class ProgressFileWatchdog:
             raise TypeError("Progress watcher callback must be callable")
         path = progress_path(self._state_dir, agent_id)
         directory = path.parent
-        with _directory(self._state_dir, agent_id):
+        # A valid active agent may not have been started by the runtime yet.
+        # Securely create only its parent directory so we can watch the first
+        # future PROGRESS.md creation without provisioning or overwriting files.
+        with _directory(self._state_dir, agent_id, create=True):
             pass
 
         token = uuid.uuid4().hex

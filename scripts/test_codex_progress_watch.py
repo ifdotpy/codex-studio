@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from codex_progress import provision_progress
+from codex_progress import provision_progress, read_progress
 from codex_progress_watch import ProgressFileWatchdog
 
 
@@ -191,6 +191,54 @@ class ProgressWatchdogTests(unittest.TestCase):
         try:
             self.first.write_text("Native event.\n", encoding="utf-8")
             self.assertTrue(changed.wait(timeout=5))
+        finally:
+            detach()
+
+    def test_native_watch_handles_agent_without_progress_directory_or_file(self):
+        self.patch_observer.stop()
+        watcher = ProgressFileWatchdog(self.root)
+        changed = threading.Event()
+        pending = self.root / "progress" / "pending-agent" / "PROGRESS.md"
+        self.assertFalse(pending.parent.exists())
+        self.assertFalse(pending.exists())
+        detach = watcher.subscribe("pending-agent", changed.set)
+        try:
+            self.assertTrue(pending.parent.is_dir())
+            self.assertFalse(pending.exists(), "watching must not provision file content")
+            self.assertFalse(changed.is_set(), "subscription baseline is not a file change")
+            temporary = pending.with_suffix(".tmp")
+            temporary.write_text("First progress update.\n", encoding="utf-8")
+            temporary.replace(pending)
+            self.assertTrue(changed.wait(timeout=5), "native watch missed first file creation")
+            self.assertEqual(
+                read_progress(self.root, "pending-agent")["markdown"],
+                "First progress update.\n",
+            )
+        finally:
+            detach()
+
+    def test_native_watch_handles_valid_agent_without_progress_directory_or_file(self):
+        self.patch_observer.stop()
+        watcher = ProgressFileWatchdog(self.root)
+        changed = threading.Event()
+        pending = self.root / "progress" / "pending-agent" / "PROGRESS.md"
+        self.assertFalse(pending.parent.exists())
+        self.assertFalse(pending.exists())
+        detach = watcher.subscribe("pending-agent", changed.set)
+        try:
+            self.assertTrue(pending.parent.is_dir())
+            self.assertFalse(pending.exists(), "watching must not provision file content")
+            self.assertFalse(changed.is_set(), "subscription baseline is not a file change")
+            temporary = pending.with_suffix(".tmp")
+            temporary.write_text("First progress update.\n", encoding="utf-8")
+            temporary.replace(pending)
+            self.assertTrue(changed.wait(timeout=5), "native watch missed first file creation")
+            from codex_progress import read_progress
+
+            self.assertEqual(
+                read_progress(self.root, "pending-agent")["markdown"],
+                "First progress update.\n",
+            )
         finally:
             detach()
 
