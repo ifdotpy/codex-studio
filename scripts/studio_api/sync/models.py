@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from typing import Literal
-from typing_extensions import Annotated
-
-from pydantic import ConfigDict, Field, TypeAdapter, WithJsonSchema, field_validator, model_validator
+from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SyncEntity
 
@@ -65,6 +63,8 @@ class AgentMode(ContractStrEnum):
 
 class AgentActivity(ContractModel):
     phase: str | None = None
+    at: float | None = None
+    tools: list[ActiveToolDto] | None = None
 
 
 class AgentNativeStatus(ContractModel):
@@ -79,6 +79,77 @@ class AgentStartAttempt(ContractModel):
 class AgentNativeRelease(ContractModel):
     phase: str | None = None
     resetPending: bool | None = None
+
+
+class AgentNativeStatusValue(ContractStrEnum):
+    IDLE = "idle"
+    NOT_LOADED = "notLoaded"
+    UNSUBSCRIBED = "unsubscribed"
+    NOT_SUBSCRIBED = "notSubscribed"
+
+
+class ActiveToolDto(ContractModel):
+    id: str
+    type: str
+    name: str
+
+
+class SnapshotNativeRelease(AgentNativeRelease):
+    id: str | None = None
+    threadId: str | None = None
+    accountKey: str | None = None
+    connectionId: str | None = None
+    at: float | None = None
+    submittedAt: float | None = None
+    resumedAt: float | None = None
+    releasedAt: float | None = None
+    closedAt: float | None = None
+    nativeStatus: AgentNativeStatusValue | None = None
+    error: str | None = None
+    resetReason: str | None = None
+    resetBy: str | None = None
+
+
+class SnapshotStartAttempt(AgentStartAttempt):
+    id: str | None = None
+    epoch: int | None = None
+    events: list[str] | None = None
+    action: str | None = None
+    submitted: bool | None = None
+    activeAtReservation: bool | None = None
+    turnId: str | None = None
+    observedTurnId: str | None = None
+    nativeOperationId: str | None = None
+    accountKey: str | None = None
+    actionRequestId: str | None = None
+    actionIdentity: dict[str, JsonValue] | None = None
+    notSubmittedReason: str | None = None
+    completedAt: float | None = None
+
+
+class WorkerDefaultsDto(ContractModel):
+    model: str
+    effort: str | None
+    fastMode: bool
+    daybreakEnabled: bool
+    accountKey: str | None = None
+    cyberAccessProgram: str | None = None
+
+
+class ReviewDefaultsDto(ContractModel):
+    model: str | None
+    effort: str | None
+
+
+class ExecutionSettingsDto(ContractModel):
+    model: str | None = None
+    effort: str | None = None
+    nativeEffort: str | None = None
+    fastMode: bool | None = None
+    daybreakEnabled: bool | None = None
+    cyberAccessProgram: str | None = None
+    accountKey: str | None = None
+    updatedAt: float | None = None
 
 
 class AgentOverview(ContractModel):
@@ -129,21 +200,21 @@ class AgentEntityDto(ContractModel):
     agentModeRevision: int | None = None
     agentModeSupported: bool | None = None
     subagentConcurrencyVersion: int | None = None
-    workerDefaults: JsonValue | None = None
-    reviewDefaults: JsonValue | None = None
+    workerDefaults: WorkerDefaultsDto | None = None
+    reviewDefaults: ReviewDefaultsDto | None = None
     parkedEvent: str | None = None
-    pendingSettings: JsonValue | None = None
+    pendingSettings: ExecutionSettingsDto | None = None
     pendingSettingsAccountKey: str | None = None
-    queuedSettings: JsonValue | None = None
+    queuedSettings: ExecutionSettingsDto | None = None
     quickCreate: JsonValue | None = None
     nativeThreadBlock: JsonValue | None = None
     daybreakEnabled: bool | None = None
     accountTransfer: JsonValue | None = None
     overview: AgentOverview | None = None
-    nativeRelease: AgentNativeRelease | None = None
+    nativeRelease: SnapshotNativeRelease | None = None
     activity: AgentActivity | None = None
-    nativeStatus: AgentNativeStatus | None = None
-    startAttempt: AgentStartAttempt | None = None
+    nativeStatus: AgentNativeStatus | AgentNativeStatusValue | None = None
+    startAttempt: SnapshotStartAttempt | None = None
     panelVersion: int | None = None
     panelDataVersion: int | None = None
     unreadCount: int | None = None
@@ -727,10 +798,10 @@ class SyncPullQuery(ContractModel):
     model_config = ConfigDict(extra="forbid", strict=False, validate_assignment=True, populate_by_name=True)
 
     scope: str | None = None
-    after: Annotated[str, WithJsonSchema({"type": "integer"})] | None = None
-    limit: Annotated[str, WithJsonSchema({"type": "integer"})] | None = None
+    after: int | None = None
+    limit: int | None = None
     fresh: str | None = None
-    initialHigh: Annotated[str, WithJsonSchema({"type": "integer"})] | None = None
+    initialHigh: int | None = None
     reset: str | None = None
     priorityId: str | None = None
 
@@ -739,7 +810,7 @@ class SyncStreamQuery(ContractModel):
 
     protocol: str | None = None
     scope: str | None = None
-    after: Annotated[str, WithJsonSchema({"type": "integer"})] | None = None
+    after: int | None = None
 
 
 class TranscriptStreamQuery(ContractModel):
@@ -785,6 +856,7 @@ class DraftPayload(ContractModel):
     """Extensible browser-owned draft document; unknown values are JSON metadata."""
 
     model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     device: str
     session: str

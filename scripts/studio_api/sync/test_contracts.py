@@ -26,7 +26,7 @@ from studio_api.sync.models import (
 class SyncEntityContractTests(unittest.TestCase):
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
-        self.assertIn("peerTeam", EntityCollection.__members__["PEER_TEAM"].value)
+        self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
         self.assertIn("id", COLLECTION_FIELDS["task"])
         agent = project("agent", {"id": "a", "status": "running", "private": "excluded"})
         self.assertEqual(agent, {"id": "a", "status": "running"})
@@ -87,8 +87,32 @@ class SyncEntityContractTests(unittest.TestCase):
             DraftPushRequest.model_validate(invalid)
 
     def test_chat_and_full_snapshot_models_share_runtime_contract(self) -> None:
+        active_agent = {
+            "id": "agent-a", "status": "running", "activity": {
+                "phase": "tool", "at": 1.5,
+                "tools": [{"id": "tool-a", "type": "commandExecution", "name": "exec"}],
+            },
+            "nativeRelease": {
+                "id": "release-a", "phase": "unsubscribing", "threadId": "thread-a",
+                "accountKey": "default", "connectionId": "conn-a", "at": 1.0,
+                "submittedAt": 1.2, "resetPending": True,
+            },
+            "nativeStatus": "notLoaded",
+            "startAttempt": {
+                "id": "attempt-a", "epoch": 4, "events": ["event-a"],
+                "action": "resume", "submitted": True, "activeAtReservation": True,
+                "observedTurnId": "turn-a", "nativeOperationId": "native-a",
+                "prepareError": "prepare details", "responseError": "response details",
+            },
+            "workerDefaults": {
+                "model": "gpt-6-luna", "effort": "high", "fastMode": False,
+                "daybreakEnabled": False, "accountKey": "default",
+            },
+            "reviewDefaults": {"model": None, "effort": None},
+            "pendingSettings": {"model": "gpt-6-luna", "effort": "medium", "fastMode": True},
+        }
         runtime = {
-            "agents": [], "projects": [], "projectOrganizationVersion": 1,
+            "agents": [active_agent], "projects": [], "projectOrganizationVersion": 1,
             "peerTeamsVersion": 1, "peerTeams": [], "tasks": [], "tasksHistoryLimit": 100,
             "monitors": [], "requests": [], "rooms": [], "complaints": [], "rules": [],
             "rateLimits": {}, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
@@ -101,6 +125,17 @@ class SyncEntityContractTests(unittest.TestCase):
         if snapshot.runtime is None:
             self.fail("snapshot runtime was omitted")
         self.assertIsNone(snapshot.runtime.work)
+        active = snapshot.runtime.agents[0]
+        if (active.activity is None or active.activity.tools is None or not active.activity.tools
+                or active.nativeRelease is None or active.startAttempt is None or active.workerDefaults is None):
+            self.fail("active producer nested values were omitted")
+        self.assertEqual(active.activity.at, 1.5)
+        self.assertEqual(active.activity.tools[0].name, "exec")
+        self.assertEqual(active.nativeRelease.connectionId, "conn-a")
+        self.assertEqual(active.startAttempt.events, ["event-a"])
+        self.assertEqual(active.workerDefaults.model, "gpt-6-luna")
+        with self.assertRaises(ValidationError):
+            SnapshotAgentDto.model_validate({**active_agent, "activity": {"unknown": True}})
         runtime["work"] = []
         full = RuntimeSnapshot.model_validate(runtime)
         self.assertEqual(full.work, [])
@@ -120,12 +155,14 @@ class SyncEntityContractTests(unittest.TestCase):
 
         document = TestClient(app).get("/api/sync/pull?after=9&limit=20&fresh=1&reset=1&priorityId=lead")
         self.assertEqual(document.json(), {
-            "after": "9", "limit": "20", "fresh": "1", "reset": "1", "priorityId": "lead"
+            "after": 9, "limit": 20, "fresh": "1", "reset": "1", "priorityId": "lead"
         })
         parameters = app.openapi()["paths"]["/api/sync/pull"]["get"]["parameters"]
         types = {
-            parameter["name"]: {option["type"] for option in parameter["schema"]["anyOf"]
-                                if option.get("type") not in ("null", None)}
+            parameter["name"]: {
+                option["type"] for option in parameter["schema"].get("anyOf", [parameter["schema"]])
+                if option.get("type") != "null"
+            }
             for parameter in parameters
         }
         self.assertEqual(types["after"], {"integer"})
