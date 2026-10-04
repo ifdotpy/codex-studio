@@ -1347,7 +1347,7 @@ class WorkMixin:
             def snapshot():
                 rows = []
                 for stored in db.execute(
-                    "SELECT e.id,e.text,e.kind,e.status,e.created,m.record AS metadata "
+                    "SELECT e.id,e.text,e.kind,e.status,e.error,e.created,m.record AS metadata "
                     "FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
                     "WHERE e.agent=? AND e.epoch=? AND e.status='pending' "
                     "AND e.kind IN ('user','followup') ORDER BY e.created,e.rowid",
@@ -1375,7 +1375,7 @@ class WorkMixin:
             request_id = data.get("request_id")
             if request_id is not None:
                 request_id = text_field(request_id, "a request ID", 200)
-            if action == "reorder" and not request_id:
+            if action in {"reorder", "send_now"} and not request_id:
                 raise ValueError("Supply a request ID to change queue delivery")
             receipt_key = "queue:" + agent_id + ":" + request_id if request_id else None
             signature, previous = self.operation_receipt(
@@ -1451,8 +1451,19 @@ class WorkMixin:
                 elif action == "first":
                     first = min(r["created"] for r in rows)
                     db.execute("UPDATE runtime_events SET created=? WHERE id=?", (first - 0.001, row["id"]))
+                elif action == "send_now":
+                    if row["kind"] != "user":
+                        raise ValueError("Only a user message can be sent now")
+                    first = min(r["created"] for r in rows)
+                    db.execute("UPDATE runtime_events SET created=? WHERE id=?", (first - 0.001, row["id"]))
+                    saved = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (row["id"],)).fetchone()
+                    metadata = json.loads(saved[0]) if saved else {}
+                    metadata["delivery"] = "steer"
+                    metadata["sendNow"] = True
+                    db.execute("INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)",
+                               (row["id"], json.dumps(metadata)))
                 else:
-                    raise ValueError("Choose edit, cancel, first, or reorder")
+                    raise ValueError("Choose edit, cancel, first, reorder, or send_now")
             a["queueMutationRevision"] = a.get("queueMutationRevision", 0) + 1
             self.put(db, "agents", a)
             updated = snapshot()

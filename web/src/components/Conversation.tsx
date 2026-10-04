@@ -1689,6 +1689,7 @@ export default function Conversation(p: {
                 scope={queueScope}
                 onEdit={messageQueue.edit}
                 onCancel={messageQueue.cancel}
+                onSendNow={messageQueue.sendNow}
                 onReorder={(ids) =>
                   messageQueue.reorder(
                     mergeQueueOrder(
