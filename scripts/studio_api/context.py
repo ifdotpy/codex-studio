@@ -44,6 +44,14 @@ JSON_CONTENT_TYPE = "application/json"
 DEFAULT_CACHE_CONTROL = "no-store"
 COMPRESS_MINIMUM_BYTES = 1024
 GZIP_LEVEL = 3
+REFERRER_POLICY = "no-referrer"
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "connect-src 'self' https://api.openai.com; "
+    "img-src 'self' data: blob: https: http:; "
+    "media-src 'self' blob: data:; frame-src 'self' blob:; "
+    "frame-ancestors 'none'; base-uri 'none'"
+)
 
 
 class ApiContext:
@@ -321,6 +329,8 @@ class ApiContext:
             headers["Content-Encoding"] = "gzip"
         if server_timing:
             headers["Server-Timing"] = ", ".join(f"{name};dur={duration:.2f}" for name, duration in server_timing.items())
+        headers["Referrer-Policy"] = REFERRER_POLICY
+        headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
         return Response(data, status_code=status, headers=headers, media_type=None)
 
     @staticmethod

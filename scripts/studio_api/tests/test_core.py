@@ -62,7 +62,12 @@ class UncheckedLegacyResponse(BaseModel):
     status: str
 
 
-def request_for(response_model: object = None, *, accept_encoding: str = "") -> Request:
+def request_for(
+    response_model: object = None,
+    *,
+    accept_encoding: str = "",
+    if_none_match: str = "",
+) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -73,7 +78,10 @@ def request_for(response_model: object = None, *, accept_encoding: str = "") -> 
         "raw_path": b"/api/messages",
         "query_string": b"",
         "root_path": "",
-        "headers": [(b"accept-encoding", accept_encoding.encode())],
+        "headers": [
+            (b"accept-encoding", accept_encoding.encode()),
+            (b"if-none-match", if_none_match.encode()),
+        ],
         "client": ("127.0.0.1", 50000),
         "server": ("127.0.0.1", 46000),
         "route": SimpleNamespace(response_model=response_model),
@@ -92,6 +100,27 @@ class CoreResponseTests(unittest.TestCase):
         response = self.context.send(request_for(), b"image-bytes", content_type="image/png")
         self.assertEqual(response.body, b"image-bytes")
         self.assertEqual(response.headers["content-type"], "image/png")
+        self.assert_security_headers(response)
+
+    def test_actual_static_html_route_restores_legacy_security_headers(self) -> None:
+        from studio_api.app import create_app
+
+        with tempfile.TemporaryDirectory(prefix="studio-static-header-test-") as directory:
+            web_root = Path(directory)
+            page = "<!doctype html><html><body><img src='https://example.test/image.png'></body></html>"
+            (web_root / "index.html").write_text(page, encoding="utf-8")
+            context = ApiContext.for_schema()
+            context.remote = SimpleNamespace(
+                request_origin=lambda _headers, _peer, _port: "http://testserver",
+            )
+            app = create_app(context)
+            with patch("codex_canvas.WEB", web_root), TestClient(app) as client:
+                response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.text, page)
+        self.assertEqual(response.headers["content-type"], "text/html; charset=utf-8")
+        self.assert_security_headers(response)
 
     def test_gzipped_validation_error_has_consistent_headers(self) -> None:
         message = "x" * 4096
@@ -105,6 +134,25 @@ class CoreResponseTests(unittest.TestCase):
         body = json.loads(gzip.decompress(bytes(response.body)))
         self.assertEqual(body["details"][0]["message"], message)
         self.assertEqual(int(response.headers["content-length"]), len(response.body))
+        self.assert_security_headers(response)
+
+    def test_etag_not_modified_keeps_cache_contract_without_security_policy(self) -> None:
+        value = {"status": "unchanged"}
+        first = self.context.send(request_for(JsonValue), value, etag=True)
+        not_modified = self.context.send(
+            request_for(JsonValue, if_none_match=first.headers["etag"]),
+            value,
+            etag=True,
+        )
+
+        self.assertEqual(not_modified.status_code, 304)
+        self.assertEqual(not_modified.body, b"")
+        self.assertEqual(not_modified.headers["etag"], first.headers["etag"])
+        self.assertEqual(not_modified.headers["cache-control"], "no-store")
+        self.assertEqual(not_modified.headers["content-length"], "0")
+        self.assertNotIn("content-security-policy", not_modified.headers)
+        self.assertNotIn("referrer-policy", not_modified.headers)
+        self.assertEqual(not_modified.headers["x-content-type-options"], "nosniff")
 
     def test_typed_root_array_keeps_its_wire_shape(self) -> None:
         request = request_for(MessageHistory)
@@ -249,6 +297,18 @@ class CoreResponseTests(unittest.TestCase):
         body = json.loads(bytes(response.body))
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("outcome", body)
+        self.assert_security_headers(response)
+
+    def assert_security_headers(self, response: Response) -> None:
+        self.assertEqual(response.headers["referrer-policy"], "no-referrer")
+        self.assertEqual(
+            response.headers["content-security-policy"],
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' https://api.openai.com; "
+            "img-src 'self' data: blob: https: http:; "
+            "media-src 'self' blob: data:; frame-src 'self' blob:; "
+            "frame-ancestors 'none'; base-uri 'none'",
+        )
 
     def test_unchecked_pydantic_model_is_not_a_typed_contract(self) -> None:
         self.assertFalse(ApiContext._response_contract(list[UncheckedLegacyResponse]))
