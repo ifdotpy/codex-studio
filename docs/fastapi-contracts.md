@@ -294,6 +294,80 @@ artifacts in the task cache's `tests-tmp` directory:
 `runtime-agent-cache-write-benchmark.py` and
 `runtime-agent-cache-write-benchmark-results.txt`.
 
+### Three further passes: session dispatch, identity reads, validation adapters
+
+The next three passes compare `cbb8d67` with `645cea8`:
+
+1. The in-memory session route runs asynchronously and sends its token mapping
+   directly through the existing strict response adapter. This removes threadpool
+   dispatch and a model-to-dictionary round trip without changing response bytes,
+   headers, or the registered response schema.
+2. Once sync version tracking has initialized its existing SQLite reader, identity
+   queries reuse that reader under its existing lock. Each request still queries
+   the committed identity; there is no identity-value cache or new connection pool.
+   Before initialization, the old connection path remains. Legacy streaming calls
+   offload identity reads to the existing threadpool, and oversized events reuse
+   the identity already read for that event.
+3. Draft assumed-state JSON and receipt ID queries reuse two module-level
+   validation adapters. Per-request strict validation, original error locations,
+   and draft identity checks remain unchanged. Repeated draft payload parsing is
+   retained to preserve those validation boundaries without added machinery.
+
+A three-way localhost TCP comparison used isolated Canvas-only servers, fresh
+connections, uncompressed responses, and six blocks in legacy/before/after/after/
+before/legacy order. Each block had 20 warmups and 500 measured requests per route,
+for 1,000 samples per variant and route. Identity was measured after a normal
+state pull initialized the version reader. The legacy source was `6212c10`.
+These are small synthetic responses, not production latency measurements.
+
+| Route                        | Legacy p50 / p95 (ms) | Before p50 / p95 (ms) | After p50 / p95 (ms) |
+| ---------------------------- | --------------------- | --------------------- | -------------------- |
+| Session                      | 0.2459 / 0.3942       | 0.2162 / 0.3107       | 0.1764 / 0.2818      |
+| Identity, initialized reader | 0.4894 / 0.6121       | 0.3756 / 0.5115       | 0.3032 / 0.3322      |
+| State pull                   | 0.5279 / 0.7306       | 0.4871 / 0.6640       | 0.5606 / 0.6912      |
+
+Session and initialized identity medians fell about 18% and 19% relative to the
+previous FastAPI revision. State-pull results varied between blocks and the pooled
+median increased in this run; no state-pull speedup is claimed. Legacy response
+sizes differ from the typed API, so this comparison does not assert byte equality
+between implementations. Before/after GET response sizes match.
+
+An additional state-pull-only comparison used eight alternating blocks
+(before/after/after/before/after/before/before/after), giving 2,000 samples per
+variant. Medians were 0.5495 versus 0.5647 ms; p95 was 0.7434 versus 0.6546 ms.
+This mixed result also does not establish a latency improvement. The measured
+state-pull path does not call the changed identity helper.
+
+A separate real TCP/SQLite write benchmark updated 100 drafts per request, each
+with the exact prior assumed state. Four before/after/after/before blocks each
+used one seed request, four warmups, and 50 measured updates, for 100 samples per
+variant. Every response was successful with no conflicts. Median full-request
+time fell from 31.699 to 6.665 ms (about 79% less time, 4.8x faster); p95 fell from
+34.052 to 7.068 ms. Each final batch request was 49,930 bytes. This includes the
+middleware, validation, and SQLite write transaction in a temporary Canvas DB;
+it does not include a model or the full runtime.
+
+The supporting draft-only microbenchmark uses different input: 100 rows,
+42,840 bytes, 25 samples after four warmups. DTO validation took 25.185 versus
+0.521 ms median. An in-process TestClient with a stub store took 27.058 versus
+1.652 ms; this is not TCP or SQLite evidence and must not be mixed with the
+full-request measurement above.
+
+Local-only scripts and raw samples are retained in the same task cache described
+above: `round2-http-perf.py` / `round2-http-perf-results.json`,
+`round2-drafts-http-perf.py` / `round2-drafts-http-perf-results.json`,
+`round2-pull-confirmation.py` / `round2-pull-confirmation-results.json`, and the
+`pass6-validation-20261004-1151/bench-corrected*` artifacts. They are not shipped
+in Git or available from a fresh checkout. The HTTP scripts capture the tested
+revision and use separate temporary state directories; run them only in the
+original task environment with its prepared API Python and writable `TMPDIR`.
+
+Integrated verification passes 281 API tests, strict mypy for 64 files, the
+three read-latency contracts, 19 SyncStore tests, sync HTTP/SSE and draft contracts,
+API generation freshness, strict frontend build, generated type fixtures, and
+staged-content hook fixtures. Independent review covers all three changes and
+their validation-error and event-loop corrections.
+
 ## Implementation evidence ledger
 
 | Area                                              | Evidence state                                                                                                                                                                                                                                                                    |
@@ -303,6 +377,6 @@ artifacts in the task cache's `tests-tmp` directory:
 | HTTP routes, auth, and caller integration         | Lead-reported API/full-build checks pass. Assigned browser flows pass for workspace/sidebar/project/inbox/task feed (5/5), limits (28 cases), terminal/navigation/worker model (8 fixtures), message metadata, markdown images, skill autocomplete, and draft/sync/message retry. |
 | Exact request identity and retry                  | Isolated service/API and renderer evidence passes same-ID recovery and no-duplicate retry scenarios. A response loss remains an uncertain outcome until the existing receipt surface is read.                                                                                     |
 | Architecture live-update guard                    | `tests/http-timeout-live-update-contract.py`: 6/6 pass. FastAPI without a compatible legacy handler rejects the legacy handler patch before mutation.                                                                                                                             |
-| Isolated performance                              | Paired Canvas-only legacy/FastAPI fixture measured above. FastAPI p50 increased on all three routes; there is no live-user measurement.                                                                                                                                           |
+| Isolated performance                              | Initial migration and later optimization fixtures are reported separately above. The latest round improves session, initialized identity, and draft writes; state-pull evidence is mixed. There is no live-user measurement.                                                      |
 | Scoped repository checks                          | Lead-reported changed-file lint/format, hook fixture, API check, and current-revision full build pass. Whole-repository lint had seven existing warnings across two unchanged files; format reported 38 unchanged files.                                                          |
 | Startup against existing state after idle/restart | Not run. Existing occupied state, active work, and restart safety were not inspected or changed; no live-startup claim is made.                                                                                                                                                   |
