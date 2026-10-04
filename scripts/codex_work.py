@@ -1464,13 +1464,17 @@ class WorkMixin:
                                (row["id"], json.dumps(metadata)))
                 else:
                     raise ValueError("Choose edit, cancel, first, reorder, or send_now")
-            a["queueMutationRevision"] = a.get("queueMutationRevision", 0) + 1
-            self.put(db, "agents", a)
             updated = snapshot()
+            queue_changed = updated["items"] != rows
+            if queue_changed:
+                a["queueMutationRevision"] = a.get("queueMutationRevision", 0) + 1
+                self.put(db, "agents", a)
+                updated = snapshot()
             result = self.save_receipt(db, receipt_key, signature, {
                 "status": "updated", "revision": updated["revision"],
                 "capabilities": updated["capabilities"],
             })
+            self._stage_event_resources(db, str(agent_id), queue=queue_changed, receipts=True)
             self.changed.set()
             return result
 

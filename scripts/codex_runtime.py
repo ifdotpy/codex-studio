@@ -1840,6 +1840,38 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 changes[key] = resource
 
+    def _stage_event_resources(self, db, agent_id: str, *, queue: bool = True, receipts: bool = True) -> None:
+        from studio_api.sync.resources.models import QueueResource, ReceiptsResource, ResourceRef
+
+        if queue:
+            self._stage_resource_change(
+                db, ResourceRef(QueueResource(kind="queue", agentId=agent_id))
+            )
+        if receipts:
+            self._stage_resource_change(
+                db, ResourceRef(ReceiptsResource(kind="receipts", agentId=agent_id))
+            )
+
+    def _stage_team_task_resources(self, db, agent_id: str) -> None:
+        from studio_api.sync.resources.models import ResourceRef, TasksResource
+
+        row = db.execute(
+            "SELECT json_extract(record,'$.rootId') FROM runtime_agents WHERE id=?",
+            (agent_id,),
+        ).fetchone()
+        if row is None:
+            return
+        root_id = row[0] or agent_id
+        members = db.execute(
+            "SELECT id FROM runtime_agents WHERE (id=? OR json_extract(record,'$.rootId')=?) "
+            "AND json_extract(record,'$.deletedAt') IS NULL",
+            (root_id, root_id),
+        )
+        for member in members:
+            self._stage_resource_change(
+                db, ResourceRef(TasksResource(kind="tasks", agentId=str(member[0])))
+            )
+
     def _publish_token_rate_observation(self, observation: TokenRateObservation) -> None:
         from codex_token_rate import token_rates
 
@@ -1903,6 +1935,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.changed.set()
 
     def _publish_committed_resource_changes(self):
+        # Detach first: commits queued after this snapshot stay pending for the
+        # next scheduler pass, whose lock barriers cover their own transactions.
+        with self._committed_resource_lock:
+            resources = self._committed_resource_changes
+            self._committed_resource_changes = {}
+            overflow = self._committed_resource_overflow
+            self._committed_resource_overflow = False
         # Mutations often enter db() while Runtime.lock is held. A cross-thread
         # lock barrier ensures their transaction scope has left that critical
         # section before the watcher/client fanout runs.
@@ -1910,11 +1949,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pass
         with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
             pass
-        with self._committed_resource_lock:
-            resources = self._committed_resource_changes
-            self._committed_resource_changes = {}
-            overflow = self._committed_resource_overflow
-            self._committed_resource_overflow = False
         if resources:
             from studio_api.sync.resources.hub import publish_resources
 
@@ -2449,7 +2483,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
-                ResourceRef, RoomResource, TaskResource, TasksResource, WorkspaceResource,
+                ResourceRef, RoomResource, TaskResource, WorkspaceResource,
             )
 
             if table == "agents":
@@ -2462,18 +2496,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._stage_resource_change(
                     db, ResourceRef(TaskResource(kind="task", taskId=str(record["id"])))
                 )
-                if record.get("agent"):
-                    self._stage_resource_change(
-                        db, ResourceRef(TasksResource(kind="tasks", agentId=str(record["agent"])))
-                    )
+                for owner in {
+                    str(value) for value in ((previous or {}).get("agent"), record.get("agent"))
+                    if value
+                }:
+                    self._stage_team_task_resources(db, owner)
             elif table == "rooms":
                 self._stage_resource_change(
                     db, ResourceRef(RoomResource(kind="room", roomId=str(record["id"])))
                 )
-            elif table == "work" and record.get("owner"):
-                self._stage_resource_change(
-                    db, ResourceRef(TasksResource(kind="tasks", agentId=str(record["owner"])))
-                )
+            elif table == "work":
+                owners = {(previous or {}).get("owner"), record.get("owner")}
+                for owner in {str(v) for v in owners if v}:
+                    self._stage_team_task_resources(db, owner)
 
     def invalidate_agent_records(self, _key=None):
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
@@ -2702,9 +2737,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     except (TypeError, ValueError):
                         previous = {}
                     if previous.get("id") == current["id"] and previous.get("status") == "lost":
-                        db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
-                                   ("Native command reattached; discard the provisional disconnect notice.",
-                                    "monitor:" + current["id"]))
+                        changed = db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
+                                             ("Native command reattached; discard the provisional disconnect notice.",
+                                              "monitor:" + current["id"]))
+                        if changed.rowcount and current.get("agent"):
+                            self._stage_event_resources(db, str(current["agent"]))
             bindings.append({"key": monitor["id"], "operation": operation,
                              "nativeId": proof["nativeId"], "response": proof.get("response")})
         return bindings
@@ -2986,7 +3023,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
                     a["inFlight"] = False
                 self.put(db, "agents", a)
-                db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
+                uncertain = db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
+                if uncertain.rowcount:
+                    self._stage_event_resources(db, str(a["id"]))
             for task in active_task_records(db):
                 if task.get("agent") in ids and task.get("status") in {"running", "starting", "approval"}:
                     task["reattachRecovery"] = {"accountKey": account_key,
@@ -3100,11 +3139,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a["status"] = "queued"
             self.put(db, "agents", a)
         if inserted.rowcount:
-            from studio_api.sync.resources.models import QueueResource, ReceiptsResource, ResourceRef
-
             agent_id = str(a["id"])
-            self._stage_resource_change(db, ResourceRef(QueueResource(kind="queue", agentId=agent_id)))
-            self._stage_resource_change(db, ResourceRef(ReceiptsResource(kind="receipts", agentId=agent_id)))
+            self._stage_event_resources(db, agent_id)
             self.mark_event_timing(db, [key], "enqueuedAt")
             if kind != "rule":
                 self.rule_event(db, a, kind, text, key)
@@ -3943,12 +3979,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         submitted = bool(attempt.get("submitted"))
         for event_id in attempt.get("events", []):
-            db.execute("UPDATE runtime_events SET status=?,turn_id=?,error=? "
-                       "WHERE id=? AND agent=? AND status IN ('reserved','dispatching')",
-                       ("uncertain" if submitted else "pending",
-                        attempt.get("turnId") if submitted else None,
-                        "Legacy native steer outcome is unknown" if submitted else None,
-                        event_id, a["id"]))
+            changed = db.execute("UPDATE runtime_events SET status=?,turn_id=?,error=? "
+                                 "WHERE id=? AND agent=? AND status IN ('reserved','dispatching')",
+                                 ("uncertain" if submitted else "pending",
+                                  attempt.get("turnId") if submitted else None,
+                                  "Legacy native steer outcome is unknown" if submitted else None,
+                                  event_id, a["id"]))
+            if changed.rowcount:
+                self._stage_event_resources(db, str(a["id"]))
         if not submitted and attempt.get("events"):
             item_id = a["id"] + ":" + attempt["events"][0]
             self.delete_search_item(db, item_id)
@@ -4839,10 +4877,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if command_index is not None:
                         rows = rows[:command_index] if command_index else rows[:1]
                 for event in rows:
-                    db.execute(
+                    reserved = db.execute(
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                    if reserved.rowcount:
+                        self._stage_event_resources(db, str(a["id"]))
                 reserved_count += len(rows)
                 self.mark_event_timing(db, [r["id"] for r in rows], "dispatchPickedAt")
                 self.capacity_reset(db, a)
@@ -4970,10 +5010,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             current["error"] = None
                         self.put(db, "agents", current)
                     for r in rows:
-                        db.execute(
+                        dispatching = db.execute(
                             "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                             (r["id"],),
                         )
+                        if dispatching.rowcount:
+                            self._stage_event_resources(db, str(a["id"]))
             else:
                 timing["preparedAt"] = time.monotonic_ns()
             try:
@@ -4995,8 +5037,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 if busy_at_reservation:
                     for r in rows:
-                        db.execute("UPDATE runtime_events SET status='dispatching' "
-                                   "WHERE id=? AND status='reserved'", (r["id"],))
+                        dispatching = db.execute("UPDATE runtime_events SET status='dispatching' "
+                                                 "WHERE id=? AND status='reserved'", (r["id"],))
+                        if dispatching.rowcount:
+                            self._stage_event_resources(db, str(a["id"]))
                 self.assert_workspace_available(db, current)
                 assert_native_thread_open(current)
                 from codex_team_isolation import assert_events
@@ -5154,6 +5198,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
             if delivered.rowcount:
+                self._stage_event_resources(db, str(a["id"]))
                 from codex_efficiency import remember_context_manifest
                 remember_context_manifest(db, a["id"], event_id)
             self.sync_chat_delivery(db, event_id, a["id"])
@@ -5712,6 +5757,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
                     if delivered.rowcount:
+                        self._stage_event_resources(db, str(a["id"]))
                         from codex_efficiency import remember_context_manifest
                         remember_context_manifest(db, a["id"], item["clientId"])
                     self.sync_chat_delivery(db, item["clientId"], a["id"])
