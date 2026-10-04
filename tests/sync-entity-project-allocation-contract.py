@@ -1,6 +1,9 @@
 """Keep agent projection filtering, nested ownership, and truncation stable."""
 from pathlib import Path
+import statistics
 import sys
+import time
+import tracemalloc
 from typing import cast
 
 root = Path(__file__).resolve().parents[1]
@@ -84,3 +87,25 @@ assert tools is not source["activity"]["tools"]
 assert tools[0] is not source["activity"]["tools"][0]
 tools[0]["name"] = "changed in renderer DTO"
 assert source["activity"]["tools"][0]["name"] == "Tool 0"
+
+if "--benchmark" in sys.argv[1:]:
+    inputs = [dict(source, id=f"worker-{index}") for index in range(250)]
+
+    def project_batch() -> list[object]:
+        return [project("agent", agent) for agent in inputs]
+
+    for _ in range(3):
+        project_batch()
+    tracemalloc.start()
+    timings = []
+    for _ in range(9):
+        started = time.perf_counter()
+        outputs = project_batch()
+        timings.append(time.perf_counter() - started)
+    peak_bytes = tracemalloc.get_traced_memory()[1]
+    print(
+        "250 agent projects: "
+        f"median_ms={statistics.median(timings) * 1000:.3f} "
+        f"min_ms={min(timings) * 1000:.3f} peak_bytes={peak_bytes} "
+        f"outputs={len(outputs)}"
+    )
