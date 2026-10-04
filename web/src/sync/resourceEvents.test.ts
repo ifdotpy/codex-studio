@@ -185,6 +185,102 @@ describe("shared resource event transport", () => {
     vi.useRealTimers();
   });
 
+  it("takes a queued Web Lock as soon as the current owner releases it", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    let releaseQueuedRequest: (() => void) | undefined;
+    const request = vi.fn(
+      (
+        _name: string,
+        options: { signal: AbortSignal },
+        callback: (lock: {}) => Promise<void>,
+      ) =>
+        new Promise<void>((resolve, reject) => {
+          const abort = () => reject(new DOMException("Aborted", "AbortError"));
+          options.signal.addEventListener("abort", abort, { once: true });
+          releaseQueuedRequest = () => {
+            options.signal.removeEventListener("abort", abort);
+            void callback({}).then(resolve, reject);
+          };
+        }),
+    );
+    vi.stubGlobal("navigator", { onLine: true, locks: { request } });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-waiter" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(request.mock.calls[0]?.[1].signal.aborted).toBe(false);
+    expect(Source.instances).toHaveLength(0);
+
+    // The mock delivers the held native lock only after its prior owner releases.
+    releaseQueuedRequest?.();
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    expect(Source.instances[0]?.closed).toBe(false);
+    stop();
+    await vi.waitFor(() => expect(Source.instances[0]?.closed).toBe(true));
+  });
+
+  it("cancels a queued Web Lock on hide without falling back to a second stream", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const documentListeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn((name: string, listener: () => void) =>
+        documentListeners.set(name, listener),
+      ),
+      removeEventListener: vi.fn(),
+    });
+    let requestSignal: AbortSignal | undefined;
+    const request = vi.fn(
+      (
+        _name: string,
+        options: { signal: AbortSignal },
+        _callback: (lock: {}) => Promise<void>,
+      ) =>
+        new Promise<void>((_resolve, reject) => {
+          requestSignal = options.signal;
+          options.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("navigator", { onLine: true, locks: { request } });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-hidden-waiter" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    expect(Source.instances).toHaveLength(0);
+
+    (document as unknown as { hidden: boolean }).hidden = true;
+    documentListeners.get("visibilitychange")?.();
+    await vi.waitFor(() => expect(requestSignal?.aborted).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(Source.instances).toHaveLength(0);
+    stop();
+  });
+
   it("opens only one replacement stream when online and pageshow resume overlap", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     const windowListeners = new Map<string, () => void>();

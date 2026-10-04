@@ -122,6 +122,7 @@ let coordinatorGeneration = 0;
 let owner = false;
 let independent = false;
 let ownerRequestPending = false;
+let ownerRequestController: AbortController | undefined;
 let releaseOwner: (() => void) | undefined;
 let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -714,15 +715,24 @@ function startAsOwner() {
     startIndependent();
     return;
   }
+  const requestController = new AbortController();
+  const generation = coordinatorGeneration;
+  const requestedWorkspaceId = workspaceId;
+  ownerRequestController = requestController;
   ownerRequestPending = true;
   void locks
     .request(
-      `codex-sync-stream:${location.origin}:${workspaceId}`,
-      { mode: "exclusive", ifAvailable: true },
+      `codex-sync-stream:${location.origin}:${requestedWorkspaceId}`,
+      { mode: "exclusive", signal: requestController.signal },
       async (lock) => {
-        ownerRequestPending = false;
+        if (ownerRequestController === requestController) {
+          ownerRequestController = undefined;
+          ownerRequestPending = false;
+        }
         if (
           !coordinatorActive ||
+          generation !== coordinatorGeneration ||
+          requestedWorkspaceId !== workspaceId ||
           !lock ||
           document.hidden ||
           navigator.onLine === false
@@ -744,13 +754,28 @@ function startAsOwner() {
         peerHeartbeatTimer = undefined;
       },
     )
-    .catch(() => {
-      ownerRequestPending = false;
+    .catch((error: unknown) => {
+      if (ownerRequestController === requestController) {
+        ownerRequestController = undefined;
+        ownerRequestPending = false;
+      }
+      if (
+        requestController.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError") ||
+        !coordinatorActive ||
+        generation !== coordinatorGeneration ||
+        requestedWorkspaceId !== workspaceId
+      )
+        return;
       startIndependent();
     });
 }
 
 function releaseStream() {
+  const pendingRequest = ownerRequestController;
+  ownerRequestController = undefined;
+  ownerRequestPending = false;
+  pendingRequest?.abort();
   const release = releaseOwner;
   releaseOwner = undefined;
   if (source) requireBaselineReconciliation();

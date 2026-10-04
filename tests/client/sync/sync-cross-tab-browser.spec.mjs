@@ -694,17 +694,31 @@ test("sync-cross-tab-browser @performance", async ({
           : Promise.reject(),
       ),
     );
-    const failoverStarted = Date.now();
-    const streamsOpenedBeforeFailover = streamsOpened;
-    await pages[streamOwnerIndex].close();
-    pages.splice(streamOwnerIndex, 1);
-    await pages[0].evaluate(() => {
+    const replacementFollowerIndex = streamOwnerIndex === 0 ? 1 : 0;
+    await pages[replacementFollowerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
         value: false,
       });
       document.dispatchEvent(new Event("visibilitychange"));
     });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(streams.size, 1, "one owner stream remains before failover");
+    assert.equal(
+      await pages[streamOwnerIndex].evaluate(
+        async (name) =>
+          (await navigator.locks.query()).held.some(
+            (lock) => lock.name === name,
+          ),
+        streamLockName,
+      ),
+      true,
+      "the selected stream owner still holds its workspace lock immediately before close",
+    );
+    const failoverStarted = Date.now();
+    const streamsOpenedBeforeFailover = streamsOpened;
+    await pages[streamOwnerIndex].close();
+    pages.splice(streamOwnerIndex, 1);
     await waitFor(
       () =>
         streams.size === 1 &&
