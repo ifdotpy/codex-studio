@@ -66,6 +66,8 @@ class ApiContext:
         self.unix_socket = unix_socket
         self.schema_only = schema_only
         self._lock = threading.RLock()
+        self._maintenance_lock = threading.Lock()
+        self._maintenance_last = 0.0
         self._terminal: TerminalManager | None = None
         self._cost_reader: AccountCostReader | None = None
         self._pricing: PricingCatalog | None = None

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
@@ -28,10 +29,46 @@ UVICORN_LOG_CONFIG = None
 
 
 class _StudioUvicornServer(uvicorn.Server):
+    def __init__(self, config: uvicorn.Config, context: ApiContext) -> None:
+        super().__init__(config)
+        self.context = context
+
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
         # codex_canvas owns the established SIGTERM-to-shutdown contract.
         yield
+
+    async def on_tick(self, counter: int) -> bool:
+        should_exit = await super().on_tick(counter)
+        if time.monotonic() - self.context._maintenance_last >= 3600:
+            await asyncio.to_thread(_run_maintenance, self.context)
+        return should_exit
+
+
+def _run_maintenance(context: ApiContext) -> None:
+    """Run the legacy hourly runtime/audio cleanup once across both listeners."""
+    if not context._maintenance_lock.acquire(blocking=False):
+        return
+    try:
+        now = time.monotonic()
+        if now - context._maintenance_last < 3600:
+            return
+        context._maintenance_last = now
+        runtime = context.runtime
+        if runtime is None:
+            return
+        from codex_execution import maintenance
+        from codex_voice import prune_audio
+
+        maintenance(runtime)  # type: ignore[no-untyped-call]
+        try:
+            prune_audio(context.canvas.root)  # type: ignore[no-untyped-call]
+        except OSError as error:
+            import sys
+
+            print(f"Voice audio cleanup failed: {error}", file=sys.stderr)
+    finally:
+        context._maintenance_lock.release()
 
 
 class UnixScopeApp:
@@ -70,7 +107,7 @@ class BoundServer:
             workers=1,
             timeout_keep_alive=5,
             limit_max_requests=None,
-        ))
+        ), context)
         self.server_address = sock.getsockname()
         self.server_port = int(sock.getsockname()[1]) if sock.family != socket.AF_UNIX else context.server_port
         self.address_family = sock.family

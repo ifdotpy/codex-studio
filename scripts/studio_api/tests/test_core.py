@@ -25,6 +25,7 @@ from studio_api.context import ApiContext
 from studio_api.middleware import RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
+from studio_api.server import _run_maintenance
 
 
 class MessageRecord(ContractModel):
@@ -169,6 +170,23 @@ class CoreResponseTests(unittest.TestCase):
             asyncio.run(exercise())
         self.assertEqual(sent[0]["status"], 408)
         self.assertEqual(delegated, [])
+
+    def test_hourly_maintenance_runs_once_for_shared_listener_context(self) -> None:
+        context = ApiContext.for_schema()
+        context.canvas.runtime = object()
+        maintenance_calls: list[object] = []
+        prune_calls: list[Path] = []
+        execution = ModuleType("codex_execution")
+        execution.maintenance = maintenance_calls.append  # type: ignore[attr-defined]
+        voice = ModuleType("codex_voice")
+        voice.prune_audio = prune_calls.append  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"codex_execution": execution, "codex_voice": voice}), patch(
+            "studio_api.server.time.monotonic", return_value=3601.0,
+        ):
+            _run_maintenance(context)
+            _run_maintenance(context)
+        self.assertEqual(maintenance_calls, [context.canvas.runtime])
+        self.assertEqual(prune_calls, [context.canvas.root])
 
     def test_response_model_union_validates_both_declared_shapes(self) -> None:
         for value in (
