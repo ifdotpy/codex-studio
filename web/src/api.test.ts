@@ -5,8 +5,10 @@ import {
   apiDownload,
   get,
   post,
+  refreshSession,
   setToken,
   setWorkspace,
+  syncGet,
 } from "./api";
 
 describe("OpenAPI transport facade", () => {
@@ -90,6 +92,30 @@ describe("OpenAPI transport facade", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves download blobs and response metadata", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(new Blob(["saved output"]), {
+            status: 200,
+            headers: {
+              "Content-Disposition": 'attachment; filename="monitor.log"',
+              "X-Log-Truncated": "true",
+            },
+          }),
+      ),
+    );
+
+    const download = await apiDownload("/api/monitor/log", {
+      id: "monitor-1",
+    });
+
+    expect(download.name).toBe("monitor.log");
+    expect(download.truncated).toBe(true);
+    expect(await download.blob.text()).toBe("saved output");
+  });
+
   it("returns cached reads for 304 and updates the read metadata", async () => {
     vi.stubGlobal(
       "fetch",
@@ -151,6 +177,50 @@ describe("OpenAPI transport facade", () => {
     const rejection =
       expect(pending).rejects.toBeInstanceOf(NetworkTimeoutError);
     await vi.advanceTimersByTimeAsync(25);
+    await rejection;
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps session refresh races ordered", async () => {
+    const resolvers: Array<(response: Response) => void> = [];
+    let onBothStarted: () => void = () => {};
+    const bothStarted = new Promise<void>((resolve) => {
+      onBothStarted = resolve;
+    });
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+          if (resolvers.length === 2) onBothStarted();
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    const older = refreshSession();
+    const newer = refreshSession();
+    await bothStarted;
+    expect(resolvers).toHaveLength(2);
+    resolvers[1](Response.json({ token: "newer-token" }));
+    await expect(newer).resolves.toMatchObject({ token: "newer-token" });
+    resolvers[0](Response.json({ token: "older-token" }));
+    await expect(older).resolves.toMatchObject({ token: "newer-token" });
+  });
+
+  it("uses the fixed sync read deadline", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      (request: Request) =>
+        new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("Aborted", "AbortError"));
+          if (request.signal.aborted) abort();
+          else request.signal.addEventListener("abort", abort, { once: true });
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const pending = syncGet("/api/session");
+    const rejection =
+      expect(pending).rejects.toBeInstanceOf(NetworkTimeoutError);
+    await vi.advanceTimersByTimeAsync(15000);
     await rejection;
     expect(fetch).toHaveBeenCalledTimes(1);
   });

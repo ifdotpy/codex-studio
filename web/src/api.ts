@@ -25,6 +25,8 @@ type BodyOf<Op> = ApiRequestBodyFor<Op>;
 type PathsWithRequiredQuery = ApiPathsWithRequiredQuery<paths>;
 
 export type ApiReadMetadata = { etag?: string; notModified?: boolean };
+export type ApiGetPath = PathsFor<"get">;
+export type ApiPostPath = PathsFor<"post">;
 export type ApiOptions = {
   timeoutMs?: number;
   workspaceId?: string;
