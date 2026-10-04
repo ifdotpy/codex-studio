@@ -6,7 +6,8 @@ import sys
 from codex_source import signature, source_function
 
 HASHES = {'codex_process_supervisor': '4b607cb64e2e8c14336510370b3dac67724fe37ec0a72e96ef53270733ff09a3',
- 'codex_runtime': '29187ff167a992655253268b5458d08c7558744cd159893ab4836800bb2f007f'}
+ 'codex_runtime': ('29187ff167a992655253268b5458d08c7558744cd159893ab4836800bb2f007f',
+                   'efc866adb1f7f4cc41cfb418f9bf7d7ae4bfb795b4e6a488ccf8d5cd529b8986')}
 FUNCTIONS = (('codex_process_supervisor',
   'ProcessProxy',
   'send_write',
@@ -61,7 +62,7 @@ def apply(runtime):
     sources = {}
     for name, expected in HASHES.items():
         raw = (scripts / (name + '.py')).read_bytes()
-        if hashlib.sha256(raw).hexdigest() != expected:
+        if hashlib.sha256(raw).hexdigest() not in (expected if isinstance(expected, tuple) else (expected,)):
             raise RuntimeError('The reviewed supervised RPC source differs: ' + name)
         sources[name] = raw
     plans = []
