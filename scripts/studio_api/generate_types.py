@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,11 @@ DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
 GENERATOR_PATH = ROOT / "node_modules" / ".bin" / "openapi-typescript"
+FORMATTER_PATH = ROOT / "node_modules" / ".bin" / "oxfmt"
+JSON_VALUE_TS_ALIAS = (
+    "export type JsonValue = null | boolean | number | string | JsonValue[] "
+    "| { [key: string]: JsonValue };"
+)
 
 
 def _entity_aliases(names: list[str]) -> str:
@@ -35,6 +41,20 @@ def _entity_aliases(names: list[str]) -> str:
         f'\nexport type {name} = components["schemas"]["{name}"];'
         for name in names
     )
+
+
+def _normalize_recursive_json_value(generated: str) -> str:
+    """Break openapi-typescript's indexed self-reference for the recursive JSON schema."""
+    pattern = re.compile(
+        r'(?m)^([ \t]*)JsonValue: null \| boolean \| number \| string \| '
+        r'components\["schemas"\]\["JsonValue"\]\[\] \| \{\r?\n'
+        r'[ \t]*\[key: string\]: components\["schemas"\]\["JsonValue"\];\r?\n'
+        r'([ \t]*)\};$'
+    )
+    normalized, replacements = pattern.subn(r"\1JsonValue: JsonValue;", generated)
+    if replacements != 1:
+        raise ValueError("openapi-typescript output has no unique recursive JsonValue component")
+    return normalized
 
 
 def render(document: dict[str, JsonValue]) -> str:
@@ -72,7 +92,25 @@ def render(document: dict[str, JsonValue]) -> str:
         generated = output_path.read_text(encoding="utf-8")
     if "export interface components" not in generated and "export type components" not in generated:
         raise ValueError("openapi-typescript output is missing the components export")
-    return generated.rstrip() + _entity_aliases(entities) + "\n"
+    generated = _normalize_recursive_json_value(generated)
+    generated += "\n\n" + JSON_VALUE_TS_ALIAS + _entity_aliases(entities) + "\n"
+    if not FORMATTER_PATH.is_file():
+        raise FileNotFoundError("Run npm ci to install the pinned Oxfmt formatter")
+    with tempfile.TemporaryDirectory(prefix="format-", dir=temp_root) as temp_name:
+        output_path = Path(temp_name) / "api.ts"
+        output_path.write_text(generated, encoding="utf-8")
+        subprocess.run(
+            [
+                str(FORMATTER_PATH),
+                "--write",
+                f"--config={ROOT / '.oxfmtrc.json'}",
+                str(output_path),
+            ],
+            cwd=ROOT,
+            check=True,
+            text=True,
+        )
+        return output_path.read_text(encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
