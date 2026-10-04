@@ -44,7 +44,7 @@ type JsonGetInit<Path extends PathsFor<"get">> = {
 };
 type JsonPostInit<Path extends PathsFor<"post">> = {
   parseAs: "json";
-  body: ApiRequestBodyFor<NonNullable<paths[Path]["post"]>>;
+  body: PostBody<Path>;
   headers?: Record<string, string>;
   signal?: AbortSignal;
   [key: string]: unknown;

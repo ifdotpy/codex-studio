@@ -35,7 +35,7 @@ export type Message = Omit<
   "assets" | "deliveryStatus" | "role" | "text"
 > & {
   assets?: Array<TranscriptAsset | LocalMessageAttachment> | null;
-  deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending";
+  deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending" | "paused";
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
   accountKey?: string;

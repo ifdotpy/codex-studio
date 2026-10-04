@@ -11,11 +11,34 @@ import {
 } from "lucide-react";
 import { errorText, saved, type QueueItemDto } from "../api";
 import type { components } from "../generated/api";
+import type { Message } from "../types";
 import { writeLocalDraft } from "../sync/localDraft";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
 
-export type QueueItem = QueueItemDto & { localDelivery?: boolean };
+export type LocalQueueItem = Pick<
+  Message,
+  "assets" | "id" | "requestedDelivery" | "text"
+> & { localDelivery: true };
+export type QueueItem =
+  | (QueueItemDto & { localDelivery?: false })
+  | LocalQueueItem;
+
+function isServerQueueItem(item: QueueItem): item is QueueItemDto {
+  return item.localDelivery !== true;
+}
+
+function isQueueItemDto(value: unknown): value is QueueItemDto {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as Partial<QueueItemDto>;
+  return (
+    typeof item.id === "string" &&
+    typeof item.text === "string" &&
+    typeof item.created === "number" &&
+    item.status === "pending" &&
+    (item.kind === "user" || item.kind === "followup")
+  );
+}
 
 type QueueAsset = { id: string; name: string };
 function isQueueAsset(
@@ -33,8 +56,8 @@ function isQueueAsset(
 type Props = {
   items: QueueItem[];
   scope: string;
-  onEdit: (item: QueueItem, text: string) => Promise<void>;
-  onCancel: (item: QueueItem) => Promise<void>;
+  onEdit: (item: QueueItemDto, text: string) => Promise<void>;
+  onCancel: (item: QueueItemDto) => Promise<void>;
   onReorder: (ids: string[]) => Promise<void>;
   canReorder: boolean;
   refreshing?: boolean;
@@ -43,7 +66,7 @@ type Props = {
 };
 
 type EditDraft = {
-  item: QueueItem;
+  item: QueueItemDto;
   text: string;
   revision: string;
   key: string;
@@ -62,8 +85,7 @@ function readDrafts(prefix: string): { drafts: Drafts; error: string } {
       const draft = saved<EditDraft | null>(key, null);
       if (
         draft?.key === key &&
-        typeof draft.item?.id === "string" &&
-        typeof draft.item.text === "string" &&
+        isQueueItemDto(draft.item) &&
         typeof draft.text === "string" &&
         typeof draft.revision === "string" &&
         typeof draft.updated === "number"
@@ -176,6 +198,7 @@ function ScopedMessageQueue(p: Props) {
     setError("");
   };
   const beginEdit = (item: QueueItem) => {
+    if (!isServerQueueItem(item)) return;
     persist({
       item,
       text: item.text,
@@ -504,7 +527,7 @@ function ScopedMessageQueue(p: Props) {
                       title="Delete"
                       onClick={() =>
                         void mutate(async () => {
-                          await p.onCancel(item);
+                          if (isServerQueueItem(item)) await p.onCancel(item);
                         })
                       }
                     >

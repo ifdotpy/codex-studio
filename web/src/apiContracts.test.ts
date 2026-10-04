@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
+import type { LocalQueueItem, QueueItem } from "./components/MessageQueue";
 import type { components } from "./generated/api";
 import type { JsonValue, Message } from "./types";
 import type {
@@ -210,6 +211,31 @@ const jsonValueAssertion: JsonValue = jsonAnalyticsError;
 void nullableTranscriptTurnId;
 void nullableAnalyticsError;
 void jsonValueAssertion;
+
+const localOutboxQueueRow: QueueItem = {
+  id: "local-message",
+  text: "unsent locally",
+  requestedDelivery: "after_turn",
+  localDelivery: true,
+};
+const serverQueueRow: QueueItem = {
+  id: "server-message",
+  text: "queued",
+  status: "pending",
+  kind: "user",
+  created: 1,
+  localDelivery: false,
+};
+const localDeliveryStatus: Message["deliveryStatus"] = "paused";
+const localQueueRow: LocalQueueItem = localOutboxQueueRow;
+// @ts-expect-error local queue projections do not fabricate server `status`
+const localQueueStatus: string = localQueueRow.status;
+// @ts-expect-error local queue projections do not fabricate server `created`
+const localQueueCreated: number = localQueueRow.created;
+void serverQueueRow;
+void localDeliveryStatus;
+void localQueueStatus;
+void localQueueCreated;
 
 function generatedFacadeRequestAssertions() {
   post("/api/accounts/discover", {});
