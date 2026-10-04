@@ -398,11 +398,13 @@ class TerminalsContract(unittest.TestCase):
             request("/api/terminals/close", {"id": task["id"]}, headers)
             with self.assertRaises(urllib.error.HTTPError) as removed:
                 request(
-                    "/api/monitor/start",
+                    "/api/monitor",
                     {"agent": self.agent["id"], "command": "must-not-run"},
                     headers,
                 )
-            self.assertEqual(removed.exception.code, 404)
+            # Unknown POST paths are handled by the GET-only static fallback,
+            # which correctly reports a method mismatch before its API 404.
+            self.assertEqual(removed.exception.code, 405)
         finally:
             server.shutdown()
             server.server_close()
