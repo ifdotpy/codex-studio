@@ -22,7 +22,17 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
 
 from studio_api.history.router import create_router
-from studio_api.history.models import CheckpointCaptureResponse, TranscriptRecord
+from studio_api.history.models import (
+    CheckpointCaptureResponse,
+    SearchItemResponse,
+    TranscriptAgent,
+    TranscriptContextUsage,
+    TranscriptInput,
+    TranscriptItemResponse,
+    TranscriptMessageRecord,
+    TranscriptPageResponse,
+    TranscriptRecord,
+)
 from studio_api.models import ErrorResponse, ResponseModel
 
 if TYPE_CHECKING:
@@ -37,7 +47,7 @@ class FakeRuntime:
     def transcript(self, key: str | None, **kwargs: object) -> dict[str, object]:
         self.calls.append(("transcript", {"key": key, **kwargs}))
         return {
-            "items": [{"id": "m-1", "role": "user", "text": "hello", "at": 1.0,
+            "items": [{"id": "m-1", "role": "user", "title": "You", "text": "hello", "at": 1.0,
                        "inputs": [{"kind": "user", "text": "hello", "truncated": False,
                                    "assets": []}]}],
             "truncated": False,
@@ -113,7 +123,7 @@ class FakeCanvas:
         self.calls.append(key)
         return {
             "items": [{
-                "id": "legacy-message", "role": "assistant", "text": "legacy text",
+                "id": "legacy-message", "role": "assistant", "title": "Assistant", "text": "legacy text",
                 "at": "2026-10-04T00:00:00Z",
             }],
             "truncated": False,
@@ -283,16 +293,39 @@ class HistoryRouteTests(unittest.TestCase):
 
     def test_transcript_contract_accepts_runtime_item_producer_record(self) -> None:
         from codex_runtime import Runtime
+        from codex_transcript_history import history_item
+        from codex_work import WorkMixin
 
         connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
         connection.executescript(
             "CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT, record TEXT, created REAL);"
             "CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT);"
             "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY, record TEXT);"
-            "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT);"
+            "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, status TEXT, "
+            "created REAL, text TEXT, error TEXT);"
+            "CREATE TABLE runtime_chat_messages(seq INTEGER PRIMARY KEY, id TEXT, room TEXT, "
+            "sender TEXT, text TEXT, created REAL, deliveries TEXT);"
+            "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);"
+            "CREATE TABLE analytics_items(id TEXT, agent TEXT, at REAL, type TEXT, record TEXT);"
+            "INSERT INTO runtime_events VALUES ('event-1','agent-1','user','delivered',1.0,'hello',NULL);"
+            "INSERT INTO runtime_event_meta VALUES ('event-1','{\"requestedDelivery\":\"after_turn\"}');"
+            "INSERT INTO runtime_chat_messages VALUES (1,'room-message','room-1','agent-1',"
+            "'hello room',2.0,'{}');"
         )
 
         class ItemProducer:
+            def __init__(self) -> None:
+                self.lock = threading.RLock()
+                self.connection = connection
+                self.current: dict[str, object] = {
+                    "id": "agent-1", "status": "idle", "autoWake": False,
+                    "inFlight": False, "turnId": None, "threadId": None,
+                    "contextUsage": {"tokens": 25, "window": 4096, "at": 2.5},
+                    "activity": {"phase": "thinking", "at": 2.5, "tools": []},
+                    "compactions": 1, "compactionsObservedOnly": 0,
+                }
+
             @staticmethod
             def index_item(*_args: object) -> None:
                 return None
@@ -301,14 +334,87 @@ class HistoryRouteTests(unittest.TestCase):
             def touch_ui(_agent: str) -> None:
                 return None
 
+            @contextmanager
+            def db(self) -> Iterator[sqlite3.Connection]:
+                yield self.connection
+
+            @contextmanager
+            def analytics_read_db(self) -> Iterator[sqlite3.Connection]:
+                yield self.connection
+
+            def agent(self, _agent: str, _db: sqlite3.Connection) -> dict[str, object]:
+                return self.current
+
+            @staticmethod
+            def checked_actor(_db: sqlite3.Connection, _agent: str) -> dict[str, object]:
+                return {"id": "agent-1", "deletedAt": None}
+
+            @staticmethod
+            def chat_rooms(_agent: str | None = None) -> list[dict[str, str]]:
+                return [{"id": "room-1"}]
+
         producer = ItemProducer()
         item = cast(Callable[..., object], Runtime.item)
-        item(producer, connection, "agent-1", "turn-1", "user", "hello", turnId="turn-9")
+        asset = {
+            "id": "asset-1", "agent": "agent-1", "name": "notes.txt",
+            "mime": "text/plain", "image": False, "size": 5, "hash": "sha256:1",
+            "created": 1.5,
+        }
+        item(
+            producer, connection, "agent-1", "turn-1", "user", "hello",
+            inputs=[{
+                "id": "event-1", "created": 1.0, "kind": "user", "text": "hello",
+                "assets": [asset],
+            }],
+            turnId="turn-9",
+        )
         record = connection.execute("SELECT record FROM runtime_items").fetchone()[0]
         parsed = TranscriptRecord.model_validate(json.loads(record))
         self.assertEqual(parsed.id, "agent-1:turn-1")
         self.assertEqual(parsed.role, "user")
         self.assertEqual(parsed.turnId, "turn-9")
+        message_schema = TranscriptMessageRecord.model_json_schema()
+        self.assertIn("role", message_schema["required"])
+        self.assertNotIn("title", message_schema["required"])
+        self.assertEqual(message_schema["properties"]["title"]["type"], "string")
+        parsed_inputs = parsed.inputs
+        assert parsed_inputs is not None
+        parsed_assets = parsed_inputs[0].assets
+        assert parsed_assets is not None
+        self.assertEqual(parsed_assets[0].hash, "sha256:1")
+        connection.commit()
+
+        transcript = cast(Callable[..., dict[str, object]], Runtime.transcript)(
+            producer, "agent-1", limit=120,
+        )
+        page = TranscriptPageResponse.model_validate(transcript)
+        input_row = cast(list[TranscriptInput], page.items[0].inputs)[0]
+        self.assertEqual(input_row.clientMessageId, "event-1")
+        self.assertEqual(input_row.deliveryStatus, "delivered")
+        self.assertEqual(input_row.requestedDelivery, "after_turn")
+        self.assertTrue(input_row.materialized)
+        self.assertFalse(input_row.pending)
+        transcript_agent = cast(TranscriptAgent, page.agent)
+        usage = cast(TranscriptContextUsage, transcript_agent.contextUsage)
+        self.assertEqual(usage.tokens, 25)
+
+        history_service = cast(Callable[..., dict[str, object]], history_item)
+        full_input = history_service(producer, "agent-1", "agent-1:event-1")
+        full_message = TranscriptItemResponse.model_validate(full_input)
+        self.assertEqual(full_message.role, "user")
+        self.assertEqual(full_message.kind, "user")
+        search_item = cast(Callable[..., dict[str, object]], WorkMixin.search_item)(
+            producer, "agent-1:turn-1",
+        )
+        searched_message = SearchItemResponse.model_validate(search_item)
+        self.assertEqual(searched_message.kind, "message")
+        self.assertEqual(searched_message.role, "user")
+        room_item = cast(Callable[..., dict[str, object]], WorkMixin.search_item)(
+            producer, "room-message",
+        )
+        searched_room = SearchItemResponse.model_validate(room_item)
+        self.assertEqual(searched_room.kind, "room")
+        self.assertIsNone(searched_room.role)
         connection.close()
 
     def test_checkpoint_contract_accepts_capture_and_summary_producer_output(self) -> None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, StrictBool, StrictStr, model_validator
+from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from studio_api.sync.models import AgentActivity
 from studio_api.models import ContractModel, JsonValue, ResponseModel
@@ -20,6 +20,12 @@ from studio_api.sync.models import (
     WorkDecisionDto,
     WorkResultDto,
 )
+
+DeliveryMode = Literal["queue", "steer", "after_tool", "after_turn"]
+DeliveryStatus = Literal[
+    "pending", "reserved", "dispatching", "uncertain", "failed", "cancelled",
+    "delivered", "stored_only", "queued", "accepted", "sent",
+]
 
 
 class TranscriptAsset(ContractModel):
@@ -44,6 +50,12 @@ class TranscriptInput(ContractModel):
     text: StrictStr
     truncated: StrictBool
     assets: list[TranscriptAsset] = Field(default_factory=list)
+    clientMessageId: StrictStr | None = None
+    deliveryStatus: DeliveryStatus | None = None
+    requestedDelivery: DeliveryMode | None = None
+    deliveryError: StrictStr | None = None
+    materialized: StrictBool | None = None
+    pending: StrictBool | None = None
 
 
 class TranscriptRecord(ContractModel):
@@ -51,6 +63,7 @@ class TranscriptRecord(ContractModel):
 
     id: StrictStr
     role: StrictStr | None = None
+    kind: StrictStr | None = None
     title: StrictStr | None = None
     text: StrictStr
     at: float | StrictStr | None = None
@@ -67,8 +80,8 @@ class TranscriptRecord(ContractModel):
     agent: StrictStr | None = None
     materialized: StrictBool | None = None
     pending: StrictBool | None = None
-    deliveryStatus: StrictStr | None = None
-    requestedDelivery: StrictStr | None = None
+    deliveryStatus: DeliveryStatus | None = None
+    requestedDelivery: DeliveryMode | None = None
     deliveryError: StrictStr | None = None
     turnError: StrictStr | None = None
     turnErrorResolved: StrictBool | None = None
@@ -78,21 +91,36 @@ class TranscriptRecord(ContractModel):
     observedWait: StrictBool | None = None
 
 
+class TranscriptMessageRecord(TranscriptRecord):
+    """Transcript rows always carry their runtime role and display text."""
+
+    role: StrictStr
+    # A small number of older persisted rows have no title. Default values are
+    # omitted by the shared sender, so the wire keeps that historical absence.
+    title: StrictStr = ""
+    pending: StrictBool = False
+
+
+class TranscriptContextUsage(ContractModel):
+    """Runtime token usage shape published by tokenUsage notifications."""
+
+    tokens: StrictInt | None = None
+    window: StrictInt | None = None
+    at: float
+
+
 class TranscriptAgent(ContractModel):
     id: StrictStr
     status: StrictStr | None = None
     activity: AgentActivity | None = None
     inFlight: StrictBool | None = None
-    contextUsage: JsonValue = Field(
-        default=None,
-        description="Provider-specific token-window and usage measurements for this turn.",
-    )
+    contextUsage: TranscriptContextUsage | None = None
     compactions: int | None = None
     compactionsObservedOnly: int | None = None
 
 
 class TranscriptPageResponse(ResponseModel):
-    items: list[TranscriptRecord]
+    items: list[TranscriptMessageRecord]
     truncated: StrictBool
     nextCursor: StrictStr | None = None
     nextAfterCursor: StrictStr | None = None
@@ -118,7 +146,7 @@ class TranscriptSearchResponse(ResponseModel):
     truncated: StrictBool
 
 
-class TranscriptItemResponse(TranscriptRecord, ResponseModel):
+class TranscriptItemResponse(TranscriptMessageRecord, ResponseModel):
     """Full transcript item projection, including its canonical sync envelope."""
 
 
@@ -152,6 +180,7 @@ class SearchItemResponse(TranscriptRecord, ResponseModel):
     room: StrictStr | None = None
     sender: StrictStr | None = None
     seq: int | None = None
+    deliveries: StrictStr | None = None
     name: StrictStr | None = None
     status: StrictStr | None = None
     created: float | None = None
