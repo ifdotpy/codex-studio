@@ -680,7 +680,23 @@ test("an active AgentPanel follows native progress changes without polling", asy
         })}`,
       );
     }
-    await follower.close();
+    await follower.locator(`[data-chat="${other.id}"]`).click();
+    await follower.waitForFunction(
+      ({ leadId, otherId }) =>
+        (window.__broadcastSent || []).some(
+          (message) =>
+            message.kind === "subscriptions" &&
+            message.resources.some(
+              (resource) =>
+                resource.kind === "panel" && resource.agentId === otherId,
+            ) &&
+            !message.resources.some(
+              (resource) =>
+                resource.kind === "panel" && resource.agentId === leadId,
+            ),
+        ),
+      { leadId: lead.id, otherId: other.id },
+    );
     await expect
       .poll(() =>
         page.evaluate(
