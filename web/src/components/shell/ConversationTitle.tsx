@@ -38,8 +38,8 @@ export default function ConversationTitle({
       )}
       <h1 id="conversation-title" title={title}>
         <ChatStatus
-          provider={agent?.provider}
-          model={agent?.model}
+          provider={agent?.provider ?? undefined}
+          model={agent?.model ?? undefined}
           status={indicator}
         />
         {title}

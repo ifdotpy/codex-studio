@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { get } from "../api";
 import { onResume } from "../sync/resume";
 import { reconcileOutboxReceipts } from "../sync/send";
 import {
@@ -37,11 +37,8 @@ export function useMessageReceipts(
       busy = true;
       try {
         if (!batch.length) return;
-        const query = new URLSearchParams({
-          agent: room,
-          ids: JSON.stringify(batch),
-        });
-        const result = await api(`/api/messages/receipts?${query}`, undefined, {
+        const result = await get("/api/messages/receipts", {
+          query: { agent: room, ids: JSON.stringify(batch) },
           workspaceId,
         });
         if (!active) return;

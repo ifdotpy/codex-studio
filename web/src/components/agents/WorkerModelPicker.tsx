@@ -1,26 +1,112 @@
 import { useEffect, useState } from "react";
-import { ApiError, api, errorText } from "../../api";
-import { type Json } from "../../types";
+import { ApiError, get, errorText } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
+
+export type WorkerModelInfo = {
+  model: string;
+  provider?: string;
+  resolvedModel?: string;
+  displayName?: string;
+  description?: string;
+  hidden?: boolean;
+  isDefault?: boolean;
+  defaultReasoningEffort?: string;
+  availableAccessPrograms?: unknown;
+  serviceTiers: { id: string; description?: string }[];
+  supportedReasoningEfforts: { reasoningEffort: string }[];
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const modelInfo = (value: unknown): WorkerModelInfo | null => {
+  if (!isRecord(value) || typeof value.model !== "string") return null;
+  const serviceTiers = Array.isArray(value.serviceTiers)
+    ? value.serviceTiers.flatMap((tier) =>
+        isRecord(tier) && typeof tier.id === "string"
+          ? [
+              {
+                id: tier.id,
+                ...(typeof tier.description === "string"
+                  ? { description: tier.description }
+                  : {}),
+              },
+            ]
+          : [],
+      )
+    : [];
+  const supportedReasoningEfforts = Array.isArray(
+    value.supportedReasoningEfforts,
+  )
+    ? value.supportedReasoningEfforts.flatMap((effort) =>
+        isRecord(effort) && typeof effort.reasoningEffort === "string"
+          ? [{ reasoningEffort: effort.reasoningEffort }]
+          : [],
+      )
+    : [];
+  return {
+    model: value.model,
+    ...(typeof value.provider === "string" ? { provider: value.provider } : {}),
+    ...(typeof value.resolvedModel === "string"
+      ? { resolvedModel: value.resolvedModel }
+      : {}),
+    ...(typeof value.displayName === "string"
+      ? { displayName: value.displayName }
+      : {}),
+    ...(typeof value.description === "string"
+      ? { description: value.description }
+      : {}),
+    ...(typeof value.hidden === "boolean" ? { hidden: value.hidden } : {}),
+    ...(typeof value.isDefault === "boolean"
+      ? { isDefault: value.isDefault }
+      : {}),
+    ...(typeof value.defaultReasoningEffort === "string"
+      ? { defaultReasoningEffort: value.defaultReasoningEffort }
+      : {}),
+    ...(Object.hasOwn(value, "availableAccessPrograms")
+      ? { availableAccessPrograms: value.availableAccessPrograms }
+      : {}),
+    serviceTiers,
+    supportedReasoningEfforts,
+  };
+};
 
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
 
-export function daybreakProgram(info?: Json): string | null {
-  const programs = info?.availableAccessPrograms?.cyber;
-  if (!Array.isArray(programs)) return null;
+const cyberAccessPrograms = (
+  info?: WorkerModelInfo,
+): string[] | null | undefined => {
+  if (!info || !Object.hasOwn(info, "availableAccessPrograms"))
+    return undefined;
+  const access = info.availableAccessPrograms;
+  if (!isRecord(access)) return null;
+  if (!("cyber" in access)) return undefined;
+  const cyber = access.cyber;
+  if (!Array.isArray(cyber)) return null;
+  if (!cyber.every((program): program is string => typeof program === "string"))
+    return null;
+  return cyber;
+};
+
+export function daybreakProgram(info?: WorkerModelInfo): string | null {
+  const programs = cyberAccessPrograms(info);
+  if (!programs) return null;
   if (programs.includes("daybreakBlue")) return "daybreakBlue";
   if (programs.includes("daybreakRed")) return "daybreakRed";
   return null;
 }
 
-export function supportsDaybreakMode(info: Json | undefined, enabled: boolean) {
+export function supportsDaybreakMode(
+  info: WorkerModelInfo | undefined,
+  enabled: boolean,
+) {
   if (!info || isDaybreakAlias(info.model)) return false;
+  const programs = cyberAccessPrograms(info);
   if (enabled) return !!daybreakProgram(info);
-  const programs = info.availableAccessPrograms?.cyber;
   return (
     programs === undefined ||
-    (Array.isArray(programs) && programs.includes("standard"))
+    (programs !== null && programs.includes("standard"))
   );
 }
 
@@ -32,7 +118,7 @@ export function useWorkerModels(
   const catalogKey = `${accountKey}:${workers}`;
   const [result, setResult] = useState<{
     key: string;
-    models: Json[];
+    models: WorkerModelInfo[];
     error: string;
     pending?: boolean;
   } | null>(null);
@@ -48,24 +134,29 @@ export function useWorkerModels(
     const load = async () => {
       let pending = false;
       try {
-        const data = await api(
-          "/api/models?account_key=" +
-            encodeURIComponent(accountKey) +
-            (workers ? "&workers=1" : ""),
-          undefined,
-          { signal: controller.signal },
-        );
+        const data = await get("/api/models", {
+          query: {
+            account_key: accountKey,
+            workers: workers ? "1" : undefined,
+          },
+          signal: controller.signal,
+        });
         if (!active) return;
         pending =
           data.catalogPending === true &&
           Array.isArray(data.unavailableAccounts) &&
           data.unavailableAccounts.some(
-            (item: Json) =>
+            (item) =>
               item?.catalogPending === true &&
               typeof item.accountKey === "string" &&
               typeof item.error === "string",
           );
-        const models: Json[] = Array.isArray(data.data) ? data.data : [];
+        const models = Array.isArray(data.data)
+          ? data.data.flatMap((row) => {
+              const parsed = modelInfo(row);
+              return parsed ? [parsed] : [];
+            })
+          : [];
         setResult((previous) => ({
           key: catalogKey,
           models:
@@ -87,10 +178,8 @@ export function useWorkerModels(
         pending =
           error instanceof ApiError &&
           error.status === 400 &&
-          error.details !== null &&
-          typeof error.details === "object" &&
-          !Array.isArray(error.details) &&
-          (error.details as Json).catalogPending === true;
+          isRecord(error.details) &&
+          error.details.catalogPending === true;
         setResult((previous) => ({
           key: catalogKey,
           models: previous?.key === catalogKey ? previous.models : [],
@@ -113,11 +202,17 @@ export function useWorkerModels(
     models:
       current?.models
         .filter((model) => model.model && !model.hidden)
-        .map((model): Json => ({
+        .map((model): WorkerModelInfo => ({
           ...model,
-          displayName: model.displayName
-            ? claudeModelLabel(model.displayName, model.description || "")
-            : model.displayName,
+          displayName:
+            typeof model.displayName === "string" && model.displayName
+              ? claudeModelLabel(
+                  model.displayName,
+                  typeof model.description === "string"
+                    ? model.description
+                    : "",
+                )
+              : model.displayName,
         })) || [],
     loading: !current || Boolean(current.pending && !current.models.length),
     error: current?.error || "",

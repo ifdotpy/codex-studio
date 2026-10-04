@@ -5,19 +5,15 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { api, ApiError, errorText, saved } from "../api";
+import { post, ApiError, errorText, saved, type PostBody } from "../api";
+
+import type { components } from "../generated/api";
 
 type Order = Record<string, string[]>;
 type Drag = { group: string; id: string };
-type ServerOrder = { revision: number; groups: Order | null };
+type ServerOrder = components["schemas"]["SidebarOrderDto"];
 type Pending = {
-  body: {
-    action: "reorder";
-    request_id: string;
-    expected_revision: number;
-    groups: Order;
-    migration?: boolean;
-  };
+  body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
 };
 export function useSidebarOrder(
   key: string,
@@ -71,9 +67,11 @@ export function useSidebarOrder(
     try {
       localStorage.setItem(pendingKey, JSON.stringify(request));
       if (optimistic) setOrder(optimistic);
-      const result = await api<ServerOrder>("/api/projects", request.body, {
+      const result = await post("/api/projects", request.body, {
         timeoutMs: 15000,
       });
+      if (!("revision" in result))
+        throw new Error("Invalid sidebar order response");
       localStorage.removeItem(pendingKey);
       if (result.revision >= revision.current) {
         revision.current = result.revision;

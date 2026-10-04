@@ -7,6 +7,7 @@ import {
   mergeQueueOrder,
   messageRenderKey,
   receiptMessage,
+  applySendingOverlay,
 } from "./messageDelivery.ts";
 import { it } from "vitest";
 
@@ -23,6 +24,28 @@ const pending = {
   text: "Same text",
   pending: true,
 };
+
+it("does not restore a sending action over a materialized removed copy", () => {
+  const restored = {
+    id: "lead:removed",
+    role: "user",
+    text: "Removed while sending",
+    materialized: true,
+    pending: false,
+    deliveryStatus: "uncertain",
+  };
+  assert.deepEqual(applySendingOverlay(restored, true), restored);
+  assert.deepEqual(
+    applySendingOverlay({ ...restored, materialized: false }, true),
+    {
+      ...restored,
+      materialized: false,
+      pending: true,
+      deliveryStatus: "sending",
+    },
+  );
+  assert.equal(applySendingOverlay(restored, true).deliveryStatus, "uncertain");
+});
 
 it("matches transcript rows by receipt identity and retains edited text and attachments", () => {
   assert.equal(

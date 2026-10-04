@@ -1,4 +1,5 @@
 import type { Json } from "../types";
+import { jsonObject, type JsonObject } from "./accountUsage";
 
 const DAY = 86400;
 const WEEK_MINUTES = 10080;
@@ -22,18 +23,29 @@ export function weeklyRunway(
   now: number,
   signedOut = false,
 ): WeeklyRunway {
-  const reported = limits?.data?.rateLimitsByLimitId;
-  const buckets: [string, Json][] = Object.entries(
-    reported && Object.keys(reported).length
-      ? reported
-      : limits?.data?.rateLimits
-        ? {
-            [limits.data.rateLimits.limitId || "codex"]: limits.data.rateLimits,
-          }
-        : {},
-  );
-  const windows = buckets.flatMap(([id, bucket]) =>
-    [bucket?.primary, bucket?.secondary].flatMap((window) => {
+  const data = jsonObject(limits?.data);
+  const reported = jsonObject(data?.rateLimitsByLimitId);
+  const rateLimits = jsonObject(data?.rateLimits);
+  const buckets: [string, JsonObject][] =
+    reported && Object.keys(reported).length > 0
+      ? Object.entries(reported).flatMap(([id, value]) => {
+          const bucket = jsonObject(value);
+          return bucket ? [[id, bucket]] : [];
+        })
+      : rateLimits
+        ? [
+            [
+              typeof rateLimits.limitId === "string"
+                ? rateLimits.limitId
+                : "codex",
+              rateLimits,
+            ],
+          ]
+        : [];
+  const windows = buckets.flatMap(([id, value]) => {
+    const bucket = value;
+    return [bucket.primary, bucket.secondary].flatMap((windowValue) => {
+      const window = jsonObject(windowValue);
       if (window?.windowDurationMins !== WEEK_MINUTES) return [];
       const used =
         finite(window.usedPercent) &&
@@ -45,7 +57,7 @@ export function weeklyRunway(
         finite(window.resetsAt) && window.resetsAt > 0 ? window.resetsAt : null;
       const expired = reset !== null && reset <= now;
       const remaining = expired ? 100 : used === null ? null : 100 - used;
-      const observed = limits!.at;
+      const observed = limits?.at;
       const observedAt = finite(observed) ? observed : Number.NaN;
       const elapsed =
         reset !== null
@@ -67,7 +79,7 @@ export function weeklyRunway(
       return [
         {
           name:
-            bucket.limitName ||
+            (typeof bucket.limitName === "string" && bucket.limitName) ||
             (id === "codex" ? "Codex" : id === "claude" ? "Claude" : id),
           remaining,
           reset,
@@ -76,8 +88,8 @@ export function weeklyRunway(
             reset !== null && (reset - now) / DAY < (days ?? Number.NaN),
         },
       ];
-    }),
-  );
+    });
+  });
   if (
     signedOut ||
     !limits?.data ||

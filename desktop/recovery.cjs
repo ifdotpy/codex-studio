@@ -13,6 +13,7 @@ const restartKeys = [
   "CODEX_CANVAS_CWD",
   "CODEX_CANVAS_CONCURRENCY",
   "CODEX_BIN",
+  "CODEX_AGENTS_PYTHON",
   "SHELL",
   "LANG",
   "LC_ALL",

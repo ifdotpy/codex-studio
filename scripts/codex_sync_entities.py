@@ -1,9 +1,28 @@
-"""Small renderer DTOs and bounded, per-entity sync versions."""
+"""Typed renderer DTO projections and bounded per-entity sync versions."""
 import hashlib
 import json
 import sqlite3
+from typing import cast
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
+from studio_api.sync.models import (
+    AgentEntityDto,
+    ChatEntityDto,
+    ComplaintEntityDto,
+    EdgeEntityDto,
+    EventEntityDto,
+    MonitorEntityDto,
+    PeerTeamEntityDto,
+    ProjectEntityDto,
+    RequestEntityDto,
+    RoomEntityDto,
+    RuleEntityDto,
+    TaskEntityDto,
+    WorkEntityDto,
+    WorkspaceEntityDto,
+    SyncEntityPayload,
+)
+from studio_api.models import JsonValue
 
 ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
@@ -11,42 +30,59 @@ ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 
 
-AGENT_FIELDS = frozenset("""
-    id name status source kind parentId rootId threadId orchestratorId orchestratorName
-    isLead role sharedRoomId model provider effort fastMode concurrency accountKey cwd worktree worktreePreparation created updated
-    turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
-    launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported subagentConcurrencyVersion
-    workerDefaults reviewDefaults parkedEvent pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
-    daybreakEnabled accountTransfer
-    overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
-    autoWake voiceState nativeError retryAt hasUnread hasQuestion hasApproval
-    statusDetail lastAnswer lastCompletedTurn nextTurnSettingsSupported readStateSupported
-    pinned archived projectFolder projectFolderRevision
-""".split())
-
-COLLECTION_FIELDS = {
-    "room": frozenset("id name kind members rootId updated userHidden projectPath radio peerTeamId peerTeamName lastMessage".split()),
-    # This is the shared task DTO field set used by workspace snapshots and sync.
-    "task": frozenset("id turnId agent kind status created finished name command query cwd processId durationMs timeout_ms interactive stdinClosed stdinCloseRequested stdinError cancelRequested exitCode bytes log outputTruncated".split()),
-    "monitor": frozenset("id agent status created finished name command cwd processId durationMs timeout_ms interactive stdinClosed stdinCloseRequested stdinError cancelRequested exitCode tail error bytes log outputTruncated ruleId".split()),
-    "complaint": frozenset("id leadId author authorName leadName title status needsResponse created readAt leadStopped leadDeleted recipient version".split()),
-    "request": frozenset("id method agent status created createdAt at updated updatedAt deferred error result params title".split()),
-    "rule": frozenset("id agent name enabled description".split()),
-    "project": frozenset("id path name created accountKey accountRevision accountKeys organizationRevision peerTeamsRevision folders".split()),
-    "peerTeam": frozenset("id name projectPath members".split()),
-    "chat": frozenset("id name members kind messageCount tail lastMessageAt".split()),
-    "edge": frozenset("id source target kind".split()),
-    "event": frozenset("id agent kind status created error".split()),
-    "work": frozenset("id rootId agent status title".split()),
-    "workspace": frozenset("connected rateLimits rateLimitsByAccount nativeNotices projectOrganizationVersion sidebarOrder peerTeamsVersion tasksHistoryLimit stateDir".split()),
+_DTO_MODELS = {
+    "agent": AgentEntityDto,
+    "room": RoomEntityDto,
+    "task": TaskEntityDto,
+    "monitor": MonitorEntityDto,
+    "complaint": ComplaintEntityDto,
+    "request": RequestEntityDto,
+    "rule": RuleEntityDto,
+    "project": ProjectEntityDto,
+    "peerTeam": PeerTeamEntityDto,
+    "chat": ChatEntityDto,
+    "edge": EdgeEntityDto,
+    "event": EventEntityDto,
+    "work": WorkEntityDto,
+    "workspace": WorkspaceEntityDto,
 }
+AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
+COLLECTION_FIELDS = {
+    name: frozenset(model.model_fields)
+    for name, model in _DTO_MODELS.items()
+    if name != "agent"
+}
+_STRING_LIMITS = {
+    "overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
+    "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000,
+}
+_AGENT_FIELD_ALLOWLISTS = {
+    "activity": ("phase", "at", "tools"),
+    "nativeStatus": ("phase", "error", "message", "turnId", "at"),
+    "nativeSafetyBuffering": (
+        "turnId", "threadId", "accountKey", "connectionId", "at",
+        "dismissed", "responseStarted", "showBufferingUi", "fasterModel",
+    ),
+    "nativeSafetyRetry": (
+        "id", "stage", "model", "turnId", "created", "updated",
+        "epoch", "accountKey", "error", "newThreadId", "acceptedTurnId",
+        "requestId", "rpcMethod",
+    ),
+    "nativeTurnError": ("turnId", "error"),
+    "nativeThreadBlock": ("threadId", "error"),
+    "connectionCheck": (
+        "epoch", "accountKey", "threadId", "turnId", "at", "previousError",
+        "nativeState", "restartTurnStatus", "readError",
+    ),
+    "readState": ("threadId", "turnId", "read", "revision"),
+    "startAttempt": ("prepareError", "responseError", "retiredEvents"),
+}
+_AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))
 
 
-def _bounded(value, key="", list_limit=200):
+def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValue:
     if isinstance(value, str):
-        limits = {"overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
-                  "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000}
-        maximum = limits.get(key, 12000)
+        maximum = _STRING_LIMITS.get(key, 12000)
         return value[:maximum]
     if isinstance(value, list):
         return [_bounded(item, list_limit=list_limit) for item in value[:list_limit]]
@@ -56,20 +92,25 @@ def _bounded(value, key="", list_limit=200):
     return value
 
 
-def project(collection, record):
+def project(collection: str, record: JsonValue) -> JsonValue | None:
     """Return only renderer-owned fields; never expose a raw runtime record."""
     if not isinstance(record, dict):
         return None
-    fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS.get(collection)
-    if fields is None:
+    model = _DTO_MODELS.get(collection)
+    if model is None:
         return None
-    result = {key: _bounded(value, key) for key, value in record.items() if key in fields}
+    fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
+    result = {
+        key: _bounded(value, key)
+        for key, value in record.items()
+        if key in fields and not (
+            collection == "agent"
+            and key in _AGENT_REPROJECT_FIELDS
+            and isinstance(value, dict)
+        )
+    }
     if collection == "agent":
-        for field, allowed in {
-            "activity": ("phase",),
-            "nativeStatus": ("error",),
-            "startAttempt": ("prepareError", "responseError"),
-        }.items():
+        for field, allowed in _AGENT_FIELD_ALLOWLISTS.items():
             value = record.get(field)
             if isinstance(value, dict):
                 result[field] = {key: _bounded(value[key], "error") for key in allowed if key in value}
@@ -95,10 +136,18 @@ def project(collection, record):
                 for key, value in overview.items()
                 if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId"}
             }
-    return result
+    return cast(JsonValue, model.model_validate(result).model_dump(mode="json", exclude_unset=True))
 
 
-def encoded(collection, key, value, deleted=False):
+def validate_entity_payload(payload: str) -> SyncEntityPayload:
+    """Validate a canonical sync entity JSON envelope without changing its bytes."""
+    envelope = SyncEntityPayload.model_validate_json(payload)
+    model = _DTO_MODELS[envelope.collection.value]
+    model.model_validate(envelope.value)
+    return envelope
+
+
+def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:
     payload = json.dumps({"collection": collection, "id": key, "value": value},
                          sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return payload, hashlib.sha256(payload.encode("utf-8")).hexdigest(), bool(deleted)
@@ -273,14 +322,16 @@ def seed(db, snapshot):
         for value in runtime.get(name, []) or []:
             if value.get("id"):
                 put(db, collection, str(value["id"]), value)
-    for value in snapshot.get("chats", []):
+    chats = snapshot.get("chats", [])
+    chat_ids = {value["id"] for value in chats if value.get("id")}
+    for value in chats:
         if value.get("id"):
             put(db, "chat", str(value["id"]), value)
     for value in snapshot.get("edges", []):
         if value.get("id"):
             put(db, "edge", str(value["id"]), value)
     for item in snapshot.get("nodes", []):
-        if item.get("id") and item.get("id") not in threads:
+        if item.get("id") and item.get("id") not in threads and item.get("id") not in chat_ids:
             put(db, "agent", item["id"], item)
     # Mutable aggregate values are small and independently versioned.
     meta = {key: runtime.get(key) for key in ("connected", "rateLimits", "rateLimitsByAccount", "nativeNotices",

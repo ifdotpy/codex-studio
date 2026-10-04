@@ -24,13 +24,17 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
     [delivered],
   );
   for (const status of [
+    "queued",
     "pending",
     "reserved",
     "dispatching",
     "delivered",
+    "accepted",
+    "sent",
     "uncertain",
     "failed",
     "cancelled",
+    "stored_only",
   ])
     assert.deepEqual(
       checkedMessageReceipts(

@@ -90,13 +90,9 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
       "PASS workspace task feed UI: initial task and completion refreshed within five seconds",
     );
   } catch (error) {
-    if (browser) {
-      const page = browser.contexts().flatMap((context) => context.pages())[0];
-      if (page)
-        await page
-          .screenshot({ path: join(stateDir, "task-feed-failure.png") })
-          .catch(() => {});
-    }
+    await runnerPage
+      .screenshot({ path: join(stateDir, "task-feed-failure.png") })
+      .catch(() => {});
     console.error("Evidence:", stateDir);
     throw error;
   } finally {

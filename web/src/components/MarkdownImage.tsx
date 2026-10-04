@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import PreviewModal from "./PreviewModal";
-import { api, errorText } from "../api";
+import { get, errorText } from "../api";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import ImageViewer from "./ImageViewer";
 import { relativeToDocument, safeSvg } from "./filePreviewFormats";
@@ -66,11 +66,11 @@ export default function MarkdownImage({
       return;
     }
     let active = true;
-    const query = new URLSearchParams({
+    const query = {
       agent: target.agent!,
       path: target.path!,
-    });
-    api(`/api/file?${query}`)
+    };
+    get("/api/file", { query })
       .then((file) => {
         if (!active) return;
         if (file.mime === "image/svg+xml") {

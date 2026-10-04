@@ -6,7 +6,9 @@ isolate_supervisor_environment()
 
 import importlib.util
 import json
+from contextlib import closing
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -15,10 +17,11 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_canvas import Canvas, make_server
+from codex_canvas import Canvas
 from codex_native_sweep import _account_busy
 from codex_runtime import Runtime
 from codex_sync import SyncStore
+from studio_api.context import ApiContext
 
 spec = importlib.util.spec_from_file_location(
     "read_contract_server", Path(__file__).with_name("runtime-contract.py"))
@@ -80,34 +83,28 @@ class RuntimeReadLock(unittest.TestCase):
             self.assertIs(second, self.runtime.records(db, "agents", shared=True))
 
     def test_http_and_chat_reads_complete_while_runtime_lock_is_held(self):
-        server = make_server(self.canvas, 0)
+        context = ApiContext(self.canvas)
+        entered = threading.Event()
+        release = threading.Event()
+        def hold():
+            with self.runtime.lock:
+                entered.set()
+                release.wait(5)
+        holder = threading.Thread(target=hold)
+        holder.start()
+        self.assertTrue(entered.wait(2))
         try:
-            http_snapshot = next(cell.cell_contents for cell in server.RequestHandlerClass.do_GET.__closure__
-                                 if callable(cell.cell_contents) and
-                                 getattr(cell.cell_contents, "__name__", None) == "snapshot")
-            entered = threading.Event()
-            release = threading.Event()
-            def hold():
-                with self.runtime.lock:
-                    entered.set()
-                    release.wait(5)
-            holder = threading.Thread(target=hold)
-            holder.start()
-            self.assertTrue(entered.wait(2))
-            try:
-                began = time.monotonic()
-                state = http_snapshot(False)
-                chat = self.runtime.chat_read(self.room)
-                peers = self.runtime.peers(self.lead["id"])
-                self.assertLess(time.monotonic() - began, 2)
-                self.assertEqual(state["runtime"]["agents"][0]["id"], self.lead["id"])
-                self.assertEqual(chat["messages"][0]["text"], "hello")
-                self.assertEqual(peers["self"], self.lead["id"])
-            finally:
-                release.set()
-                holder.join(5)
+            began = time.monotonic()
+            state = context.snapshot(include_work=False)
+            chat = self.runtime.chat_read(self.room)
+            peers = self.runtime.peers(self.lead["id"])
+            self.assertLess(time.monotonic() - began, 2)
+            self.assertEqual(state["runtime"]["agents"][0]["id"], self.lead["id"])
+            self.assertEqual(chat["messages"][0]["text"], "hello")
+            self.assertEqual(peers["self"], self.lead["id"])
         finally:
-            server.server_close()
+            release.set()
+            holder.join(5)
 
     def test_read_transaction_keeps_one_generation(self):
         with self.runtime.read_db() as db:
@@ -120,6 +117,41 @@ class RuntimeReadLock(unittest.TestCase):
             self.assertEqual(before["agents"][0]["name"], again["agents"][0]["name"])
         self.assertEqual(self.runtime.snapshot(include_work=False)["agents"][0]["name"],
                          "After snapshot")
+
+    def test_old_read_snapshot_cannot_poison_current_agent_cache(self):
+        with self.runtime.read_db() as old_reader:
+            old_reader.execute("SELECT count(*) FROM runtime_agents").fetchone()
+            with self.runtime.db() as writer:
+                writer.execute("UPDATE runtime_agents SET record=json_set(record,'$.pinned',json('true')) WHERE id=?",
+                               (self.lead["id"],))
+            self.runtime.invalidate_agent_records()
+
+            old_rows = self.runtime.records(old_reader, "agents", shared=True)
+            self.assertFalse(next(row for row in old_rows if row["id"] == self.lead["id"])
+                             .get("pinned", False))
+
+        with self.runtime.read_db() as fresh_reader:
+            fresh_rows = self.runtime.records(fresh_reader, "agents", shared=True)
+        self.assertTrue(next(row for row in fresh_rows if row["id"] == self.lead["id"])
+                        .get("pinned", False))
+
+    def test_autocommit_agent_read_bypasses_shared_snapshot_cache(self):
+        with self.runtime.read_db() as db:
+            self.runtime.records(db, "agents", shared=True)
+        with self.runtime.db() as writer:
+            writer.execute("UPDATE runtime_agents SET record=json_set(record,'$.pinned',json('true')) WHERE id=?",
+                           (self.lead["id"],))
+        self.runtime.invalidate_agent_records()
+
+        with closing(sqlite3.connect(self.runtime.db_path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            generation = db.execute(
+                "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
+            rows = self.runtime.records(db, "agents", shared=True)
+        self.assertTrue(next(row for row in rows if row["id"] == self.lead["id"])
+                        .get("pinned", False))
+        self.assertNotIn(generation, self.runtime._agent_records_cache)
 
     def test_native_sweep_queries_use_targeted_indexes(self):
         with self.runtime.lock, self.runtime.db() as db:

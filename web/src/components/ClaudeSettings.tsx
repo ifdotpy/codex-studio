@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
-import { api, errorText, saved } from "../api";
-import { busy, type Agent, type Json } from "../types";
+import { errorText, post, saved, type PostBody, type PostResult } from "../api";
+import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
 import type { Account } from "./Accounts";
@@ -9,12 +9,54 @@ import { requiresThinking } from "../../../scripts/claude_bridge/thinking.mjs";
 import "./claude-settings.css";
 
 type ClaudeValues = {
-  permissionMode: string;
+  permissionMode: NonNullable<
+    NonNullable<ClaudeSessionState["settings"]>["permissionMode"]
+  >;
   thinking: boolean;
   autoCompactWindow?: number;
 };
 
-const valuesFrom = (value: Json, agent: Agent): ClaudeValues => ({
+function permissionMode(value: string): ClaudeValues["permissionMode"] | null {
+  switch (value) {
+    case "default":
+    case "acceptEdits":
+    case "auto":
+    case "plan":
+    case "bypassPermissions":
+      return value;
+    default:
+      return null;
+  }
+}
+
+type ClaudeSessionRequest = PostBody<"/api/claude/session">;
+type ClaudeSessionResponse = PostResult<"/api/claude/session">;
+type ClaudeSessionState = Extract<ClaudeSessionResponse, { turns: unknown[] }>;
+type ClaudeCommandsResponse = Extract<ClaudeSessionResponse, unknown[]>;
+type ClaudeSessionMutation = ClaudeSessionRequest extends infer Request
+  ? Request extends {
+      action: "settings" | "command" | "rollback";
+    }
+    ? Omit<Request, "request_id">
+    : never
+  : never;
+
+function isClaudeSessionState(
+  value: ClaudeSessionResponse,
+): value is ClaudeSessionState {
+  return "turns" in value && Array.isArray(value.turns);
+}
+
+function isClaudeCommandsResponse(
+  value: ClaudeSessionResponse,
+): value is ClaudeCommandsResponse {
+  return Array.isArray(value);
+}
+
+const valuesFrom = (
+  value: Pick<ClaudeSessionState, "settings">,
+  agent: Agent,
+): ClaudeValues => ({
   permissionMode:
     value.settings?.permissionMode ||
     (agent.yoloMode === false ? "default" : "bypassPermissions"),
@@ -37,12 +79,16 @@ export function ClaudeSettings({
     agent.accountKey || "default",
     !account || account.status === "ready",
   );
-  const thinkingRequired = requiresThinking(agent.model, catalog.models);
-  const [state, setState] = useState<Json>({});
+  const thinkingRequired = requiresThinking(agent.model || "", catalog.models);
+  const [state, setState] = useState<ClaudeSessionState>({
+    settings: {},
+    turns: [],
+    tasks: [],
+  });
   const [stateLoaded, setStateLoaded] = useState(false);
   const [stateLoading, setStateLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [commands, setCommands] = useState<Json[]>([]);
+  const [commands, setCommands] = useState<ClaudeCommandsResponse>([]);
   const [values, setValues] = useState<ClaudeValues>(() =>
     valuesFrom({}, agent),
   );
@@ -57,23 +103,22 @@ export function ClaudeSettings({
   const [savedLabel, setSavedLabel] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const call = (action: string, data: Json = {}) =>
-    api(
-      "/api/claude/session",
-      { id: agent.id, action, ...data },
-      { timeoutMs: 15000 },
-    );
-  const mutate = async (action: string, data: Json) => {
-    const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${action}:${JSON.stringify(data)}`;
+  const call = (body: ClaudeSessionRequest) =>
+    post("/api/claude/session", body, { timeoutMs: 15000 });
+  const mutate = async (body: ClaudeSessionMutation) => {
+    const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${body.action}:${JSON.stringify({ ...body, id: undefined, action: undefined })}`;
     const requestId =
       saved<string | null>(storageKey, null) || crypto.randomUUID();
     localStorage.setItem(storageKey, JSON.stringify(requestId));
-    const result = await call(action, { ...data, request_id: requestId });
+    const result = await call({ ...body, request_id: requestId });
     localStorage.removeItem(storageKey);
     return result;
   };
   const load = async () => {
-    const value = await call("state");
+    const result = await call({ id: agent.id, action: "state" });
+    if (!isClaudeSessionState(result))
+      throw new Error("Claude session state response is invalid.");
+    const value = result;
     const next = valuesFrom(value, agent);
     setState(value);
     valuesRef.current = next;
@@ -86,9 +131,12 @@ export function ClaudeSettings({
     setStateLoaded(false);
     setStateLoading(true);
     setError("");
-    call("state")
-      .then((value) => {
+    call({ id: agent.id, action: "state" })
+      .then((result) => {
         if (!active) return;
+        if (!isClaudeSessionState(result))
+          throw new Error("Claude session state response is invalid.");
+        const value = result;
         const next = valuesFrom(value, agent);
         setState(value);
         valuesRef.current = next;
@@ -124,7 +172,7 @@ export function ClaudeSettings({
     setSavedLabel("");
     setError("");
     try {
-      await mutate("settings", { settings: next });
+      await mutate({ id: agent.id, action: "settings", settings: next });
       savedRef.current = next;
       setSavedLabel("Saved");
       if (timer.current) clearTimeout(timer.current);
@@ -174,19 +222,30 @@ export function ClaudeSettings({
     }
     void saveSetting("Auto-compact limit", { autoCompactWindow: limit });
   };
-  const historyTurns: Json[] = [...(state.turns || [])];
+  const historyTurns = [...state.turns];
   const recoveryTurn = state.controlOperation?.turnId;
   if (recoveryTurn && !historyTurns.some((item) => item.id === recoveryTurn))
-    historyTurns.push({ id: recoveryTurn, text: "Recover pending rollback" });
+    historyTurns.push({
+      id: recoveryTurn,
+      status: "interrupted",
+      text: "Recover pending rollback",
+    });
   useEffect(() => {
     if (turn && !historyTurns.some((item) => item.id === turn)) setTurn("");
   }, [state, turn]);
   const locked =
     !stateLoaded ||
     (!!account && account.status !== "ready") ||
-    busy.has(agent.status) ||
+    (typeof agent.status === "string" && busy.has(agent.status)) ||
     busyAction ||
     !!savingField;
+  const nativeStatusError =
+    agent.nativeStatus &&
+    typeof agent.nativeStatus === "object" &&
+    "error" in agent.nativeStatus &&
+    typeof agent.nativeStatus.error === "string"
+      ? agent.nativeStatus.error
+      : undefined;
 
   return (
     <section
@@ -200,11 +259,11 @@ export function ClaudeSettings({
         label="Permission mode"
         value={values.permissionMode}
         disabled={locked}
-        onChange={(event) =>
-          void saveSetting("Permission mode", {
-            permissionMode: event.currentTarget.value,
-          })
-        }
+        onChange={(event) => {
+          const selected = permissionMode(event.currentTarget.value);
+          if (selected)
+            void saveSetting("Permission mode", { permissionMode: selected });
+        }}
         data={[
           { value: "default", label: "Ask for permission" },
           { value: "acceptEdits", label: "Allow file edits" },
@@ -260,7 +319,15 @@ export function ClaudeSettings({
             <Button
               disabled={busyAction}
               onClick={() =>
-                void run(async () => setCommands(await call("commands")))
+                void run(async () => {
+                  const result = await call({
+                    id: agent.id,
+                    action: "commands",
+                  });
+                  if (!isClaudeCommandsResponse(result))
+                    throw new Error("Claude commands response is invalid.");
+                  setCommands(result);
+                })
               }
             >
               Load commands
@@ -284,14 +351,26 @@ export function ClaudeSettings({
             />
             <Button
               disabled={busyAction || !command}
-              onClick={() => void run(() => mutate("command", { command }))}
+              onClick={() =>
+                void run(() =>
+                  mutate({ id: agent.id, action: "command", command }),
+                )
+              }
             >
               Send command
             </Button>
             <Button
               disabled={locked}
               onClick={() =>
-                void run(() => mutate("command", { command: "/compact" }), true)
+                void run(
+                  () =>
+                    mutate({
+                      id: agent.id,
+                      action: "command",
+                      command: "/compact",
+                    }),
+                  true,
+                )
               }
             >
               Compact conversation
@@ -309,7 +388,7 @@ export function ClaudeSettings({
               onChange={(event) => setTurn(event.currentTarget.value)}
               data={[
                 { value: "", label: "Select a turn" },
-                ...historyTurns.map((item: Json, index) => ({
+                ...historyTurns.map((item, index) => ({
                   value: item.id,
                   label: `${index + 1}. ${item.text || item.status}`,
                 })),
@@ -326,11 +405,17 @@ export function ClaudeSettings({
                 void run(
                   () =>
                     state.controlOperation?.turnId === turn
-                      ? call("rollback", {
+                      ? call({
+                          id: agent.id,
+                          action: "rollback",
                           turn_id: turn,
                           request_id: state.controlOperation.requestId,
                         })
-                      : mutate("rollback", { turn_id: turn }),
+                      : mutate({
+                          id: agent.id,
+                          action: "rollback",
+                          turn_id: turn,
+                        }),
                   true,
                 )
               }
@@ -341,14 +426,19 @@ export function ClaudeSettings({
           <p className="claude-version">
             Claude Code {state.version || "version unavailable"}
           </p>
-          {(state.tasks || []).map((item: Json) => (
+          {(state.tasks || []).map((item) => (
             <div key={item.task_id} className="claude-task">
               <span>{item.description || item.task_id}</span>
               <Button
                 disabled={busyAction}
                 onClick={() =>
                   void run(
-                    () => call("stop_task", { task_id: item.task_id }),
+                    () =>
+                      call({
+                        id: agent.id,
+                        action: "stop_task",
+                        task_id: item.task_id,
+                      }),
                     true,
                   )
                 }
@@ -367,7 +457,11 @@ export function ClaudeSettings({
       {onSignIn && (
         <AccountSignInNotice
           account={account}
-          errors={[error, agent.error, agent.nativeStatus?.error]}
+          errors={[
+            error,
+            typeof agent.error === "string" ? agent.error : undefined,
+            nativeStatusError,
+          ]}
           onSignIn={onSignIn}
         />
       )}

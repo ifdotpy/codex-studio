@@ -26,7 +26,8 @@ import {
   Mail,
   X,
 } from "lucide-react";
-import { api, errorText, save, saved } from "../api";
+import { post, errorText, save, saved } from "../api";
+import type { paths } from "../generated/api";
 import "./sidebar-projects.css";
 import { useSidebarOrder } from "./useSidebarOrder";
 import {
@@ -43,12 +44,20 @@ import {
   PeerTeamGroup,
   usePeerTeamMove,
 } from "./shell/messages/PeerTeams";
+
 import ChatStatus from "./agents/ChatStatus";
 import {
   hasCompletedResult,
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
+
+type OrganizationRequest =
+  paths["/api/organization"]["post"]["requestBody"]["content"]["application/json"];
+type WithoutOrganizationId<Request> = Request extends { id: string }
+  ? Omit<Request, "id">
+  : never;
+type OrganizationData = WithoutOrganizationId<OrganizationRequest>;
 type Props = {
   data: Snapshot;
   opened: string | null;
@@ -73,8 +82,36 @@ type Props = {
   markUnread: (agent: Agent) => void;
   markingRead: Set<string>;
 };
+type NavigableProject = Project & { path: string; name: string };
+export function isVisibleSidebarAgent(
+  agent: Pick<Agent, "source" | "isLead" | "deletedAt" | "sharedRoomId">,
+) {
+  return (
+    agent.source === "managed" &&
+    agent.isLead &&
+    !agent.deletedAt &&
+    !agent.sharedRoomId
+  );
+}
+export function projectDisplayName(
+  project: Pick<Project, "path" | "name">,
+): string {
+  return typeof project.name === "string" && project.name
+    ? project.name
+    : project.path || "Project";
+}
+export function projectSearchLabel(
+  projectName: string | null | undefined,
+  legacyProjectName: unknown,
+): string {
+  return (
+    projectName ||
+    (typeof legacyProjectName === "string" ? legacyProjectName : "")
+  );
+}
 export default function Sidebar(p: Props) {
   reportPromptComposerRender("sidebar");
+  const runtime = p.data.runtime;
   const compact = useMediaQuery("(max-width: 760px)");
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
@@ -83,13 +120,13 @@ export default function Sidebar(p: Props) {
     [projectsOpen, setProjectsOpen] = useState(true);
   const sorting = useSidebarOrder(
     `codex-sidebar-order:${p.data.stateDir}`,
-    p.data.runtime.sidebarOrder,
+    runtime?.sidebarOrder ?? undefined,
     p.refresh,
     p.notify,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
-  type Conversion = { source: Agent; target: Agent; project: Project };
+  type Conversion = { source: Agent; target: Agent; project: NavigableProject };
   const conversionKey = `studio-peer-conversion-dialog:${p.data.stateDir}`;
   const [conversion, updateConversion] = useState<Conversion | null>(() =>
     saved(conversionKey, null),
@@ -131,13 +168,22 @@ export default function Sidebar(p: Props) {
     action: "save" | "delete";
   } | null>(null);
   const peerTeams =
-    p.data.runtime.peerTeamsVersion === 1 ? p.data.runtime.peerTeams || [] : [];
+    runtime?.peerTeamsVersion === 1 ? runtime.peerTeams || [] : [];
+  const projects = (runtime?.projects ?? [])
+    .filter(
+      (project): project is Project & { path: string } =>
+        typeof project.path === "string",
+    )
+    .map((project): NavigableProject => ({
+      ...project,
+      name: projectDisplayName(project),
+    }));
   const teamMove = usePeerTeamMove(p.refresh, p.notify);
   const teamFor = (id: string) =>
-    peerTeams.find((team) => team.members.includes(id));
+    peerTeams.find((team) => (team.members ?? []).includes(id));
   const grouped = new Set(
     peerTeams.flatMap((team) =>
-      team.members.filter((id) =>
+      (team.members ?? []).filter((id) =>
         p.data.threads.some((a) => a.id === id && a.cwd === team.projectPath),
       ),
     ),
@@ -149,7 +195,7 @@ export default function Sidebar(p: Props) {
     parentId?: string;
     agentId?: string;
   } | null>(null);
-  const canOrganizeProjects = !!p.data.runtime.projectOrganizationVersion;
+  const canOrganizeProjects = !!runtime?.projectOrganizationVersion;
   const requireProjectSupport = () => {
     if (canOrganizeProjects) return true;
     p.notify?.(
@@ -162,7 +208,7 @@ export default function Sidebar(p: Props) {
     setDialog(null);
   };
   const editProject = (
-    project: Project,
+    project: NavigableProject,
     folder?: ProjectFolder | "new",
     parentId?: string,
   ) => {
@@ -197,7 +243,7 @@ export default function Sidebar(p: Props) {
   const [overrides, setOverrides] = useState<
     Record<string, { pinned?: boolean; archived?: boolean }>
   >({});
-  const organize = async (id: string, data: Record<string, unknown>) => {
+  const organize = async (id: string, data: OrganizationData) => {
     if (organizationLock.current) return false;
     organizationLock.current = true;
     setOrganizing(id);
@@ -212,7 +258,7 @@ export default function Sidebar(p: Props) {
     if (hasOptimistic)
       setOverrides((old) => ({ ...old, [id]: { ...old[id], ...optimistic } }));
     try {
-      await api("/api/organization", { id, ...data });
+      await post("/api/organization", { id, ...data });
       if (hasOptimistic) void p.refresh?.();
       else await p.refresh?.();
       return true;
@@ -239,10 +285,9 @@ export default function Sidebar(p: Props) {
         const thread = p.data.threads.find((a) => a.id === id);
         if (
           !thread ||
-          Object.entries(values).every(
-            ([key, value]) =>
-              !!(thread as Record<string, unknown>)[key] === value,
-          )
+          ((values.pinned === undefined || thread.pinned === values.pinned) &&
+            (values.archived === undefined ||
+              thread.archived === values.archived))
         ) {
           delete next[id];
           changed = true;
@@ -252,18 +297,15 @@ export default function Sidebar(p: Props) {
     });
   }, [p.data.threads]);
   const agents = p.data.threads
-    .filter(
-      (a) =>
-        a.source === "managed" && a.isLead && !a.deletedAt && !a.sharedRoomId,
-    )
+    .filter(isVisibleSidebarAgent)
     .map((a) => (overrides[a.id] ? { ...a, ...overrides[a.id] } : a));
-  const sharedRooms = p.data.runtime.rooms.filter(
+  const sharedRooms = (runtime?.rooms || []).filter(
     (r) => r.radio?.direct && !r.userHidden,
   );
   const visibleSharedRooms = archive
     ? []
     : sharedRooms.filter((r) =>
-        `${r.name} ${r.projectPath || ""} ${p.data.runtime.projects?.find((project) => project.path === r.projectPath)?.name || ""}`
+        `${r.name} ${r.projectPath || ""} ${projects.find((project) => project.path === r.projectPath)?.name || ""}`
           .toLowerCase()
           .includes(query.toLowerCase()),
       );
@@ -284,8 +326,7 @@ export default function Sidebar(p: Props) {
         save(projectKey, next);
       }
       const folders =
-        p.data.runtime.projects?.find((project) => project.path === path)
-          ?.folders || [];
+        projects.find((project) => project.path === path)?.folders || [];
       let folder = folders.find((item) => item.id === selectedFolder);
       const ancestors: Record<string, boolean> = {};
       while (folder && !(folderKey(path || "", folder.id) in ancestors)) {
@@ -322,7 +363,10 @@ export default function Sidebar(p: Props) {
       ? sorting.rank(legacyChatGroup(a), a.id)
       : rank;
   };
-  const folderDrop = (project: Project, folder: ProjectFolder | null = null) =>
+  const folderDrop = (
+    project: NavigableProject,
+    folder: ProjectFolder | null = null,
+  ) =>
     sorting.dropBindings(
       folder ? folderKey(project.path, folder.id) : project.path,
       (source) => {
@@ -387,15 +431,15 @@ export default function Sidebar(p: Props) {
   const filtered = orderedAgents
     .filter((row) => !!row.archived === archive)
     .filter((a) => {
-      const project = p.data.runtime.projects?.find(
-        (item) => item.path === a.cwd,
-      );
+      const project = projects.find((item) => item.path === a.cwd);
+      const legacyProjectName = "project" in a ? a.project : undefined;
       if (a.id === p.opened && grouped.has(a.id)) return true;
       const teamName =
         peerTeams.find(
-          (team) => team.members.includes(a.id) && team.projectPath === a.cwd,
+          (team) =>
+            (team.members ?? []).includes(a.id) && team.projectPath === a.cwd,
         )?.name || "";
-      return `${teamName} ${a.name} ${a.cwd || ""} ${project?.name || a.project || ""} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
+      return `${teamName} ${a.name || ""} ${a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
         .toLowerCase()
         .includes(query.toLowerCase());
     });
@@ -410,13 +454,13 @@ export default function Sidebar(p: Props) {
   };
   const groupMap = new Map<
     string,
-    Project & {
+    NavigableProject & {
       chats: Agent[];
       registered: boolean;
       hasChats: boolean;
     }
   >();
-  for (const project of p.data.runtime.projects || [])
+  for (const project of projects)
     groupMap.set(project.path, {
       ...project,
       chats: [],
@@ -466,7 +510,7 @@ export default function Sidebar(p: Props) {
     if (query || !compactProjects[a.cwd || ""] || keptInCompact(a))
       groupMap.get(a.cwd || "")!.chats.push(a);
   }
-  const itemIds = (group: Project, parent: string | null = null) =>
+  const itemIds = (group: NavigableProject, parent: string | null = null) =>
     [
       ...(!parent
         ? peerTeams
@@ -550,7 +594,7 @@ export default function Sidebar(p: Props) {
                   ),
             ),
           )}
-          title={row.name}
+          title={row.name ?? undefined}
           aria-description="Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works."
           className="chat-row"
           data-chat={row.id}
@@ -563,13 +607,13 @@ export default function Sidebar(p: Props) {
           <span className="row-copy">
             <strong>
               {a?.pinned && <Pin size={11} className="chat-pin" />}
-              {row.name}
+              {row.name ?? ""}
             </strong>
           </span>
           <ChatStatus
             status={p.indicators.get(a.id)}
-            provider={a.provider}
-            model={a.model}
+            provider={a.provider ?? undefined}
+            model={a.model ?? undefined}
           />
         </UnstyledButton>
         {renaming !== row.id && (
@@ -680,7 +724,7 @@ export default function Sidebar(p: Props) {
               <Menu.Item
                 leftSection={<Pencil size={14} />}
                 onClick={() => {
-                  setName(row.name);
+                  setName(row.name ?? "");
                   setRenaming(row.id);
                 }}
               >
@@ -700,12 +744,13 @@ export default function Sidebar(p: Props) {
     );
   };
   const renderPeerTeam = (
-    group: Project & { chats: Agent[] },
+    group: NavigableProject & { chats: Agent[] },
     team: (typeof peerTeams)[number],
   ): ReactNode => {
-    const members = group.chats.filter((a) => team.members.includes(a.id));
+    const teamMembers = team.members ?? [];
+    const members = group.chats.filter((a) => teamMembers.includes(a.id));
     const selected = agents.find(
-      (a) => a.id === p.opened && team.members.includes(a.id),
+      (a) => a.id === p.opened && teamMembers.includes(a.id),
     );
     if (selected && !members.includes(selected)) members.push(selected);
     if (!members.length && (query || archive)) return null;
@@ -716,9 +761,7 @@ export default function Sidebar(p: Props) {
         key={team.id}
         itemId={teamKey(group.path, team.id)}
         team={team}
-        roomId={
-          p.data.runtime.rooms.find((r) => r.radio?.teamId === team.id)?.id
-        }
+        roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
         scope={p.data.stateDir}
         openRoom={p.open}
         refresh={p.refresh}
@@ -735,7 +778,7 @@ export default function Sidebar(p: Props) {
               chat &&
               source.group === chatGroup(chat) &&
               chat.cwd === group.path &&
-              !team.members.includes(chat.id) &&
+              !teamMembers.includes(chat.id) &&
               !teamMove.blocked() &&
               !organizationLock.current
             );
@@ -760,7 +803,7 @@ export default function Sidebar(p: Props) {
         }
       >
         <div className="peer-team-chats">
-          {p.data.runtime.rooms
+          {(runtime?.rooms || [])
             .filter(
               (r) =>
                 r.radio?.teamId === team.id && (!closed || r.id === p.opened),
@@ -783,7 +826,7 @@ export default function Sidebar(p: Props) {
     );
   };
   const renderProjectChats = (
-    group: Project & { chats: Agent[] },
+    group: NavigableProject & { chats: Agent[] },
     parent: ProjectFolder | null = null,
   ): ReactNode => {
     const folders = group.folders || [];
@@ -904,7 +947,7 @@ export default function Sidebar(p: Props) {
                           onClick={async () => {
                             if (!requireProjectSupport()) return;
                             try {
-                              await api("/api/projects", {
+                              await post("/api/projects", {
                                 action: "remove_folder",
                                 path: group.path,
                                 folder_id: folder.id,
@@ -1126,7 +1169,7 @@ export default function Sidebar(p: Props) {
                             New shared chat
                           </Menu.Item>
                         )}
-                        {p.data.runtime.peerTeamsVersion === 1 && (
+                        {runtime?.peerTeamsVersion === 1 && (
                           <Menu.Item
                             onClick={() =>
                               setTeamDialog({
@@ -1164,7 +1207,7 @@ export default function Sidebar(p: Props) {
                           <Menu.Item
                             onClick={async () => {
                               try {
-                                await api("/api/projects", {
+                                await post("/api/projects", {
                                   action: "remove",
                                   path: group.path,
                                 });

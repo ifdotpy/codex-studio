@@ -554,6 +554,27 @@ class ConnectionRecoveryContract(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertEqual(result['status'], 'reconciled')
             self.read_calls_only()
+            receipt = self.runtime.agent(self.key)['connectionRecovery']
+            self.update(lastContextRepairWait={
+                'status': 'superseded', 'finishedAt': 12.5,
+                'reason': 'The exact native turn was confirmed',
+                'events': ['original-input'],
+            }, lastContextRepairCheck={
+                'phase': 'preparing', 'status': 'superseded', 'finishedAt': 12.5,
+                'source': {'id': self.key, 'threadId': 'native-thread'},
+                'supersededReason': 'No native fork was submitted.',
+            })
+            for view in ('full', 'chat'):
+                with self.subTest(view=view):
+                    status, snapshot = request('/api/state?view=' + view)
+                    self.assertEqual(status, 200, snapshot)
+                    agent = next(a for a in snapshot['runtime']['agents'] if a['id'] == self.key)
+                    self.assertEqual(agent['connectionRecovery'], receipt)
+                    for field in ('lastContextRepairWait', 'lastContextRepairCheck'):
+                        if view == 'full':
+                            self.assertEqual(agent[field], self.runtime.agent(self.key)[field])
+                        else:
+                            self.assertNotIn(field, agent)
         finally:
             server.shutdown()
             server.server_close()

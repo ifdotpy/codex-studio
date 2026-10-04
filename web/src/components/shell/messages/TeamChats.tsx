@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import { save, saved } from "../../../api";
 import { useMessages } from "../../../hooks";
-import type { Snapshot } from "../../../types";
+import type { JsonValue, Snapshot } from "../../../types";
 import StreamingText from "../../conversation/transcript/StreamingText";
 import Requests from "../../questions/Requests";
 import UserMessages from "./UserMessages";
@@ -20,6 +20,17 @@ import {
   useFollowState,
 } from "../../useConversationScroll";
 import "./team-chats.css";
+
+function firstQuestion(params: JsonValue | undefined): string | undefined {
+  if (!params || typeof params !== "object" || Array.isArray(params))
+    return undefined;
+  const questions = params.questions;
+  if (!Array.isArray(questions)) return undefined;
+  const first = questions[0];
+  if (!first || typeof first !== "object" || Array.isArray(first))
+    return undefined;
+  return typeof first.question === "string" ? first.question : undefined;
+}
 
 export default function TeamChats({
   data,
@@ -62,22 +73,25 @@ export default function TeamChats({
       )
       .map((agent) => agent.id),
   );
-  const rooms = data.runtime.rooms.filter(
+  const runtime = data.runtime;
+  const rooms = (runtime?.rooms ?? []).filter(
     (room) =>
       leadId &&
       (room.kind === "federated"
-        ? (room.localMembers || room.members).some((id) => members.has(id))
+        ? (room.localMembers ?? room.members ?? []).some((id) =>
+            members.has(id),
+          )
         : room.kind === "broadcast"
           ? room.rootId === leadId
-          : room.members.length > 0 &&
-            (room.members.every((id) => members.has(id)) ||
+          : (room.members ?? []).length > 0 &&
+            ((room.members ?? []).every((id) => members.has(id)) ||
               (!!room.peerTeamId &&
-                room.members.some((id) => members.has(id))))),
+                (room.members ?? []).some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
     if (room.kind === "federated") return room.peerLabel || room.name;
     if (room.kind === "broadcast") return "Team broadcast";
-    const peers = room.members.filter((id) => id !== leadId);
+    const peers = (room.members ?? []).filter((id) => id !== leadId);
     return peers.length === 1
       ? data.threads.find((agent) => agent.id === peers[0])?.name || room.name
       : room.name;
@@ -92,17 +106,17 @@ export default function TeamChats({
   useEffect(() => {
     setSeen(saved(seenKey, {}));
   }, [seenKey]);
-  const attention = data.runtime.requests.filter(
+  const attention = (runtime?.requests ?? []).filter(
     (request) => request.status === "pending" || !request.status,
   );
   const latestPersonal = [
-    ...data.runtime.complaints.map((item) => ({
+    ...(runtime?.complaints ?? []).map((item) => ({
       created: item.created,
       text: item.title,
     })),
-    ...data.runtime.requests.map((item) => ({
+    ...(runtime?.requests ?? []).map((item) => ({
       created: item.createdAt ?? item.created ?? item.at,
-      text: item.params?.questions?.[0]?.question || item.title,
+      text: firstQuestion(item.params) || item.title,
     })),
   ].sort((a, b) => (b.created || 0) - (a.created || 0))[0];
   const personalPreview =
@@ -120,13 +134,14 @@ export default function TeamChats({
       <span className="team-conversation-icon">
         <Users size={21} />
       </span>
-    ) : item.members.length > 2 || !item.members.includes(leadId || "") ? (
+    ) : (item.members ?? []).length > 2 ||
+      !(item.members ?? []).includes(leadId || "") ? (
       <span className="team-conversation-icon">
         <Users size={21} />
       </span>
     ) : (
       <AgentAvatar
-        id={item.members.find((id) => id !== leadId) || item.id}
+        id={(item.members ?? []).find((id) => id !== leadId) || item.id}
         size={42}
       />
     );
@@ -138,8 +153,8 @@ export default function TeamChats({
     )
     .sort(
       (a, b) =>
-        (b.lastMessage?.created || b.updated) -
-        (a.lastMessage?.created || a.updated),
+        (b.lastMessage?.created ?? b.updated ?? 0) -
+        (a.lastMessage?.created ?? a.updated ?? 0),
     );
   const {
     items,
@@ -178,7 +193,7 @@ export default function TeamChats({
     useConversationScroll(`${scope}:messages:${selected}`, loaded);
   const follow = useFollowState(subscribeFollow, getFollow);
   const events = [
-    ...(showYou ? data.runtime.requests : [])
+    ...(showYou ? (runtime?.requests ?? []) : [])
       .filter((request) => request.status === "pending" || !request.status)
       .map((request) => ({
         id: `request:${request.id}`,
@@ -187,23 +202,21 @@ export default function TeamChats({
           <Requests
             scope={data.stateDir}
             requests={[request]}
-            allRequests={data.runtime.requests}
+            allRequests={runtime?.requests ?? []}
             agents={data.threads}
             refresh={refresh}
             notify={notify}
           />
         ),
       })),
-    ...(showYou ? data.runtime.complaints : []).map((message) => ({
+    ...(showYou ? (runtime?.complaints ?? []) : []).map((message) => ({
       id: `complaint:${message.id}`,
       created: message.created || 0,
       content: (
         <UserMessages
-          data={{
-            ...data,
-            runtime: { ...data.runtime, complaints: [message] },
-          }}
-          target={message.recipient as "user" | "lead"}
+          data={data}
+          onlyComplaintId={message.id}
+          target={message.recipient === "lead" ? "lead" : "user"}
           hideEmpty
           focusId={focusItemId}
           focusRequestId={focusRequestId}

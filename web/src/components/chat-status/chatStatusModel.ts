@@ -34,6 +34,15 @@ export interface ChatActivity {
 
 export const endedWaitLabel = "Turn ended. Send a message to continue.";
 
+function epochMatches(epoch: unknown, agentEpoch: number | null | undefined) {
+  if (epoch == null) return true;
+  return (
+    typeof epoch === "number" &&
+    Number.isFinite(epoch) &&
+    (agentEpoch == null || epoch === agentEpoch)
+  );
+}
+
 export interface ChatWaitState {
   live: boolean;
   label: string;
@@ -50,12 +59,15 @@ export function chatWaitState(
   agent: Agent,
   activities = chatActivities(data),
 ): ChatWaitState {
+  const runtime = data.runtime;
   const agents = data.threads.filter(
     (child) =>
       child.source === "managed" &&
       child.parentId === agent.id &&
       (child.inFlight ||
-        ["queued", "starting", "running", "approval"].includes(child.status)),
+        ["queued", "starting", "running", "approval"].includes(
+          child.status || "",
+        )),
   );
   const owned = activities
     .get(agent.id)
@@ -70,14 +82,15 @@ export function chatWaitState(
   const monitors =
     owned?.filter((activity) => activity.kind === "monitor") ?? [];
   const inputs =
-    data.runtime.requests?.filter(
+    runtime?.requests?.filter(
       (request) =>
         request.agent === agent.id &&
         (!request.status || request.status === "pending") &&
         !request.deferred &&
-        (request.epoch == null ||
-          agent.epoch == null ||
-          request.epoch === agent.epoch),
+        epochMatches(
+          "epoch" in request ? request.epoch : undefined,
+          agent.epoch,
+        ),
     ).length ?? 0;
   const event = agent.parkedEvent || undefined;
   const count = (value: number, name: string) =>
@@ -109,6 +122,7 @@ export function backgroundActivities(activities: ChatActivity[]) {
 
 // The visible reasons and the spinner use the same activity records.
 export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
+  const runtime = data.runtime;
   const agents = data.threads.filter((agent) => agent.source === "managed");
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   const result = new Map<string, ChatActivity[]>();
@@ -120,69 +134,88 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       result.set(id, [...(result.get(id) || []), activity]);
     }
   };
-  for (const [kind, entries] of [
-    ["task", data.runtime.tasks || []],
-    ["monitor", data.runtime.monitors || []],
-  ] as const) {
-    for (const record of entries) {
-      const entry = record as typeof record & {
-        epoch?: number;
-        type?: string;
-        turnId?: string;
-      };
-      const agent = byId.get(entry.agent);
-      if (
-        !agent ||
-        (entry.epoch != null &&
-          agent.epoch != null &&
-          entry.epoch !== agent.epoch) ||
-        !["starting", "running", "approval"].includes(entry.status)
-      )
-        continue;
-      concrete.add(agent.id);
-      const background =
-        kind === "monitor" ||
-        agent.inFlight === false ||
-        !!(entry.turnId && agent.turnId && agent.turnId !== entry.turnId);
-      add(agent, {
-        id: entry.id,
-        kind,
-        agentId: agent.id,
-        agentName: agent.name,
-        label:
-          kind === "monitor" || (background && entry.command)
-            ? "Background command"
-            : entry.command
-              ? "Command"
-              : "Tool call",
-        command: entry.command || entry.query || entry.name || entry.type,
-        created: entry.created,
-        status: entry.status,
-        background,
-        commandTask:
-          kind === "task" && (!!entry.command || entry.kind === "command"),
-      });
-    }
+  const entries = runtime
+    ? [
+        ...(runtime.tasks || []).map((record) => ({
+          kind: "task" as const,
+          record,
+        })),
+        ...(runtime.monitors || []).map((record) => ({
+          kind: "monitor" as const,
+          record,
+        })),
+      ]
+    : [];
+  for (const { kind, record } of entries) {
+    const agent = byId.get(record.agent || "");
+    if (
+      !agent ||
+      !epochMatches(
+        "epoch" in record ? record.epoch : undefined,
+        agent.epoch,
+      ) ||
+      !["starting", "running", "approval"].includes(record.status || "")
+    )
+      continue;
+    concrete.add(agent.id);
+    const background =
+      kind === "monitor" ||
+      agent.inFlight === false ||
+      !!(
+        "turnId" in record &&
+        record.turnId &&
+        agent.turnId &&
+        agent.turnId !== record.turnId
+      );
+    const type =
+      "type" in record && typeof record.type === "string"
+        ? record.type
+        : undefined;
+    const command =
+      record.command ||
+      (kind === "task" ? record.query : undefined) ||
+      record.name ||
+      type ||
+      (kind === "task" ? record.kind : undefined) ||
+      undefined;
+    add(agent, {
+      id: record.id,
+      kind,
+      agentId: agent.id,
+      agentName: agent.name || "Agent",
+      label:
+        kind === "monitor" || (background && record.command)
+          ? "Background command"
+          : record.command
+            ? "Command"
+            : "Tool call",
+      command,
+      created: record.created ?? undefined,
+      status: record.status || "",
+      background,
+      commandTask:
+        kind === "task" && (!!record.command || record.kind === "command"),
+    });
   }
   for (const agent of agents) {
     if (concrete.has(agent.id)) continue;
     if (
       agent.inFlight ||
       (agent.autoWake !== false &&
-        ["queued", "starting", "running"].includes(agent.status))
+        ["queued", "starting", "running"].includes(agent.status || ""))
     )
       add(agent, {
         id: agent.id,
         kind: "agent",
         agentId: agent.id,
-        agentName: agent.name,
+        agentName: agent.name || "Agent",
         label:
           agent.status === "queued"
             ? "Waiting to start"
             : agent.status === "starting"
               ? "Starting"
               : "Working",
-        status: agent.status,
+        status: agent.status || "",
       });
   }
   for (const entries of result.values())
@@ -202,7 +235,7 @@ export function hasCompletedResult(agent: Agent) {
 }
 export function unreadResult(
   agent: Agent,
-  readState: ReadState | null = agent.readState || null,
+  readState: ReadState | null = savedReadState(agent),
 ) {
   return (
     hasCompletedResult(agent) &&
@@ -215,7 +248,19 @@ export function unreadResult(
 }
 
 function savedReadState(agent: Agent): ReadState | null {
-  return agent.readState || null;
+  if (!("readState" in agent)) return null;
+  const value = agent.readState;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const threadId = "threadId" in value ? value.threadId : undefined;
+  const turnId = "turnId" in value ? value.turnId : undefined;
+  const read = "read" in value ? value.read : undefined;
+  const revision = "revision" in value ? value.revision : undefined;
+  return typeof threadId === "string" &&
+    typeof turnId === "string" &&
+    typeof read === "boolean" &&
+    typeof revision === "number"
+    ? { threadId, turnId, read, revision }
+    : null;
 }
 
 // Operational state and read receipts are separate: a question cannot disappear
@@ -238,16 +283,17 @@ export function chatIndicators(
       if (root) set.add(root.id);
     }
   };
-  const requests = data.runtime.requests;
+  const requests = data.runtime?.requests;
   if (requests) {
     for (const request of requests) {
       if (request.status && request.status !== "pending") continue;
-      const agent = byId.get(request.agent);
+      const agent = byId.get(request.agent || "");
       if (
         !agent ||
-        (request.epoch != null &&
-          agent.epoch != null &&
-          request.epoch !== agent.epoch)
+        !epochMatches(
+          "epoch" in request ? request.epoch : undefined,
+          agent.epoch,
+        )
       )
         continue;
       if (request.deferred) deferred.add(agent.id);
@@ -260,7 +306,7 @@ export function chatIndicators(
   return new Map(
     agents.map((agent) => {
       let indicator: ChatIndicator;
-      const waiting = ["waiting", "parked"].includes(agent.status);
+      const waiting = ["waiting", "parked"].includes(agent.status || "");
       const getWait = () => chatWaitState(data, agent, activities);
       if (answers.has(agent.id)) {
         let label = "Needs your answer";
@@ -291,7 +337,7 @@ export function chatIndicators(
       } else if (agent.status === "failed")
         indicator = { kind: "error", label: "Failed" };
       else if (
-        ["paused", "interrupted"].includes(agent.status) ||
+        ["paused", "interrupted"].includes(agent.status || "") ||
         (agent.autoWake === false && !agent.empty)
       )
         indicator = {

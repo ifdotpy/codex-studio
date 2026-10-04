@@ -125,7 +125,9 @@ export function historyGroups(
       )
     )
       continue;
-    const outcomes = group.items.map((item) => item.turnStatus).filter(Boolean);
+    const outcomes = group.items
+      .map((item) => item.turnStatus)
+      .filter((status): status is string => Boolean(status));
     if (
       !outcomes.length ||
       outcomes.some(

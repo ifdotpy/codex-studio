@@ -175,6 +175,61 @@ function executable(name, env = process.env) {
     `Install ${name}, or set ${name === "python3" ? "CODEX_AGENTS_PYTHON" : "CODEX_BIN"} to its absolute executable path.`,
   );
 }
+function apiPython(resources, env = process.env) {
+  const hasApi = (file) => {
+    try {
+      execFileSync(
+        file,
+        [
+          "-c",
+          "import sys; assert sys.version_info >= (3,11); import fastapi, httpx, pydantic, uvicorn",
+        ],
+        { timeout: 10000, stdio: "ignore" },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const configured = env.CODEX_AGENTS_PYTHON;
+  if (configured) {
+    if (hasApi(configured)) return configured;
+    throw new Error(
+      "CODEX_AGENTS_PYTHON must point to Python 3.11+ with FastAPI, Pydantic, Uvicorn, and HTTPX from requirements.txt installed.",
+    );
+  }
+
+  const requirements = path.join(resources, "requirements.txt");
+  if (fs.existsSync(requirements)) {
+    const digest = createHash("sha256")
+      .update(fs.readFileSync(requirements))
+      .digest("hex");
+    const cacheRoot =
+      env.XDG_CACHE_HOME ||
+      (process.platform === "darwin"
+        ? path.join(os.homedir(), "Library", "Caches")
+        : path.join(os.homedir(), ".cache"));
+    const managed = path.join(
+      cacheRoot,
+      "codex-agents",
+      "python",
+      digest,
+      "bin",
+      "python",
+    );
+    if (hasApi(managed)) return managed;
+  }
+
+  const fallbackEnv = { ...env };
+  delete fallbackEnv.CODEX_AGENTS_PYTHON;
+  try {
+    const fallback = executable("python3", fallbackEnv);
+    if (hasApi(fallback)) return fallback;
+  } catch {}
+  throw new Error(
+    "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. Run `python3 scripts/install-cli.py` to prepare the managed environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter.",
+  );
+}
 async function identity(
   origin,
   state,
@@ -285,7 +340,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     throw new Error(
       "Desktop assets are missing. Run the web build before starting or packaging desktop.",
     );
-  const python = executable("python3", env);
+  const python = apiPython(resources, env);
   execFileSync(
     python,
     [
@@ -385,6 +440,7 @@ module.exports = {
   ensureBackend,
   identity,
   executable,
+  apiPython,
   stateDirectory,
   backendBuild,
   updateStatus,

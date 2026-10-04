@@ -11,30 +11,22 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
-import { api, syncApi, errorText, save, saved } from "../api";
+import {
+  get,
+  post,
+  syncPost,
+  errorText,
+  save,
+  saved,
+  type GetResult,
+  type PostBody,
+} from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
 
-type Shell = {
-  id: string;
-  agent: string;
-  title: string;
-  cwd: string;
-  status: string;
-  exitCode?: number;
-  error?: string;
-  created: number;
-};
+type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
-type Output = {
-  text: string;
-  offset: number;
-  truncated: boolean;
-  status: string;
-  exitCode?: number;
-  error?: string;
-};
 const running = (status: string) =>
   ["running", "starting", "approval"].includes(status);
 const inputUncertaintyNotice =
@@ -75,7 +67,7 @@ export default function TerminalDock({
     const request = ++listingRevision.current;
     const current = () => request === listingRevision.current && allowed();
     try {
-      const value = await api<{ items: Shell[] }>("/api/terminals");
+      const value = await get("/api/terminals");
       if (!current()) return;
       setShells(value.items || []);
       setError("");
@@ -156,7 +148,7 @@ export default function TerminalDock({
     setCreating(true);
     setOpened(true);
     try {
-      const shell = await api<Shell>("/api/terminals/create", {
+      const shell = await post("/api/terminals/create", {
         id: crypto.randomUUID(),
         agent: agent.id,
         cols: 100,
@@ -177,10 +169,15 @@ export default function TerminalDock({
       setCreating(false);
     }
   };
-  const action = async (path: string, body: object) => {
+  const action = async <
+    Path extends "/api/terminals/rename" | "/api/terminals/close",
+  >(
+    path: Path,
+    body: PostBody<Path>,
+  ) => {
     setPending(true);
     try {
-      await api(path, body);
+      await post(path, body);
       await load();
       return true;
     } catch (e) {
@@ -533,24 +530,31 @@ function ShellView({
       let end: number | undefined;
       let incomplete = false;
       for (let page = 0; page < 512; page++) {
-        const value = await api<
-          Output & {
-            hasMore: boolean;
-            availableOffset: number;
-            historyStart: number;
-          }
-        >(
-          `/api/terminals/output?id=${encodeURIComponent(shell.id)}&history=1&offset=${offset}&limit=${Math.min(65536, end === undefined ? 65536 : end - offset)}`,
-        );
+        const value = await get("/api/terminals/output", {
+          query: {
+            id: shell.id,
+            history: ["1"],
+            offset: String(offset),
+            limit: String(
+              Math.min(65536, end === undefined ? 65536 : end - offset),
+            ),
+          },
+        });
         if (downloadAttempt.current !== attempt) return;
         if (
+          !value ||
+          typeof value.offset !== "number" ||
           !Number.isSafeInteger(value.offset) ||
+          typeof value.availableOffset !== "number" ||
           !Number.isSafeInteger(value.availableOffset) ||
+          typeof value.historyStart !== "number" ||
+          !Number.isSafeInteger(value.historyStart) ||
           typeof value.text !== "string" ||
           typeof value.hasMore !== "boolean"
         )
           throw new Error("The server did not return saved terminal output.");
-        end ??= value.availableOffset;
+        const endOffset = end ?? value.availableOffset;
+        end = endOffset;
         if (value.offset < offset || (value.hasMore && value.offset === offset))
           throw new Error(
             "The saved output did not advance. Try the download again.",
@@ -558,7 +562,7 @@ function ShellView({
         parts.push(value.text);
         incomplete ||= value.truncated;
         offset = value.offset;
-        if (!value.hasMore || offset >= end) {
+        if (!value.hasMore || offset >= endOffset) {
           const url = URL.createObjectURL(
             new Blob(parts, { type: "text/plain;charset=utf-8" }),
           );
@@ -575,7 +579,7 @@ function ShellView({
           return;
         }
         setDownloadStatus(
-          `Preparing saved output: ${offset.toLocaleString()} of ${end.toLocaleString()} characters`,
+          `Preparing saved output: ${offset.toLocaleString()} of ${endOffset.toLocaleString()} characters`,
         );
       }
       throw new Error(
@@ -602,7 +606,7 @@ function ShellView({
         const pending = {};
         pendingInput.current = pending;
         try {
-          const result = await syncApi("/api/terminals/input", {
+          const result = await syncPost("/api/terminals/input", {
             id: shell.id,
             text,
             request_id,
@@ -677,7 +681,7 @@ function ShellView({
           clearTimeout(resizeTimer);
           resizeTimer = setTimeout(() => {
             if (instance && !disposed && running(shell.status))
-              void api("/api/terminals/resize", {
+              void post("/api/terminals/resize", {
                 id: shell.id,
                 cols: instance.cols,
                 rows: instance.rows,
@@ -691,9 +695,9 @@ function ShellView({
         resize();
         const poll = async () => {
           try {
-            const output = await api<Output>(
-              `/api/terminals/output?id=${encodeURIComponent(shell.id)}&offset=${offset}`,
-            );
+            const output = await get("/api/terminals/output", {
+              query: { id: shell.id, offset: String(offset) },
+            });
             if (disposed) return;
             if (output.truncated) {
               instance!.reset();

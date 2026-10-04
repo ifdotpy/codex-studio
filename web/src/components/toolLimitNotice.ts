@@ -1,4 +1,4 @@
-import type { Message } from "../types";
+import type { JsonValue, Message } from "../types";
 import { nativeErrorView } from "../nativeErrors";
 
 type LimitNotice = { title: string; message: string } | null;
@@ -31,31 +31,38 @@ export function toolLimitNotice(item: Message): LimitNotice {
 function readToolLimitNotice(
   item: Message,
 ): { title: string; message: string } | null {
-  let payload: any;
+  let payload: unknown;
   try {
     payload = JSON.parse(item.text);
   } catch {
     return null;
   }
-  if (!payload || typeof payload !== "object") return null;
+  const record = objectValue(payload);
+  if (!record) return null;
   if (
     item.toolStatus !== "failed" &&
-    payload.status !== "failed" &&
-    payload.success !== false
+    record.status !== "failed" &&
+    record.success !== false
   )
     return null;
-  const worker = typeof payload.agent_id === "string" && "result" in payload;
+  const result = objectValue(record.result);
+  const worker = typeof record.agent_id === "string" && "result" in record;
+  const textEntries = (value: JsonValue | undefined): string[] =>
+    Array.isArray(value)
+      ? value.flatMap((entry) => {
+          const entryRecord = objectValue(entry);
+          return typeof entryRecord?.text === "string"
+            ? [entryRecord.text]
+            : [];
+        })
+      : [];
   const candidates = [
-    payload.error,
-    payload.result,
+    record.error,
+    record.result,
     item.nativeError,
-    ...[
-      payload.contentItems,
-      payload.result?.contentItems,
-      payload.result?.content,
-    ].flatMap((entries) =>
-      Array.isArray(entries) ? entries.map((entry: any) => entry?.text) : [],
-    ),
+    ...textEntries(record.contentItems),
+    ...textEntries(result?.contentItems),
+    ...textEntries(result?.content),
   ];
   for (const candidate of candidates) {
     if (candidate == null) continue;
@@ -69,7 +76,7 @@ function readToolLimitNotice(
       continue;
     // Keep the server's displayed date as text; its timezone can be unspecified.
     const retry = error.message.match(/\btry again at\s+(.+?)\.?\s*$/i)?.[1];
-    const name = worker && typeof payload.name === "string" ? payload.name : "";
+    const name = worker && typeof record.name === "string" ? record.name : "";
     const title =
       error.kind === "rateLimitExceeded"
         ? "Rate limit reached"
@@ -89,4 +96,29 @@ function readToolLimitNotice(
     };
   }
   return null;
+}
+
+function objectValue(value: unknown): Record<string, JsonValue> | null {
+  return isJsonObject(value) ? value : null;
+}
+
+function isJsonObject(value: unknown): value is Record<string, JsonValue> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isJsonValue)
+  );
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  )
+    return true;
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isJsonObject(value);
 }

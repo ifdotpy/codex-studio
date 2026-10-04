@@ -1,19 +1,13 @@
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText, save, saved } from "../api";
+import { errorText, get, post, save, saved, type PostResult } from "../api";
 import type { Account } from "./Accounts";
 
-type Receipt = {
-  requestId: string;
-  accountKey: string;
-  status: "starting" | "pending" | "ready" | "error" | "cancelled";
-  verificationUrl?: string;
-  error?: unknown;
-  email?: string;
-};
+type Receipt = PostResult<"/api/accounts/claude/login">;
+type LoginAction = "start" | "code" | "cancel";
 const active = (receipt: Receipt | null) =>
   !receipt || ["starting", "pending"].includes(receipt.status);
-function authUrl(value?: string): string | null {
+function authUrl(value?: string | null): string | null {
   try {
     const url = new URL(value || "");
     if (
@@ -74,9 +68,9 @@ export default function ClaudeSignIn({
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const result = await api<Receipt>(
-          `/api/accounts/claude/login?request_id=${encodeURIComponent(requestId)}`,
-        );
+        const result = await get("/api/accounts/claude/login", {
+          query: { request_id: requestId },
+        });
         if (live) store(result, requestId);
       } catch (failure) {
         if (live) setError(errorText(failure));
@@ -89,7 +83,7 @@ export default function ClaudeSignIn({
       clearTimeout(timer);
     };
   }, [requestId, receipt?.status]);
-  const run = async (action: string) => {
+  const run = async (action: LoginAction) => {
     if (lock.current) return;
     lock.current = true;
     setBusy(action);
@@ -106,15 +100,24 @@ export default function ClaudeSignIn({
       }
       const submittedCode = code.trim();
       if (action === "code") setCode("");
-      const result = await api<Receipt>(
-        `/api/accounts/claude/login${action === "start" ? "" : `/${action}`}`,
-        {
-          request_id: id,
-          ...(action === "start" ? { account_key: account.id } : {}),
-          ...(action === "code" ? { code: submittedCode } : {}),
-        },
-        { timeoutMs: 30000 },
-      );
+      const result =
+        action === "start"
+          ? await post(
+              "/api/accounts/claude/login",
+              { request_id: id, account_key: account.id },
+              { timeoutMs: 30000 },
+            )
+          : action === "code"
+            ? await post(
+                "/api/accounts/claude/login/code",
+                { request_id: id, code: submittedCode },
+                { timeoutMs: 30000 },
+              )
+            : await post(
+                "/api/accounts/claude/login/cancel",
+                { request_id: id },
+                { timeoutMs: 30000 },
+              );
       store(result, id);
     } catch (failure) {
       setError(errorText(failure));

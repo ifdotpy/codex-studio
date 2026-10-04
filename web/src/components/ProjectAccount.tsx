@@ -4,6 +4,10 @@ import { useProjectSave } from "./useProjectSave";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 
+type SnapshotProject = NonNullable<
+  NonNullable<Snapshot["runtime"]>["projects"]
+>[number];
+
 export default function ProjectAccount({
   path,
   project,
@@ -12,7 +16,7 @@ export default function ProjectAccount({
   saved,
 }: {
   path: string;
-  project?: NonNullable<Snapshot["runtime"]["projects"]>[number];
+  project?: SnapshotProject;
   accounts: AccountsState;
   defaultAccountKey: string;
   saved: () => Promise<void>;
@@ -104,7 +108,7 @@ export default function ProjectAccount({
             .map((account) => ({
               value: account.id,
               label: account.email || account.label || account.id,
-              disabled: account.status !== "ready" || account.disconnected,
+              disabled: account.status !== "ready" || !!account.disconnected,
             })),
         ]}
       />

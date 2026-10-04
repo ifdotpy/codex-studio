@@ -1,6 +1,6 @@
 import { Button, Loader } from "@mantine/core";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { get } from "../api";
 import {
   canUseNativeFiles,
   openFile,
@@ -56,12 +56,12 @@ export default function FilePreview({
     if (!target) return;
     let active = true,
       url = "";
-    const query = new URLSearchParams(
-      Object.entries(target).filter(
-        ([name, value]) => name !== "line" && value != null,
-      ) as [string, string][],
-    );
-    api(`/api/file?${query}`)
+    const query = {
+      ...(target.agent ? { agent: target.agent } : {}),
+      ...(target.path ? { path: target.path } : {}),
+      ...(target.asset ? { asset: target.asset } : {}),
+    };
+    get("/api/file", { query })
       .then((result) => {
         if (!active) return;
         const bytes = Uint8Array.from(atob(result.base64), (c) =>

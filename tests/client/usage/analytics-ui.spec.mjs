@@ -371,6 +371,15 @@ test("analytics ui", async ({ browser: _browser }) => {
           hasMore: report.rateLimits.length > 100,
         },
       };
+      if (q.get("export") === "1") {
+        out.filters = {
+          agent: q.get("agent"),
+          scope: q.get("scope") || "all",
+          from: q.has("from") ? Number(q.get("from")) : null,
+          to: q.has("to") ? Number(q.get("to")) : null,
+          tool: q.get("tool"),
+        };
+      }
       out.pagination = {
         limit: 30,
         offset,
@@ -498,6 +507,7 @@ test("analytics ui", async ({ browser: _browser }) => {
     const path = join(root, "export.json");
     await file.saveAs(path);
     const exported = JSON.parse(await readFile(path, "utf8"));
+    assert.equal(observed.at(-1)?.export, "1");
     assert.equal(exported.filters.scope, "team");
     assert.equal(exported.filters.tool, longName);
     assert.ok(exported.filters.from > now - 86410);

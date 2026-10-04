@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../../api";
+import { post, ApiError } from "../../api";
 import { onResume } from "../../sync/resume";
 
 export interface ProgressLayout {
@@ -72,7 +72,7 @@ export function useProgressLayoutReport(
       request = current;
       requestKey = fingerprint;
       try {
-        await api(
+        await post(
           "/api/panel/layout",
           {
             agent,

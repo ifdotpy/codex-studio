@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText } from "../../api";
+import { post, ApiError, errorText, type PostBody } from "../../api";
 import type { Agent } from "../../types";
 import "./subagent-concurrency-control.css";
 
@@ -13,20 +13,12 @@ const UNSUPPORTED_HELP =
 const CONCURRENCY_SCHEMA_VERSION = 2;
 
 type Confirmed = { concurrency: number; revision: number };
-type LimitRequest = {
-  id: string;
-  subagent_concurrency: number;
-  expected_mode_revision: number;
-  request_id: string;
-};
-type LegacyModeRequest = {
-  id: string;
-  agent_mode: "multi" | "single";
-  expected_mode_revision: number;
-  request_id: string;
-};
-type PendingRequest = LimitRequest | LegacyModeRequest;
+type PendingRequest = PostBody<"/api/conversation">;
 type Stored = { confirmed?: Confirmed; pending?: PendingRequest };
+type ConcurrencyAgent = Pick<
+  Agent,
+  "subagentConcurrencyVersion" | "concurrency" | "agentModeRevision"
+>;
 type Props = {
   lead: Agent;
   stateDir: string;
@@ -40,7 +32,7 @@ const validConcurrency = (value: unknown): value is number =>
   Number(value) <= MAX_CONCURRENCY;
 const validRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && Number(value) >= 0;
-const stateOf = (agent: Agent): Confirmed | undefined => {
+const stateOf = (agent: ConcurrencyAgent): Confirmed | undefined => {
   if (
     !Number.isSafeInteger(agent.subagentConcurrencyVersion) ||
     agent.subagentConcurrencyVersion! < CONCURRENCY_SCHEMA_VERSION ||
@@ -58,8 +50,8 @@ const pendingTarget = (
 ): number | undefined => {
   if (!request) return undefined;
   if ("subagent_concurrency" in request)
-    return (request as LimitRequest).subagent_concurrency;
-  return (request as LegacyModeRequest).agent_mode === "single"
+    return request.subagent_concurrency ?? undefined;
+  return request.agent_mode === "single"
     ? MIN_CONCURRENCY
     : DEFAULT_CONCURRENCY;
 };
@@ -222,10 +214,12 @@ function ScopedConcurrencyControl({
     }
     // A saved v1 mode request is replayed byte-for-byte as its original body;
     // new requests persist the target and identity before touching the server.
+    const expectedRevision =
+      stored.pending?.expected_mode_revision ?? confirmed.revision;
     const request: PendingRequest = stored.pending ?? {
       id: lead.id,
-      subagent_concurrency: draft as number,
-      expected_mode_revision: confirmed.revision,
+      subagent_concurrency: validDraft ? draft : confirmed.concurrency,
+      expected_mode_revision: expectedRevision,
       request_id: crypto.randomUUID(),
     };
     const pending: Stored = { confirmed, pending: request };
@@ -242,7 +236,7 @@ function ScopedConcurrencyControl({
     setSaving(true);
     setError("");
     try {
-      const result = await api<Agent>("/api/conversation", request, {
+      const result = await post("/api/conversation", request, {
         workspaceId,
         timeoutMs: 15000,
       });
@@ -251,7 +245,7 @@ function ScopedConcurrencyControl({
         !stateOf(result) ||
         !validConcurrency(result.concurrency) ||
         !validRevision(result.agentModeRevision) ||
-        result.agentModeRevision < request.expected_mode_revision
+        result.agentModeRevision < expectedRevision
       )
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",

@@ -1,4 +1,4 @@
-import { ApiError, NetworkTimeoutError } from "../../api";
+import { get, NetworkTimeoutError } from "../../api";
 import { onResume } from "../../sync/resume";
 
 export type CachedProgress = {
@@ -135,20 +135,12 @@ function startRead(stateDir: string, agentId: string): Pending {
     expire = setTimeout(request.expire, 8000);
   });
   const read = async () => {
-    const response = await fetch(
-      `/api/panel?agent=${encodeURIComponent(agentId)}`,
-      {
-        signal: controller.signal,
-        cache: "no-store",
-      },
-    );
-    const value = await response.json();
-    if (!response.ok || value?.error)
-      throw new ApiError(
-        value?.error || `Request failed (${response.status})`,
-        response.status,
-        value,
-      );
+    const value = await get("/api/panel", {
+      query: { agent: agentId },
+      signal: controller.signal,
+      timeoutMs: 8000,
+      cache: "no-store",
+    });
     if (
       value?.agent !== agentId ||
       value.format !== "markdown" ||
