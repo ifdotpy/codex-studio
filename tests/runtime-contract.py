@@ -19,6 +19,10 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
 
+# Keep general protocol fixtures independent of host image support. Dedicated
+# image workspace contracts exercise the supported path with explicit mocks.
+Runtime.image_workspace_support = lambda _self, _repo: (False, "disabled in protocol fixture")
+
 
 def eventually(predicate, timeout=8):
     end = time.monotonic() + timeout

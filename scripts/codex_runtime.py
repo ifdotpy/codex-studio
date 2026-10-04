@@ -3806,10 +3806,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 relative = agent.get("imageWorkspaceRelative", ".")
                 start_commit = agent.get("workerBaseCommit")
-            from codex_workspace_images import create_workspace
+            from codex_workspace_images import create_workspace, exec_prefix
             workspace = create_workspace(repo, agent_id, start_commit=start_commit)
             cwd = Path(workspace["repoPath"]) / relative
-            if not cwd.is_dir():
+            exists = subprocess.run([*exec_prefix(), "test", "-d", str(cwd)],
+                                    capture_output=True, timeout=10)
+            if exists.returncode:
                 raise ValueError("Image workspace does not contain the worker project folder")
             with self.lock, self.db() as db:
                 current = self.agent(agent_id, db)

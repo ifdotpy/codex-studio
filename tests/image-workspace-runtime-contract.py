@@ -172,9 +172,14 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             'mount': str(mount), 'repoPath': str(mount / 'repo'),
             'branch': 'codex-agent/' + worker, 'startCommit': 'abc',
             'snapshotCommit': 'snap'})
+        engine.exec_prefix = Mock(return_value=['nsenter', '--'])
         with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
-                patch.object(self.rt, '_send_image_workspace_notice') as notice:
+                patch.object(self.rt, '_send_image_workspace_notice') as notice, \
+                patch('codex_runtime.subprocess.run', return_value=types.SimpleNamespace(
+                    returncode=0)) as path_check:
             self.rt.image_base_completed(worker, {'state': 'ready'})
+        path_check.assert_called_once_with(
+            ['nsenter', '--', 'test', '-d', str(project)], capture_output=True, timeout=10)
         record = self.rt.agent(worker)
         self.assertEqual(record['cwd'], str(project))
         self.assertTrue(record['imageWorkspaceReady'])
@@ -197,6 +202,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             'mount': str(mount), 'repoPath': str(image_repo),
             'branch': 'codex-agent/' + worker, 'startCommit': 'abc',
             'snapshotCommit': None})
+        engine.exec_prefix = Mock(return_value=[])
         engine.remove_workspace = Mock()
         with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
                 patch.object(self.rt, '_send_image_workspace_notice') as notice:
