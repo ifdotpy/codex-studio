@@ -11,7 +11,7 @@ import threading
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import cast
+from typing import Callable, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -20,8 +20,15 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from studio_api.context import ApiContext
-from studio_api.models import ContractModel
-from .models import DesktopResponse, DiagnosticsResponse, DirectoriesResponse, ProcessRecord
+from studio_api.models import ContractModel, JsonValue
+from .models import (
+    DesktopResponse,
+    DiagnosticsResponse,
+    DirectoriesResponse,
+    MigrationStatus,
+    NativeProviderAccount,
+    ProcessRecord,
+)
 from .router import create_router
 
 
@@ -71,7 +78,7 @@ class SystemApiTests(unittest.TestCase):
         (self.root / ".private").mkdir()
         (self.root / "plain-file").write_text("fixture", encoding="utf-8")
 
-        response = self.client.get(f"/api/directories?path={self.root}&path=/does/not/exist")
+        response = self.client.get(f"/api/directories?path=&path={self.root}&path=/does/not/exist")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
@@ -92,16 +99,46 @@ class SystemApiTests(unittest.TestCase):
         runtime = SimpleNamespace(
             live_updates=SimpleNamespace(status=lambda: {"status": "idle", "pid": 3}),
         )
+        native_status: dict[str, object] = {
+            "status": "ready",
+            "checkedAt": 10.0,
+            "selected": {
+                "path": "/bundle/codex",
+                "sourcePath": "/installed/codex",
+                "version": "1.2.3",
+                "sha256": "a" * 64,
+                "bundleSha256": "b" * 64,
+                "validatedAt": 9.0,
+                "approvalRevision": 1,
+                "checks": {"schema": {"methods": []}},
+                "companions": {"codex-code-mode-host": {"sha256": "c" * 64}},
+                "sourceIdentity": {"path": "/installed/codex", "size": 100},
+            },
+            "candidates": [
+                {"path": "/installed/codex", "status": "discovered", "version": "1.2.3",
+                 "identity": {"path": "/installed/codex"}, "companionIdentity": {}},
+                {"path": "/older/codex", "status": "approved", "version": "1.2.2",
+                 "identity": {"path": "/older/codex"}, "companionIdentity": {}},
+                {"path": "/broken/codex", "status": "rejected", "error": "invalid"},
+            ],
+            "accounts": {"fixture-account": {
+                "status": "current", "version": "1.2.3", "pid": 9,
+                "targetVersion": "1.2.3", "reason": None, "updatedAt": 8.0,
+            }},
+        }
         with patch("codex_native_runtime.status", return_value=None) as native, \
                 patch("codex_browser.diagnostics", return_value=None) as browser, \
                 patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "0"}, clear=False):
             self.context.canvas.runtime = runtime
-            response = self.client.get("/api/desktop?account_key=fixture-account")
+            native.return_value = native_status
+            self.context.remote.origin = lambda: None
+            response = self.client.get("/api/desktop?account_key=&account_key=fixture-account")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["application"], "codex-agents")
-        self.assertEqual(body["publicOrigin"], "https://studio.example")
+        self.assertIsNone(body["publicOrigin"])
+        self.assertEqual(body["nativeRuntime"]["selected"]["version"], "1.2.3")
         self.assertEqual(body["liveUpdate"], {"status": "idle", "pid": 3})
         native.assert_called_once_with(runtime)
         browser.assert_called_once_with(runtime, "fixture-account")
@@ -117,7 +154,12 @@ class SystemApiTests(unittest.TestCase):
             "processTree": {"rootPid": 10, "processes": [], "kinds": {}, "totalRssMiB": 0.0},
             "hostResources": {"cpuCount": 8, "totalMemoryBytes": None, "availableMemoryBytes": None},
             "resourceAttribution": [],
-            "nativeAccounts": {"account1": {"provider": "claude", "liveQueries": 1}},
+            "nativeAccounts": {"account1": {
+                "provider": "claude", "liveQueries": 1, "activeTurns": 0,
+                "backgroundQueries": 0, "idleQueries": 1, "idleLimitSeconds": 900,
+                "sessionCache": {"cachedSessions": 1, "retainedBytes": 2,
+                                 "pendingWrites": 0, "journalBytes": 4},
+            }},
             "studioLoadedThreads": 0,
             "queues": {"recoveryPending": 0, "durableInputPending": 0},
             "runtimeLockSamples": [{"waitMs": 0.1, "holder": None}],
@@ -134,7 +176,11 @@ class SystemApiTests(unittest.TestCase):
                     "activeTracking": {"tracked": 0, "limit": 256, "untrackedStarts": 0},
                 },
             },
-            "analyticsCapture": {"available": False},
+            "analyticsCapture": {
+                "limit": 64, "byteLimit": 8388608, "queued": 0, "active": 0,
+                "bytes": 0, "completed": 0, "failed": 0, "overflow": 0,
+                "pendingErrors": 0, "lastError": None,
+            },
             "migrations": {"payloads": {}, "analyticsFile": {"status": "idle"}},
             "analyticsFileMigration": {"status": "idle"},
             "searchMigrationError": None,
@@ -147,13 +193,48 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(response.json()["supervisor"]["mode"], False)
 
     def test_diagnostics_models_accept_actual_snapshot_producer_shape(self) -> None:
-        from codex_diagnostics import snapshot
-        from codex_execution import ensure_tables
+        from codex_diagnostics import snapshot as untyped_snapshot
+        from codex_execution import ensure_tables as untyped_ensure_tables
+
+        snapshot = cast(
+            Callable[[object, int, str], dict[str, JsonValue]],
+            untyped_snapshot,
+        )
+        ensure_tables = cast(Callable[[sqlite3.Connection], None], untyped_ensure_tables)
 
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)
         ensure_tables(db)
         db.execute("CREATE TABLE runtime_events(status TEXT)")
+        run: dict[str, object] = {
+            "id": "run:fixture", "agent": "agent:fixture", "accountKey": "default",
+            "epoch": 1, "threadId": "thread:fixture", "turnId": None, "created": 1.0,
+            "status": "pending", "firstAttemptId": "attempt:fixture",
+            "rootAttemptId": None, "latestAttemptId": "attempt:fixture",
+        }
+        db.execute(
+            "INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?)",
+            (run["id"], run["agent"], run["accountKey"], run["epoch"], run["threadId"],
+             run["turnId"], run["created"], json.dumps(run)),
+        )
+        attempt: dict[str, object] = {
+            "id": "attempt:fixture", "runId": "run:fixture", "submission": "unsent",
+            "epoch": 1, "events": [], "submitted": False,
+        }
+        db.execute("INSERT INTO runtime_execution_attempts VALUES (?,?,?)",
+                   (attempt["id"], run["id"], json.dumps(attempt)))
+        node: dict[str, object] = {
+            "id": "worker:fixture", "runId": "run:fixture", "kind": "managed_worker",
+            "agentId": "agent:child", "status": "queued",
+        }
+        db.execute("INSERT INTO runtime_execution_nodes VALUES (?,?,?)",
+                   (node["id"], run["id"], json.dumps(node)))
+        effect: dict[str, object] = {
+            "id": "spawn:agent:child", "runId": "run:fixture", "kind": "spawn",
+            "referenceId": "agent:child", "status": "queued",
+        }
+        db.execute("INSERT INTO runtime_execution_effects VALUES (?,?,?,?,?)",
+                   (effect["id"], run["id"], effect["kind"], effect["referenceId"], json.dumps(effect)))
         runtime = SimpleNamespace(
             lock=threading.RLock(),
             servers={},
@@ -170,7 +251,7 @@ class SystemApiTests(unittest.TestCase):
             "totalMemoryBytes": None,
             "availableMemoryBytes": None,
         }):
-            result = snapshot(runtime, root_pid=10, ps_output="10 1 1024 0.0 codex-canvas")
+            result = snapshot(runtime, 10, "10 1 1024 0.0 codex-canvas")
         result["supervisor"] = {"mode": False, "fallback": False, "notice": None}
 
         DiagnosticsResponse.model_validate_json(json.dumps(result))
@@ -194,6 +275,41 @@ class SystemApiTests(unittest.TestCase):
         invalid = record.replace("codex_app_server", "unexpected_process")
         with self.assertRaises(ValidationError):
             ProcessRecord.model_validate_json(invalid)
+
+    def test_native_provider_model_rejects_malformed_codex_branch(self) -> None:
+        from pydantic import TypeAdapter
+
+        adapter: TypeAdapter[NativeProviderAccount] = TypeAdapter(NativeProviderAccount)
+        self.assertEqual(
+            adapter.validate_json('{"provider":"codex","loadedThreads":3}').provider,
+            "codex",
+        )
+        with self.assertRaises(ValidationError):
+            adapter.validate_json('{"provider":"codex","liveQueries":3}')
+
+    def test_migration_models_cover_owned_status_variants(self) -> None:
+        value = {
+            "search": {
+                "phase": "waiting_for_space", "cursor": 0, "updated": 1.0,
+                "error": None, "lastBatchBytes": None,
+            },
+            "payloads": {
+                "checkpoints": {"cursor": 1, "complete": False, "status": "running",
+                                "updated": 1.0, "error": None},
+                "tool_requests": {"cursor": 1, "complete": True, "status": "complete",
+                                  "updated": 1.0, "error": None},
+                "tool_results": {"cursor": 0, "complete": False, "status": "waitingForSpace",
+                                 "updated": None, "error": None},
+                "tasks": {"cursor": 0, "complete": False, "status": "pending",
+                          "updated": None, "error": None},
+            },
+            "entityTombstones": {
+                "count": 2, "floor": 1,
+                "pruning": {"status": "running", "updated": 1.0, "deleted": 1, "remaining": 1},
+            },
+            "analyticsFile": {"status": "copy", "updated": 1.0, "error": None},
+        }
+        MigrationStatus.model_validate_json(json.dumps(value))
 
 
 if __name__ == "__main__":

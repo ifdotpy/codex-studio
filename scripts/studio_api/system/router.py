@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
-from studio_api.models import ErrorResponse
+from studio_api.models import ErrorResponse, JsonValue
 from .models import (
     DesktopQuery,
     DesktopResponse,
@@ -22,6 +22,12 @@ if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
 
+NativeRuntimeStatus = Callable[[object], dict[str, JsonValue] | None]
+BrowserDiagnostics = Callable[[object, str], dict[str, JsonValue] | None]
+SupervisorStatus = Callable[[str], dict[str, JsonValue]]
+DiagnosticsSnapshot = Callable[[object], dict[str, JsonValue]]
+
+
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
@@ -32,8 +38,11 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def desktop(request: Request, query: DesktopQuery = Depends()) -> Response:
         from codex_backend_identity import BACKEND_BUILD
-        from codex_browser import diagnostics as browser_diagnostics
-        from codex_native_runtime import status as native_runtime_status
+        from codex_browser import diagnostics as untyped_browser_diagnostics
+        from codex_native_runtime import status as untyped_native_runtime_status
+
+        browser_diagnostics = cast(BrowserDiagnostics, untyped_browser_diagnostics)
+        native_runtime_status = cast(NativeRuntimeStatus, untyped_native_runtime_status)
 
         canvas = context.canvas
         try:
@@ -49,15 +58,17 @@ def create_router(context: ApiContext) -> APIRouter:
         )
         supervisor_status: object | None = None
         if supervisor_mode or (Path(canvas.root) / "supervisor.sock").exists():
-            from codex_process_supervisor import status as process_supervisor_status
+            from codex_process_supervisor import status as untyped_process_supervisor_status
+
+            process_supervisor_status = cast(SupervisorStatus, untyped_process_supervisor_status)
 
             try:
-                supervisor_status = process_supervisor_status(canvas.root)
+                supervisor_status = process_supervisor_status(str(canvas.root))
             except (OSError, RuntimeError, ValueError) as error:
                 supervisor_status = {"error": str(error)[:300]}
 
         account_keys = request.query_params.getlist("account_key")
-        browser_account = account_keys[0] if account_keys else query.account_key
+        browser_account = next((value for value in account_keys if value), "default")
         runtime = canvas.runtime
         result = {
             "application": "codex-agents",
@@ -103,10 +114,12 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = context.runtime
         if runtime is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-        from codex_diagnostics import snapshot as diagnostics_snapshot
+        from codex_diagnostics import snapshot as untyped_diagnostics_snapshot
+
+        diagnostics_snapshot = cast(DiagnosticsSnapshot, untyped_diagnostics_snapshot)
 
         result = diagnostics_snapshot(runtime)
-        supervisor: dict[str, object] = {
+        supervisor: dict[str, JsonValue] = {
             "mode": os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1",
             "fallback": os.environ.get("CODEX_AGENTS_SUPERVISOR_FALLBACK") == "1",
             "notice": (
@@ -116,9 +129,11 @@ def create_router(context: ApiContext) -> APIRouter:
         }
         if supervisor["mode"] is True:
             try:
-                from codex_process_supervisor import status as process_supervisor_status
+                from codex_process_supervisor import status as untyped_process_supervisor_status
 
-                supervisor["health"] = process_supervisor_status(context.canvas.root)
+                process_supervisor_status = cast(SupervisorStatus, untyped_process_supervisor_status)
+
+                supervisor["health"] = process_supervisor_status(str(context.canvas.root))
             except (OSError, RuntimeError, ValueError) as error:
                 supervisor["health"] = {"error": str(error)[:300]}
         result["supervisor"] = supervisor
@@ -131,7 +146,7 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def directories(request: Request, query: DirectoriesQuery = Depends()) -> Response:
         paths = request.query_params.getlist("path")
-        raw_path = paths[0] if paths else (query.path if query.path is not None else os.getcwd())
+        raw_path = next((value for value in paths if value), os.getcwd())
         directory = Path(raw_path).expanduser().resolve()
         if not directory.is_dir():
             raise HTTPException(status_code=400, detail="This directory is unavailable")
