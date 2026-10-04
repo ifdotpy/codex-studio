@@ -1309,6 +1309,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("migrations-indexes-start")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_agent_record_generation (
+                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                INSERT OR IGNORE INTO runtime_agent_record_generation VALUES (1, 0);
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_insert
+                  AFTER INSERT ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_update
+                  AFTER UPDATE OF record ON runtime_agents WHEN OLD.record IS NOT NEW.record BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS runtime_agent_record_generation_delete
+                  AFTER DELETE ON runtime_agents BEGIN
+                  UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;
+                END;
                 CREATE TABLE IF NOT EXISTS runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_agent_native_scope ON runtime_agents(
@@ -2022,15 +2037,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
             return rows if shared else list(rows)
-        cache_lock = runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
+        runtime.__dict__.setdefault("_agent_records_cache_lock", threading.RLock())
         runtime.__dict__.setdefault("_agent_record_revision", 0)
-        with cache_lock:
-            generation = runtime._agent_record_revision
-        cacheable = not db.in_transaction or db.execute("PRAGMA query_only").fetchone()[0] == 1
-        if not cacheable:
+        transactional_read = db.in_transaction and db.execute(
+            "PRAGMA query_only").fetchone()[0] == 1
+        if not transactional_read:
             rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                 "SELECT record FROM runtime_agents"))
         else:
+            generation = db.execute(
+                "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
             rows = cache.get(generation)
             if rows is None:
@@ -2040,10 +2056,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if rows is None:
                         rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
                             "SELECT record FROM runtime_agents"))
-                        if runtime._agent_record_revision == generation:
-                            cache[generation] = rows
-                            while len(cache) > 4:
-                                cache.pop(next(iter(cache)))
+                        cache[generation] = rows
+                        while len(cache) > 4:
+                            cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
     def team_agents(self, db, root_id):
@@ -2265,7 +2280,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
             self.__dict__.setdefault("_agent_record_revision", 0)
             self._agent_record_revision += 1
-            self.__dict__.setdefault("_agent_records_cache", {}).clear()
 
     def mark_agent_records_changed(self, key=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
