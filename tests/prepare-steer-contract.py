@@ -90,14 +90,21 @@ class PrepareSteerContract(unittest.TestCase):
         a = self.create()
         entry = self.pending_prepare(a)
         self.assertTrue(self.runtime.agent(a["id"])["inFlight"])
-        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "reserved")
-        self.runtime.send(a["id"], "Second")
+        first_id = self.runtime.snapshot()["events"][0]["id"]
+        self.assertEqual(self.runtime.delivery_receipt(first_id)["status"], "reserved")
+        second_id = self.runtime.send(a["id"], "Second")["id"]
         self.runtime.dispatch()
         self.assertEqual(self.count("thread/start"), 1)
         self.assertEqual(self.count("turn/start"), 0)
+        self.assertEqual(self.runtime.agent(a["id"])["startAttempt"]["events"], [first_id])
+        self.assertEqual(self.runtime.delivery_receipt(second_id)["status"], "pending")
         self.accept_prepare(entry)
         eventually(lambda: self.runtime.agent(a["id"])["status"] == "running")
-        self.assertEqual(self.count("turn/start"), 1)
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.delivery_receipt(second_id)["status"] == "delivered")
+        starts = [p["clientUserMessageId"] for method, p in self.server.calls if method == "turn/start"]
+        self.assertEqual(starts.count(first_id), 1)
+        self.assertEqual(starts.count(second_id), 1)
         self.assertEqual(self.runtime.agent(a["id"])["threadId"], "new-prepared-thread")
         self.assertIsNone(self.runtime.agent(a["id"])["error"])
 
