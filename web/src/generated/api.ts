@@ -9019,6 +9019,10 @@ export interface components {
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      /** Connectionrecovery */
+      connectionRecovery?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Content */
       content?: string | null;
       contextRepair?: components["schemas"]["JsonValue"] | null;
@@ -9096,9 +9100,13 @@ export interface components {
       lastCompletedTurnId?: string | null;
       lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
       /** Lastcontextrepaircheck */
-      lastContextRepairCheck?: number | null;
+      lastContextRepairCheck?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Lastcontextrepairwait */
-      lastContextRepairWait?: number | null;
+      lastContextRepairWait?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Lastevent */
       lastEvent?: string | null;
       /** Lastreadat */

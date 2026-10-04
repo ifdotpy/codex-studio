@@ -711,8 +711,9 @@ class SnapshotAgentDto(AgentEntityDto):
     quickCreateRequest: str | None = None
     contextRepair: JsonValue | None = None
     contextRepairHistory: list[JsonValue] | None = None
-    lastContextRepairCheck: float | None = None
-    lastContextRepairWait: float | None = None
+    lastContextRepairCheck: dict[str, JsonValue] | None = None
+    lastContextRepairWait: dict[str, JsonValue] | None = None
+    connectionRecovery: dict[str, JsonValue] | None = None
     nativeNameSynced: bool | None = None
     capacity: JsonValue | None = None
     transfer: JsonValue | None = None

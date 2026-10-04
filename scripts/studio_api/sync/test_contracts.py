@@ -621,6 +621,21 @@ class SyncEntityContractTests(unittest.TestCase):
             assert isinstance(projected, dict)
             self.assertNotIn("tokenUsageAccounting", projected)
 
+    def test_recovery_receipts_are_snapshot_only_json_objects(self) -> None:
+        for field in ("connectionRecovery", "lastContextRepairCheck", "lastContextRepairWait"):
+            record: dict[str, JsonValue] = {
+                "id": "worker", "kind": "agent", field: {"at": 1.5, "events": ["input"]},
+            }
+            self.assertEqual(
+                SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
+            )
+            projected = project("agent", record)
+            assert isinstance(projected, dict)
+            self.assertNotIn(field, projected)
+            for invalid in (1.5, {"at": float("nan")}):
+                with self.subTest(field=field, invalid=invalid), self.assertRaises(ValidationError):
+                    SnapshotAgentDto.model_validate({"id": "worker", "kind": "agent", field: invalid})
+
     def test_draft_row_standalone_validation_stays_scoped_to_payloads(self) -> None:
         row = {
             "newDocumentState": {

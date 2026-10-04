@@ -559,6 +559,15 @@ remain. No live backend, occupied state directory, model invocation, or reset
 credit was used. Independent source review found no remaining issue after the
 weak-ETag oversized-integer correction and reuse of the existing adapter cache.
 
+## Final recovery integration with main `1f4bc09`
+
+Full snapshots retain `connectionRecovery`, `lastContextRepairCheck`, and
+`lastContextRepairWait` as named JSON-object receipts. They remain outside the
+durable agent sync projection; chat snapshots still omit the two context-repair
+receipts. The connection-recovery HTTP contract exercises actual recovery and
+then both full and chat `/api/state`, preventing strict response-validation 500s
+when these persisted receipts are present.
+
 ## Subsequent simplification audit
 
 The audit at `d78152e` → `effe925` removed duplicate request helpers,
