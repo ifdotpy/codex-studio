@@ -1387,10 +1387,12 @@ function Rules(c: Context) {
               intervalSeconds: 300,
               minimumWorkers: 8,
               durationMinutes: 30,
+              stallTimeoutSeconds: 1800,
               at: "",
               path: "",
               event: "worker_completed",
               command: "",
+              livenessCommand: "",
               text: "",
             })
           }
@@ -1449,35 +1451,7 @@ function Rules(c: Context) {
               <Button
                 size="compact-xs"
                 variant="subtle"
-                onClick={() =>
-                  setDraft({
-                    id: rule.id,
-                    name: rule.name || "",
-                    kind: rule.kind || "interval",
-                    intervalSeconds: rule.intervalSeconds ?? 60,
-                    minimumWorkers: rule.minimumWorkers ?? 8,
-                    durationMinutes: rule.durationMinutes ?? 30,
-                    at: rule.at
-                      ? new Date(
-                          typeof rule.at === "number"
-                            ? rule.at * 1000
-                            : rule.at,
-                        )
-                          .toLocaleString("sv-SE")
-                          .slice(0, 16)
-                          .replace(" ", "T")
-                      : "",
-                    path: rule.path || "",
-                    event:
-                      rule.event === "monitor_exit" ||
-                      rule.event === "work_review" ||
-                      rule.event === "complaint"
-                        ? rule.event
-                        : "worker_completed",
-                    command: rule.command || "",
-                    text: rule.text || "",
-                  })
-                }
+                onClick={() => setDraft(ruleDraftFromRecord(rule))}
               >
                 Edit
               </Button>
@@ -1527,33 +1501,10 @@ function Rules(c: Context) {
               setBusy(true);
               const submittedDraft = draftValue;
               try {
-                await c.run("/api/rules", {
-                  id: draft.id,
-                  agent: c.selected!.id,
-                  action: "save",
-                  name: draft.name,
-                  kind: draft.kind,
-                  intervalSeconds:
-                    draft.kind === "interval"
-                      ? Number(draft.intervalSeconds)
-                      : undefined,
-                  minimumWorkers:
-                    draft.kind === "low_workers"
-                      ? Number(draft.minimumWorkers)
-                      : undefined,
-                  durationMinutes:
-                    draft.kind === "low_workers"
-                      ? Number(draft.durationMinutes)
-                      : undefined,
-                  at:
-                    draft.kind === "once"
-                      ? new Date(draft.at).getTime() / 1000
-                      : undefined,
-                  path: draft.kind === "file" ? draft.path : undefined,
-                  event: draft.kind === "event" ? draft.event : undefined,
-                  command: draft.kind === "low_workers" ? "" : draft.command,
-                  text: draft.text,
-                });
+                await c.run(
+                  "/api/rules",
+                  ruleBodyFromDraft(draft, c.selected!.id),
+                );
                 setDraftValue((current) =>
                   current === submittedDraft ? null : current,
                 );
@@ -1747,10 +1698,12 @@ type RuleDraft = {
   intervalSeconds: number | string;
   minimumWorkers: number | string;
   durationMinutes: number | string;
+  stallTimeoutSeconds: number | string;
   at: string;
   path: string;
   event: NonNullable<PostBody<"/api/rules">["event"]>;
   command: string;
+  livenessCommand: string;
   text: string;
 };
 
@@ -1791,6 +1744,7 @@ export function parseRuleDraft(value: Json | null): RuleDraft | null {
     intervalSeconds: asNumberOrString(value.intervalSeconds, 60),
     minimumWorkers: asNumberOrString(value.minimumWorkers, 8),
     durationMinutes: asNumberOrString(value.durationMinutes, 30),
+    stallTimeoutSeconds: asNumberOrString(value.stallTimeoutSeconds, 1800),
     at: typeof value.at === "string" ? value.at : "",
     path: typeof value.path === "string" ? value.path : "",
     event:
@@ -1798,6 +1752,60 @@ export function parseRuleDraft(value: Json | null): RuleDraft | null {
         ? value.event
         : "worker_completed",
     command: typeof value.command === "string" ? value.command : "",
+    livenessCommand:
+      typeof value.livenessCommand === "string" ? value.livenessCommand : "",
     text: typeof value.text === "string" ? value.text : "",
+  };
+}
+
+export function ruleDraftFromRecord(rule: RuleRecord): RuleDraft {
+  return {
+    id: rule.id,
+    name: rule.name || "",
+    kind: rule.kind || "interval",
+    intervalSeconds: rule.intervalSeconds ?? 60,
+    minimumWorkers: rule.minimumWorkers ?? 8,
+    durationMinutes: rule.durationMinutes ?? 30,
+    stallTimeoutSeconds: rule.stallTimeoutSeconds ?? 1800,
+    at: rule.at
+      ? new Date(typeof rule.at === "number" ? rule.at * 1000 : rule.at)
+          .toLocaleString("sv-SE")
+          .slice(0, 16)
+          .replace(" ", "T")
+      : "",
+    path: rule.path || "",
+    event:
+      typeof rule.event === "string" && isRuleEvent(rule.event)
+        ? rule.event
+        : "worker_completed",
+    command: rule.command || "",
+    livenessCommand: rule.livenessCommand || "",
+    text: rule.text || "",
+  };
+}
+
+export function ruleBodyFromDraft(
+  draft: RuleDraft,
+  agent: string,
+): PostBody<"/api/rules"> {
+  return {
+    id: draft.id,
+    agent,
+    action: "save",
+    name: draft.name,
+    kind: draft.kind,
+    intervalSeconds:
+      draft.kind === "interval" ? Number(draft.intervalSeconds) : undefined,
+    minimumWorkers:
+      draft.kind === "low_workers" ? Number(draft.minimumWorkers) : undefined,
+    durationMinutes:
+      draft.kind === "low_workers" ? Number(draft.durationMinutes) : undefined,
+    stallTimeoutSeconds: Number(draft.stallTimeoutSeconds),
+    at: draft.kind === "once" ? new Date(draft.at).getTime() / 1000 : undefined,
+    path: draft.kind === "file" ? draft.path : undefined,
+    event: draft.kind === "event" ? draft.event : undefined,
+    command: draft.kind === "low_workers" ? "" : draft.command,
+    livenessCommand: draft.kind === "file" ? draft.livenessCommand : undefined,
+    text: draft.text,
   };
 }
