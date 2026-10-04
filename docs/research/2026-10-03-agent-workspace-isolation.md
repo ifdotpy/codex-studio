@@ -48,11 +48,15 @@ These are the requirements after the design discussion. Each item records a deci
 
 ## Decision
 
-| OS      | Mechanism                                                                                                                  | Status                                                                                           |
-| ------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Main candidate. Xcode with packages needs a global SwiftPM setting and a shared temporary folder |
-| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Main candidate on btrfs. Open: parallel metadata load, sandbox                                   |
-| Windows | Differencing VHDX or ProjFS                                                                                                | Not measured                                                                                     |
+| OS      | Mechanism                                                                                                                  | Status                                                                      |
+| ------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| macOS   | ASIF disk image as the base. Per agent: an APFS clone of the image file, attached read-write (shadow file as the fallback) | Workspace part ready (see "Implementation spec"). Enforced isolation parked |
+| Linux   | overlayfs: lower is a read-only btrfs snapshot, upper is a folder per agent                                                | Workspace part ready on btrfs, without root. Enforced isolation parked      |
+| Windows | Differencing VHDX or ProjFS                                                                                                | Not supported for now (user decision 2026-10-04)                            |
+
+**User decision (2026-10-04): solve the workspace (worktree) problem first.** Virtualization and
+enforced isolation (process sandbox, separate user, EndpointSecurity) are parked. macOS and Linux are
+the supported platforms. Windows is not guaranteed.
 
 **This design does not meet requirement 3 for the first agent of a repository.** The base build is
 O(files): about 16.5 min for chromium on macOS. Starts after that are about 1 s. So the decision
@@ -75,12 +79,19 @@ base build for the lead's repository if no current base exists.
    (`sandboxPolicy: {"type": "readOnly"}`, `scripts/codex_runtime.py:3685`). It can read, search,
    inspect git history and plan. It cannot build or run tests, because they write files.
 3. The base is ready. Studio clones the image file for the agent, copies the fresh user edits into it,
-   makes the snapshot commit, and moves the agent to the image mount with write access (process
-   sandbox limited to the mount and the agent's own folders).
+   makes the snapshot commit, and moves the agent to the image mount with write access (the same
+   write access as today; enforced isolation is parked).
 4. Studio notifies the agent that its writable workspace is ready: the new path, the write access and
    the snapshot commit. Native delivery steers an active turn or starts an idle one
    ([ORCHESTRATION.md](../../ORCHESTRATION.md)). The new working folder and sandbox apply from the
    next turn, so the notice must tell the agent to continue its work there.
+
+**User decision (2026-10-04): the whole user temporary folder is writable for agents.** The Seatbelt
+profile allows writes to the folder from `getconf DARWIN_USER_TEMP_DIR` (resolved under
+`/private/var`). Apple build tools write there and ignore `TMPDIR`. The folder is shared by all agents
+and other apps of the user, so an agent can delete temporary files of others, but not the user's code
+or data. Open: the global SwiftPM setting `IDEPackageSupportDisableManifestSandbox`, which Xcode
+projects with Swift packages also need under Seatbelt.
 
 The process sandbox (requirement 2) is a separate and required part. The image isolates the
 workspace, not the process. See "Limits and risks".
@@ -92,7 +103,8 @@ Common model for all platforms:
 - **Agent layer.** The agent writes only to its own layer: a shadow file or a cloned image file
   (macOS), or an upper folder (Linux). One agent equals one file or one folder.
 - **Fresh user edits.** At agent start, Studio copies the files that changed since the base was built
-  into the agent layer. FSEvents usually gives this list in O(changes). See "Limits and risks", item 3.
+  into the agent layer: FSEvents on macOS (usually O(changes), see "Limits and risks", item 3), `rsync`
+  on Linux.
 - **Result.** The agent commits to a git branch. Studio fetches the branch into the user's repository.
 - **Removal.** Detach and delete one file (macOS), or unmount and delete one folder (Linux).
 
@@ -112,11 +124,17 @@ Two rules:
 
 - **Separate the user's edits from the agent's work.** The fresh user edits copied in at start are
   uncommitted. Right after the copy, Studio makes one snapshot commit in the agent repository. The
-  agent commits on top of it. At merge time Studio takes only the commits after the snapshot:
-  `git rebase --onto <user HEAD> <snapshot> codex-agent/<id>`.
+  agent commits on top of it. At merge time Studio takes only the commits after the snapshot and
+  replays them onto the user's HEAD without a working tree: for each commit,
+  `git merge-tree --write-tree --merge-base <commit>^ <tip> <commit>`, then `git commit-tree`. This
+  works with git 2.40 and later. `git replay` is not portable: git 2.54 updates the branch itself, and
+  git 2.53 has no `--ref`. The result goes to `codex-agent/<id>-result`. The user's working tree and
+  HEAD do not change. A merge conflict stops the replay, and the fetched branch stays for a normal
+  merge.
 - **Checkpoint commit at the end of each turn**, so uncommitted agent work survives removal or a crash.
 
-Nested repositories (149 in chromium) need one fetch for each nested repository that the agent changed.
+Nested repositories (149 in chromium) need one fetch for each nested repository that the agent
+changed, and one protection ref (`refs/studio/base/<id>`) in each of them.
 
 ## Folders without git
 
@@ -128,14 +146,100 @@ has no isolation. With images it has the same isolation as in a git repository.
 Only the return of the result needs another path. Studio has three versions of each file: the base
 (the copy at base build time), the user's current file, and the agent's file.
 
-1. Studio lists the files that the agent changed: FSEvents on the agent mount since the snapshot
-   event id, with a compare against the base as the fallback.
+1. Right after the fresh edits are copied in, Studio clones the agent image file once more. This
+   clone is the snapshot. At collect time Studio compares the agent mount with the snapshot
+   (`rsync -anic --delete <agent>/ <snapshot>/`). FSEvents cannot do this: macOS does not log
+   FSEvents on volumes attached with `--nobrowse`.
 2. If the user did not change a file since the base, Studio takes the agent's version.
 3. If both changed it, Studio runs a three-way merge on the plain files (`git merge-file` or `diff3`
    work without a repository).
 4. A conflict, and every binary file that both sides changed, goes to the user to choose.
 
 The git-only parts of the design (alternates, `core.checkStat`, the snapshot commit) do not apply.
+
+## Implementation spec
+
+Scope: the workspace for implementers on macOS and Linux. Enforced isolation is parked. Every step
+below was run in the readiness checks (see "Readiness checks"), unless it is marked "not verified".
+
+### Store and layout
+
+- One store folder per user, outside every repository. macOS: exclude it from Time Machine with
+  `tmutil addexclusion <store>` (no root needed).
+- Volume layout of a base and of each agent: `repo/` (the working tree), `home/`, `tmp/`. On macOS
+  `.metadata_never_index` sits at the volume root, outside `repo/`, so `git status` stays clean.
+
+### Base build (background, when Multi agent mode is turned on)
+
+macOS:
+
+1. `diskutil image create blank --format ASIF --size <large> --fs APFS base.asif`, attach read-write.
+2. Copy the working tree into `repo/` with parallel `tar` streams. Skip every git object store (a
+   folder named `objects` whose parent has a `HEAD` file), so the copy is safe while git runs in the
+   background.
+3. For each git folder in the copy: `objects/info/alternates` points to the user's object store,
+   `core.checkStat=minimal`, `core.trustctime=false`. Run `git status` once to refresh the index.
+4. Add `refs/studio/base/<id>` in each user repository, nested ones included, so `git gc` keeps the
+   objects that the base needs.
+5. Record the FSEvents event id from before the copy. Detach.
+
+Linux (btrfs, no root):
+
+1. `btrfs subvolume create base`, copy the working tree the same way (object stores skipped,
+   alternates, protection refs).
+2. `btrfs subvolume snapshot -r base base-v<n>`: one read-only snapshot per base version.
+3. Delete an old version: `btrfs property set -ts base-v<n> ro false`, delete its content, `rmdir`.
+   `btrfs subvolume delete` needs root or `user_subvol_rm_allowed`.
+
+### Agent start
+
+1. Read-only phase until the base is ready (user decision).
+2. macOS: `cp -c base.asif <agent>.asif` (clone, O(1)), `diskutil image attach --nobrowse
+--mountPoint <agent mount> <agent>.asif`.
+   Linux: one long-lived namespace per Studio, `unshare -U --map-current-user -m --propagation private
+sleep infinity`. Mount and unmount with `nsenter -t <pid> -U -m --preserve-credentials --keep-caps`
+   and a direct `mount(2)` call (the `mount` program refuses a non-root uid): overlay with
+   `lowerdir=base-v<n>,upperdir=<agent>/u,workdir=<agent>/w,userxattr`. Agent processes run with
+   `nsenter -t <pid> -U -m --preserve-credentials`: the user's own uid, no capabilities.
+3. Fresh user edits:
+   - macOS: FSEvents since the base event id on the user's repository. Skip object stores, create
+     folders, copy files, delete removed paths. Repeat passes from the last event id until no new
+     event arrives. If FSEvents reports `MustScanSubDirs`, run `rsync -a --delete` for that folder.
+   - Linux: `rsync -a --delete` from the user's folder into the agent view, with object stores
+     excluded.
+4. git: `checkout -b codex-agent/<id>`, `add -A`, commit "studio snapshot". Without git: clone the
+   agent image file again as the snapshot.
+5. Notify the agent (native delivery). The next turn uses the new working folder and write access.
+
+### Collect
+
+1. Studio fetches `codex-agent/<id>` from the agent repository into the user's repository, nested
+   repositories first. On Linux the fetch runs through `nsenter` into the namespace.
+2. Replay the commits after the snapshot onto the user's HEAD with `git merge-tree` and
+   `git commit-tree` into `codex-agent/<id>-result`. The user's working tree does not change.
+3. Without git: compare with the snapshot and merge file by file (see "Folders without git").
+
+### Removal
+
+- macOS: eject. If a process holds the mount (for example `ibtoold` or a git fsmonitor daemon), stop
+  the processes from `lsof -t +f -- <mount>`, then eject. Delete the agent file.
+- Linux: unmount, `chmod -R u+rwx <agent>/w` (overlay creates `work` with mode 000), delete the folder.
+- Remove protection refs when no agent and no base version uses that commit.
+
+### Accounting
+
+- macOS: `getattrlist` with `ATTR_CMNEXT_PRIVATESIZE` per agent file and per base version.
+- Linux: size of the upper folder; base versions share blocks.
+
+### Open items for the implementation
+
+- **Claude provider and a changed working folder (not verified).** Claude Code keeps sessions per
+  project path. `getcwd()` returns the resolved path, so a symbolic link does not keep the path
+  stable. Test `resume` after the switch with one live session, or start a new session at the switch.
+- **Codex `turn/start` with a new `cwd` (verified in the schema of codex-cli 0.160.0, not live).**
+- **`MustScanSubDirs` in real use.** The fallback works; the event did not occur in the tests.
+- **Linux on ext4 or XFS**: no btrfs snapshots; the base is a full copy. Not tested.
+- **Xcode and SwiftPM build output** is not reused at another path. Rust `target/` is.
 
 ## Options and verdicts
 
@@ -574,6 +678,49 @@ Other Linux facts:
 - The Linux machine is much faster than macOS for metadata (walk 0.73 s against about 4.7 s on the
   same tree), so the macOS image overhead must be judged against macOS native, not against Linux.
 
+### Readiness checks (2026-10-04)
+
+macOS 27.2, git 2.54. Test repository with a submodule, user commit after the base, uncommitted
+edit, untracked file and delete.
+
+| Check                                                                                                                             | Result                                                                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| agent start: clone, attach, FSEvents delta (35 paths), snapshot commit                                                            | 1.18 s                                                                                                                         |
+| agent sees the user's new commit, uncommitted edit, untracked file and delete                                                     | pass                                                                                                                           |
+| collect: fetch (submodule and parent) + replay                                                                                    | 0.15 s                                                                                                                         |
+| result: one agent commit on the user's HEAD, with the agent change, without the user's uncommitted edit, untracked file or delete | pass                                                                                                                           |
+| submodule commit of the agent fetched into the user's submodule                                                                   | pass                                                                                                                           |
+| user working tree and HEAD unchanged                                                                                              | pass                                                                                                                           |
+| portable replay (merge-tree + commit-tree) gives the same tree as `git replay`                                                    | pass                                                                                                                           |
+| user `git gc --prune=now` after history change, without protection ref                                                            | agent repository broken                                                                                                        |
+| the same with `refs/studio/base/<id>`                                                                                             | agent repository works                                                                                                         |
+| folder without git: compare with snapshot, three-way merge                                                                        | 0.05 s compare. Both edits merged, agent file taken, agent delete applied, binary conflict reported with the user version kept |
+| FSEvents on a volume attached with `--nobrowse`                                                                                   | no events (with or without an existing `.fseventsd`). Without `--nobrowse`: events work                                        |
+| FSEvents history of `chromium/src` since the previous day                                                                         | 4,255 paths in 13.7 s, no `MustScanSubDirs`                                                                                    |
+| user edits during the delta copy (60 edits in 3 s)                                                                                | folders equal after the final pass (10 passes)                                                                                 |
+| `rsync` rescan fallback for a folder                                                                                              | folders equal                                                                                                                  |
+| mount stays after the attaching process ends; re-attach keeps data                                                                | pass                                                                                                                           |
+| symbolic link switch from the user folder to the mount                                                                            | pass                                                                                                                           |
+| Time Machine exclusion without root                                                                                               | pass                                                                                                                           |
+
+Linux (OrbStack, Ubuntu 26.04, kernel 7.0, btrfs, git 2.53), normal user, 200,000 files plus a
+submodule:
+
+| Check                                                               | Result                                                                           |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `btrfs subvolume create` + copy without object stores + alternates  | ok, 12.5 s                                                                       |
+| read-only snapshot per base version                                 | ok, 0.5 to 1.2 s                                                                 |
+| namespace with the user's own uid, overlay mount through `mount(2)` | ok, 0.08 s. The `mount` program refuses: "must be superuser"                     |
+| `nsenter -m` without the user namespace                             | refused by the kernel: setns needs `CAP_SYS_ADMIN` in the caller's own namespace |
+| agent process: uid and capabilities                                 | the user's uid, `CapEff` 0                                                       |
+| mount visible inside the namespace only                             | pass                                                                             |
+| `rsync` of fresh edits, 200,000 files, a few changes                | 1.2 s                                                                            |
+| git result checks (same as macOS)                                   | pass                                                                             |
+| base valid after user `git gc` with protection ref                  | pass                                                                             |
+| reflink copy of a live repository including `.git/objects`          | unsafe: background `git gc` moved objects during the copy                        |
+| `btrfs subvolume delete` without root                               | refused. Clear read-only, delete content, `rmdir`: 1.2 to 1.6 s                  |
+| delete the overlay work folder                                      | needs `chmod -R u+rwx` first                                                     |
+
 ## Design rules
 
 1. **macOS: use ASIF only.** `diskutil` ignores `--shadow` for `.sparseimage`. Test isolation for any
@@ -648,10 +795,11 @@ Other Linux facts:
 - Base update with a real FSEvents delta of a large repository (the small update took 2.44 s).
 - Checkpoint and restore with the shadow file variant.
 - Real cold start after a reboot (the clone method removes the page cache, not the SSD cache).
-- Xcode projects that need code signing, simulators or UI tests under the sandbox.
-- Windows (differencing VHDX, ProjFS).
-- Linux on bare metal and on ext4 or XFS, and the Linux process sandbox.
+- Claude `resume` after the working folder changes, and Codex `turn/start` with a new `cwd`, with a
+  live model.
+- Linux on bare metal and on ext4 or XFS.
 - More than 30 agents.
+- Windows (not supported for now).
 
 ## Appendix: commands
 

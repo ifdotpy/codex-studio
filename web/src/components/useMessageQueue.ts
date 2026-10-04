@@ -56,7 +56,7 @@ function isQueueMutation(value: unknown): value is QueueMutation {
     return false;
   const hasMessageId =
     typeof value.message_id === "string" || typeof value.id === "string";
-  if (value.action === "cancel")
+  if (value.action === "cancel" || value.action === "send_now")
     return hasMessageId && typeof value.expectedText === "string";
   if (value.action === "edit")
     return (
@@ -277,6 +277,8 @@ export function useMessageQueue(p: {
     },
     cancel: (item: QueueItemDto) =>
       mutate({ action: "cancel", id: item.id, expectedText: item.text }),
+    sendNow: (item: QueueItemDto) =>
+      mutate({ action: "send_now", id: item.id, expectedText: item.text }),
     reorder: (ids: string[]) => mutate({ action: "reorder", ordered_ids: ids }),
   };
 }

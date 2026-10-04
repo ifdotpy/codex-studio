@@ -7,6 +7,49 @@ import uuid
 from codex_work import text_field
 
 
+class SidebarOrderConflict(ValueError):
+    pass
+
+
+def sidebar_order(db):
+    row = db.execute("SELECT record FROM runtime_sidebar_order WHERE id='current'").fetchone()
+    return json.loads(row[0]) if row else {'revision': 0, 'groups': None}
+
+
+def reorder_sidebar(runtime, data):
+    """Save the first client's legacy order or a revision checked reorder."""
+    request_id = text_field(data.get('request_id'), 'a request ID', 255)
+    revision = data.get('expected_revision')
+    groups = data.get('groups')
+    if type(revision) is not int or revision < 0:
+        raise ValueError('Supply the current sidebar order revision')
+    if (not isinstance(groups, dict) or len(groups) > 500 or
+            any(not isinstance(key, str) or len(key) > 4096 or
+                not isinstance(ids, list) or len(ids) > 10000 or
+                any(not isinstance(item, str) or len(item) > 4096 for item in ids) or
+                len(set(ids)) != len(ids) for key, ids in groups.items()) or
+            sum(len(ids) for ids in groups.values()) > 10000 or
+            len(json.dumps(groups)) > 5_000_000):
+        raise ValueError('Invalid sidebar order')
+    with runtime.lock, runtime.db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        signature, previous = runtime.operation_receipt(
+            db, 'sidebar-order:' + request_id, {'operation': 'sidebar-order', 'body': data})
+        if previous is not None:
+            return previous
+        current = sidebar_order(db)
+        if revision != current['revision']:
+            raise SidebarOrderConflict('Sidebar order changed. Refreshed from the server')
+        if current['groups'] is not None and data.get('migration'):
+            raise SidebarOrderConflict('Sidebar order changed. Refreshed from the server')
+        result = {'revision': revision + 1, 'groups': groups}
+        db.execute("INSERT INTO runtime_sidebar_order(id,record) VALUES ('current',?) "
+                   "ON CONFLICT(id) DO UPDATE SET record=excluded.record", (json.dumps(result),))
+        from codex_sync_entities import patch
+        patch(db, 'workspace', 'current', {'sidebarOrder': result})
+        return runtime.save_receipt(db, 'sidebar-order:' + request_id, signature, result)
+
+
 def folder_for(runtime, db, path, folder_id):
     if folder_id is None:
         return None

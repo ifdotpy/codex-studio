@@ -374,7 +374,7 @@ class WorkerDefaultsDto(ContractModel):
     model: str
     effort: str | None
     fastMode: bool
-    daybreakEnabled: bool
+    daybreakEnabled: bool = False
     accountKey: str | None = None
     cyberAccessProgram: str | None = None
 
@@ -892,7 +892,7 @@ class TaskEntityDto(ContractModel):
     query: str | None = None
     cwd: str | None = None
     processId: str | None = None
-    durationMs: int | None = None
+    durationMs: int | float | None = None
     timeout_ms: int | None = None
     interactive: bool | None = None
     stdinClosed: bool | None = None
@@ -1235,12 +1235,18 @@ class NativeNoticeDto(ContractModel):
     at: float | None = None
 
 
+class SidebarOrderDto(ContractModel):
+    revision: int
+    groups: dict[str, list[str]] | None
+
+
 class WorkspaceEntityDto(ContractModel):
     connected: bool | None = None
     rateLimits: AccountRateLimitsDto | None = None
     rateLimitsByAccount: dict[str, AccountRateLimitsDto] | None = None
     nativeNotices: list[NativeNoticeDto] | None = None
     projectOrganizationVersion: int | None = None
+    sidebarOrder: SidebarOrderDto | None = None
     peerTeamsVersion: int | None = None
     tasksHistoryLimit: int | None = None
     stateDir: str | None = None
@@ -1263,6 +1269,7 @@ class RuntimeSnapshot(ResponseModel):
     agents: list[SnapshotAgentDto]
     projects: list[SnapshotProjectDto]
     projectOrganizationVersion: int
+    sidebarOrder: SidebarOrderDto | None = None
     peerTeamsVersion: int
     peerTeams: list[PeerTeamEntityDto]
     tasks: list[SnapshotTaskDto]

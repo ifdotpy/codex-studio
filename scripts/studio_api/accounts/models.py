@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
-from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive
+from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
 
 
 def _uuid_string(value: str) -> str:
@@ -157,7 +157,11 @@ class ProjectRemovalResponse(ResponseModel):
     removed: bool
 
 
-ProjectMutationResponse = ProjectMutationRecord | ProjectRemovalResponse
+class SidebarOrderResponse(SidebarOrderDto, ResponseModel):
+    pass
+
+
+ProjectMutationResponse = ProjectMutationRecord | ProjectRemovalResponse | SidebarOrderResponse
 
 
 class ProjectReadResponse(ResponseModel):
@@ -600,6 +604,14 @@ class ProjectAccountsRequest(ContractModel):
     account_key: str
     account_keys: list[str]
     expected_revision: int
+
+
+class SidebarReorderRequest(ContractModel):
+    action: Literal["reorder"]
+    request_id: str = Field(min_length=1, max_length=255)
+    expected_revision: int = Field(ge=0)
+    groups: dict[str, list[str]]
+    migration: bool | None = None
 
 
 class ProjectWriteRequest(ContractModel):

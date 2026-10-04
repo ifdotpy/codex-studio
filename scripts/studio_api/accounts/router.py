@@ -37,6 +37,7 @@ from .models import (
     PeerTeamsResponse,
     ProjectReadResponse,
     ProjectWriteRequest,
+    SidebarReorderRequest,
     ProjectMutationResponse,
     RegisterAccountRequest,
     ResetRequest,
@@ -291,7 +292,13 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, reset_service(_runtime(context), _dump(body)))
 
     @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_ERROR_RESPONSES)
-    def project_write(request: Request, body: Annotated[ProjectWriteRequest, Body()]) -> Response:
-        return context.send(request, _runtime(context).projects(_dump(body)))
+    def project_write(request: Request, body: Annotated[ProjectWriteRequest | SidebarReorderRequest, Body()]) -> Response:
+        from codex_project_folders import SidebarOrderConflict
+
+        try:
+            result = _runtime(context).projects(_dump(body))
+        except SidebarOrderConflict as error:
+            return context.send(request, {"error": str(error)}, status=409)
+        return context.send(request, result)
 
     return router

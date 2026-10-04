@@ -4,6 +4,7 @@ import { localFileLink } from "../fileLinks";
 
 interface ProgressToken {
   type: string;
+  raw?: string;
   text?: string;
   tokens?: ProgressToken[];
   items?: ProgressToken[];
@@ -75,8 +76,17 @@ export function progressMarkdown(source: string): {
         case "link": {
           const href = decode(token.href).trim();
           const local = localFileLink(href);
-          if (!local && !/^https?:\/\//i.test(href))
+          if (!local && !/^https?:\/\//i.test(href)) {
+            // Marked creates links for plain email addresses and other autolinks.
+            // Preserve their visible text without granting an unsupported link.
+            if (
+              !token.title &&
+              (token.raw === token.text || token.raw === `<${token.text}>`) &&
+              decode(token.text) === href.replace(/^mailto:/i, "")
+            )
+              return <span key={index}>{children()}</span>;
             throw new Error("Unsupported progress link");
+          }
           return (
             <a
               key={index}

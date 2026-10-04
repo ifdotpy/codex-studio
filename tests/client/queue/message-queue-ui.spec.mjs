@@ -172,6 +172,37 @@ test("message-queue-ui", async ({ browser }) => {
     assert.equal(sent[0].delivery, "after_turn", "Tab sends after-turn input");
     await panel.waitFor();
     await list.getByText("First input", { exact: true }).waitFor();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 960 });
+      for (const colorScheme of ["dark", "light"]) {
+        await page.emulateMedia({ colorScheme });
+        const size = await panel.evaluate((element) => {
+          const panelBox = element.getBoundingClientRect();
+          const contentBox = element
+            .querySelector("ol")
+            .getBoundingClientRect();
+          const preview = element.querySelector(".message-queue-preview");
+          return {
+            gap: panelBox.bottom - contentBox.bottom,
+            previewHeight: preview.getBoundingClientRect().height,
+            previewText: preview.textContent,
+          };
+        });
+        assert(
+          size.gap >= 0 && size.gap <= 2,
+          `Queue fits its content: ${JSON.stringify(size)}`,
+        );
+        assert(
+          size.previewHeight <= 37,
+          `Short text occupies one row: ${JSON.stringify(size)}`,
+        );
+        assert.equal(size.previewText, "First input");
+        await page.screenshot({
+          path: join(root, `queue-${width}-${colorScheme}.png`),
+        });
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
     const asset = (await queue()).items[0].assets[0].id;
 
     for (const text of ["Second input", "Third input"]) {
@@ -209,6 +240,42 @@ test("message-queue-ui", async ({ browser }) => {
       order,
     );
     await list.getByText("Revised first input", { exact: true }).waitFor();
+    const longText =
+      "A long queued message with details that span several lines. ".repeat(9);
+    await composer.fill(longText);
+    await composer.press("Tab");
+    await button("Expand queued message 4").waitFor();
+    const shortHeight = await list.locator("li").nth(3).boundingBox();
+    await button("Expand queued message 4").click();
+    await button("Collapse queued message 4").waitFor();
+    const fullHeight = await list.locator("li").nth(3).boundingBox();
+    assert(fullHeight.height > shortHeight.height, "Long text expands");
+    await button("Collapse queued message 4").click();
+    const sendNowRequests = [];
+    await page.route("**/api/queue", async (route) => {
+      if (
+        route.request().method() === "POST" &&
+        route.request().postDataJSON()?.action === "send_now"
+      ) {
+        sendNowRequests.push(route.request().postDataJSON());
+        if (sendNowRequests.length === 1) return route.abort("failed");
+      }
+      await route.continue();
+    });
+    await button("Send queued message 1 now").click();
+    await panel.getByRole("alert").waitFor();
+    assert.equal(sendNowRequests.length, 1);
+    await page.getByRole("button", { name: "Retry queue change" }).click();
+    await wait(
+      async () => sendNowRequests.length === 2,
+      "Retry uses the saved send-now request",
+    );
+    assert.deepEqual(sendNowRequests[1], sendNowRequests[0]);
+    await wait(
+      async () => (await queue()).items[0]?.delivery === "steer",
+      "Send now changes one queued input to steer",
+    );
+    await page.unrouteAll({ behavior: "wait" });
     expect(errors).toEqual([]);
     console.log(
       "PASS Tab after-turn queue, pending edit, asset, reorder and reload",

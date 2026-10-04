@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -7,6 +7,7 @@ import {
   ListOrdered,
   Paperclip,
   Pencil,
+  Send,
   Trash2,
 } from "lucide-react";
 import { errorText, saved, type QueueItemDto } from "../api";
@@ -63,6 +64,7 @@ type Props = {
   scope: string;
   onEdit: (item: QueueItemDto, text: string) => Promise<void>;
   onCancel: (item: QueueItemDto) => Promise<void>;
+  onSendNow?: (item: QueueItemDto) => Promise<void>;
   onReorder: (ids: string[]) => Promise<void>;
   canReorder: boolean;
   refreshing?: boolean;
@@ -107,6 +109,58 @@ function readDrafts(prefix: string): { drafts: Drafts; error: string } {
       error: "Saved queue edits could not be read. Keep this page open.",
     };
   }
+}
+
+function QueuePreview({
+  text,
+  index,
+  expanded,
+  toggle,
+}: {
+  text: string;
+  index: number;
+  expanded: boolean;
+  toggle: () => void;
+}) {
+  const preview = useRef<HTMLDivElement>(null);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const element = preview.current;
+    if (!element) return;
+    const measure = () => {
+      element.classList.remove("expanded");
+      const overflow = element.scrollHeight > element.clientHeight + 1;
+      if (expanded) element.classList.add("expanded");
+      setLong(overflow);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element.parentElement!);
+    return () => observer.disconnect();
+  }, [text, expanded]);
+  return (
+    <>
+      <div
+        ref={preview}
+        className={`message-queue-preview${expanded ? " expanded" : ""}`}
+      >
+        {text.trimEnd() || "Attachments"}
+      </div>
+      {long && (
+        <button
+          type="button"
+          className="message-queue-expand"
+          aria-label={`${expanded ? "Collapse" : "Expand"} queued message ${index}`}
+          aria-expanded={expanded}
+          title={expanded ? "Show less" : "Show more"}
+          onClick={toggle}
+        >
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
 }
 
 export default function MessageQueue(props: Props) {
@@ -491,15 +545,12 @@ function ScopedMessageQueue(p: Props) {
                   </span>
                   <div className="message-queue-content">
                     {!draft && (
-                      <button
-                        type="button"
-                        className={`message-queue-preview${isExpanded ? " expanded" : ""}`}
-                        aria-label={`${isExpanded ? "Collapse" : "Expand"} queued message ${index + 1}`}
-                        aria-expanded={isExpanded}
-                        onClick={() => setExpanded(isExpanded ? null : item.id)}
-                      >
-                        {item.text || "Attachments"}
-                      </button>
+                      <QueuePreview
+                        text={item.text}
+                        index={index + 1}
+                        expanded={isExpanded}
+                        toggle={() => setExpanded(isExpanded ? null : item.id)}
+                      />
                     )}
                     {!!item.assets?.length && (
                       <div className="message-queue-assets">
@@ -512,8 +563,24 @@ function ScopedMessageQueue(p: Props) {
                       </div>
                     )}
                     {draft && editor(draft)}
+                    {isServerQueueItem(item) && item.error && (
+                      <p className="message-queue-error" role="alert">
+                        {item.error}
+                      </p>
+                    )}
                   </div>
                   <div className="message-queue-actions">
+                    {p.onSendNow && !draft && isServerQueueItem(item) && (
+                      <button
+                        type="button"
+                        disabled={disabled || !!item.localDelivery}
+                        aria-label={`Send queued message ${index + 1} now`}
+                        title="Send now"
+                        onClick={() => void mutate(() => p.onSendNow!(item))}
+                      >
+                        <Send size={15} />
+                      </button>
+                    )}
                     {!draft && (
                       <button
                         type="button"

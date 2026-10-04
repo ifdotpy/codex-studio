@@ -7367,7 +7367,7 @@ export interface components {
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
-      action: "first";
+      action: "first" | "send_now";
       /** Agent */
       agent?: string | null;
       /** Expected Revision */
@@ -7395,6 +7395,8 @@ export interface components {
        * @enum {string}
        */
       delivery?: "queue" | "steer" | "after_tool" | "after_turn";
+      /** Error */
+      error?: string | null;
       /** Id */
       id: string;
       /**
@@ -7649,16 +7651,24 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name: string;
+      name?: string | null;
+      /** Request Id */
+      request_id?: string | null;
     };
     /** RenameResponse */
     RenameResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Error */
+      error?: string | null;
       /** Id */
       id: string;
       /** Name */
-      name: string;
+      name?: string | null;
+      /** Request Id */
+      request_id?: string | null;
+      /** Status */
+      status?: ("pending" | "applied" | "failed") | null;
     };
     /** RequestEntityDto */
     RequestEntityDto: {
@@ -8461,6 +8471,7 @@ export interface components {
       rooms: components["schemas"]["SnapshotRoomDto"][];
       /** Rules */
       rules: components["schemas"]["RuleSnapshotDto"][];
+      sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
       /** Tasks */
       tasks: components["schemas"]["SnapshotTaskDto"][];
       /** Taskshistorylimit */
@@ -8770,6 +8781,44 @@ export interface components {
       effort?: string | null;
       /** Model */
       model: string;
+    };
+    /** SidebarOrderDto */
+    SidebarOrderDto: {
+      /** Groups */
+      groups: {
+        [key: string]: string[];
+      } | null;
+      /** Revision */
+      revision: number;
+    };
+    /** SidebarOrderResponse */
+    SidebarOrderResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Groups */
+      groups: {
+        [key: string]: string[];
+      } | null;
+      /** Revision */
+      revision: number;
+    };
+    /** SidebarReorderRequest */
+    SidebarReorderRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "reorder";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Groups */
+      groups: {
+        [key: string]: string[];
+      };
+      /** Migration */
+      migration?: boolean | null;
+      /** Request Id */
+      request_id: string;
     };
     /** SignedEnvelope */
     SignedEnvelope: {
@@ -11413,8 +11462,11 @@ export interface components {
       accountKey?: string | null;
       /** Cyberaccessprogram */
       cyberAccessProgram?: string | null;
-      /** Daybreakenabled */
-      daybreakEnabled: boolean;
+      /**
+       * Daybreakenabled
+       * @default false
+       */
+      daybreakEnabled?: boolean;
       /** Effort */
       effort: string | null;
       /** Fastmode */
@@ -16843,7 +16895,9 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["ProjectWriteRequest"];
+        "application/json":
+          | components["schemas"]["ProjectWriteRequest"]
+          | components["schemas"]["SidebarReorderRequest"];
       };
     };
     responses: {
@@ -16855,7 +16909,8 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ProjectMutationRecord"]
-            | components["schemas"]["ProjectRemovalResponse"];
+            | components["schemas"]["ProjectRemovalResponse"]
+            | components["schemas"]["SidebarOrderResponse"];
         };
       };
       /** @description Invalid request or operation failed */

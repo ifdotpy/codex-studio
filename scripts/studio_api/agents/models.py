@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from uuid import UUID
+from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 from studio_api.sync.models import (
@@ -442,14 +443,22 @@ class UsageResumeResponse(UsageResumeDto, ResponseModel):
 
 class RenameRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
-    name: str
+    name: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=200)
 
     @field_validator("name")
     @classmethod
-    def name_not_blank(cls, value: str) -> str:
-        if not 1 <= len(value.strip()) <= 80:
+    def name_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not 1 <= len(value.strip()) <= 80:
             raise ValueError("A name must have 1 to 80 characters")
         return value
+
+
+    @model_validator(mode="after")
+    def smart_rename_identity(self) -> RenameRequest:
+        if self.name is None and not self.request_id:
+            raise ValueError("Supply a request ID to generate a name")
+        return self
 
 
 class SimpleIdResponse(ResponseModel):
@@ -549,7 +558,10 @@ class TransferResponse(ResponseModel):
 
 class RenameResponse(ResponseModel):
     id: str
-    name: str
+    name: str | None = None
+    request_id: str | None = None
+    status: Literal["pending", "applied", "failed"] | None = None
+    error: str | None = None
 
 
 class ImportListResponse(ResponseModel):

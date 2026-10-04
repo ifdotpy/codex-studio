@@ -126,7 +126,7 @@ class QueueEditBody(OperationBody):
 
 
 class QueueFirstBody(OperationBody):
-    action: Literal["first"]
+    action: Literal["first", "send_now"]
     id: StrictStr | None = None
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
@@ -137,6 +137,8 @@ class QueueFirstBody(OperationBody):
     def has_message_identity(self) -> QueueFirstBody:
         if not self.id and not self.message_id:
             raise ValueError("Supply a queued message ID")
+        if self.action == "send_now" and not self.request_id:
+            raise ValueError("Supply a request ID to change queue delivery")
         return self
 
 
@@ -347,6 +349,7 @@ class WorkList(ResponseModel):
 
 class QueueItem(ContractModel):
     id: StrictStr
+    error: str | None = None
     text: StrictStr
     kind: Literal["user", "followup"]
     status: Literal["pending"]

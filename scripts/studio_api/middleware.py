@@ -122,7 +122,7 @@ def _request_limit(path: str) -> int:
         return FEDERATION_BODY_LIMIT
     if path == "/api/assets":
         return ASSET_BODY_LIMIT
-    if path == "/api/voice/audio":
+    if path in {"/api/voice/audio", "/api/projects"}:
         return VOICE_AUDIO_BODY_LIMIT
     return DEFAULT_BODY_LIMIT
 

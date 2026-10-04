@@ -4435,6 +4435,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     selected.append(event)
                     asset_count += count
                 rows = selected
+                # Composer after-turn inputs each own a turn. Keep other event
+                # batching, including notifications that precede the next input.
+                composer_input = False
+                one_turn = []
+                for event in rows:
+                    meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event["id"],)).fetchone()
+                    delivery = json.loads(meta[0]).get("delivery") if meta else None
+                    is_composer = event["kind"] == "user" and (delivery == "after_turn" or
+                        bool(meta and json.loads(meta[0]).get("sendNow")))
+                    if is_composer and composer_input:
+                        break
+                    one_turn.append(event)
+                    composer_input |= is_composer
+                rows = one_turn
                 if a.get("provider") == "claude":
                     # Native slash commands must reach the CLI as a separate input.
                     command_index = next((i for i, event in enumerate(rows)
@@ -4887,10 +4901,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a.update(status="running" if a.get("inFlight") else "queued", error=None)
                 a.pop("startAttempt", None)
                 for event_id in attempt["events"]:
-                    db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL "
+                    meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event_id,)).fetchone()
+                    visible_error = str(error) if meta and json.loads(meta[0]).get("sendNow") else None
+                    db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=? "
                                "WHERE id=? AND agent=? AND epoch=? "
                                "AND status IN ('reserved','dispatching','uncertain')",
-                               (event_id, agent_id, attempt["epoch"]))
+                               (visible_error, event_id, agent_id, attempt["epoch"]))
                 if attempt["events"]:
                     item_id = agent_id + ":" + attempt["events"][0]
                     self.delete_search_item(db, item_id)
@@ -6254,22 +6270,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          "complaint-review:" + completion)
         a["status"] = "queued"
 
-    def rename(self, key, name):
-        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80:
-            raise ValueError("A name must have 1 to 80 characters")
-        with self.lock, self.db() as db:
-            row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (key,)).fetchone()
-            if row:
-                room = json.loads(row[0])
-                room["customName"] = name.strip()
-                self.put(db, "rooms", room)
-            else:
-                a = self.agent(key, db)
-                if a.get("deletedAt"):
-                    raise ValueError("This conversation was deleted")
-                a.update(name=name.strip(), manualName=True, needsTitle=False)
-                self.put(db, "agents", a)
-            return {"id": key, "name": name.strip()}
+    def rename(self, key, name, request_id=None):
+        from codex_rename import rename
+        return rename(self, key, name, request_id)
 
     def hide_room(self, key):
         with self.lock, self.db() as db:
@@ -8069,6 +8072,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def _snapshot_from_db(self, db, include_work):
         from codex_peer_teams import snapshot as peer_snapshot
+        from codex_project_folders import sidebar_order
         agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
         team_names = {a["id"]: a["name"] for a in agents}
         for a in agents:
@@ -8107,6 +8111,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "agents": agents,
             "projects": self.projects(db=db)["items"],
             "projectOrganizationVersion": 1,
+            "sidebarOrder": sidebar_order(db),
             "peerTeamsVersion": 1,
             "peerTeams": peer_snapshot(self, db),
             "tasks": self.recent_tasks(db),

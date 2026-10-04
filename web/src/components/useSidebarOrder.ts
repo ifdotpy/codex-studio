@@ -5,12 +5,28 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { saved } from "../api";
+import { post, ApiError, errorText, saved, type PostBody } from "../api";
+
+import type { components } from "../generated/api";
 
 type Order = Record<string, string[]>;
 type Drag = { group: string; id: string };
-export function useSidebarOrder(key: string, notify?: (text: string) => void) {
-  const [order, setOrder] = useState<Order>(() => saved(key, {}));
+type ServerOrder = components["schemas"]["SidebarOrderDto"];
+type Pending = {
+  body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
+};
+export function useSidebarOrder(
+  key: string,
+  server: ServerOrder | undefined,
+  refresh?: () => Promise<void>,
+  notify?: (text: string) => void,
+) {
+  const [order, setOrder] = useState<Order>(
+    () => server?.groups || saved(key, {}),
+  );
+  const revision = useRef(-1);
+  const busy = useRef(false);
+  const pendingKey = `${key}:pending`;
   const drag = useRef<Drag | null>(null);
   const [target, setTarget] = useState<(Drag & { after: boolean }) | null>(
     null,
@@ -18,8 +34,82 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
   const [announcement, announce] = useState("");
   const [destination, setDestination] = useState<string | null>(null);
   useEffect(() => {
+    revision.current = -1;
     setOrder(saved(key, {}));
   }, [key]);
+  useEffect(() => {
+    if (!server) return;
+    if (server.revision > revision.current) {
+      revision.current = server.revision;
+      if (server.groups !== null) setOrder(server.groups);
+    }
+    if (busy.current) return;
+    const pending = saved<Pending | null>(pendingKey, null);
+    if (pending?.body) {
+      void send(pending);
+    } else if (server.groups === null) {
+      void send({
+        body: {
+          action: "reorder",
+          request_id: crypto.randomUUID(),
+          expected_revision: server.revision,
+          groups: saved(key, {}),
+          migration: true,
+        },
+      });
+    }
+    // The server revision controls this effect. The request keeps its exact body.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, server?.revision, server?.groups]);
+  const send = async (request: Pending, optimistic?: Order) => {
+    if (busy.current) return false;
+    busy.current = true;
+    try {
+      localStorage.setItem(pendingKey, JSON.stringify(request));
+      if (optimistic) setOrder(optimistic);
+      const result = await post("/api/projects", request.body, {
+        timeoutMs: 15000,
+      });
+      if (!("revision" in result))
+        throw new Error("Invalid sidebar order response");
+      localStorage.removeItem(pendingKey);
+      if (result.revision >= revision.current) {
+        revision.current = result.revision;
+        setOrder(result.groups || {});
+      }
+      void refresh?.().catch((error) =>
+        notify?.(`Could not refresh sidebar order: ${errorText(error)}`),
+      );
+      return true;
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408
+      ) {
+        localStorage.removeItem(pendingKey);
+        setOrder(server?.groups || {});
+        notify?.(
+          error.status === 409
+            ? "Sidebar order changed in another client. Refreshing from the server."
+            : `Could not save sidebar order: ${errorText(error)}`,
+        );
+        try {
+          await refresh?.();
+        } catch (refreshError) {
+          notify?.(
+            `Could not refresh sidebar order: ${errorText(refreshError)}`,
+          );
+        }
+      } else {
+        notify?.(`Could not save sidebar order: ${errorText(error)}`);
+      }
+      return false;
+    } finally {
+      busy.current = false;
+    }
+  };
   const rank = (group: string, id: string) => {
     const index = order[group]?.indexOf(id) ?? -1;
     return index < 0 ? Number.MAX_SAFE_INTEGER : index;
@@ -34,14 +124,30 @@ export function useSidebarOrder(key: string, notify?: (text: string) => void) {
     if (from === to || !ids.includes(from) || !ids.includes(to)) return;
     const next = ids.filter((id) => id !== from);
     next.splice(next.indexOf(to) + Number(after), 0, from);
-    const value = { ...order, [group]: next };
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      setOrder(value);
-      announce(`Moved to position ${next.indexOf(from) + 1} of ${next.length}`);
-    } catch (error) {
-      notify?.(`Could not save sidebar order: ${String(error)}`);
+    if (!server || server.groups === null || busy.current) return;
+    if (saved<Pending | null>(pendingKey, null)) {
+      notify?.(
+        "Retry the saved sidebar order request before moving another item.",
+      );
+      return;
     }
+    const value = { ...order, [group]: next };
+    void send(
+      {
+        body: {
+          action: "reorder",
+          request_id: crypto.randomUUID(),
+          expected_revision: revision.current,
+          groups: value,
+        },
+      },
+      value,
+    ).then((saved) => {
+      if (saved)
+        announce(
+          `Moved to position ${next.indexOf(from) + 1} of ${next.length}`,
+        );
+    });
   };
   const finish = () => {
     drag.current = null;

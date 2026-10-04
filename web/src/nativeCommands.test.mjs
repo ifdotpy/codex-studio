@@ -1,7 +1,16 @@
 // Run with: node --experimental-strip-types tests/native-commands-contract.mjs
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { menuActions, studioCommand } from "./nativeCommands.ts";
+import { menuActions, renameCommand, studioCommand } from "./nativeCommands.ts";
+
+test("rename command parses an exact name or requests a generated title", () => {
+  assert.equal(renameCommand("/rename"), null);
+  assert.equal(renameCommand("/rename  Release review  "), "Release review");
+  assert.equal(renameCommand("/renamed"), undefined);
+  assert.equal(renameCommand("please /rename"), undefined);
+  assert.equal(studioCommand("/rename", "codex"), true);
+  assert.equal(studioCommand("/rename New title", "claude"), true);
+});
 
 test("Codex chats run compact and review as Studio actions", () => {
   for (const text of [
