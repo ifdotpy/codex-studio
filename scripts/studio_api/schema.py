@@ -1,4 +1,4 @@
-"""Offline OpenAPI construction and schema coverage checks."""
+"""Offline OpenAPI construction and strict schema coverage checks."""
 from __future__ import annotations
 
 import json
@@ -9,25 +9,21 @@ from studio_api.models import JsonValue
 
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 NO_BODY_SUCCESS_STATUS = "204"
-
-
-def openapi_document() -> dict[str, JsonValue]:
-    """Build OpenAPI using the inert schema context; never opens runtime state."""
-    from studio_api.app import create_app
-    from studio_api.context import ApiContext
-
-    app = create_app(ApiContext.for_schema())
-    return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
-
-
-def _object(value: JsonValue) -> dict[str, JsonValue] | None:
-    if isinstance(value, dict):
-        return value
-    return None
-
-
-def _has_schema_shape(schema: dict[str, JsonValue]) -> bool:
-    known_shape_keys = {
+JSON_VALUE_REF = "#/components/schemas/JsonValue"
+JSON_VALUE_SCHEMA: dict[str, JsonValue] = {
+    "title": "JsonValue",
+    "anyOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "integer"},
+        {"type": "number"},
+        {"type": "string"},
+        {"type": "array", "items": {"$ref": JSON_VALUE_REF}},
+        {"type": "object", "additionalProperties": {"$ref": JSON_VALUE_REF}},
+    ],
+}
+SCHEMA_SHAPE_KEYS = frozenset(
+    {
         "$ref",
         "type",
         "enum",
@@ -40,67 +36,325 @@ def _has_schema_shape(schema: dict[str, JsonValue]) -> bool:
         "items",
         "additionalProperties",
     }
-    if not schema.keys() & known_shape_keys:
-        return False
+)
+SCHEMA_COMBINATORS = ("oneOf", "anyOf", "allOf")
+
+
+def openapi_document() -> dict[str, JsonValue]:
+    """Build OpenAPI using the inert schema context; never opens runtime state."""
+    from studio_api.app import create_app
+    from studio_api.context import ApiContext
+
+    app = create_app(ApiContext.for_schema())
+    document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    normalize_json_value_schema(document)
+    return document
+
+
+def _object(value: JsonValue) -> dict[str, JsonValue] | None:
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _resolve_pointer(document: dict[str, JsonValue], reference: str) -> JsonValue | None:
+    if not reference.startswith("#/"):
+        return None
+    current: JsonValue = document
+    for encoded_part in reference[2:].split("/"):
+        part = encoded_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current[part]
+        elif isinstance(current, list):
+            try:
+                index = int(part)
+            except ValueError:
+                return None
+            if not 0 <= index < len(current):
+                return None
+            current = current[index]
+        else:
+            return None
+    return current
+
+
+def _reference_has_concrete_schema(document: dict[str, JsonValue], reference: str) -> bool:
+    """Check that a pure `$ref` cycle eventually reaches a concrete schema."""
+    seen: set[str] = set()
+    current_reference = reference
+    while current_reference not in seen:
+        seen.add(current_reference)
+        target = _object(_resolve_pointer(document, current_reference))
+        if target is None:
+            return False
+        if target.keys() & (SCHEMA_SHAPE_KEYS - {"$ref"}):
+            return True
+        next_reference = target.get("$ref")
+        if not isinstance(next_reference, str):
+            return False
+        current_reference = next_reference
+    return False
+
+
+def normalize_json_value_schema(document: dict[str, JsonValue]) -> None:
+    """Replace Pydantic's empty JsonValue schema with its recursive JSON union."""
+    components = _object(document.get("components"))
+    schemas = _object(components.get("schemas")) if components else None
+    if schemas is None or "JsonValue" not in schemas:
+        raise ValueError("OpenAPI document does not expose the shared JsonValue component")
+    schemas["JsonValue"] = JSON_VALUE_SCHEMA
+
+
+def _schema_errors(
+    schema_value: JsonValue,
+    document: dict[str, JsonValue],
+    location: str,
+    reference_stack: frozenset[str] = frozenset(),
+) -> list[str]:
+    schema = _object(schema_value)
+    if schema is None:
+        return [f"{location}: schema is not an object"]
+
+    errors: list[str] = []
+    reference = schema.get("$ref")
+    if reference is not None:
+        if not isinstance(reference, str):
+            errors.append(f"{location}: $ref is not a string")
+        else:
+            target = _resolve_pointer(document, reference)
+            if target is None:
+                errors.append(f"{location}: unresolved schema reference {reference}")
+            elif reference not in reference_stack:
+                errors.extend(
+                    _schema_errors(
+                        target,
+                        document,
+                        f"{location} -> {reference}",
+                        reference_stack | {reference},
+                    )
+                )
+            elif not _reference_has_concrete_schema(document, reference):
+                errors.append(f"{location}: reference cycle has no concrete schema")
+
+    if not schema.keys() & SCHEMA_SHAPE_KEYS:
+        errors.append(f"{location}: schema has no type or validation shape")
+        return errors
     if schema.get("additionalProperties") is True:
-        return False
+        errors.append(f"{location}: unconstrained additionalProperties")
     if schema.get("type") == "object":
-        properties = _object(schema.get("properties"))
+        properties_value = schema.get("properties")
+        properties = _object(properties_value) if properties_value is not None else None
         additional = schema.get("additionalProperties")
         if not properties and additional is None:
-            return False
-    return True
+            errors.append(f"{location}: object has no declared properties or additionalProperties schema")
+    if schema.get("type") == "array" and "items" not in schema:
+        errors.append(f"{location}: array has no items schema")
+
+    properties_value = schema.get("properties")
+    if properties_value is not None:
+        properties = _object(properties_value)
+        if properties is None:
+            errors.append(f"{location}: properties is not an object")
+        else:
+            for name, child in properties.items():
+                errors.extend(_schema_errors(child, document, f"{location}.properties.{name}", reference_stack))
+
+    items = schema.get("items")
+    if items is not None:
+        errors.extend(_schema_errors(items, document, f"{location}.items", reference_stack))
+
+    additional = schema.get("additionalProperties")
+    if isinstance(additional, dict):
+        errors.extend(
+            _schema_errors(additional, document, f"{location}.additionalProperties", reference_stack)
+        )
+    elif additional is not None and not isinstance(additional, bool):
+        errors.append(f"{location}: additionalProperties is not a schema or boolean")
+
+    for keyword in SCHEMA_COMBINATORS:
+        raw_branches = schema.get(keyword)
+        if raw_branches is None:
+            continue
+        if not isinstance(raw_branches, list) or not raw_branches:
+            errors.append(f"{location}: {keyword} must contain at least one schema")
+            continue
+        for index, branch in enumerate(raw_branches):
+            errors.extend(
+                _schema_errors(branch, document, f"{location}.{keyword}[{index}]", reference_stack)
+            )
+
+    for keyword in ("not", "if", "then", "else", "contains"):
+        child = schema.get(keyword)
+        if child is not None:
+            errors.extend(_schema_errors(child, document, f"{location}.{keyword}", reference_stack))
+    return errors
 
 
-def validate_success_responses(document: dict[str, JsonValue]) -> None:
-    """Reject undocumented and opaque JSON success paths in the API contract."""
+def _parameter_errors(
+    raw_parameter: JsonValue,
+    document: dict[str, JsonValue],
+    location: str,
+    reference_stack: frozenset[str] = frozenset(),
+) -> list[str]:
+    parameter = _object(raw_parameter)
+    if parameter is None:
+        return [f"{location}: parameter is not an object"]
+    reference = parameter.get("$ref")
+    if reference is not None:
+        if not isinstance(reference, str):
+            return [f"{location}: parameter $ref is not a string"]
+        target = _resolve_pointer(document, reference)
+        if target is None:
+            return [f"{location}: unresolved parameter reference {reference}"]
+        if reference in reference_stack:
+            return [f"{location}: cyclic parameter reference {reference}"]
+        return _parameter_errors(target, document, f"{location} -> {reference}", reference_stack | {reference})
+
+    errors: list[str] = []
+    if not isinstance(parameter.get("name"), str):
+        errors.append(f"{location}: parameter has no string name")
+    parameter_location = parameter.get("in")
+    if not isinstance(parameter_location, str) or parameter_location not in {"path", "query", "header", "cookie"}:
+        errors.append(f"{location}: parameter has invalid or missing location")
+
+    schema = parameter.get("schema")
+    if schema is not None:
+        errors.extend(_schema_errors(schema, document, f"{location}.schema"))
+    else:
+        content = _object(parameter.get("content"))
+        if not content:
+            errors.append(f"{location}: parameter has no schema")
+        else:
+            for media_type, raw_media in content.items():
+                media = _object(raw_media)
+                media_schema = media.get("schema") if media else None
+                if media_schema is None:
+                    errors.append(f"{location}.content.{media_type}: missing schema")
+                else:
+                    errors.extend(_schema_errors(media_schema, document, f"{location}.content.{media_type}"))
+    return errors
+
+
+def _request_body_errors(
+    raw_body: JsonValue,
+    document: dict[str, JsonValue],
+    location: str,
+    reference_stack: frozenset[str] = frozenset(),
+) -> list[str]:
+    body = _object(raw_body)
+    if body is None:
+        return [f"{location}: request body is not an object"]
+    reference = body.get("$ref")
+    if reference is not None:
+        if not isinstance(reference, str):
+            return [f"{location}: request body $ref is not a string"]
+        target = _resolve_pointer(document, reference)
+        if target is None:
+            return [f"{location}: unresolved request body reference {reference}"]
+        if reference in reference_stack:
+            return [f"{location}: cyclic request body reference {reference}"]
+        return _request_body_errors(target, document, f"{location} -> {reference}", reference_stack | {reference})
+
+    content = _object(body.get("content"))
+    if not content:
+        return [f"{location}: request body has no content schemas"]
+    errors: list[str] = []
+    for media_type, raw_media in content.items():
+        media = _object(raw_media)
+        schema = media.get("schema") if media else None
+        if schema is None:
+            errors.append(f"{location}.content.{media_type}: missing schema")
+        else:
+            errors.extend(_schema_errors(schema, document, f"{location}.content.{media_type}"))
+    return errors
+
+
+def _operation_errors(
+    path: str,
+    method: str,
+    path_item: dict[str, JsonValue],
+    operation: dict[str, JsonValue],
+    document: dict[str, JsonValue],
+) -> list[str]:
+    prefix = f"{method.upper()} {path}"
+    errors: list[str] = []
+    for parameter_scope, raw_parameters in (
+        ("path", path_item.get("parameters")),
+        ("operation", operation.get("parameters")),
+    ):
+        if raw_parameters is None:
+            continue
+        if not isinstance(raw_parameters, list):
+            errors.append(f"{prefix}: {parameter_scope} parameters are not an array")
+            continue
+        for index, parameter in enumerate(raw_parameters):
+            errors.extend(
+                _parameter_errors(parameter, document, f"{prefix}.{parameter_scope}.parameters[{index}]")
+            )
+
+    request_body = operation.get("requestBody")
+    if request_body is not None:
+        errors.extend(_request_body_errors(request_body, document, f"{prefix}.requestBody"))
+
+    responses = _object(operation.get("responses"))
+    if responses is None:
+        errors.append(f"{prefix}: no response declarations")
+        return errors
+    for status, raw_response in responses.items():
+        response = _object(raw_response)
+        if response is None:
+            errors.append(f"{prefix} {status}: response is not an object")
+            continue
+        content = _object(response.get("content"))
+        if content is None:
+            if status.startswith("2") and status != NO_BODY_SUCCESS_STATUS:
+                errors.append(f"{prefix} {status}: response has no content schema")
+            continue
+        for media_type, raw_media in content.items():
+            media = _object(raw_media)
+            schema = media.get("schema") if media else None
+            is_json = media_type == "application/json" or media_type.endswith("+json")
+            if schema is None:
+                if status.startswith("2") and status != NO_BODY_SUCCESS_STATUS and is_json:
+                    errors.append(f"{prefix} {status} {media_type}: missing JSON response schema")
+                continue
+            if status.startswith("2") or is_json:
+                errors.extend(_schema_errors(schema, document, f"{prefix}.{status}.{media_type}"))
+    return errors
+
+
+def validate_contract_schemas(document: dict[str, JsonValue]) -> None:
+    """Recursively validate route parameters, request bodies, and response schemas."""
     paths = _object(document.get("paths"))
     if paths is None or not paths:
         raise ValueError("OpenAPI document has no paths")
 
-    failures: list[str] = []
+    errors: list[str] = []
     for path, raw_path_item in paths.items():
         path_item = _object(raw_path_item)
         if path_item is None:
-            failures.append(f"{path}: path item is not an object")
+            errors.append(f"{path}: path item is not an object")
             continue
         for method, raw_operation in path_item.items():
             if method not in HTTP_METHODS:
                 continue
             operation = _object(raw_operation)
-            responses = _object(operation.get("responses")) if operation else None
-            if responses is None or not responses:
-                failures.append(f"{method.upper()} {path}: no response declarations")
+            if operation is None:
+                errors.append(f"{method.upper()} {path}: operation is not an object")
                 continue
-            for status, raw_response in responses.items():
-                if not status.startswith("2") or status == NO_BODY_SUCCESS_STATUS:
-                    continue
-                response = _object(raw_response)
-                content = _object(response.get("content")) if response else None
-                if content is None:
-                    failures.append(f"{method.upper()} {path} {status}: response has no content schema")
-                    continue
-                json_media_type = next(
-                    (
-                        media_type
-                        for media_type in content
-                        if media_type == "application/json" or media_type.endswith("+json")
-                    ),
-                    None,
-                )
-                json_media = _object(content.get(json_media_type)) if json_media_type else None
-                if json_media is None:
-                    # Non-JSON responses (for example an image or download) have
-                    # their own explicit media type and are outside this schema.
-                    if not content:
-                        failures.append(f"{method.upper()} {path} {status}: empty response content")
-                    continue
-                schema = _object(json_media.get("schema"))
-                if schema is None or not _has_schema_shape(schema):
-                    failures.append(f"{method.upper()} {path} {status}: opaque JSON response schema")
+            errors.extend(_operation_errors(path, method, path_item, operation, document))
 
-    if failures:
-        raise ValueError("\n".join(failures))
+    components = _object(document.get("components"))
+    schemas = _object(components.get("schemas")) if components else None
+    if schemas is None:
+        errors.append("OpenAPI document has no component schemas")
+    else:
+        for name, schema in schemas.items():
+            errors.extend(_schema_errors(schema, document, f"components.schemas.{name}"))
+    if errors:
+        raise ValueError("\n".join(errors))
 
 
 def validate_error_responses(document: dict[str, JsonValue]) -> None:
@@ -149,5 +403,6 @@ def entity_schema_names(document: dict[str, JsonValue]) -> list[str]:
 def require_json_value_schema(document: dict[str, JsonValue]) -> None:
     components = _object(document.get("components"))
     schemas = _object(components.get("schemas")) if components else None
-    if schemas is None or "JsonValue" not in schemas:
-        raise ValueError("OpenAPI document does not expose the shared JsonValue component")
+    schema = _object(schemas.get("JsonValue")) if schemas else None
+    if schema is None or schema.get("anyOf") != JSON_VALUE_SCHEMA["anyOf"]:
+        raise ValueError("OpenAPI document does not expose the recursive shared JsonValue schema")

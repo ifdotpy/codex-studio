@@ -13,10 +13,11 @@ from typing import cast
 from studio_api.models import JsonValue
 from studio_api.schema import (
     entity_schema_names,
+    normalize_json_value_schema,
     openapi_document,
     require_json_value_schema,
+    validate_contract_schemas,
     validate_error_responses,
-    validate_success_responses,
 )
 
 
@@ -36,7 +37,8 @@ def _entity_aliases(names: list[str]) -> str:
 
 
 def render(document: dict[str, JsonValue]) -> str:
-    validate_success_responses(document)
+    normalize_json_value_schema(document)
+    validate_contract_schemas(document)
     validate_error_responses(document)
     require_json_value_schema(document)
     entities = entity_schema_names(document)

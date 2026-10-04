@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import Field, ValidationError
 
-from studio_api.models import ContractModel, ContractStrEnum, ErrorResponse, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, ErrorResponse, JsonValue, ResponseModel
 
 
 class Action(ContractStrEnum):
@@ -20,6 +20,10 @@ class Action(ContractStrEnum):
 class Body(ContractModel):
     action: Action
     count: Annotated[int, Field(gt=0)] = 1
+
+
+class ExtensiblePayload(ContractModel):
+    value: JsonValue
 
 
 class ModelContractTests(unittest.TestCase):
@@ -55,6 +59,16 @@ class ModelContractTests(unittest.TestCase):
         error_types = {issue["type"] for issue in captured.exception.errors()}
         self.assertIn("extra_forbidden", error_types)
         self.assertIn("int_type", error_types)
+
+    def test_json_value_accepts_json_values_and_rejects_non_finite_numbers(self) -> None:
+        accepted = ExtensiblePayload.model_validate(
+            {"value": {"items": [True, 3, 1.5, None, "text"]}}
+        )
+        self.assertEqual(accepted.value, {"items": [True, 3, 1.5, None, "text"]})
+        for value in (float("nan"), float("inf"), {"nested": [float("-inf")]}):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    ExtensiblePayload.model_validate({"value": value})
 
     def test_response_dump_preserves_omitted_versus_explicit_null(self) -> None:
         self.assertEqual(ResponseModel().wire_dump(), {})

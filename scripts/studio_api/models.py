@@ -2,16 +2,34 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal, cast
+import math
+from typing import Annotated, Literal, TypeAlias, cast
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
-    JsonValue as JsonValue,
+    JsonValue as PydanticJsonValue,
 )
 from pydantic_core import CoreSchema, core_schema
+
+
+def _validate_finite_json(value: object) -> object:
+    """Reject non-standard NaN and infinity values from extensible JSON data."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("JSON numbers must be finite")
+    if isinstance(value, list):
+        for item in value:
+            _validate_finite_json(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _validate_finite_json(item)
+    return value
+
+
+JsonValue: TypeAlias = Annotated[PydanticJsonValue, AfterValidator(_validate_finite_json)]
 
 
 class ContractStrEnum(StrEnum):
