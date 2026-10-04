@@ -62,13 +62,19 @@ type TabStatus = {
   tabId: string;
   status: ResourceConnectionState;
 };
+type TabSubscriptionDiscovery = {
+  kind: "discover-subscriptions";
+  workspaceId: string;
+  tabId: string;
+};
 type TabMessage =
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
   | TabHeartbeat
   | LeaderHeartbeat
-  | TabStatus;
+  | TabStatus
+  | TabSubscriptionDiscovery;
 type OutgoingMessage =
   | {
       kind: "subscriptions";
@@ -80,6 +86,7 @@ type OutgoingMessage =
   | { kind: "token-rates"; event: ResourceTokenRatesEvent }
   | { kind: "tab-heartbeat" }
   | { kind: "leader-heartbeat" }
+  | { kind: "discover-subscriptions" }
   | { kind: "status"; status: ResourceConnectionState };
 
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -417,6 +424,17 @@ function receiveChannelMessage(value: unknown) {
     lastLeaderHeartbeatAt = Date.now();
     const peer = peerSubscriptions.get(record.tabId);
     if (peer) peer.seenAt = Date.now();
+  } else if (
+    record.kind === "discover-subscriptions" &&
+    !owner &&
+    !independent &&
+    !document.hidden &&
+    navigator.onLine !== false
+  ) {
+    // A new lock owner has no reliable way to infer subscriptions from
+    // heartbeats. Advertise them once when ownership changes so takeover
+    // restores the full resource union without making quiet heartbeats reads.
+    announceSubscriptions(true);
   } else if (record.kind === "resource-event") {
     receiveResourceEvent(record.event, true);
   } else if (record.kind === "token-rates") {
@@ -669,6 +687,7 @@ function startAsOwner() {
           return;
         owner = true;
         startPeerHeartbeat();
+        broadcast({ kind: "discover-subscriptions" });
         broadcast({ kind: "status", status: "connecting" });
         openSource();
         await new Promise<void>((resolve) => {

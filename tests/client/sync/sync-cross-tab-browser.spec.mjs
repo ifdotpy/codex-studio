@@ -351,6 +351,25 @@ test("sync-cross-tab-browser @performance", async ({
       stablePanelCallbacks,
       "Peer subscription heartbeats do not replay unchanged resources after unrelated traffic",
     );
+    await pages[1].evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      window.takeoverPanelCallbacks = 0;
+      window.stopTakeoverPanel = client.watchResourceChanges(
+        { kind: "panel", agentId: "takeover-unique-panel" },
+        () => window.takeoverPanelCallbacks++,
+      );
+    });
+    await waitFor(
+      () =>
+        [...streamResources.values()].some((resources) =>
+          resources.some(
+            (resource) =>
+              resource.kind === "panel" &&
+              resource.agentId === "takeover-unique-panel",
+          ),
+        ),
+      "the original owner did not learn the second tab's unique panel subscription",
+    );
     await pages[0].evaluate(() => window.stopPanelCallbacks());
     await pages[2].evaluate(() => window.stopCostCallbacks());
     await panelFollower.evaluate(() => window.stopLatePanel());
@@ -407,6 +426,38 @@ test("sync-cross-tab-browser @performance", async ({
       () => streams.size === 1 && streamsOpened > streamsBeforeHidingOwner,
       "a visible peer did not take ownership after the active owner was hidden",
       5000,
+    );
+    await waitFor(
+      () =>
+        [...streamResources.values()].some((resources) =>
+          resources.some(
+            (resource) =>
+              resource.kind === "panel" &&
+              resource.agentId === "takeover-unique-panel",
+          ),
+        ),
+      "the replacement owner did not rediscover the surviving peer's unique panel",
+    );
+    const takeoverPanelBefore = await pages[1].evaluate(
+      () => window.takeoverPanelCallbacks,
+    );
+    sendChange(workspaceId, {
+      kind: "panel",
+      agentId: "takeover-unique-panel",
+    });
+    await pages[1].waitForFunction(
+      (previous) => window.takeoverPanelCallbacks > previous,
+      takeoverPanelBefore,
+      { timeout: 5000 },
+    );
+    const takeoverPanelAfterChange = await pages[1].evaluate(
+      () => window.takeoverPanelCallbacks,
+    );
+    await pages[1].waitForTimeout(3500);
+    assert.equal(
+      await pages[1].evaluate(() => window.takeoverPanelCallbacks),
+      takeoverPanelAfterChange,
+      "quiet peer heartbeats do not refetch the surviving panel after takeover",
     );
     assert.ok(
       Date.now() - visibilityFailoverStarted <= 5000,
@@ -488,6 +539,7 @@ test("sync-cross-tab-browser @performance", async ({
       { timeout: 5000 },
     );
     await follower.evaluate(() => window.stopResumedPanel());
+    await pages[1].evaluate(() => window.stopTakeoverPanel());
     await pages[initialOwnerIndex].evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -590,10 +642,9 @@ test("sync-cross-tab-browser @performance", async ({
     const beforeWorkspaceMove = await Promise.all(
       pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
     );
-    const restartedWorkspaceId = "c".repeat(32);
     for (const response of streams)
       if (streamWorkspaces.get(response) === workspaceId)
-        sendResourceEvent(response, restartedWorkspaceId, "workspace", [
+        sendResourceEvent(response, workspaceId, "workspace", [
           { kind: "state" },
           { kind: "transcript", agentId: "session-one" },
         ]);
@@ -602,9 +653,8 @@ test("sync-cross-tab-browser @performance", async ({
         pages.map((page, index) =>
           page.waitForFunction(
             (prior) =>
-              window.states?.at(-1) === "degraded" &&
-              window.counts.state === prior.state &&
-              window.counts.transcripts === prior.transcripts,
+              window.counts.state > prior.state &&
+              window.counts.transcripts > prior.transcripts,
             beforeWorkspaceMove[index],
             { timeout: 4500 },
           ),
@@ -616,13 +666,14 @@ test("sync-cross-tab-browser @performance", async ({
           page.evaluate(() => ({
             counts: window.counts,
             states: window.states,
+            sse: window.__syncDiagnostics.sse.slice(-8),
             sent: window.__syncDiagnostics.sent.slice(-5),
             received: window.__syncDiagnostics.received.slice(-8),
           })),
         ),
       );
       process.stderr.write(
-        `workspace identity diagnostic: ${JSON.stringify({ beforeWorkspaceMove, diagnostics })}\n`,
+        `workspace reset diagnostic: ${JSON.stringify({ beforeWorkspaceMove, streamsOpened, streamResources: [...streamResources.values()], diagnostics })}\n`,
       );
       throw error;
     }

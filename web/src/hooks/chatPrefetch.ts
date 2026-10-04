@@ -9,6 +9,7 @@ import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
 import { readProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
+import { foregroundTranscriptPending } from "./chatPrefetchState";
 
 const MAX_TRANSCRIPT_WATCHES = 12;
 
@@ -37,7 +38,7 @@ export function useChatPrefetch(
     const pendingHistory = new Set<string>();
     const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
-    let foregroundId: string | null = null;
+    let foregroundId: string | null | undefined;
     let foregroundReady = false;
     let stopForegroundCache: (() => void) | undefined;
 
@@ -115,7 +116,8 @@ export function useChatPrefetch(
       const { data, opened } = current.current;
       if (!data || (!opened && data.threads.length > 0)) return;
       watchForegroundTranscript();
-      if (!foregroundReady) return;
+      if (foregroundTranscriptPending(foregroundId ?? null, foregroundReady))
+        return;
       const selected = data.threads.find((agent) => agent.id === opened);
       const root = selected?.isLead ? selected.id : selected?.rootId;
       const pool = data.threads.filter(
