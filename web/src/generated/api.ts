@@ -2234,18 +2234,6 @@ export interface components {
       | "error"
       | "changed"
       | "duplicate";
-    /** AccountTransferRequest */
-    AccountTransferRequest: {
-      /** Account Key */
-      account_key?: string | null;
-      action?: components["schemas"]["TransferAction"] | null;
-      /** Id */
-      id?: string | null;
-      /** Request Id */
-      request_id: string;
-      /** @default team */
-      scope?: components["schemas"]["TransferScope"];
-    };
     /** ActionContext */
     ActionContext: {
       /** Accountkey */
@@ -8989,6 +8977,17 @@ export interface components {
      * @enum {string}
      */
     TransferAction: "retry" | "cancel" | "finish_history";
+    /** TransferActionRequest */
+    TransferActionRequest: {
+      /** Account Key */
+      account_key?: string | null;
+      action: components["schemas"]["TransferAction"];
+      /** Id */
+      id?: string | null;
+      /** Request Id */
+      request_id: string;
+      scope?: components["schemas"]["TransferScope"] | null;
+    };
     /**
      * TransferInterruptOutcome
      * @enum {string}
@@ -9126,6 +9125,17 @@ export interface components {
      * @enum {string}
      */
     TransferScope: "team" | "subagents";
+    /** TransferStartRequest */
+    TransferStartRequest: {
+      /** Account Key */
+      account_key?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Request Id */
+      request_id: string;
+      /** @default team */
+      scope?: components["schemas"]["TransferScope"];
+    };
     /**
      * TransferStatus
      * @enum {string}
@@ -9225,6 +9235,8 @@ export interface components {
       /** Startedat */
       startedAt?: number | null;
       status: components["schemas"]["UsageResumeStatus"];
+      /** Taskclaims */
+      taskClaims?: string[] | null;
       /** Threadid */
       threadId: string;
       /** Turnid */
@@ -11164,7 +11176,9 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["AccountTransferRequest"];
+        "application/json":
+          | components["schemas"]["TransferStartRequest"]
+          | components["schemas"]["TransferActionRequest"];
       };
     };
     responses: {
