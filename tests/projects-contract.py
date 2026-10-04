@@ -117,6 +117,35 @@ class ProjectContracts(unittest.TestCase):
         project = self.edit_project(project, 'remove_folder', folder_id=parent)
         self.assertEqual(project['folders'], [])
 
+    def test_sidebar_order_persists_conflicts_and_exact_retry(self):
+        self.runtime.projects({'path': str(self.first)})
+        with self.runtime.db() as db:
+            from codex_sync_entities import seed
+            seed(db, lambda: {'runtime': self.runtime.snapshot(db=db), 'stateDir': str(self.root)})
+        first = {'action': 'reorder', 'request_id': str(uuid.uuid4()),
+                 'expected_revision': 0, 'groups': {'projects': [str(self.first)]},
+                 'migration': True}
+        result = self.runtime.projects(first)
+        self.assertEqual(result, {'revision': 1, 'groups': first['groups']})
+        self.restart()
+        self.assertEqual(self.runtime.snapshot()['sidebarOrder'], result)
+        self.assertEqual(self.runtime.projects(first), result)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.runtime.projects({**first, 'groups': {}})
+        with self.assertRaisesRegex(ValueError, 'Sidebar order changed'):
+            self.runtime.projects({**first, 'request_id': str(uuid.uuid4())})
+        second = {'action': 'reorder', 'request_id': str(uuid.uuid4()),
+                  'expected_revision': 1, 'groups': {
+                      'projects': [str(self.second), str(self.first)],
+                      'many': [str(i) for i in range(205)]}}
+        changed = self.runtime.projects(second)
+        self.assertEqual(changed['revision'], 2)
+        self.assertEqual(self.runtime.projects(second), changed)
+        self.assertEqual(self.runtime.projects(first), result)
+        with self.runtime.db() as db:
+            payload = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()[0]
+        self.assertEqual(json.loads(payload)['value']['sidebarOrder'], changed)
+
     def test_move_active_chat_preserves_directory_account_and_work(self):
         project = self.runtime.projects({'path': str(self.first)})
         folder = str(uuid.uuid4())
@@ -272,6 +301,16 @@ class ProjectContracts(unittest.TestCase):
             self.assertEqual(json.loads(entities[0]["payload"])["value"], project)
             self.assertEqual(request("/api/projects"), {"items": [project]})
             self.assertEqual(request("/api/state")["runtime"]["projects"], [project])
+            order = {"action": "reorder", "request_id": str(uuid.uuid4()),
+                     "expected_revision": 0, "groups": {"projects": [project["path"]]},
+                     "migration": True}
+            saved_order = request("/api/projects", order)
+            self.assertEqual(saved_order["revision"], 1)
+            self.assertEqual(request("/api/projects", order)["revision"], 1)
+            with self.assertRaises(urllib.error.HTTPError) as conflict:
+                request("/api/projects", {**order, "request_id": str(uuid.uuid4())})
+            self.assertEqual(conflict.exception.code, 409)
+            conflict.exception.close()
             lead = request("/api/leads", {"id": str(uuid.uuid4()), "cwd": project["path"]})
             self.assertEqual(lead["cwd"], project["path"])
             self.assertTrue(request("/api/projects", {"action": "remove", "path": project["path"]})["removed"])

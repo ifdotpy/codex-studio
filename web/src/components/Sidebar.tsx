@@ -83,6 +83,8 @@ export default function Sidebar(p: Props) {
     [projectsOpen, setProjectsOpen] = useState(true);
   const sorting = useSidebarOrder(
     `codex-sidebar-order:${p.data.stateDir}`,
+    p.data.runtime.sidebarOrder,
+    p.refresh,
     p.notify,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);

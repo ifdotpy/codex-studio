@@ -8085,6 +8085,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def _snapshot_from_db(self, db, include_work):
         from codex_peer_teams import snapshot as peer_snapshot
+        from codex_project_folders import sidebar_order
         agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
         team_names = {a["id"]: a["name"] for a in agents}
         for a in agents:
@@ -8123,6 +8124,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "agents": agents,
             "projects": self.projects(db=db)["items"],
             "projectOrganizationVersion": 1,
+            "sidebarOrder": sidebar_order(db),
             "peerTeamsVersion": 1,
             "peerTeams": peer_snapshot(self, db),
             "tasks": self.recent_tasks(db),
