@@ -467,7 +467,40 @@ describe("shared resource event transport", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
 
+    const beforeCacheInspection = ownerChannel.messages.length;
+    ownerChannel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "tab-cache-inspection",
+        resources: [local, ...bulkRefs],
+        tokenRates: false,
+        reset: true,
+      },
+    } as MessageEvent);
+    const cachedBaseline = ownerChannel.messages
+      .slice(beforeCacheInspection)
+      .find((message: any) => message.kind === "resource-event") as
+      | { event: { resources: unknown[] } }
+      | undefined;
+    const cachedResources = cachedBaseline?.event.resources ?? [];
+    expect(cachedResources).toHaveLength(129);
+    expect(cachedResources).toContainEqual(local);
+    expect(cachedResources).toContainEqual(bulkRefs.at(-1));
+    expect(cachedResources).not.toContainEqual(evictedRef);
+    ownerChannel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "tab-cache-inspection",
+        resources: [],
+        tokenRates: false,
+        reset: true,
+      },
+    } as MessageEvent);
+
     const sentBeforeLateSubscription = ownerChannel.messages.length;
+    const sourceCountBeforeLateSubscription = Source.instances.length;
     ownerChannel.onmessage?.({
       data: {
         kind: "subscriptions",
@@ -479,14 +512,16 @@ describe("shared resource event transport", () => {
       },
     } as MessageEvent);
 
-    expect(Source.instances).toHaveLength(2);
+    expect(Source.instances).toHaveLength(
+      sourceCountBeforeLateSubscription + 1,
+    );
     expect(
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)
         .some((message: any) => message.kind === "resource-event"),
     ).toBe(false);
 
-    Source.instances[1]!.emit("resources", {
+    Source.instances.at(-1)!.emit("resources", {
       protocol: 3,
       workspaceId,
       epoch: "epoch-one",
@@ -509,6 +544,79 @@ describe("shared resource event transport", () => {
         ),
     ).toBe(true);
     expect(localChanges).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("reconciles an unchanged owner baseline once after reconnect", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.useFakeTimers();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const local = { kind: "panel", agentId: "resume-panel" } as const;
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(local, onChange);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(Source.instances).toHaveLength(1);
+    const initial = {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 7,
+      reason: "initial",
+      resources: [local],
+    };
+    Source.instances[0]!.emit("resources", initial);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    Source.instances[0]!.onerror?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.emit("resources", {
+      ...initial,
+      reason: "reconnect",
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledTimes(2);
+
+    Source.instances[1]!.emit("resources", initial);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledTimes(2);
+
+    Channel.instances[0]!.onmessage?.({
+      data: {
+        kind: "resource-event",
+        workspaceId,
+        tabId: "tab-peer",
+        event: initial,
+      },
+    } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledTimes(2);
     stop();
   });
 });

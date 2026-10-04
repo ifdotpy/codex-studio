@@ -100,6 +100,7 @@ const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
 const resourceValues = new Map<string, Version>();
+const baselineReconciliations = new Set<string>();
 const transportStatusListeners = new Set<
   (status: ResourceConnectionState) => void
 >();
@@ -255,6 +256,11 @@ function pruneResourceVersions(active: Set<string>) {
   }
 }
 
+function requireBaselineReconciliation() {
+  for (const resource of localResources())
+    baselineReconciliations.add(resourceKey(resource));
+}
+
 function dispatchEvent(event: ResourceChangeEvent) {
   if (!workspaceId || event.workspaceId !== workspaceId) {
     setStatus("degraded");
@@ -276,12 +282,19 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
+    const key = resourceKey(resource);
     const version = {
       epoch: event.epoch,
       revision: event.revision,
     };
-    if (active.has(resourceKey(resource))) dispatchResource(resource, version);
+    if (active.has(key)) dispatchResource(resource, version);
     else rememberResourceVersion(resource, version);
+    if (
+      source &&
+      event.reason !== "change" &&
+      baselineReconciliations.delete(key)
+    )
+      pendingResources.add(key);
   }
   pruneResourceVersions(active);
   const local = localResources().map(resourceKey);
@@ -553,6 +566,7 @@ function scheduleReconnect() {
 }
 
 function reconnectNow() {
+  if (source) requireBaselineReconciliation();
   closeSource();
   scheduleReconnect();
 }
@@ -626,6 +640,7 @@ function openSource() {
     });
     connected.onerror = () => {
       if (source !== connected) return;
+      requireBaselineReconciliation();
       closeSource();
       scheduleReconnect();
     };
@@ -711,6 +726,7 @@ function startAsOwner() {
           navigator.onLine === false
         )
           return;
+        requireBaselineReconciliation();
         owner = true;
         startPeerHeartbeat();
         broadcast({ kind: "discover-subscriptions" });
@@ -735,6 +751,7 @@ function startAsOwner() {
 function releaseStream() {
   const release = releaseOwner;
   releaseOwner = undefined;
+  if (source) requireBaselineReconciliation();
   owner = false;
   independent = false;
   closeSource();
@@ -823,6 +840,7 @@ function stopCoordinator() {
   lastTokenRevision = undefined;
   lastTokenEvent = undefined;
   resourceValues.clear();
+  baselineReconciliations.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
   setStatus("connecting");
