@@ -263,7 +263,18 @@ class _RuntimeFixture:
 
     def limits(self, key: str) -> dict[str, object]:
         self.limit_reads.append(key)
-        return {"accountKey": key, "data": {"accountId": key}, "at": 2.0, "error": None}
+        return {
+            "accountKey": key,
+            "data": {
+                "accountId": key,
+                "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 27}},
+                "rateLimitsByLimitId": {"codex": {"limitId": "codex", "primary": {"usedPercent": 27}}},
+                "rateLimitResetCredits": {"availableCount": 0, "credits": []},
+                "providerExtension": {"payloadVersion": 2},
+            },
+            "at": 2.0,
+            "error": None,
+        }
 
     def catalog(self, key: str) -> dict[str, object]:
         self.catalog_reads.append(key)
@@ -415,6 +426,8 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(self.runtime.limit_reads, [])
         repeated = self.client.get("/api/limits?account_key=first&cached=1&cached=1")
         self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json()["data"]["rateLimits"]["primary"]["usedPercent"], 27)
+        self.assertEqual(repeated.json()["data"]["providerExtension"]["payloadVersion"], 2)
         self.assertEqual(self.runtime.limit_reads, ["first"])
 
     def test_models_workers_flag_requires_single_value_and_query_schema_is_visible(self) -> None:
