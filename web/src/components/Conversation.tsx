@@ -1,5 +1,6 @@
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
+import { nativeStatusMessage } from "./conversation/nativeStatus";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageQueue from "./MessageQueue";
 import { useMessageQueue } from "./useMessageQueue";
@@ -105,15 +106,6 @@ import { copyText } from "../clipboard/clipboard";
 
 function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function nativeStatusMessage(status: Agent["nativeStatus"] | undefined) {
-  if (!isJsonObject(status)) return undefined;
-  const error = status.error;
-  if (typeof error === "string") return error;
-  if (isJsonObject(error) && typeof error.message === "string")
-    return error.message;
-  return typeof status.message === "string" ? status.message : undefined;
 }
 
 // Message controls keep stable identities while their actions read the latest
