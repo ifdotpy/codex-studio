@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/apiContracts.ts", "src/apiContracts.test.ts"]
+}
