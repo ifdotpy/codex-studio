@@ -33,7 +33,14 @@ export function weeklyRunway(
           return bucket ? [[id, bucket]] : [];
         })
       : rateLimits
-        ? [[rateLimits.limitId || "codex", rateLimits]]
+        ? [
+            [
+              typeof rateLimits.limitId === "string"
+                ? rateLimits.limitId
+                : "codex",
+              rateLimits,
+            ],
+          ]
         : [];
   const windows = buckets.flatMap(([id, value]) => {
     const bucket = value;
