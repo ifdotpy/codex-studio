@@ -25,6 +25,7 @@ from studio_api.history.router import create_router
 from studio_api.history.models import (
     CheckpointCaptureResponse,
     SearchItemResponse,
+    SearchResponse,
     TranscriptAgent,
     TranscriptContextUsage,
     TranscriptInput,
@@ -469,6 +470,50 @@ class HistoryRouteTests(unittest.TestCase):
         self.assertEqual(parsed.historyBoundary, 1)
         self.assertNotIn("historyDelta", summary)
         producer.connection.close()
+
+    def test_search_response_contract_accepts_work_search_producer_output(self) -> None:
+        from codex_work import WorkMixin
+
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            "CREATE TABLE runtime_items(id TEXT, record TEXT);"
+            "CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED, agent UNINDEXED, kind UNINDEXED, body);"
+            "CREATE TABLE runtime_chat_messages(id TEXT, room TEXT, sender TEXT, text TEXT, seq INTEGER);"
+        )
+
+        class SearchProducer:
+            @contextmanager
+            def read_db(self) -> Iterator[sqlite3.Connection]:
+                yield connection
+
+            @staticmethod
+            def _search_phase(_db: sqlite3.Connection) -> str:
+                return "idle"
+
+            @staticmethod
+            def records(_db: sqlite3.Connection, table: str) -> list[dict[str, object]]:
+                if table == "agents":
+                    return [{"id": "agent-1", "rootId": "agent-1"}]
+                if table == "work":
+                    return [{
+                        "id": "task-1", "rootId": "agent-1", "title": "needle task",
+                    }]
+                return []
+
+            @staticmethod
+            def chat_rooms(_db: sqlite3.Connection, _agent: str | None = None) -> list[dict[str, str]]:
+                return []
+
+        produce = cast(Callable[..., dict[str, object]], WorkMixin.search_work)
+        result = produce(SearchProducer(), "needle", limit=20)
+        response = SearchResponse.model_validate(result)
+        self.assertEqual(response.query, "needle")
+        self.assertEqual(response.results[0].id, "task-1")
+        self.assertEqual(response.results[0].agent, "agent-1")
+        self.assertEqual(response.results[0].type, "work")
+        self.assertEqual(response.results[0].text, "needle task")
+        connection.close()
 
     def test_history_routes_through_core_context_sender_and_request_boundary(self) -> None:
         from studio_api.context import ApiContext
