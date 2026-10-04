@@ -40,7 +40,7 @@ class _StudioUvicornServer(uvicorn.Server):
 
     async def on_tick(self, counter: int) -> bool:
         should_exit = await super().on_tick(counter)
-        if time.monotonic() - self.context._maintenance_last >= 3600:
+        if self.context.runtime is not None and time.monotonic() - self.context._maintenance_last >= 3600:
             await asyncio.to_thread(_run_maintenance, self.context)
         return should_exit
 
@@ -53,10 +53,10 @@ def _run_maintenance(context: ApiContext) -> None:
         now = time.monotonic()
         if now - context._maintenance_last < 3600:
             return
-        context._maintenance_last = now
         runtime = context.runtime
         if runtime is None:
             return
+        context._maintenance_last = now
         from codex_execution import maintenance
         from codex_voice import prune_audio
 

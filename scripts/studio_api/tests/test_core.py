@@ -192,6 +192,12 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(maintenance_calls, [context.canvas.runtime])
         self.assertEqual(prune_calls, [context.canvas.root])
 
+    def test_maintenance_timer_waits_for_runtime_attachment(self) -> None:
+        context = ApiContext.for_schema()
+        with patch("studio_api.server.time.monotonic", return_value=3601.0):
+            _run_maintenance(context)
+        self.assertEqual(context._maintenance_last, 0.0)
+
     def test_http_trace_covers_response_without_recording_request_contents(self) -> None:
         trace_events: list[tuple[object, ...]] = []
         traces = ModuleType("codex_http_traces")
