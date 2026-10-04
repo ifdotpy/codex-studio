@@ -21,7 +21,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { errorText, get, post, type GetResult, type PostResult } from "../api";
+import { errorText, get, post, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
@@ -232,7 +232,7 @@ export function AccountTransferStatus({
   showCompleted = false,
   onAction,
 }: {
-  transfer?: PostResult<"/api/agents/account-transfer">;
+  transfer?: NonNullable<Agent["accountTransfer"]>;
   targetLabel?: string;
   pending?: boolean;
   showCompleted?: boolean;
@@ -540,7 +540,8 @@ export default function Accounts({
               <span className="account-picker-label">{title}</span>
               {transferring && (
                 <span aria-label="Account transfer in progress">
-                  {transfer.moved ?? transfer.completed}/{transfer.total}
+                  {teamTransfer?.moved ?? teamTransfer?.completed}/
+                  {teamTransfer?.total}
                 </span>
               )}
             </Button>
@@ -624,15 +625,16 @@ export default function Accounts({
                 </Menu.Item>
               ))}
             <AccountTransferStatus
-              transfer={teamTransfer}
+              transfer={teamTransfer ?? undefined}
               targetLabel={transferTarget?.email || transferTarget?.label}
               pending={!!pending}
               onAction={(kind) => {
-                if (typeof teamTransfer?.id !== "string") return;
+                const requestId = teamTransfer?.id;
+                if (typeof requestId !== "string") return;
                 void action(`${kind}-transfer`, () =>
                   post("/api/agents/account-transfer", {
                     action: kind,
-                    request_id: teamTransfer.id,
+                    request_id: requestId,
                   }),
                 );
               }}
