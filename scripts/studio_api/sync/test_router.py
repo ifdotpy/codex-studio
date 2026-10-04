@@ -96,6 +96,11 @@ class RuntimeStub:
         return response
 
 
+class TokenRatesStub:
+    def workspace_snapshot(self) -> dict[str, object]:
+        return {"rates": {"agent-a": {"rate": 8.5}}, "teams": {}}
+
+
 class ConnectedRequest(Request):
     async def is_disconnected(self) -> bool:
         return False
@@ -169,7 +174,10 @@ class SyncRouterTests(unittest.TestCase):
 
         async def read() -> bytes:
             if path.startswith("/api/sync/stream"):
-                response = await route.endpoint(request, SyncStreamQuery(protocol="1", scope="drafts", after=4))
+                protocol = "2" if "protocol=2" in path else "1"
+                response = await route.endpoint(
+                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4)
+                )
             else:
                 response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
             result = bytearray()
@@ -178,6 +186,22 @@ class SyncRouterTests(unittest.TestCase):
             return bytes(result)
 
         return asyncio.run(read()).decode()
+
+    def test_shared_stream_reads_token_rates_object_and_emits_snapshot(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+
+        async def stop_after_first_iteration(_delay: float) -> None:
+            context.runtime.closed = True
+
+        with (
+            patch("codex_token_rate.token_rates", return_value=TokenRatesStub()),
+            patch("studio_api.sync.router.asyncio.sleep", new=stop_after_first_iteration),
+        ):
+            body = self.read_stream(context, "/api/sync/stream?protocol=2&scope=drafts&after=0")
+        self.assertIn("event: token-rates", body)
+        self.assertIn('"rates": {"agent-a": {"rate": 8.5}}', body)
+        self.assertIn('"workspaceId": "workspace-a"', body)
 
     def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
         context = ContextStub()

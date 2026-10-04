@@ -25,7 +25,9 @@ from studio_api.sync.models import (
     AgentNativeStatus,
     DraftPushRequest,
     EntityCollection,
+    NativeProviderError,
     RuntimeSnapshot,
+    AccountRateLimitsDto,
     RequestEntityDto,
     RoomRadioSeen,
     SnapshotAgentDto,
@@ -320,6 +322,22 @@ class SyncEntityContractTests(unittest.TestCase):
         if resumed.nativeRelease is None or resumed.nativeRelease.phase is None:
             self.fail("resumed native release phase was omitted")
         self.assertEqual(resumed.nativeRelease.phase.value, "resumed")
+
+    def test_runtime_rate_limit_and_provider_error_fields_validate(self) -> None:
+        account_limits = AccountRateLimitsDto.model_validate({
+            "accountKey": "default", "at": 1791091211.7, "readAt": 1791091211.8,
+            "data": None, "error": None,
+        })
+        self.assertEqual(account_limits.readAt, 1791091211.8)
+        agent = SnapshotAgentDto.model_validate({
+            "id": "agent-a", "kind": "agent",
+            "lastCompletedTurnError": {
+                "message": "Usage limit reached: workspace_owner_credits_depleted (rateLimitExceeded).",
+                "codexErrorInfo": "rateLimitExceeded",
+            },
+        })
+        assert isinstance(agent.lastCompletedTurnError, NativeProviderError)
+        self.assertEqual(agent.lastCompletedTurnError.codexErrorInfo, "rateLimitExceeded")
 
     def test_projection_preserves_typed_runtime_and_request_receipts(self) -> None:
         provider_error: dict[str, JsonValue] = {

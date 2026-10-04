@@ -92,12 +92,18 @@ class StateFixtureResponseTests(unittest.TestCase):
 
     def test_full_and_chat_state_responses_validate_actual_runtime(self) -> None:
         base = f"http://127.0.0.1:{self.port}"
+        with urlopen(f"{base}/api/limits", timeout=20) as response:
+            self.assertEqual(response.status, 200)
         with urlopen(f"{base}/api/state", timeout=20) as response:
             initial = StateSnapshot.model_validate_json(response.read())
         with urlopen(f"{base}/api/sync/generations", timeout=20) as response:
             generations = SyncGenerationState.model_validate_json(response.read())
         self.assertEqual(generations.syncProtocol, 2)
         self.assertIs(generations.chatState, True)
+        self.assertIsNotNone(initial.runtime)
+        assert initial.runtime is not None
+        self.assertIsNotNone(initial.runtime.rateLimits.readAt)
+        self.assertIsNotNone(initial.runtime.rateLimitsByAccount["default"].readAt)
         self.assertGreaterEqual(len(initial.threads), 2)
         chat_id = "00000000-0000-4000-8000-000000000001"
         create_chat = Request(

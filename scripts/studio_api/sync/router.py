@@ -78,8 +78,8 @@ class SyncStoreContract(Protocol):
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]: ...
 
 
-class TokenRateReader(TypedDict):
-    workspace_snapshot: Callable[[], dict[str, object]]
+class TokenRateReader(Protocol):
+    def workspace_snapshot(self) -> dict[str, object]: ...
 
 
 def _sync_store(context: ApiContext) -> SyncStoreContract:
@@ -310,7 +310,7 @@ def create_router(context: ApiContext) -> APIRouter:
                     from codex_token_rate import token_rates
 
                     rate_reader_factory = cast(Callable[[object], TokenRateReader], token_rates)
-                    rates = await run_in_threadpool(rate_reader_factory(runtime)["workspace_snapshot"])
+                    rates = await run_in_threadpool(rate_reader_factory(runtime).workspace_snapshot)
                     if rates != rate_previous:
                         generation = cast(dict[str, object], current)
                         payload = {**rates, "protocol": 2, "workspaceId": generation["workspaceId"]}

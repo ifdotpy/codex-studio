@@ -709,7 +709,7 @@ class SnapshotAgentDto(AgentEntityDto):
     delivery: JsonValue | None = None
     disconnectRecovery: JsonValue | None = None
     expectedModeRevision: int | None = None
-    lastCompletedTurnError: str | None = None
+    lastCompletedTurnError: NativeProviderError | str | None = None
     lastEvent: str | None = None
     lastUpdated: float | None = None
     lazyAccountTransfer: JsonValue | None = None
@@ -1203,6 +1203,7 @@ class AccountRateLimitsDto(ContractModel):
     """Account-specific read envelope; provider rate-limit data stays JSON."""
     accountKey: str
     at: float | None
+    readAt: float | None = None
     data: RateLimitsDataDto | None = None
     error: str | None = None
 
