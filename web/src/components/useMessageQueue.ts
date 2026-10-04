@@ -1,15 +1,64 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, syncApi, ApiError, errorText, saved } from "../api";
+import { get, syncPost, ApiError, errorText } from "../api";
+import type { QueueItemDto } from "../api";
 import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
-import type { Json } from "../types";
-import type { QueueItem } from "./MessageQueue";
+import type { paths } from "../generated/api";
 
-type QueueView = {
-  items: QueueItem[];
-  revision?: string;
-  capabilities?: { reorder?: boolean; receipts?: boolean };
-};
+type QueueView =
+  paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
+type QueueMutation =
+  paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
+type QueueChange<T = QueueMutation> = T extends unknown
+  ? Omit<T, "agent" | "expected_revision" | "request_id">
+  : never;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
+}
+
+function readQueueRequest(key: string): unknown {
+  let stored: string | null;
+  try {
+    stored = localStorage.getItem(key);
+  } catch {
+    return "";
+  }
+  if (stored === null) return null;
+  try {
+    const request: unknown = JSON.parse(stored);
+    return request;
+  } catch {
+    return stored;
+  }
+}
+
+function isQueueMutation(value: unknown): value is QueueMutation {
+  if (
+    !isRecord(value) ||
+    typeof value.agent !== "string" ||
+    typeof value.request_id !== "string" ||
+    typeof value.expected_revision !== "string"
+  )
+    return false;
+  if (value.action === "cancel")
+    return (
+      typeof value.id === "string" && typeof value.expectedText === "string"
+    );
+  if (value.action === "edit")
+    return (
+      typeof value.id === "string" &&
+      typeof value.expectedText === "string" &&
+      typeof value.text === "string"
+    );
+  return value.action === "reorder" && isStringArray(value.ordered_ids);
+}
 
 export function useMessageQueue(p: {
   id: string | null;
@@ -36,28 +85,25 @@ export function useMessageQueue(p: {
   const [failure, setFailure] = useState({ key, text: "" });
   const [pendingState, setPending] = useState<{
     key: string;
-    request: Json | null;
+    request: unknown;
   }>({
     key,
-    request: saved<Json | null>(key, null),
+    request: readQueueRequest(key),
   });
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
   const serial = useRef(0);
   const view = state.key === key ? state.view : { items: [] };
   const pending =
-    pendingState.key === key
-      ? pendingState.request
-      : saved<Json | null>(key, null);
+    pendingState.key === key ? pendingState.request : readQueueRequest(key);
 
   const reload = useCallback(async () => {
     if (!p.enabled || !p.id) return;
     const attempt = ++serial.current;
-    const result = await api<QueueView>(
-      `/api/queue?agent=${encodeURIComponent(p.id)}`,
-      undefined,
-      { workspaceId: p.workspaceId },
-    );
+    const result = await get("/api/queue", {
+      query: { agent: p.id },
+      workspaceId: p.workspaceId,
+    });
     if (currentKey.current === key && attempt === serial.current) {
       setState((previous) =>
         previous.key === key &&
@@ -72,7 +118,7 @@ export function useMessageQueue(p: {
 
   useEffect(() => {
     serial.current++;
-    setPending({ key, request: saved<Json | null>(key, null) });
+    setPending({ key, request: readQueueRequest(key) });
     if (!p.enabled || !p.id) return;
     let active = true;
     let polling = false;
@@ -103,15 +149,17 @@ export function useMessageQueue(p: {
     };
   }, [key, reload, p.enabled, p.id, p.pendingDelivery, p.refreshDelivery]);
 
-  const clearRequest = async (request: Json) => {
-    const next = await updateLocalDraft<Json | null>(key, null, (current) =>
-      current?.request_id === request.request_id ? null : current,
+  const clearRequest = async (request: QueueMutation) => {
+    const next = await updateLocalDraft<unknown>(key, null, (current) =>
+      isQueueMutation(current) && current.request_id === request.request_id
+        ? null
+        : current,
     );
     if (currentKey.current === key) setPending({ key, request: next });
   };
   useEffect(() => {
     const syncPending = () =>
-      setPending({ key, request: saved<Json | null>(key, null) });
+      setPending({ key, request: readQueueRequest(key) });
     const changed = (event: StorageEvent) => {
       if (event.key === key || event.key === null) syncPending();
     };
@@ -123,7 +171,7 @@ export function useMessageQueue(p: {
       stop();
     };
   }, [key]);
-  const execute = async (request: Json) => {
+  const execute = async (request: QueueMutation) => {
     if (locks.current.has(key))
       throw new Error("Wait for the current queue change.");
     if (!p.id || request.agent !== p.id)
@@ -132,7 +180,9 @@ export function useMessageQueue(p: {
     setBusy(key);
     serial.current++;
     try {
-      await syncApi("/api/queue", request, { workspaceId: p.workspaceId });
+      await syncPost("/api/queue", request, {
+        workspaceId: p.workspaceId,
+      });
       await clearRequest(request);
       if (request.action === "cancel") p.observed?.([request.id]);
       if (request.action === "edit") p.edited?.(request.id, request.text);
@@ -156,10 +206,11 @@ export function useMessageQueue(p: {
       setBusy((value) => (value === key ? null : value));
     }
   };
-  const mutate = async (change: Json) => {
-    const existing = saved<Json | null>(key, null);
+  const mutate = async (change: QueueChange) => {
+    if (!p.id) throw new Error("The queue belongs to another chat.");
+    const existing = readQueueRequest(key);
     setPending({ key, request: existing });
-    if (existing)
+    if (existing !== null)
       throw new Error(
         "Retry the previous queue change before making another change.",
       );
@@ -172,10 +223,10 @@ export function useMessageQueue(p: {
       agent: p.id,
       expected_revision: view.revision,
       request_id: crypto.randomUUID(),
-    };
+    } satisfies QueueMutation;
     // Save before HTTP so a lost response or reload reuses the same operation.
-    await updateLocalDraft<Json | null>(key, null, (current) => {
-      if (current)
+    await updateLocalDraft<unknown>(key, null, (current) => {
+      if (current !== null)
         throw new Error(
           "Retry the previous queue change before making another change.",
         );
@@ -193,11 +244,15 @@ export function useMessageQueue(p: {
     pending,
     reload,
     retry: async () => {
-      const request = saved<Json | null>(key, null);
+      const request = readQueueRequest(key);
       setPending({ key, request });
-      if (request) await execute(request);
+      if (request !== null) {
+        if (!isQueueMutation(request))
+          throw new Error("The saved queue change cannot be verified.");
+        await execute(request);
+      }
     },
-    edit: async (item: QueueItem, text: string) => {
+    edit: async (item: QueueItemDto, text: string) => {
       const current = view.items.find((row) => row.id === item.id);
       await mutate({
         action: "edit",
@@ -206,7 +261,7 @@ export function useMessageQueue(p: {
         expectedText: current?.text === text.trim() ? current.text : item.text,
       });
     },
-    cancel: (item: QueueItem) =>
+    cancel: (item: QueueItemDto) =>
       mutate({ action: "cancel", id: item.id, expectedText: item.text }),
     reorder: (ids: string[]) => mutate({ action: "reorder", ordered_ids: ids }),
   };

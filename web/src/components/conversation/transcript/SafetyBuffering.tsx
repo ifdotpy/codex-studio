@@ -2,7 +2,7 @@ import ErrorDescription from "../../ErrorDescription";
 import { useRef, useState } from "react";
 import { Button, Modal } from "@mantine/core";
 import { Clock3 } from "lucide-react";
-import { api, errorText } from "../../../api";
+import { post, errorText } from "../../../api";
 import type { Agent } from "../../../types";
 
 export default function SafetyBuffering({ agent }: { agent: Agent }) {
@@ -37,7 +37,7 @@ export default function SafetyBuffering({ agent }: { agent: Agent }) {
     setPending(true);
     setError("");
     try {
-      await api(
+      await post(
         "/api/action",
         {
           id: agent.id,

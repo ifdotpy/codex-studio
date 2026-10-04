@@ -1,25 +1,40 @@
-import { api, syncApi, ApiError } from "../api";
+import { get, syncPost, ApiError } from "../api";
 import type { Message, Snapshot } from "../types";
 import { transcriptMessages } from "../hooks";
 import { stopRemovedMessage, type OutgoingMessage } from "../sync/send";
+import type { paths } from "../generated/api";
 import {
   isRemovedMessage,
   removeMessageFromDevice,
   saveRemovedMessage,
 } from "./removedMessages";
-import type { QueueItem } from "./MessageQueue";
 
 export const isSendingMessage = (message: Message) =>
   message.role === "user" &&
   ["sending", "reserved", "dispatching"].includes(message.deliveryStatus || "");
 
-type Queue = {
-  items: QueueItem[];
-  revision: string;
-  capabilities?: { receipts?: boolean };
-};
+type Queue =
+  paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
+type QueueMutation =
+  paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
 type Target = { chat: string; message: Message; queue?: Queue; kind?: string };
 type Scope = { stateDir: string; workspaceId?: string; kind?: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isQueueCancellation(value: unknown): value is QueueMutation {
+  return (
+    isRecord(value) &&
+    value.action === "cancel" &&
+    typeof value.agent === "string" &&
+    typeof value.id === "string" &&
+    typeof value.expectedText === "string" &&
+    typeof value.expected_revision === "string" &&
+    typeof value.request_id === "string"
+  );
+}
 
 export async function removeSendingMessage(scope: Scope, target: Target) {
   const { chat, message } = target;
@@ -32,15 +47,17 @@ export async function removeSendingMessage(scope: Scope, target: Target) {
   if (kind === "agent" && clientId && message.deliveryStatus === "sending") {
     const key = `studio-remove-sending:${JSON.stringify([scope.stateDir, scope.workspaceId, chat, clientId])}`;
     const saved = localStorage.getItem(key);
-    let request = saved ? JSON.parse(saved) : null;
+    const parsed: unknown = saved ? JSON.parse(saved) : null;
+    if (parsed !== null && !isQueueCancellation(parsed))
+      throw new Error("The saved message cancellation cannot be verified.");
+    let request: QueueMutation | null = parsed;
     if (!request) {
       const queue =
         target.queue ||
-        (await api<Queue>(
-          `/api/queue?agent=${encodeURIComponent(chat)}`,
-          undefined,
-          { workspaceId: scope.workspaceId },
-        ));
+        (await get("/api/queue", {
+          query: { agent: chat },
+          workspaceId: scope.workspaceId,
+        }));
       const row = queue.items.find((item) => item.id === clientId);
       // Internal follow-ups continue. Only user input can be cancelled here.
       if (
@@ -55,13 +72,13 @@ export async function removeSendingMessage(scope: Scope, target: Target) {
           expectedText: row.text,
           expected_revision: queue.revision,
           request_id: crypto.randomUUID(),
-        };
+        } satisfies QueueMutation;
         localStorage.setItem(key, JSON.stringify(request));
       }
     }
     if (request) {
       try {
-        await syncApi("/api/queue", request, {
+        await syncPost("/api/queue", request, {
           workspaceId: scope.workspaceId,
         });
         cancelled = true;
@@ -124,11 +141,10 @@ export async function removeAllSendingMessages(
     Array.from({ length: Math.min(4, agents.length) }, async () => {
       while (next < agents.length) {
         const agent = agents[next++];
-        const queue = await api<Queue>(
-          `/api/queue?agent=${encodeURIComponent(agent.id)}`,
-          undefined,
-          { workspaceId: scope.workspaceId },
-        );
+        const queue = await get("/api/queue", {
+          query: { agent: agent.id },
+          workspaceId: scope.workspaceId,
+        });
         for (const row of queue.items) {
           if ((row.requestedDelivery || row.delivery) === "after_turn")
             continue;
@@ -147,11 +163,10 @@ export async function removeAllSendingMessages(
           });
         }
         if (["running", "starting", "approval"].includes(agent.status)) {
-          const page = await api<{ items: Message[] }>(
-            `/api/transcript/page?id=${encodeURIComponent(agent.id)}`,
-            undefined,
-            { workspaceId: scope.workspaceId },
-          );
+          const page = await get("/api/transcript/page", {
+            query: { id: agent.id },
+            workspaceId: scope.workspaceId,
+          });
           for (const message of transcriptMessages(page.items, agent.id))
             if (isSendingMessage(message)) include({ chat: agent.id, message });
         }

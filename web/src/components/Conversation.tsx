@@ -33,7 +33,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { api, errorText } from "../api";
+import { get, post, errorText } from "../api";
 import { refreshProjection } from "../sync/client";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
@@ -406,21 +406,19 @@ export default function Conversation(p: {
       ].filter((message) => !removed.hidden(message)),
     [delivery.items, removed.hidden, removed.restored],
   );
+  const historyAgentId = p.id;
   const promptRecall = usePromptRecall(
     `${p.data.stateDir}:${kind}:${p.id}:${historyVersion}`,
     p.room ? [] : items,
     () => p.getDraft(p.id || "new"),
     p.setDraft,
-    p.agent?.source === "managed" && kind === "agent" && p.id
+    p.agent?.source === "managed" && kind === "agent" && historyAgentId
       ? {
           before: before ? String(before) : null,
           load: async (cursor) => {
-            const params = new URLSearchParams({
-              id: p.id!,
-              before: cursor,
-              limit: "500",
+            const page = await get("/api/transcript/page", {
+              query: { id: historyAgentId, before: cursor, limit: 500 },
             });
-            const page = await api(`/api/transcript/page?${params}`);
             if (page.unavailable) throw new Error(page.unavailable);
             if (
               historyVersion &&
@@ -431,9 +429,10 @@ export default function Conversation(p: {
                 "The conversation changed. Open its message history again.",
               );
             return {
-              messages: transcriptMessages(page.items || [], p.id).filter(
-                (item) => !removed.hidden(item),
-              ),
+              messages: transcriptMessages(
+                page.items || [],
+                historyAgentId,
+              ).filter((item) => !removed.hidden(item)),
               before: page.nextCursor || null,
             };
           },
@@ -882,11 +881,8 @@ export default function Conversation(p: {
     try {
       let original = message;
       if (message.truncated) {
-        const query = new URLSearchParams({
-          id: chat || "",
-          message_id: message.id,
-        });
-        const full = await api(`/api/transcript/item?${query}`, undefined, {
+        const full = await get("/api/transcript/item", {
+          query: { id: chat || "", message_id: message.id },
           timeoutMs: 15000,
         });
         if (full.truncated || typeof full.text !== "string")
@@ -911,16 +907,18 @@ export default function Conversation(p: {
   const branch = useMessageAction(
     async (message: Message, draft?: { before: boolean; text: string }) => {
       if (branchLock.current) return;
+      const agentId = p.id;
+      if (!agentId) return;
       branchLock.current = true;
       const sourceId = draft?.before
         ? message.id
         : message.sourceId || message.id;
-      const key = `${p.id}:${sourceId}:${draft?.before ? "before" : "after"}`;
+      const key = `${agentId}:${sourceId}:${draft?.before ? "before" : "after"}`;
       branchRequests.current[key] ||= crypto.randomUUID();
       setBranching(true);
       try {
-        const response = await api("/api/branch", {
-          agent: p.id,
+        const response = await post("/api/branch", {
+          agent: agentId,
           message_id: sourceId,
           id: branchRequests.current[key],
           ...(draft?.before ? { before: true } : {}),
@@ -1976,11 +1974,12 @@ export default function Conversation(p: {
                           }
                           aria-busy={stopping}
                           onClick={() => {
-                            if (stopping) return;
+                            const agentId = p.id;
+                            if (stopping || !agentId) return;
                             const attempt = ++stopAttempt.current;
                             setStopping(true);
-                            void api("/api/stop", {
-                              id: p.id,
+                            void post("/api/stop", {
+                              id: agentId,
                               descendants: false,
                             })
                               .then(p.refresh)

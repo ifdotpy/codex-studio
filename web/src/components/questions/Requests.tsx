@@ -3,7 +3,7 @@ import ErrorDescription from "../ErrorDescription";
 import { Button } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, errorText, saved } from "../../api";
+import { post as apiPost, errorText, saved } from "../../api";
 import { writeLocalDraft } from "../../sync/localDraft";
 import type { Json, Agent } from "../../types";
 import "./request-questions.css";
@@ -255,7 +255,7 @@ function RequestCard({
     pending.current = true;
     setSending(true);
     try {
-      await api("/api/answer", { ...body, id: r.id });
+      await apiPost("/api/answer", { ...body, id: r.id });
       answerDrafts.delete(draftKey);
       const storageError = writeLocalDraft(
         `studio-answer-draft:${draftKey}`,
@@ -277,10 +277,12 @@ function RequestCard({
     pending.current = true;
     setSending(true);
     try {
-      await api(remove ? "/api/questions/delete" : "/api/questions/defer", {
-        id: r.id,
-        deferred: !r.deferred,
-      });
+      if (remove) await apiPost("/api/questions/delete", { id: r.id });
+      else
+        await apiPost("/api/questions/defer", {
+          id: r.id,
+          deferred: !r.deferred,
+        });
       if (mounted.current) setOpen(false);
       await refresh();
     } catch (error) {
