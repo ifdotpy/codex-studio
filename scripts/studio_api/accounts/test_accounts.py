@@ -642,6 +642,24 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Catalog is unavailable"})
 
+    def test_models_route_forwards_only_singleton_explicit_retry(self) -> None:
+        from codex_catalog import DISPLAY_RETRY
+
+        seen: list[bool] = []
+
+        def catalog(_account_key: str) -> dict[str, object]:
+            seen.append(DISPLAY_RETRY.get())
+            return {"data": []}
+
+        with patch.object(self.runtime, "catalog", side_effect=catalog):
+            self.assertEqual(self.client.get("/api/models").status_code, 200)
+            self.assertEqual(self.client.get("/api/models?retry=1").status_code, 200)
+            self.assertEqual(
+                self.client.get("/api/models?retry=1&retry=1").status_code,
+                200,
+            )
+        self.assertEqual(seen, [False, True, False])
+
     def test_real_reset_producer_reuses_exact_request_after_retry(self) -> None:
         fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
         sys.path.insert(0, str(fixture_path.parent))
