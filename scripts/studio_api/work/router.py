@@ -143,7 +143,8 @@ def create_router(context: ApiContext) -> APIRouter:
         query = _query(AgentQuery, request)
         return context.send(request, context.runtime.work_action(query.agent, {"action": "list"}))
 
-    @router.post("/api/work", response_model=WorkItem, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/work", response_model=WorkItem | WorkList,
+                 responses={400: {"model": ErrorResponse}})
     def work_action(request: Request, body: WorkBody) -> Response:
         values = _body(body)
         return context.send(request, context.runtime.work_action(values.get("agent"), values, values.get("id")))

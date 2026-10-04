@@ -144,6 +144,19 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.work_action.assert_called_once_with("agent-1", work_body, "operation-1")
         context.runtime.queue_action.assert_called_once_with("agent-1", queue_body)
 
+    def test_post_work_list_action_preserves_legacy_list_response(self) -> None:
+        context = FakeContext()
+        context.runtime.work_action = Mock(return_value={"items": [], "tasks": []})
+        response = make_client(context).post("/api/work", json={
+            "agent": "agent-1", "action": "list",
+        })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"items": [], "tasks": []})
+        context.runtime.work_action.assert_called_once_with(
+            "agent-1", {"agent": "agent-1", "action": "list"}, None,
+        )
+
     def test_profile_and_rule_editor_payload_fields_are_preserved(self) -> None:
         context = FakeContext()
         context.runtime.profiles = Mock(return_value={"id": "profile-1", "deleted": None})
