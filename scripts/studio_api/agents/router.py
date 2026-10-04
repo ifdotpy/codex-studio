@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
 from studio_api.context import ApiContext
-from studio_api.sync.models import AgentEntityDto
 from codex_sync_entities import project
 
 from .models import (
+    AgentResponse,
     AgentMode,
     AccountSelectionRequest,
     AccountTransferRequest,
@@ -129,7 +129,7 @@ def create_router(context: ApiContext) -> APIRouter:
             raise HTTPException(status_code=404, detail="Not found")
         return cast(AgentRuntime, runtime)
 
-    @router.post("/api/leads", response_model=AgentEntityDto)
+    @router.post("/api/leads", response_model=AgentResponse)
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
@@ -140,14 +140,14 @@ def create_router(context: ApiContext) -> APIRouter:
             created["empty"] = runtime.empty_lead(db, created)
         return context.send(http_request, project("agent", created))
 
-    @router.post("/api/agents", response_model=AgentEntityDto)
+    @router.post("/api/agents", response_model=AgentResponse)
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, project("agent", created))
 
-    @router.post("/api/conversation", response_model=AgentEntityDto)
+    @router.post("/api/conversation", response_model=AgentResponse)
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
         runtime = current_runtime()
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
@@ -165,7 +165,7 @@ def create_router(context: ApiContext) -> APIRouter:
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
         return context.send(http_request, runtime.configure(body.id, request))
 
-    @router.post("/api/agents/account", response_model=AgentEntityDto)
+    @router.post("/api/agents/account", response_model=AgentResponse)
     def select_account(http_request: Request, body: AccountSelectionRequest) -> Response:
         runtime = current_runtime()
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
@@ -226,7 +226,7 @@ def create_router(context: ApiContext) -> APIRouter:
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))
         return context.send(http_request, runtime.native_command_action(request))
 
-    @router.post("/api/import", response_model=AgentEntityDto)
+    @router.post("/api/import", response_model=AgentResponse)
     def import_thread(http_request: Request, body: ImportRequest) -> Response:
         runtime = current_runtime()
         request = cast(dict[str, JsonValue], body.model_dump(mode="json", exclude_unset=True))

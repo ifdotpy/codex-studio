@@ -1,10 +1,17 @@
 """FastAPI-level tests for agent route dispatch and generated query contracts."""
 
+from __future__ import annotations
+
+from contextlib import contextmanager
+import sqlite3
+import threading
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
+from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 from types import SimpleNamespace
+from typing import Iterator
 from unittest.mock import patch
 import unittest
 
@@ -17,6 +24,7 @@ class _RuntimeFixture:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.invalid_stop_response = False
+        self.lock = threading.RLock()
 
     def stop(self, agent_id: str, descendants: bool) -> dict[str, list[str]]:
         self.calls.append(("stop", (agent_id, descendants)))
@@ -27,6 +35,33 @@ class _RuntimeFixture:
     def native_action(self, *args: object) -> dict[str, object]:
         self.calls.append(("native_action", args))
         return {}
+
+    def create(self, data: dict[str, object], parent: str | None = None) -> dict[str, object]:
+        self.calls.append(("create", (data, parent)))
+        return _agent_record()
+
+    def set_account(
+        self,
+        agent_id: str,
+        account_key: str,
+        cwd: str | None = None,
+    ) -> dict[str, object]:
+        self.calls.append(("set_account", (agent_id, account_key, cwd)))
+        return _agent_record()
+
+    @contextmanager
+    def db(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(":memory:")
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def agent(self, _agent_id: str, _db: sqlite3.Connection) -> dict[str, object]:
+        return _agent_record()
+
+    def empty_lead(self, _db: sqlite3.Connection, _agent: dict[str, object]) -> bool:
+        return False
 
     def capabilities(self, agent_id: str | None) -> dict[str, object]:
         self.calls.append(("capabilities", (agent_id,)))
@@ -70,12 +105,46 @@ class _RuntimeFixture:
         }
 
 
-def _app() -> tuple[FastAPI, _RuntimeFixture, ApiContext]:
+def _agent_record() -> dict[str, object]:
+    return {
+        "id": "agent-created",
+        "status": "idle",
+        "source": "managed",
+        "kind": "agent",
+        "name": "Worker",
+        "isLead": False,
+    }
+
+
+class _SyncDbFixture:
+    def execute(self, _query: str, _parameters: tuple[int]) -> _SyncCursorFixture:
+        return _SyncCursorFixture()
+
+
+class _SyncCursorFixture:
+    def fetchall(self) -> list[tuple[str, str, int, str, int]]:
+        return [("agent", "agent-created", 42, '{"id":"agent-created"}', 0)]
+
+
+class _SyncFixture:
+    @contextmanager
+    def connect(self) -> Iterator[_SyncDbFixture]:
+        yield _SyncDbFixture()
+
+
+def _app(*, include_sync_envelope: bool = False) -> tuple[FastAPI, _RuntimeFixture, ApiContext]:
     runtime = _RuntimeFixture()
     context = ApiContext.for_schema()
     setattr(context.canvas, "runtime", runtime)
+    if include_sync_envelope:
+        setattr(context, "sync", lambda: _SyncFixture())
     app = FastAPI()
     app.include_router(create_router(context))
+    if include_sync_envelope:
+        @app.middleware("http")
+        async def add_sync_cursor(request: Request, call_next: RequestResponseEndpoint) -> Response:
+            request.scope["studio_sync_entities_after"] = 0
+            return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
     async def legacy_validation_error(request: Request, _error: RequestValidationError) -> Response:
@@ -239,6 +308,38 @@ def test_transfer_response_preserves_receipt_identity_and_filters_internal_state
         assert private_marker not in serialized
 
 
+def test_agent_create_and_select_accept_the_shared_sync_envelope() -> None:
+    app, runtime, _context = _app(include_sync_envelope=True)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/agents",
+        json={"id": "9750de4d-a148-49a7-a15c-14887ab55bdc", "prompt": "Do work", "parent": "lead"},
+    )
+    selected = client.post(
+        "/api/agents/account",
+        json={"id": "agent-created", "account_key": "account-2"},
+    )
+
+    for response in (created, selected):
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] == "agent-created"
+        assert response.json()["_syncEntities"] == [
+            {"id": "entity:agent:agent-created", "seq": 42, "payload": '{"id":"agent-created"}', "_deleted": False}
+        ]
+    assert runtime.calls[0][0] == "create"
+    assert runtime.calls[1] == ("set_account", ("agent-created", "account-2", None))
+
+
+def test_agent_routes_register_response_dto_with_sync_envelope() -> None:
+    app, _runtime, _context = _app()
+    schema = app.openapi()
+    response_name = schema["paths"]["/api/agents"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+
+    assert response_name == "AgentResponse"
+    assert "_syncEntities" in schema["components"]["schemas"][response_name]["properties"]
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -260,3 +361,9 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_transfer_projection_preserves_identity_and_filters_internal_state(self) -> None:
         test_transfer_response_preserves_receipt_identity_and_filters_internal_state()
+
+    def test_agent_create_and_select_accept_sync_envelope(self) -> None:
+        test_agent_create_and_select_accept_the_shared_sync_envelope()
+
+    def test_agent_route_schema_includes_sync_envelope(self) -> None:
+        test_agent_routes_register_response_dto_with_sync_envelope()

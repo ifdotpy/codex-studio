@@ -7,6 +7,11 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.sync.models import AgentEntityDto
+
+
+class AgentResponse(AgentEntityDto, ResponseModel):
+    """Agent entity response that also accepts the HTTP sync envelope."""
 
 
 class AgentRole(ContractStrEnum):
