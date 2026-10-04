@@ -24,6 +24,7 @@ class SchedulerCadence(unittest.TestCase):
         runtime.rules_tick = lambda: None
         runtime.capacity_tick = lambda: None
         runtime.usage_resume_tick = lambda: None
+        runtime.accepted_archive_tick = lambda: None
         dispatched = []
         runtime.dispatch = lambda: dispatched.append(time.monotonic())
         runtime.changed.set()
