@@ -213,6 +213,18 @@ test("project tree ui", async ({ page: runnerPage }) => {
       group("assistant")
         .locator("[data-chat]")
         .evaluateAll((rows) => rows.map((row) => row.dataset.chat));
+    const waitForOrderReceipt = () =>
+      expect
+        .poll(() =>
+          page.evaluate(() =>
+            Object.keys(localStorage).some(
+              (key) =>
+                key.startsWith("codex-sidebar-order:") &&
+                key.endsWith(":pending"),
+            ),
+          ),
+        )
+        .toBe(false);
     const beforeProjects = await projectOrder();
     await waitFor(
       async () =>
@@ -356,17 +368,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
       "Keyboard reorder stays below pins",
     );
     // The visual order is optimistic; wait for its receipt before the next move.
-    await expect
-      .poll(() =>
-        page.evaluate(() =>
-          Object.keys(localStorage).some(
-            (key) =>
-              key.startsWith("codex-sidebar-order:") &&
-              key.endsWith(":pending"),
-          ),
-        ),
-      )
-      .toBe(false);
+    await waitForOrderReceipt();
     const beforeFailure = await chatOrder();
     await page.evaluate(() => {
       window.originalSetItem = Storage.prototype.setItem;
@@ -724,13 +726,16 @@ test("project tree ui", async ({ page: runnerPage }) => {
       await expect(folderTarget).toHaveAttribute("data-drop-edge", "before");
       await page.mouse.up();
       await expect.poll(() => rootFolders(page)).not.toEqual(beforeFolderOrder);
+      await waitForOrderReceipt();
+      const savedFolderOrder = await rootFolders(page);
+      assert.notDeepEqual(savedFolderOrder, beforeFolderOrder);
       await expect
         .poll(() => rootFolders(secondPage))
-        .toEqual(await rootFolders(page));
+        .toEqual(savedFolderOrder);
       await secondPage.reload();
       await expect
         .poll(() => rootFolders(secondPage))
-        .toEqual(await rootFolders(page));
+        .toEqual(savedFolderOrder);
       await secondContext.close();
     }
     await page
