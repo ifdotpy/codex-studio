@@ -1,8 +1,8 @@
 import { Button, Select, Textarea } from "@mantine/core";
 import { useRef, useState } from "react";
-import { api, ApiError, errorText, save, saved } from "../api";
+import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
 import { useMessages } from "../hooks";
-import type { Json, Room, Snapshot } from "../types";
+import type { Room, Snapshot } from "../types";
 import AgentAvatar from "./agents/AgentAvatar";
 import MessageDate from "./conversation/transcript/MessageDate";
 import Requests from "./questions/Requests";
@@ -16,7 +16,17 @@ import {
 import "./radio-chat.css";
 
 // Keep the exact command across navigation and reloads until the server confirms it.
-type Attempt = { body: Json; acknowledged?: boolean; rejected?: boolean };
+type PeerTeamRequest = PostBody<"/api/peer-teams">;
+type RadioRequest = Extract<PeerTeamRequest, { action: "radio" }>;
+type RadioActionInput =
+  | { action: "pass"; target: string }
+  | { action: "stop" }
+  | { action: "send"; text: string; target: string; rounds: 1 | 2 };
+type Attempt = {
+  body: RadioRequest;
+  acknowledged?: boolean;
+  rejected?: boolean;
+};
 export default function RadioChat({
   room,
   data,
@@ -64,7 +74,7 @@ export default function RadioChat({
     remember(next);
     try {
       if (!next.acknowledged && !next.rejected) {
-        await api("/api/peer-teams", next.body, { timeoutMs: 15000 });
+        await post("/api/peer-teams", next.body, { timeoutMs: 15000 });
         next = { ...next, acknowledged: true };
         remember(next);
       }
@@ -93,7 +103,7 @@ export default function RadioChat({
       setPending(false);
     }
   };
-  const command = (action: string, fields: Json = {}) => {
+  const command = (input: RadioActionInput) => {
     if (attempt || locked.current) return;
     const path =
       room.projectPath ||
@@ -102,17 +112,38 @@ export default function RadioChat({
       notify("The shared chat project is unavailable. Refresh Studio.");
       return;
     }
-    void execute({
-      body: {
-        action: "radio",
-        radio_action: action,
-        path,
-        team_id: radio.teamId || room.peerTeamId,
-        request_id: crypto.randomUUID(),
-        expected_revision: radio.revision,
-        ...fields,
-      },
-    });
+    const base = {
+      action: "radio" as const,
+      path,
+      team_id: radio.teamId || room.peerTeamId,
+      request_id: crypto.randomUUID(),
+      expected_revision: radio.revision,
+    };
+    switch (input.action) {
+      case "pass":
+        void execute({
+          body: {
+            ...base,
+            radio_action: "pass",
+            target: input.target,
+          },
+        });
+        break;
+      case "stop":
+        void execute({ body: { ...base, radio_action: "stop" } });
+        break;
+      case "send":
+        void execute({
+          body: {
+            ...base,
+            radio_action: "send",
+            text: input.text,
+            target: input.target,
+            rounds: input.rounds,
+          },
+        });
+        break;
+    }
   };
   const busy =
     !!radio.active || (radio.status !== "idle" && radio.status !== "blocked");
@@ -161,7 +192,7 @@ export default function RadioChat({
                   size="compact-xs"
                   variant="subtle"
                   disabled={frozen || radio.status === "stopping"}
-                  onClick={() => command("pass", { target: agent.id })}
+                  onClick={() => command({ action: "pass", target: agent.id })}
                 >
                   Reply next
                 </Button>
@@ -173,7 +204,7 @@ export default function RadioChat({
             size="compact-xs"
             variant="subtle"
             disabled={frozen || radio.status === "stopping"}
-            onClick={() => command("stop")}
+            onClick={() => command({ action: "stop" })}
           >
             {radio.status === "stopping" ? "Stopping…" : "Stop"}
           </Button>
@@ -240,7 +271,8 @@ export default function RadioChat({
         className="radio-composer"
         onSubmit={(e) => {
           e.preventDefault();
-          if (canSend) command("send", { text: draft, target, rounds: 1 });
+          if (canSend)
+            command({ action: "send", text: draft, target, rounds: 1 });
         }}
       >
         {radio.error && <p role="alert">{radio.error}</p>}
@@ -280,7 +312,7 @@ export default function RadioChat({
               canSend
             ) {
               e.preventDefault();
-              command("send", { text: draft, target, rounds: 1 });
+              command({ action: "send", text: draft, target, rounds: 1 });
             }
           }}
         />
@@ -313,7 +345,7 @@ export default function RadioChat({
               disabled={!canSend}
               title="Two replies each, four replies total"
               onClick={() =>
-                command("send", { text: draft, target, rounds: 2 })
+                command({ action: "send", text: draft, target, rounds: 2 })
               }
             >
               Discuss (4 replies)

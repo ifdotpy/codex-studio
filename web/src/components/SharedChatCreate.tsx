@@ -1,6 +1,6 @@
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText, save, saved } from "../api";
+import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
 import type { Json, Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
@@ -8,7 +8,15 @@ import { ModelPicker, type ModelOption } from "./ModelPicker";
 import "./shared-chat-create.css";
 
 type Participant = { account_key: string; model: string; effort?: string };
-type Creation = { body: Json; roomId?: string; rejected?: boolean };
+type SharedCreateRequest = Extract<
+  PostBody<"/api/peer-teams">,
+  { action: "radio"; radio_action: "create" }
+>;
+type Creation = {
+  body: SharedCreateRequest;
+  roomId?: string;
+  rejected?: boolean;
+};
 export const sharedCreationKey = (scope: string) =>
   `studio-radio-create:${scope}`;
 
@@ -188,12 +196,19 @@ export default function SharedChatCreate({
     remember(next);
     try {
       if (!next.roomId && !next.rejected) {
-        const result = await api("/api/peer-teams", next.body, {
+        const result = await post("/api/peer-teams", next.body, {
           timeoutMs: 15000,
         });
-        if (!result.room?.id)
+        const room = "room" in result ? result.room : null;
+        if (
+          !room ||
+          typeof room !== "object" ||
+          Array.isArray(room) ||
+          !("id" in room) ||
+          typeof room.id !== "string"
+        )
           throw Error("The server did not return the shared chat identity.");
-        next = { ...next, roomId: result.room.id };
+        next = { ...next, roomId: room.id };
         remember(next);
       }
       await refresh();
