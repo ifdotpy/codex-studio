@@ -28,6 +28,20 @@ Status: in progress (2026-10-04). Design and measurements:
 The common module selects the backend by `sys.platform`. Backends implement the interface in
 `codex_workspace_images.py` (the engine owner writes it first and shares it).
 
+The common module owns Git setup, snapshots, protection refs, and collection. A backend implements
+`current_event_id(repo_root)`, `open_base_staging(repo_root, repo_key, version)`,
+`copy_base_tree(repo_root, destination, *, excludes)`, `seal_base(staging)`,
+`remove_base_version(handle)`,
+`clone_workspace(base_image, agent_dir)`,
+`mount_workspace(layer, mount, *, base_image=None)`,
+`sync_delta(repo_root, target_repo, token, *, excludes)`,
+`unmount_workspace(mount, *, force=False)`, `remove_layer(agent_dir)`, `private_bytes(path)`, and
+`exec_prefix()`. Base creation opens writable staging, copies the tree, then applies common Git setup
+before sealing. Staging has `root`, `versionPath`, and `token`. The sealed result has `image`,
+`versionPath`, and `token`. `excludes` contains paths relative to the repository root, including
+`.worktrees` and the workspace store when it is inside the repository. Backend copies skip Git object
+stores. Common reapplies alternates and Git settings after each delta.
+
 ## Store
 
 Default `~/.local/state/codex-agents/workspaces`, override `CODEX_WORKSPACE_STORE`.
@@ -47,8 +61,10 @@ or repo key, so a retry after a crash or a lost response adopts or completes the
 
 - `supported(repo_root) -> (bool, reason)`
 - `base_status(repo_root) -> {"state": "missing"|"building"|"ready"|"failed", "version", "error"}`
-- `start_base_build(repo_root) -> base_status` : starts a background build if no current base
-  exists. Safe to call many times. Also refreshes a stale base when the delta is large.
+- `start_base_build(repo_root, on_done=None) -> base_status` : starts a background build if no
+  current base exists. Safe to call many times. Also refreshes a stale base when the delta is
+  large. `on_done(base_status)` runs once from the build thread when the build ends (ready or
+  failed), or at once when the base is already ready or failed. No polling.
 - `create_workspace(repo_root, agent_id, *, start_commit=None) -> dict` with `mount`,
   `repoPath` (`<mount>/repo`), `branch` (`codex-agent/<id>`), `startCommit`, `snapshotCommit`
   (None when the user tree was clean). Steps: clone or overlay, mount, fresh user edits,
