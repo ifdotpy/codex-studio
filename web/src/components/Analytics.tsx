@@ -416,10 +416,12 @@ export default function Analytics({
     () => ({
       agent: agent.id,
       scope,
-      limit: 30,
-      offset,
-      to: snapshotAt,
-      ...(period !== "all" ? { from: snapshotAt - Number(period) } : {}),
+      limit: "30",
+      offset: String(offset),
+      to: String(snapshotAt),
+      ...(period !== "all"
+        ? { from: String(snapshotAt - Number(period)) }
+        : {}),
       ...(tool ? { tool } : {}),
     }),
     [agent.id, scope, period, tool, offset, snapshotAt],
@@ -439,9 +441,10 @@ export default function Analytics({
           ...query,
           view: "detail",
           detail,
-          limit: 100,
-          offset:
+          limit: "100",
+          offset: String(
             (data[detail]?.length || 0) + (olderDetails[detail]?.length || 0),
+          ),
         },
       });
       setOlderDetails((previous) => ({
