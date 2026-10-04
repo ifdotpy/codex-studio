@@ -27,6 +27,69 @@ class Runtime(fixture.Runtime):
 
 
 class ConnectionRecoveryContract(unittest.TestCase):
+    def unsubmitted_disconnect(self, *, thread='native-thread', event_ids=None):
+        event_ids = event_ids or ['original-unsent-input']
+        for event_id in event_ids:
+            self.runtime.send(self.key, 'Keep the original input.', message_id=event_id)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            attempt = {'id': 'unsent-attempt', 'epoch': agent['epoch'], 'accountKey': 'default',
+                       'events': event_ids, 'submitted': False, 'activeAtReservation': False,
+                       'executionOutcome': 'unknown', 'responseError': 'skills/extraRoots/set response timed out; outcome unknown'}
+            agent.update(status='interrupted', autoWake=False, inFlight=False, threadId=thread,
+                         turnId=None, startAttempt=None,
+                         error='Codex disconnected. Review the transcript before resuming.',
+                         disconnectRecovery={'epoch': agent['epoch'], 'accountKey': 'default',
+                            'threadId': thread, 'turnId': None, 'autoWake': True, 'startAttempt': attempt})
+            db.execute("UPDATE runtime_events SET status='reserved' WHERE agent=?", (self.key,))
+            self.runtime.put(db, 'agents', agent)
+        self.server.calls.clear()
+        return agent
+
+    def test_disconnected_preparation_restores_original_ids_without_native_input(self):
+        self.unsubmitted_disconnect()
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result, {'status': 'input_restored', 'attemptId': 'unsent-attempt'})
+        current = self.runtime.agent(self.key)
+        self.assertEqual(current['status'], 'queued')
+        self.assertTrue(current['autoWake'])
+        self.assertFalse(current['inFlight'])
+        with self.runtime.read_db() as db:
+            self.assertEqual(tuple(db.execute('SELECT id,status,turn_id FROM runtime_events WHERE agent=?',
+                                             (self.key,)).fetchone()), ('original-unsent-input', 'pending', None))
+        self.assertEqual(self.server.calls, [])
+        self.assertEqual(recover(self.runtime, self.key), {'status': 'superseded'})
+
+    def test_disconnected_preparation_without_thread_restores_original_initial_input(self):
+        self.unsubmitted_disconnect(thread=None)
+        self.assertEqual(recover(self.runtime, self.key)['status'], 'input_restored')
+        self.assertIsNone(self.runtime.agent(self.key)['threadId'])
+        self.assertEqual(self.server.calls, [])
+
+    def test_disconnected_preparation_refuses_submitted_changed_or_native_action_receipts(self):
+        from codex_connection_recovery import disconnected_preparation_eligible
+        agent = self.unsubmitted_disconnect()
+        for field, value in [('submitted', True), ('epoch', agent['epoch'] + 1), ('action', 'review'),
+                             ('activeAtReservation', True), ('observedTurnId', 'accepted-turn')]:
+            with self.subTest(field=field):
+                changed = copy.deepcopy(agent)
+                changed['disconnectRecovery']['startAttempt'][field] = value
+                self.assertFalse(disconnected_preparation_eligible(changed))
+        changed = copy.deepcopy(agent)
+        changed['disconnectRecovery']['threadId'] = 'different-thread'
+        self.assertFalse(disconnected_preparation_eligible(changed))
+
+    def test_disconnected_preparation_keeps_whole_batch_when_one_input_is_uncertain(self):
+        self.unsubmitted_disconnect(event_ids=['first-unsent', 'uncertain-input'])
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='uncertain' WHERE id='uncertain-input'")
+        self.assertEqual(recover(self.runtime, self.key), {'status': 'unconfirmed'})
+        with self.runtime.read_db() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT id,status FROM runtime_events WHERE agent=? ORDER BY id',
+                                                             (self.key,))], [('first-unsent', 'reserved'), ('uncertain-input', 'uncertain')])
+        self.assertFalse(self.runtime.agent(self.key)['autoWake'])
+        self.assertEqual(self.server.calls, [])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-connection-recovery-')
         self.addCleanup(self.temp.cleanup)
