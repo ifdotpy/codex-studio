@@ -592,42 +592,49 @@ test("an active AgentPanel follows native progress changes without polling", asy
     expect(panelGets.length).toBeGreaterThan(beforeDelete);
 
     await page.locator(`[data-chat="${other.id}"]`).click();
-    await page.waitForFunction(
-      ({ leadId, otherId }) => {
-        const entries = window.__resourceEventSources || [];
-        return entries.some((source) => {
-          const resources = JSON.parse(
-            new URL(source.url, location.href).searchParams.get("resources") ||
-              "[]",
-          );
-          return (
-            resources.some(
-              (resource) =>
-                resource.kind === "panel" && resource.agentId === otherId,
-            ) &&
-            !resources.some(
-              (resource) =>
-                resource.kind === "panel" && resource.agentId === leadId,
-            )
-          );
-        });
-      },
-      { leadId: lead.id, otherId: other.id },
-    );
+    const hasPanelSet = (url, { include, exclude = [] }) => {
+      const resources = JSON.parse(
+        new URL(url).searchParams.get("resources") || "[]",
+      );
+      const panels = new Set(
+        resources
+          .filter((resource) => resource.kind === "panel")
+          .map((resource) => resource.agentId),
+      );
+      return (
+        include.every((agentId) => panels.has(agentId)) &&
+        exclude.every((agentId) => !panels.has(agentId))
+      );
+    };
     await expect
       .poll(() =>
         streamResponses.some((response) => {
-          const resources = JSON.parse(
-            new URL(response.url).searchParams.get("resources") || "[]",
-          );
           return (
             response.status === 200 &&
-            resources.some(
-              (resource) =>
-                resource.kind === "panel" && resource.agentId === other.id,
-            )
+            hasPanelSet(response.url, { include: [lead.id, other.id] })
           );
         }),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ({ leadId, otherId }) =>
+            (window.__resourceEventSources || []).some((source) => {
+              const url = new URL(source.__trackedUrl, location.href);
+              const panels = JSON.parse(
+                url.searchParams.get("resources") || "[]",
+              )
+                .filter((resource) => resource.kind === "panel")
+                .map((resource) => resource.agentId);
+              return (
+                source.readyState !== 2 &&
+                panels.includes(leadId) &&
+                panels.includes(otherId)
+              );
+            }),
+          { leadId: lead.id, otherId: other.id },
+        ),
       )
       .toBe(true);
     await expect
@@ -650,7 +657,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
       .toBe(true);
     try {
       await expect.poll(watchState).toMatchObject({
-        activeAgentIds: expect.arrayContaining([other.id]),
+        activeAgentIds: expect.arrayContaining([lead.id, other.id]),
         dispatcherAlive: true,
         observerAlive: true,
       });
@@ -673,6 +680,33 @@ test("an active AgentPanel follows native progress changes without polling", asy
         })}`,
       );
     }
+    await follower.close();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ({ leadId, otherId }) =>
+            (window.__resourceEventSources || []).some((source) => {
+              const url = new URL(source.__trackedUrl, location.href);
+              const panels = JSON.parse(
+                url.searchParams.get("resources") || "[]",
+              )
+                .filter((resource) => resource.kind === "panel")
+                .map((resource) => resource.agentId);
+              return (
+                source.readyState !== 2 &&
+                panels.includes(otherId) &&
+                !panels.includes(leadId)
+              );
+            }),
+          { leadId: lead.id, otherId: other.id },
+        ),
+      )
+      .toBe(true);
+    await expect.poll(watchState).toMatchObject({
+      activeAgentIds: [other.id],
+      dispatcherAlive: true,
+      observerAlive: true,
+    });
     expect((await watchState()).activeAgentIds).not.toContain(lead.id);
     expect(
       await page.evaluate(
