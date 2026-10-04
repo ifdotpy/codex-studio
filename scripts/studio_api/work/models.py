@@ -49,7 +49,7 @@ class RequestIdQuery(AgentQuery):
 
 class ToolRequestCancelBody(ContractModel):
     agent: StrictStr
-    request_id: StrictStr
+    request_id: StrictStr = Field(min_length=1, max_length=1000)
 
 
 class ChangesQuery(AgentQuery):
@@ -65,21 +65,21 @@ class WorkBody(OperationBody):
     action: Literal["list", "create", "update", "claim", "submit", "cancel", "accept", "reject"]
     task_id: StrictStr | None = None
     version: StrictInt | None = None
-    title: StrictStr | None = None
-    description: StrictStr | None = None
+    title: StrictStr | None = Field(default=None, max_length=160)
+    description: StrictStr | None = Field(default=None, max_length=64000)
     owner: StrictStr | None = None
-    dependencies: list[StrictStr] | None = None
+    dependencies: list[StrictStr] | None = Field(default=None, max_length=100)
     status: Literal["ready", "blocked"] | None = None
-    result: StrictStr | None = None
-    checks: StrictStr | None = None
-    revision: StrictStr | None = None
-    files: list[StrictStr] | None = None
-    reason: StrictStr | None = None
+    result: StrictStr | None = Field(default=None, max_length=12000)
+    checks: StrictStr | None = Field(default=None, max_length=12000)
+    revision: StrictStr | None = Field(default=None, max_length=200)
+    files: list[StrictStr] | None = Field(default=None, max_length=50)
+    reason: StrictStr | None = Field(default=None, max_length=12000)
 
 
 class QueueBody(OperationBody):
     action: Literal["cancel", "edit", "first", "reorder"]
-    request_id: StrictStr | None = None
+    request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
     expectedText: StrictStr | None = None
@@ -131,8 +131,8 @@ class ManagedMessageBody(MessageBody):
 
 class ChatCreateBody(ContractModel):
     id: StrictStr
-    name: StrictStr
-    members: list[StrictStr]
+    name: StrictStr = Field(min_length=1, max_length=100)
+    members: list[StrictStr] = Field(max_length=100)
 
 
 class ConnectionBody(ContractModel):
@@ -167,7 +167,7 @@ class ComplaintBody(ContractModel):
     id: StrictStr = Field(min_length=1, max_length=200)
     action: Literal["submit", "respond"] = "submit"
     lead: StrictStr | None = None
-    text: StrictStr
+    text: StrictStr = Field(min_length=1, max_length=12000)
     complaint_id: StrictStr | None = None
     status: Literal["in_progress", "resolved", "declined"] | None = None
     version: StrictInt | None = None
@@ -177,11 +177,11 @@ class ProfileBody(ContractModel):
     action: Literal["save", "delete"] = "save"
     isNew: StrictBool | None = None
     id: StrictStr | None = None
-    name: StrictStr | None = None
+    name: StrictStr | None = Field(default=None, max_length=100)
     role: Literal["reviewer", "implementer"] = "reviewer"
-    model: StrictStr | None = None
+    model: StrictStr | None = Field(default=None, max_length=100)
     effort: Literal["low", "medium", "high", "xhigh", "max", "ultra"] | None = None
-    instructions: StrictStr = ""
+    instructions: StrictStr = Field(default="", max_length=16000)
 
 
 class RuleBody(ContractModel):
@@ -191,20 +191,20 @@ class RuleBody(ContractModel):
     id: StrictStr | None = None
     rootId: StrictStr | None = None
     epoch: StrictInt | None = None
-    name: StrictStr | None = None
+    name: StrictStr | None = Field(default=None, max_length=120)
     kind: Literal["interval", "once", "file", "event", "low_workers"] = "interval"
-    intervalSeconds: StrictInt = 60
-    stallTimeoutSeconds: StrictInt = 1800
-    stall_timeout_seconds: StrictInt | None = None
+    intervalSeconds: StrictInt = Field(default=60, ge=10, le=31536000)
+    stallTimeoutSeconds: StrictInt = Field(default=1800, ge=0, le=31536000)
+    stall_timeout_seconds: StrictInt | None = Field(default=None, ge=0, le=31536000)
     at: StrictInt | StrictFloat | None = None
     nextAt: StrictInt | StrictFloat | None = None
     event: Literal["worker_completed", "monitor_exit", "work_review", "complaint"] = "worker_completed"
-    command: StrictStr = ""
-    text: StrictStr = ""
-    path: StrictStr | None = None
-    livenessCommand: StrictStr = ""
-    minimumWorkers: StrictInt = 8
-    durationMinutes: StrictInt = 30
+    command: StrictStr = Field(default="", max_length=12000)
+    text: StrictStr = Field(default="", max_length=12000)
+    path: StrictStr | None = Field(default=None, max_length=4096)
+    livenessCommand: StrictStr = Field(default="", max_length=12000)
+    minimumWorkers: StrictInt = Field(default=8, ge=1, le=255)
+    durationMinutes: StrictInt = Field(default=30, ge=1, le=525600)
     status: Literal["active", "paused"] | None = None
     created: StrictInt | StrictFloat | None = None
     inFlight: StrictBool | None = None
