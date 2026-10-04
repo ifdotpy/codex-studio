@@ -1001,7 +1001,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 'worktree': cleanup if not target.get('imageWorkspace') else None}
     if action == 'restore':
         if restore_image:
-            from codex_workspace_images import create_workspace
+            from codex_workspace_images import create_workspace, exec_prefix
             try:
                 workspace = create_workspace(restore_image['repo'], target['id'],
                                              start_commit=restore_image['head'])
@@ -1009,7 +1009,9 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 return {'status': 'blocked', 'reason': 'Image workspace restore failed: ' + str(error)[:500]}
             relative = restore_image.get('relative', '.')
             cwd = Path(workspace['repoPath']) / relative
-            if not cwd.is_dir():
+            path_check = subprocess.run([*exec_prefix(), 'test', '-d', str(cwd)],
+                                        capture_output=True, timeout=30)
+            if path_check.returncode:
                 return {'status': 'blocked', 'reason': 'The restored image workspace lacks the saved project path'}
             with rt.lock, rt.db() as db:
                 target = rt.agent(args.get('agent_id'), db)
