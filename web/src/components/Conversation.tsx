@@ -110,15 +110,14 @@ function isJsonObject(value: unknown): value is Json {
 
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
-function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
+function useMessageAction<Args extends unknown[], Result>(
+  action: (...args: Args) => Result,
+): (...args: Args) => Result {
   const current = useRef(action);
   useLayoutEffect(() => {
     current.current = action;
   });
-  return useCallback(
-    ((...args: Parameters<T>) => current.current(...args)) as T,
-    [],
-  );
+  return useCallback((...args: Args) => current.current(...args), []);
 }
 
 function FollowLatest(p: {
