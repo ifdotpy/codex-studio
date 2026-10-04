@@ -74,6 +74,7 @@ export interface AgentEntityDto {
   voiceState?: any;
   workerDefaults?: any;
   worktree?: any;
+  worktreePreparation?: any;
   yoloMode?: any;
 }
 
