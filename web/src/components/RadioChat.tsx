@@ -110,7 +110,7 @@ export default function RadioChat({
     if (attempt || locked.current) return;
     const path =
       room.projectPath ||
-      data.runtime.peerTeams?.find((t) => t.id === radio.teamId)?.projectPath;
+      data.runtime?.peerTeams?.find((t) => t.id === radio.teamId)?.projectPath;
     if (!path) {
       notify("The shared chat project is unavailable. Refresh Studio.");
       return;
@@ -155,7 +155,8 @@ export default function RadioChat({
     radio.status === "stopping" ||
     (radio.status === "blocked" && !!radio.active);
   const canSend = !frozen && !inputBlocked && !!draft.trim();
-  const requests = data.runtime.requests.filter(
+  const runtimeRequests = data.runtime?.requests || [];
+  const requests = runtimeRequests.filter(
     (r) =>
       r.agent === radio.active?.agentId &&
       (!r.status || r.status === "pending") &&
@@ -261,7 +262,7 @@ export default function RadioChat({
           {!!requests.length && (
             <Requests
               requests={requests}
-              allRequests={data.runtime.requests}
+              allRequests={runtimeRequests}
               agents={data.threads}
               scope={data.stateDir}
               refresh={refresh}

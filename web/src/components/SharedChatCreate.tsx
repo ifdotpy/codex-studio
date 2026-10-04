@@ -133,7 +133,10 @@ export default function SharedChatCreate({
     saved(key, null),
   );
   const [path, setPath] = useState<string>(
-    attempt?.body.path || initialPath || data.runtime.projects?.[0]?.path || "",
+    attempt?.body.path ||
+      initialPath ||
+      data.runtime?.projects?.[0]?.path ||
+      "",
   );
   const [name, setName] = useState<string>(attempt?.body.name || "");
   const readyAccounts = accounts.accounts.filter(
@@ -171,13 +174,13 @@ export default function SharedChatCreate({
     if (
       !attempt?.roomId ||
       finished.current ||
-      !data.runtime.rooms.some((room) => room.id === attempt.roomId)
+      !data.runtime?.rooms.some((room) => room.id === attempt.roomId)
     )
       return;
     finished.current = true;
     save(key, null);
     created(attempt.roomId);
-  }, [attempt?.roomId, data.runtime.rooms, created, key]);
+  }, [attempt?.roomId, data.runtime?.rooms, created, key]);
   const submit = async () => {
     if (lock.current) return;
     lock.current = true;
@@ -232,7 +235,7 @@ export default function SharedChatCreate({
   const projects = [
     ...new Map(
       [
-        ...(data.runtime.projects || []).map(
+        ...(data.runtime?.projects || []).map(
           (p) => [p.path, p.name || p.path] as const,
         ),
         ...data.threads
