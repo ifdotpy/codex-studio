@@ -1333,17 +1333,6 @@ class SyncIdentityResponse(ResponseModel):
     chatState: bool | None = None
 
 
-class SyncPullQuery(ContractModel):
-    model_config = ConfigDict(extra="forbid", strict=False, validate_assignment=True, populate_by_name=True)
-
-    scope: str | None = None
-    after: int | None = None
-    limit: int | None = None
-    fresh: str | None = None
-    initialHigh: int | None = None
-    reset: str | None = None
-    priorityId: str | None = None
-
 class SyncStreamQuery(ContractModel):
     model_config = ConfigDict(extra="forbid", strict=False, validate_assignment=True, populate_by_name=True)
 

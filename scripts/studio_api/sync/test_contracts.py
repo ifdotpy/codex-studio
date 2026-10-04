@@ -14,9 +14,6 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from pydantic import ValidationError
-from fastapi import Depends, FastAPI
-from fastapi.testclient import TestClient
-
 from codex_account_transfer import AccountTransfers
 from codex_sync_entities import COLLECTION_FIELDS, project, validate_entity_payload
 from studio_api.models import JsonValue
@@ -35,7 +32,6 @@ from studio_api.sync.models import (
     StateSnapshot,
     SyncDocument,
     SyncEntityPayload,
-    SyncPullQuery,
 )
 
 
@@ -622,36 +618,6 @@ class SyncEntityContractTests(unittest.TestCase):
         runtime["work"] = []
         full = RuntimeSnapshot.model_validate(runtime)
         self.assertEqual(full.work, [])
-
-    def test_query_schema_documents_numeric_cursors_and_wire_flags(self) -> None:
-        app = FastAPI()
-
-        @app.get("/api/sync/pull")
-        def get_pull(query: SyncPullQuery = Depends()) -> dict[str, object]:
-            return {
-                "after": query.after,
-                "limit": query.limit,
-                "fresh": query.fresh,
-                "reset": query.reset,
-                "priorityId": query.priorityId,
-            }
-
-        document = TestClient(app).get("/api/sync/pull?after=9&limit=20&fresh=1&reset=1&priorityId=lead")
-        self.assertEqual(document.json(), {
-            "after": 9, "limit": 20, "fresh": "1", "reset": "1", "priorityId": "lead"
-        })
-        parameters = app.openapi()["paths"]["/api/sync/pull"]["get"]["parameters"]
-        types = {
-            parameter["name"]: {
-                option["type"] for option in parameter["schema"].get("anyOf", [parameter["schema"]])
-                if option.get("type") != "null"
-            }
-            for parameter in parameters
-        }
-        self.assertEqual(types["after"], {"integer"})
-        self.assertEqual(types["limit"], {"integer"})
-        self.assertEqual(types["fresh"], {"string"})
-
 
 if __name__ == "__main__":
     unittest.main()
