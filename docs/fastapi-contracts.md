@@ -272,6 +272,28 @@ supports `python tests/sync-entity-project-allocation-contract.py --benchmark`
 for a single-revision diagnostic; its timed loop includes `tracemalloc` and is
 not directly comparable to the untraced paired timing above.
 
+### Snapshot cache correctness follow-up
+
+Project-tree verification exposed a race where an older SQLite read transaction
+could populate the shared agent cache under a newer process revision. The cache
+now uses an agent-record revision maintained in the same SQLite transaction as
+inserts, updates, and deletes. Only explicit read-only transactions share cached
+rows; writable and autocommit reads bypass that cache. The cache remains bounded
+to four revisions and preserves reuse across unchanged read transactions.
+A dedicated initialization lock also keeps the first provider-version status
+read from waiting on the runtime writer lock.
+
+`tests/runtime-read-lock-contract.py` covers stale-snapshot poisoning, snapshot
+consistency, rollback, shared-cache reuse, copied-record isolation, autocommit
+bypass, and actual API snapshot reads while the runtime lock is held.
+An isolated WAL write benchmark (8,000 one-row commits, six samples, synchronous
+FULL) measured medians of 7.099 s without the revision triggers and 7.029 s with
+them. This fsync-dominated result shows no measurable difference in that fixture;
+it does not establish zero CPU overhead. Its script and results are local-only
+artifacts in the task cache's `tests-tmp` directory:
+`runtime-agent-cache-write-benchmark.py` and
+`runtime-agent-cache-write-benchmark-results.txt`.
+
 ## Implementation evidence ledger
 
 | Area                                              | Evidence state                                                                                                                                                                                                                                                                    |
