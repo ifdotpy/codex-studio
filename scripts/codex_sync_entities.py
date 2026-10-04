@@ -38,20 +38,21 @@ COLLECTION_FIELDS = {
     "edge": frozenset("id source target kind".split()),
     "event": frozenset("id agent kind status created error".split()),
     "work": frozenset("id rootId agent status title".split()),
-    "workspace": frozenset("connected rateLimits rateLimitsByAccount nativeNotices projectOrganizationVersion peerTeamsVersion tasksHistoryLimit stateDir".split()),
+    "workspace": frozenset("connected rateLimits rateLimitsByAccount nativeNotices projectOrganizationVersion sidebarOrder peerTeamsVersion tasksHistoryLimit stateDir".split()),
 }
 
 
-def _bounded(value, key=""):
+def _bounded(value, key="", list_limit=200):
     if isinstance(value, str):
         limits = {"overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
                   "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000}
         maximum = limits.get(key, 12000)
         return value[:maximum]
     if isinstance(value, list):
-        return [_bounded(item) for item in value[:200]]
+        return [_bounded(item, list_limit=list_limit) for item in value[:list_limit]]
     if isinstance(value, dict):
-        return {name: _bounded(item, name) for name, item in value.items()}
+        limit = 10000 if key == "sidebarOrder" else list_limit
+        return {name: _bounded(item, name, limit) for name, item in value.items()}
     return value
 
 
@@ -283,7 +284,7 @@ def seed(db, snapshot):
             put(db, "agent", item["id"], item)
     # Mutable aggregate values are small and independently versioned.
     meta = {key: runtime.get(key) for key in ("connected", "rateLimits", "rateLimitsByAccount", "nativeNotices",
-                                                  "projectOrganizationVersion", "peerTeamsVersion",
+                                                  "projectOrganizationVersion", "sidebarOrder", "peerTeamsVersion",
                                                   "tasksHistoryLimit") if key in runtime}
     meta["stateDir"] = snapshot.get("stateDir", "")
     put(db, "workspace", "current", meta)

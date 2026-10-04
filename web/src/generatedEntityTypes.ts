@@ -247,6 +247,7 @@ export interface WorkspaceEntityDto {
   projectOrganizationVersion?: any;
   rateLimits?: any;
   rateLimitsByAccount?: any;
+  sidebarOrder?: any;
   stateDir?: any;
   tasksHistoryLimit?: any;
 }

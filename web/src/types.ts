@@ -182,6 +182,10 @@ export interface Snapshot {
   chats: Json[];
   runtime: {
     projectOrganizationVersion?: number;
+    sidebarOrder?: {
+      revision: number;
+      groups: Record<string, string[]> | null;
+    };
     peerTeamsVersion?: number;
     peerTeams?: PeerTeam[];
     federation?: FederationSnapshot;

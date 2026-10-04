@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
 test("project tree ui", async ({ page: runnerPage }) => {
+  test.setTimeout(240_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -97,6 +98,22 @@ test("project tree ui", async ({ page: runnerPage }) => {
     } else {
       page = runnerPage;
       await page.setViewportSize({ width: 1440, height: 960 });
+      const canonicalRoot = await realpath(root);
+      await page.addInitScript(
+        ({ scope, canonical }) => {
+          localStorage.setItem(
+            `codex-sidebar-order:${scope}`,
+            JSON.stringify({
+              projects: [
+                `${canonical}/assistant`,
+                `${canonical}/Newcrom Case`,
+                `${canonical}/litos`,
+              ],
+            }),
+          );
+        },
+        { scope: root, canonical: canonicalRoot },
+      );
     }
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -197,6 +214,31 @@ test("project tree ui", async ({ page: runnerPage }) => {
         .locator("[data-chat]")
         .evaluateAll((rows) => rows.map((row) => row.dataset.chat));
     const beforeProjects = await projectOrder();
+    await waitFor(
+      async () =>
+        (await (await fetch(url + "/api/state")).json()).runtime.sidebarOrder
+          ?.groups !== null,
+    );
+    if (!process.env.CODEX_TEST_DESKTOP) {
+      const migrated = (await (await fetch(url + "/api/state")).json()).runtime
+        .sidebarOrder;
+      assert.deepEqual(migrated.groups.projects, [
+        folders.assistant,
+        folders["Newcrom Case"],
+        folders.litos,
+      ]);
+    }
+    const secondContext = process.env.CODEX_TEST_DESKTOP
+      ? null
+      : await page
+          .context()
+          .browser()
+          .newContext({ viewport: { width: 1440, height: 960 } });
+    const secondPage = secondContext ? await secondContext.newPage() : null;
+    if (secondPage) {
+      await secondPage.goto(url, { waitUntil: "domcontentloaded" });
+      await secondPage.locator(".sidebar-project").first().waitFor();
+    }
     await group("litos")
       .locator(".project-tree-toggle")
       .dragTo(group("assistant").locator(".project-tree-toggle"), {
@@ -208,6 +250,27 @@ test("project tree ui", async ({ page: runnerPage }) => {
         movedProjects.indexOf(folders.assistant),
     );
     assert.notDeepEqual(movedProjects, beforeProjects);
+    if (secondPage) {
+      await expect
+        .poll(() =>
+          secondPage
+            .locator(".sidebar-project")
+            .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+        )
+        .toEqual(movedProjects);
+      await secondPage.reload();
+      await expect
+        .poll(() =>
+          secondPage
+            .locator(".sidebar-project")
+            .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+        )
+        .toEqual(movedProjects);
+      await secondPage
+        .locator(`[data-project-path="${folders.assistant}"]`)
+        .getByText("Show more", { exact: true })
+        .click();
+    }
     const beforeChats = await chatOrder();
     const chatButton = (id) => page.locator(`[data-chat="${id}"]`);
     await chatButton(beforeChats.at(-1)).dragTo(chatButton(beforeChats[0]), {
@@ -218,6 +281,15 @@ test("project tree ui", async ({ page: runnerPage }) => {
       beforeChats.at(-1),
       "Chat drag persists visual order",
     );
+    if (secondPage) {
+      await expect
+        .poll(() =>
+          secondPage
+            .locator(`[data-project-path="${folders.assistant}"] [data-chat]`)
+            .evaluateAll((rows) => rows.map((row) => row.dataset.chat)),
+        )
+        .toEqual(await chatOrder());
+    }
     const pinnedId = beforeChats[3];
     const pinnedName = (await state()).find((a) => a.id === pinnedId).name;
     await chatButton(pinnedId).hover();
@@ -612,6 +684,30 @@ test("project tree ui", async ({ page: runnerPage }) => {
       .getByText("UI review", { exact: true })
       .waitFor();
     const emptyFolder = await newFolder(null, "Temporary");
+    if (secondPage) {
+      const rootFolders = (client) =>
+        client
+          .locator(
+            `[data-project-path="${folders.litos}"] > .project-chats > [data-folder-id]`,
+          )
+          .evaluateAll((rows) => rows.map((row) => row.dataset.folderId));
+      await secondPage.locator(`[data-folder-id="${emptyFolder}"]`).waitFor();
+      const beforeFolderOrder = await rootFolders(page);
+      await folderHeading(emptyFolder)
+        .locator(".project-tree-toggle")
+        .dragTo(folderHeading(workFolder).locator(".project-tree-toggle"), {
+          targetPosition: { x: 45, y: 3 },
+        });
+      assert.notDeepEqual(await rootFolders(page), beforeFolderOrder);
+      await expect
+        .poll(() => rootFolders(secondPage))
+        .toEqual(await rootFolders(page));
+      await secondPage.reload();
+      await expect
+        .poll(() => rootFolders(secondPage))
+        .toEqual(await rootFolders(page));
+      await secondContext.close();
+    }
     await page
       .locator(`[data-folder-id="${emptyFolder}"] > .project-tree-heading`)
       .hover();

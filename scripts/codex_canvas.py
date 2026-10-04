@@ -1428,7 +1428,7 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                 if (
                     not 0
                     < length
-                    <= (28 * 1024 * 1024 if self.path == "/api/assets" else 6 * 1024 * 1024 if self.path == "/api/voice/audio" else 262144)
+                    <= (28 * 1024 * 1024 if self.path == "/api/assets" else 6 * 1024 * 1024 if self.path in {"/api/voice/audio", "/api/projects"} else 262144)
                 ):
                     return self.send({"error": "Invalid request size"}, 413)
                 if self.headers.get_content_type() != "application/json":
@@ -1499,7 +1499,11 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
                         from codex_peer_teams import manage
                         return self.send(manage(runtime, body))
                     if self.path == "/api/projects":
-                        return self.send(runtime.projects(body))
+                        from codex_project_folders import SidebarOrderConflict
+                        try:
+                            return self.send(runtime.projects(body))
+                        except SidebarOrderConflict as error:
+                            return self.send({"error": str(error)}, 409)
                     if self.path in {"/api/accounts/claude/login", "/api/accounts/claude/login/code", "/api/accounts/claude/login/cancel"}:
                         from codex_claude_login import manager
                         login = manager(runtime)

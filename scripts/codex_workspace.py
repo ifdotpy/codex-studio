@@ -59,6 +59,7 @@ class WorkspaceMixin:
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_sidebar_order (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_phase ON runtime_workspace_operations(
                 json_extract(record,'$.phase'), json_extract(record,'$.agent'));
@@ -325,6 +326,9 @@ class WorkspaceMixin:
                     return self.projects(db=connection)
             return {"items": sorted(self.records(db, "projects"), key=lambda p: (p["created"], p["id"]))}
         action = data.get("action", "register")
+        if action == "reorder":
+            from codex_project_folders import reorder_sidebar
+            return reorder_sidebar(self, data)
         if action in ('rename', 'add_folder', 'rename_folder', 'remove_folder'):
             from codex_project_folders import organize_project
             return organize_project(self, data)

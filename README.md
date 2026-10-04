@@ -459,7 +459,8 @@ send paid model requests. Desktop checks use hidden Electron windows.
 
 Inside a project, drag teams, folders, and loose chats to set their order.
 Drop near a row edge to change the order. Alt + Up or Down also works.
-Project order and item order stay saved in this browser.
+Project order and item order stay saved on the Studio server and sync between clients.
+The first client to connect sends its previous browser order once if the server has no order.
 Select **Compact project** from the project menu to show peer team chats,
 pinned chats, active chats, unread chats, and chats active in the last 24 hours.
 The rule uses the chat's last update time. **Show all N** restores all chats.
