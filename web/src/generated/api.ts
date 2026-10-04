@@ -2208,6 +2208,8 @@ export interface components {
       data?: components["schemas"]["RateLimitsDataDto"] | null;
       /** Error */
       error?: string | null;
+      /** Readat */
+      readAt?: number | null;
     };
     /** AccountSelectionRequest */
     AccountSelectionRequest: {
@@ -9012,7 +9014,10 @@ export interface components {
       /** Lastcompletedturn */
       lastCompletedTurn?: string | null;
       /** Lastcompletedturnerror */
-      lastCompletedTurnError?: string | null;
+      lastCompletedTurnError?:
+        | components["schemas"]["NativeProviderError"]
+        | string
+        | null;
       /** Lastcompletedturnid */
       lastCompletedTurnId?: string | null;
       lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
