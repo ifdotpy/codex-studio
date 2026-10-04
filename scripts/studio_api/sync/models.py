@@ -599,6 +599,8 @@ class AgentEntityDto(ContractModel):
     imageWorkspaceError: str | None = None
     imageWorkspaceRepo: str | None = None
     imageWorkspaceBaseRepo: str | None = None
+    imageWorkspaceRelative: str | None = None
+    imageWorkspaceStartCommit: str | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None

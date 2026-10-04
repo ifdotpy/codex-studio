@@ -126,6 +126,8 @@ class SyncEntityContractTests(unittest.TestCase):
             "imageWorkspaceError",
             "imageWorkspaceRepo",
             "imageWorkspaceBaseRepo",
+            "imageWorkspaceRelative",
+            "imageWorkspaceStartCommit",
         ):
             self.assertIn(field, AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
@@ -148,6 +150,48 @@ class SyncEntityContractTests(unittest.TestCase):
         })
         self.assertEqual(image_agent["imageWorkspace"], True)
         self.assertEqual(image_agent["imageWorkspacePhase"], "ready")
+
+    def test_image_workspace_paths_and_commits_survive_each_snapshot_location(self) -> None:
+        for relative, commit in ((None, None), (".", None), ("packages/app", "a" * 40)):
+            with self.subTest(relative=relative, commit=commit):
+                source: dict[str, JsonValue] = {
+                    "id": "image-worker", "kind": "agent",
+                    "imageWorkspaceRelative": relative, "imageWorkspaceStartCommit": commit,
+                }
+                projected = project("agent", source)
+                if not isinstance(projected, dict):
+                    self.fail("image workspace agent did not project")
+                for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
+                    self.assertIn(field, projected)
+                    self.assertEqual(projected[field], source[field])
+                snapshot = StateSnapshot.model_validate({
+                    "token": "session", "stateDir": "/state", "threads": [source],
+                    "chats": [], "nodes": [source], "edges": [], "at": 15.0,
+                    "runtime": {
+                        "agents": [source], "projects": [], "projectOrganizationVersion": 0,
+                        "peerTeamsVersion": 0, "peerTeams": [], "tasks": [],
+                        "tasksHistoryLimit": 0, "monitors": [], "requests": [], "rooms": [],
+                        "complaints": [], "rules": [], "rateLimits": {
+                            "accountKey": "default", "data": None, "at": None, "error": None,
+                        }, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
+                        "connected": False,
+                    },
+                })
+                assert snapshot.runtime is not None
+                for agent in (snapshot.threads[0], snapshot.nodes[0], snapshot.runtime.agents[0]):
+                    self.assertEqual(agent.model_dump(mode="json", exclude_unset=True), source)
+
+    def test_image_workspace_metadata_rejects_wrong_types_and_unknown_fields(self) -> None:
+        for model in (AgentEntityDto, SnapshotAgentDto):
+            for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
+                for value in (42, False, {}, []):
+                    with self.subTest(model=model.__name__, field=field, value=value):
+                        with self.assertRaises(ValidationError) as rejected:
+                            model.model_validate({"id": "image-worker", "kind": "agent", field: value})
+                        self.assertEqual(rejected.exception.errors()[0]["type"], "string_type")
+            with self.assertRaises(ValidationError) as rejected:
+                model.model_validate({"id": "image-worker", "kind": "agent", "imageWorkspaceUnknown": "."})
+            self.assertEqual(rejected.exception.errors()[0]["type"], "extra_forbidden")
 
     def test_agent_transfer_summary_matches_runtime_projection(self) -> None:
         runtime = TransferRuntimeFixture()
