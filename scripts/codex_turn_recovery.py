@@ -313,7 +313,7 @@ class TurnRecoveryMixin:
             if getattr(server, 'supervisor_mode', False):
                 if process is None or not hasattr(process, 'call'):
                     return {'status': 'unconfirmed'}
-                journal = process.call('poll')
+                journal = process.call('status')
                 if (journal.get('sequence') != journal.get('acknowledged')
                         or journal.get('backpressure')):
                     return {'status': 'unconfirmed'}
