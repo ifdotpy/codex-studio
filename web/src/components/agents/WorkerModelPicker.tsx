@@ -57,12 +57,16 @@ export function useWorkerModels(
       let pending = false;
       try {
         const data = await get("/api/models", {
-          query: { account_key: accountKey, workers },
+          query: {
+            account_key: accountKey,
+            workers: workers ? "1" : undefined,
+          },
           signal: controller.signal,
         });
         if (!active) return;
         pending =
           data.catalogPending === true &&
+          Array.isArray(data.unavailableAccounts) &&
           data.unavailableAccounts.some(
             (item) =>
               item?.catalogPending === true &&

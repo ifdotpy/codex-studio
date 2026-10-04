@@ -533,7 +533,7 @@ function ShellView({
         const value = await get("/api/terminals/output", {
           query: {
             id: shell.id,
-            history: true,
+            history: "1",
             offset,
             limit: Math.min(65536, end === undefined ? 65536 : end - offset),
           },

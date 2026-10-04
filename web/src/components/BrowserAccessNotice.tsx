@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { get } from "../api";
+import { get, type GetResult } from "../api";
 import "./browser-access-notice.css";
+
+type BrowserStatus = NonNullable<GetResult<"/api/desktop">["browser"]>;
 
 export default function BrowserAccessNotice({
   accountKey,

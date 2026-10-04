@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
-import { get, type GetResult } from "../../../api";
+import { get, type GetOptions, type GetResult } from "../../../api";
 import { localDateTime } from "../../../local-time";
 import { peekSessionCost } from "../../../usage/sessionCostCache";
 import type { Message } from "../../../types";
@@ -57,7 +57,7 @@ export default function MessageInfo({
       item: itemId,
       ...(message.turnId ? { turn: message.turnId } : {}),
       ...(message.threadId ? { thread: message.threadId } : {}),
-    };
+    } satisfies NonNullable<GetOptions<"/api/analytics">["query"]>;
     get("/api/analytics", { query, timeoutMs: 5000 })
       .then((value) => {
         if (active) setMetadata(value);
