@@ -119,11 +119,13 @@ def main():
         done = threading.Event()
         build_result = []
         backend = images._get_backend()
-        base_steps = {'repositoryDiscovery': 0.0, 'open': 0.0, 'copy': 0.0,
-                      'seal': 0.0, 'repoSetup': 0.0, 'gitCalls': {},
+        base_steps = {'repositoryDiscovery': 0.0, 'storeSetup': 0.0,
+                      'open': 0.0, 'copy': 0.0, 'seal': 0.0,
+                      'repoSetup': 0.0, 'gitCalls': {},
                       'directCommands': {}}
         saved_base_methods = {}
-        for method, key_name in (('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
+        for method, key_name in (('exclude_store', 'storeSetup'),
+                                 ('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
                                  ('seal_base', 'seal')):
             original = getattr(backend, method)
             saved_base_methods[method] = original

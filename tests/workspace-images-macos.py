@@ -99,11 +99,13 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         done = threading.Event()
         result = []
         steps = {'repositoryDiscovery': 0.0, 'open': 0.0, 'copy': 0.0,
-                 'seal': 0.0, 'repoSetup': 0.0, 'protectionRefs': 0.0}
+                 'seal': 0.0, 'storeSetup': 0.0, 'repoSetup': 0.0,
+                 'protectionRefs': 0.0}
         git_calls = {}
         direct_commands = {}
         saved_methods = {}
-        for method, key in (('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
+        for method, key in (('exclude_store', 'storeSetup'),
+                            ('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
                             ('seal_base', 'seal')):
             original = getattr(backend, method)
             saved_methods[method] = original
