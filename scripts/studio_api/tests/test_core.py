@@ -17,7 +17,7 @@ from unittest.mock import patch
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 import httpx
-from pydantic import Field, RootModel
+from pydantic import BaseModel, Field, RootModel
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -56,6 +56,10 @@ class NativeActionRequest(ContractModel):
 
 class NativeActionResponse(ResponseModel):
     ok: bool
+
+
+class UncheckedLegacyResponse(BaseModel):
+    status: str
 
 
 def request_for(response_model: object = None, *, accept_encoding: str = "") -> Request:
@@ -202,6 +206,9 @@ class CoreResponseTests(unittest.TestCase):
         body = json.loads(bytes(response.body))
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("outcome", body)
+
+    def test_unchecked_pydantic_model_is_not_a_typed_contract(self) -> None:
+        self.assertFalse(ApiContext._response_contract(UncheckedLegacyResponse))
 
     def test_schema_factory_assembles_all_domain_routers_without_state_io(self) -> None:
         package_names = (

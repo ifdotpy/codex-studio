@@ -18,7 +18,7 @@ from starlette.responses import Response
 
 from codex_remote import RemoteAccess
 
-from studio_api.models import ErrorResponse, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
 
 if TYPE_CHECKING:
     from codex_canvas import Canvas
@@ -360,7 +360,7 @@ class ApiContext:
         if isinstance(candidate, type):
             if candidate in (str, int, float, bool):
                 return True
-            return issubclass(candidate, BaseModel)
+            return issubclass(candidate, ContractModel)
         members = get_args(candidate)
         origin = get_origin(candidate)
         if origin in (list, tuple):
