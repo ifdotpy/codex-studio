@@ -1288,7 +1288,8 @@ def _schedule_task_wait_check(rt, db, agent, error):
         if row:
             candidate = json.loads(row[0])
             if (candidate.get('agent') == agent['id'] and candidate.get('status') == 'running'
-                    and candidate.get('type') in TASK_CHECK_TYPES
+                    and candidate.get('type') in {'commandExecution', 'fileChange',
+                                                  'dynamicToolCall', 'mcpToolCall'}
                     and isinstance(candidate.get('itemId'), str) and candidate['itemId']
                     and isinstance(candidate.get('turnId'), str) and candidate['turnId']
                     and candidate.get('id') == agent['id'] + ':' + candidate['itemId']):

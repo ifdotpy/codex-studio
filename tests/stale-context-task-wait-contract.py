@@ -49,7 +49,7 @@ class StaleTaskWait(f.ContextWait):
         self.put('tool_requests', value)
         return value
 
-    def wait(self, task=None, *, tools=None):
+    def wait(self, task=None, *, tools=None, expected_jobs=1):
         self.runtime.send(self.a['id'], 'Keep the exact input.', message_id='stale-task-input')
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.a['id'], db)
@@ -68,7 +68,7 @@ class StaleTaskWait(f.ContextWait):
                 'scope':'local', 'error':error, 'nextCheckAt':0}
             self.runtime.put(db, 'agents', agent)
         self.runtime.dispatch()
-        self.assertEqual(len(self.jobs), 1)
+        self.assertEqual(len(self.jobs), expected_jobs)
 
     def run_check(self):
         function, args = self.jobs.pop(0)
@@ -119,6 +119,14 @@ class StaleTaskWait(f.ContextWait):
         self.assertEqual(calls[0]['threadId'], self.tid)
         self.assertEqual(calls[0]['turnId'], 'old-turn')
         self.assertFalse(any(m == 'thread/turns/list' for m,p in self.server.calls))
+
+    def test_unsupported_task_types_do_not_schedule_repeated_native_reads(self):
+        for kind in ('computerToolCall', 'collabAgentToolCall'):
+            with self.subTest(kind=kind):
+                task = self.task(kind)
+                self.wait(task, expected_jobs=0)
+                self.assertEqual(self.saved_task(task)['status'], 'running')
+                self.assertFalse(any(m == 'thread/items/list' for m,p in self.server.calls))
 
     def test_externalized_tool_result_uses_the_exact_saved_payload(self):
         task = self.task()
