@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The backend raises its soft open-file limit so native children inherit it."""
+"""The backend and the supervisor raise the soft open-file limit for native children."""
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -8,11 +8,12 @@ import resource
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 PROBE = (
     "import sys, resource, subprocess; sys.path.insert(0, %r); "
-    "from codex_canvas import raise_open_file_limit; "
+    "from codex_open_file_limit import raise_open_file_limit; "
     "print(raise_open_file_limit()); "
     "print(subprocess.run([sys.executable, '-c', "
     "'import resource; print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])'], "
@@ -42,6 +43,31 @@ class OpenFileLimit(unittest.TestCase):
     def test_higher_soft_limit_is_not_lowered(self):
         own, _ = run_with(100000, resource.RLIM_INFINITY)
         self.assertEqual(own, 100000)
+
+
+class EntryPoints(unittest.TestCase):
+    """Both processes that start native app-servers raise the limit first."""
+
+    def assert_raises_first(self, module_name):
+        sys.path.insert(0, str(SCRIPTS))
+        try:
+            module = __import__(module_name)
+        finally:
+            sys.path.remove(str(SCRIPTS))
+        sentinel = RuntimeError("limit raised")
+        with mock.patch.object(module, "raise_open_file_limit", side_effect=sentinel), \
+                mock.patch.object(sys, "argv", [module_name, "--state", "/nonexistent"]):
+            with self.assertRaises(RuntimeError) as caught:
+                module.main()
+        self.assertIs(caught.exception, sentinel)
+
+    def test_supervisor_raises_limit_before_serving(self):
+        # The supervisor owns the native app-server processes (2026-10-04: the
+        # app-server hit 256 files because only the backend raised its limit).
+        self.assert_raises_first("codex_process_supervisor")
+
+    def test_backend_raises_limit_before_serving(self):
+        self.assert_raises_first("codex_canvas")
 
 
 if __name__ == "__main__":
