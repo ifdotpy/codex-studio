@@ -18,9 +18,11 @@ put the letter in the same saved draft record right away.
 only owner of draft text, the recovery journal, sync, and conflict handling. On
 each edit, it updates its current value and notifies the chat's subscriber,
 then writes the recovery journal and saved scope map in the same synchronous
-call. Both writes finish before the input handler returns. No debounce or new
-storage format was added. Remote reconciliation and workspace adoption still
-update the legacy hook state and notify changed chat subscribers.
+call. Both writes finish before the input handler returns. The replication
+client coalesces upstream draft pushes with a trailing quiet wait and a bounded
+maximum wait ([`client.ts`](../../sync/client.ts)); it does not delay local
+recovery or change the storage format. Remote reconciliation and workspace
+adoption still update the legacy hook state and notify changed chat subscribers.
 
 App and Conversation read the current value by chat ID when a send begins. This
 keeps an immediate Enter send and a send that waits on uploads or delivery from
