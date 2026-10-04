@@ -35,7 +35,7 @@ from .models import (
     PeerTeamsResponse,
     ProjectReadResponse,
     ProjectWriteRequest,
-    ProjectsResponse,
+    ProjectMutationResponse,
     RegisterAccountRequest,
     ResetRequest,
     UsageLimitsResponse,
@@ -243,7 +243,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
         return context.send(request, consume_reset(_runtime(context), _dump(body)))
 
-    @router.post("/api/projects", response_model=ProjectsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_ERROR_RESPONSES)
     def project_write(request: Request, body: Annotated[ProjectWriteRequest, Body()]) -> Response:
         return context.send(request, _runtime(context).projects(_dump(body)))
 

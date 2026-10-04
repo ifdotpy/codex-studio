@@ -147,10 +147,16 @@ class Project(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
-class ProjectsResponse(ResponseModel):
-    items: list[Project] = Field(default_factory=list)
-    id: str | None = None
-    removed: bool | None = None
+class ProjectMutationRecord(Project, ResponseModel):
+    """A project record returned directly by successful project writes."""
+
+
+class ProjectRemovalResponse(ResponseModel):
+    id: str
+    removed: bool
+
+
+ProjectMutationResponse = ProjectMutationRecord | ProjectRemovalResponse
 
 
 class ProjectReadResponse(ResponseModel):
@@ -165,12 +171,19 @@ class ProviderModel(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
+class UnavailableAccount(ContractModel):
+    accountKey: str
+    error: str
+    catalogPending: bool | None = None
+
+
 class ModelCatalogResponse(ResponseModel):
     data: list[ProviderModel] | None = None
     nextCursor: str | None = None
     error: str | None = None
     catalogPending: bool | None = None
     accountKey: str | None = None
+    unavailableAccounts: list[UnavailableAccount] = Field(default_factory=list)
 
 
 class UsageLimitsResponse(ResponseModel):
@@ -343,7 +356,10 @@ class ClaudeCommand(ContractModel):
 
 class ClaudeDeliveryResponse(ResponseModel):
     id: str
-    status: Literal["pending", "queued", "dispatching", "delivered", "uncertain", "cancelled", "failed"]
+    status: Literal[
+        "pending", "queued", "reserved", "dispatching", "delivered",
+        "uncertain", "stored_only", "cancelled", "failed",
+    ]
     error: str | None = None
 
 

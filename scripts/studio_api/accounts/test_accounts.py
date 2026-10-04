@@ -22,13 +22,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
-from studio_api.models import ErrorResponse, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
 from .router import create_router
 from .models import (
     Account,
     AccountsResponse,
     ClaudeOptions,
     ClaudeCommand,
+    ClaudeDeliveryResponse,
     ClaudeSessionResponse,
     ClaudeSessionStateResponse,
     ModelCatalogResponse,
@@ -144,9 +145,13 @@ class _ContextFixture:
 
     def send(self, request: Request, value: JsonValue, status: int = 200, **_kwargs: object) -> JSONResponse:
         route = request.scope["route"]
-        model_type = route.response_model
-        validated = model_type.model_validate(value)
-        content = validated.wire_dump() if isinstance(validated, ResponseModel) else validated.model_dump(mode="json")
+        validated = TypeAdapter[object](route.response_model).validate_python(value)
+        if isinstance(validated, ResponseModel):
+            content: JsonValue = validated.wire_dump()
+        elif isinstance(validated, ContractModel):
+            content = cast(JsonValue, validated.model_dump(mode="json"))
+        else:
+            content = cast(JsonValue, validated)
         return JSONResponse(content=content, status_code=status)
 
 
@@ -259,6 +264,43 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertNotIn("content", operation["responses"]["422"])
         self.assertNotIn("HTTPValidationError", json.dumps(operation["responses"]))
 
+    def test_worker_catalog_preserves_actual_unavailable_account_metadata(self) -> None:
+        from codex_catalog import CatalogUnavailable
+
+        class WorkerAccounts:
+            def list(self) -> list[dict[str, object]]:
+                return [
+                    {"id": "first", "status": "ready", "provider": "codex"},
+                    {"id": "second", "status": "ready", "provider": "codex"},
+                ]
+
+            def default(self) -> str:
+                return "first"
+
+            def get(self, key: str) -> dict[str, object]:
+                return {"id": key, "status": "ready", "provider": "codex"}
+
+        class WorkerRuntime(_RuntimeFixture):
+            def __init__(self) -> None:
+                super().__init__(cast(_AccountStore, WorkerAccounts()))
+
+            def catalog(self, key: str) -> dict[str, object]:
+                if key == "first":
+                    raise CatalogUnavailable("fixture account offline")
+                return {"data": [{"model": "worker/model"}]}
+
+        worker_app = FastAPI()
+        worker_app.include_router(create_router(_ContextFixture(WorkerRuntime())))
+        with TestClient(worker_app) as client:
+            response = client.get("/api/models?account_key=first&workers=1")
+        self.assertEqual(response.status_code, 200)
+        body = ModelCatalogResponse.model_validate(response.json())
+        if body.data is None:
+            self.fail("worker catalog omitted models")
+        self.assertEqual(body.data[0].model, "worker/model")
+        self.assertEqual(body.unavailableAccounts[0].accountKey, "first")
+        self.assertEqual(body.unavailableAccounts[0].error, "fixture account offline")
+
     def test_catalog_pending_keeps_legacy_400_body(self) -> None:
         from codex_catalog import CatalogPending
 
@@ -300,6 +342,81 @@ class AccountsRouterTests(unittest.TestCase):
             self.assertEqual(retry.json()["request_id"], request_id)
             self.assertEqual(retry.json()["outcome"], "reset")
             self.assertEqual(len(isolated.server.consumes), 1)
+        finally:
+            isolated.tearDown()
+
+    def test_project_mutations_accept_actual_project_records(self) -> None:
+        fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
+        sys.path.insert(0, str(fixture_path.parent))
+        spec = importlib.util.spec_from_file_location("project_contract_fixture", fixture_path)
+        if spec is None or spec.loader is None:
+            self.fail("could not load isolated project fixture")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        isolated = fixture.AccountContracts()
+        isolated.setUp()
+        try:
+            app = FastAPI()
+            app.include_router(create_router(_ContextFixture(isolated.runtime)))
+            project_path = isolated.root / "project"
+            project_path.mkdir()
+            with TestClient(app) as client:
+                registered = client.post("/api/projects", json={"path": str(project_path)})
+                self.assertEqual(registered.status_code, 200, registered.text)
+                project = registered.json()
+                self.assertEqual(project["path"], str(project_path.resolve()))
+                self.assertEqual(project["name"], "project")
+                self.assertEqual(project["accountKey"], "default")
+                self.assertEqual(project["accountRevision"], 1)
+                self.assertIsInstance(project["created"], float)
+                account = client.post("/api/projects", json={
+                    "action": "set_account", "path": str(project_path),
+                    "account_key": isolated.other_key, "expected_revision": 1,
+                })
+                self.assertEqual(account.status_code, 200, account.text)
+                self.assertEqual(account.json()["accountKey"], isolated.other_key)
+                self.assertEqual(account.json()["accountRevision"], 2)
+                updated = client.post("/api/projects", json={
+                    "action": "set_worker_base", "path": str(project_path),
+                    "base_ref": "main", "expected_revision": 0,
+                })
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertEqual(updated.json()["workerBaseRef"], "main")
+                self.assertEqual(updated.json()["workerBaseRevision"], 1)
+                organized = client.post("/api/projects", json={
+                    "action": "rename", "path": str(project_path),
+                    "name": "Renamed", "expected_revision": 0,
+                })
+                self.assertEqual(organized.status_code, 200, organized.text)
+                self.assertEqual(organized.json()["name"], "Renamed")
+                self.assertEqual(organized.json()["organizationRevision"], 1)
+                removed = client.post("/api/projects", json={"action": "remove", "path": str(project_path)})
+                self.assertEqual(removed.status_code, 200, removed.text)
+                self.assertEqual(removed.json(), {"id": str(project_path.resolve()), "removed": True})
+        finally:
+            isolated.tearDown()
+
+    def test_delivery_receipt_accepts_actual_runtime_replay_states(self) -> None:
+        fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
+        sys.path.insert(0, str(fixture_path.parent))
+        spec = importlib.util.spec_from_file_location("delivery_contract_fixture", fixture_path)
+        if spec is None or spec.loader is None:
+            self.fail("could not load isolated delivery fixture")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        isolated = fixture.AccountContracts()
+        isolated.setUp()
+        try:
+            lead = isolated.lead()
+            request_id = str(uuid4())
+            isolated.runtime.send(lead["id"], "exact command", message_id=request_id)
+            for status in ("reserved", "stored_only"):
+                with isolated.runtime.db() as db:
+                    db.execute("UPDATE runtime_events SET status=? WHERE id=?", (status, request_id))
+                receipt = isolated.runtime.send(lead["id"], "exact command", message_id=request_id)
+                validated = ClaudeDeliveryResponse.model_validate(receipt)
+                self.assertEqual(validated.status, status)
+                self.assertEqual(validated.id, request_id)
         finally:
             isolated.tearDown()
 
