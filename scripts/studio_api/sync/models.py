@@ -449,6 +449,16 @@ class AccountTransferSummaryDto(ContractModel):
     canRetry: bool | None = None
 
 
+class ConvertedFromLeadDto(ContractModel):
+    """User conversion provenance persisted when a peer lead becomes a worker."""
+
+    requestId: str
+    by: Literal["user"]
+    at: float
+    oldRootId: str
+    rootId: str
+
+
 class CapacityRetrySettingsDto(ExecutionSettingsDto):
     """Settings captured by Runtime.preparation_settings for a retry receipt."""
 
@@ -558,6 +568,7 @@ class AgentOverview(ContractModel):
 class AgentEntityDto(ContractModel):
     id: str
     name: str | None = None
+    manualName: bool | None = None
     status: AgentStatus | None = None
     source: AgentSource | None = None
     kind: Literal["agent"] | None = None
@@ -606,6 +617,7 @@ class AgentEntityDto(ContractModel):
     nativeThreadBlock: NativeThreadBlockDto | None = None
     daybreakEnabled: bool | None = None
     accountTransfer: AccountTransferSummaryDto | None = None
+    convertedFromLead: ConvertedFromLeadDto | None = None
     overview: AgentOverview | None = None
     nativeRelease: SnapshotNativeRelease | None = None
     activity: AgentActivity | None = None

@@ -12,7 +12,9 @@ import tempfile
 import threading
 import time
 import unittest
+from uuid import uuid4
 from pathlib import Path
+from typing import cast
 from urllib.request import Request, urlopen
 
 from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot, SyncGenerationState
@@ -163,6 +165,85 @@ class SidebarProjectStateFixtureTests(StateFixtureResponseTests):
         self.assertIsNotNone(peer_team)
         assert peer_team is not None
         self.assertEqual(peer_team.revision, 1)
+
+    def test_z_peer_conversion_state_response_validates_over_http(self) -> None:
+        base = f"http://127.0.0.1:{self.port}"
+        with urlopen(f"{base}/api/state", timeout=20) as response:
+            initial = StateSnapshot.model_validate_json(response.read())
+        runtime = initial.runtime
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        agents = {agent.name: agent for agent in runtime.agents}
+        source = agents["Team source"]
+        destination = agents["Destination"]
+        project = next(item for item in runtime.projects if item.peerTeams)
+        request_id = str(uuid4())
+        conversion = Request(
+            f"{base}/api/peer-teams",
+            data=json.dumps({
+                "action": "convert",
+                "path": project.path,
+                "member": source.id,
+                "target": destination.id,
+                "expected_revision": project.peerTeamsRevision,
+                "request_id": request_id,
+            }).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Canvas-Token": initial.token,
+                "Origin": base,
+            },
+            method="POST",
+        )
+        with urlopen(conversion, timeout=20) as response:
+            self.assertEqual(response.status, 200)
+        with urlopen(f"{base}/api/state", timeout=20) as response:
+            snapshot = StateSnapshot.model_validate_json(response.read())
+
+        converted = next(agent for agent in snapshot.threads if agent.id == source.id)
+        self.assertIsNotNone(converted.convertedFromLead)
+        assert converted.convertedFromLead is not None
+        self.assertEqual(converted.convertedFromLead.requestId, request_id)
+        self.assertEqual(converted.convertedFromLead.by, "user")
+        self.assertEqual(converted.convertedFromLead.oldRootId, source.id)
+        self.assertEqual(converted.convertedFromLead.rootId, destination.id)
+
+
+class RenamedAgentStateFixtureTests(StateFixtureResponseTests):
+    """Exercise manual-name records emitted by Runtime.snapshot after rename."""
+
+    def test_renamed_lead_state_response_validates_over_http(self) -> None:
+        base = f"http://127.0.0.1:{self.port}"
+        with urlopen(f"{base}/api/state", timeout=20) as response:
+            initial = StateSnapshot.model_validate_json(response.read())
+        assert self.temporary is not None
+        project_path = str((Path(self.temporary.name) / "manual-name-project").resolve())
+        Path(project_path).mkdir()
+
+        def post(path: str, body: dict[str, object]) -> dict[str, object]:
+            request = Request(
+                f"{base}{path}",
+                data=json.dumps(body).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Canvas-Token": initial.token,
+                    "Origin": base,
+                },
+                method="POST",
+            )
+            with urlopen(request, timeout=20) as response:
+                return cast(dict[str, object], json.loads(response.read()))
+
+        post("/api/projects", {"path": project_path})
+        agent_id = str(uuid4())
+        post("/api/leads", {"id": agent_id, "cwd": project_path})
+        post("/api/rename", {"id": agent_id, "name": "Evidence reviewer"})
+        with urlopen(f"{base}/api/state", timeout=20) as response:
+            snapshot = StateSnapshot.model_validate_json(response.read())
+
+        renamed = next(agent for agent in snapshot.threads if agent.id == agent_id)
+        self.assertEqual(renamed.name, "Evidence reviewer")
+        self.assertIs(renamed.manualName, True)
 
 
 if __name__ == "__main__":
