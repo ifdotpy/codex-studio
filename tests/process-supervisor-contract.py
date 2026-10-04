@@ -82,6 +82,11 @@ for line in sys.stdin:
         print(json.dumps({'method':'turn/completed','params':{'threadId':params['threadId'],'turn':{'id':'long-turn','status':'completed'}}}),flush=True)
         result={'turn':{'id':'long-turn','status':'completed'}}
     elif method == 'command/exec':
+        if request['params']['processId'] == 'live-monitor':
+            Path(os.environ['FAKE_PHASE_ONE']).touch()
+            release=Path(os.environ['FAKE_RELEASE'])
+            deadline=time.time()+10
+            while not release.exists() and time.time()<deadline: time.sleep(.01)
         print(json.dumps({'method':'command/exec/outputDelta','params':{'processId':request['params']['processId'],'delta':'monitor-output'}}),flush=True)
         result={'exitCode':0}
     elif method == 'process/spawn':
@@ -405,7 +410,15 @@ class ProcessSupervisorContract(unittest.TestCase):
             monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
                                             ('native-monitor',)).fetchone()[0])
         self.assertEqual(task['status'], 'running')
-        self.assertEqual(monitor['status'], 'running')
+        # This fixture saves a monitor row but never starts a command/exec RPC.
+        # The resumed model turn cannot restore that monitor's missing Future.
+        self.assertEqual(monitor['status'], 'lost')
+        self.assertIsNone(monitor.get('exitCode'))
+        self.assertEqual(monitor['reattachRecovery']['proof'], 'operation_missing')
+        with second.db() as db:
+            notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:native-monitor'").fetchall()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['status'], 'lost')
         wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
         partial = self._stored_runtime_item(second, agent['id'], 'long-item')
         self.assertEqual(partial['text'], 'buffered-')
@@ -424,13 +437,92 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(json.loads(item_rows[0][0])['text'], 'buffered-final-answer')
         self.assertEqual(completed, 1)
         self.assertEqual(restart_errors, 0)
-        # The separate native monitor is still active, so the finished agent
-        # waits for that result while retaining the completed model turn.
-        self.assertEqual(second.agent(agent['id'])['status'], 'waiting')
+        # This monitor was never submitted, so it cannot hold the completed turn.
+        self.assertEqual(second.agent(agent['id'])['status'], 'completed')
         self.assertNotIn('Server restarted during a turn', second.agent(agent['id']).get('error') or '')
         operations = [json.loads(line)['method'] for line in
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('longTurn'), 1)
+        self.assertEqual(operations.count('command/exec'), 0)
+
+    def test_runtime_restart_reattaches_live_monitor_and_delivers_exact_reply(self):
+        from codex_runtime import Runtime
+        first = Runtime(self.root, AppServer)
+        self.addCleanup(first.close)
+        agent = first.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            server = first.connect()
+        operation = {'agent': agent['id'], 'epoch': agent['epoch'], 'accountKey': 'default',
+                     'connectionId': first.connection_ids['default']}
+        with first.lock, first.db() as db:
+            first.put(db, 'monitors', {'id': 'live-monitor', 'agent': agent['id'], 'epoch': agent['epoch'],
+                'status': 'running', 'created': time.time(), 'command': 'fixture command',
+                'operation': operation, 'successExitCodes': [0], 'tail': '', 'bytes': 0,
+                'log': str(self.root / 'monitor-logs' / 'live-monitor.log')})
+        server.submit('command/exec', {'processId': 'live-monitor'},
+                      operation_id='monitor:live-monitor')
+        wait_for(lambda: (self.root / 'phase-one').exists())
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            second = Runtime(self.root, AppServer)
+            self.addCleanup(second.close)
+            second.connect()
+        with second.db() as db:
+            monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()[0])
+            notice = db.execute("SELECT status FROM runtime_events WHERE id='monitor:live-monitor'").fetchone()
+        self.assertEqual(monitor['status'], 'running')
+        self.assertEqual(notice['status'], 'cancelled')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.release.touch()
+        def completed():
+            with second.db() as db:
+                row = db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()
+            return json.loads(row[0])['status'] == 'completed'
+        wait_for(completed)
+        with second.db() as db:
+            monitor = json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id='live-monitor'").fetchone()[0])
+            notices = db.execute("SELECT id,status,text FROM runtime_events WHERE id='monitor:live-monitor'").fetchall()
+        self.assertEqual(monitor['exitCode'], 0)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['status'], 'completed')
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('command/exec'), 1)
+
+    def test_runtime_restart_recovers_monitor_reply_after_supervisor_ack(self):
+        from codex_runtime import Runtime
+        first = Runtime(self.root, AppServer)
+        self.addCleanup(first.close)
+        agent = first.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            server = first.connect()
+        operation = {'agent': agent['id'], 'epoch': agent['epoch'], 'accountKey': 'default',
+                     'connectionId': first.connection_ids['default']}
+        with first.lock, first.db() as db:
+            first.put(db, 'monitors', {'id': 'acked-monitor', 'agent': agent['id'], 'epoch': agent['epoch'],
+                'status': 'running', 'created': time.time(), 'command': 'fixture command',
+                'operation': operation, 'successExitCodes': [0], 'tail': '', 'bytes': 0,
+                'log': str(self.root / 'monitor-logs' / 'acked-monitor.log')})
+        submitted = server.submit('command/exec', {'processId': 'acked-monitor'},
+                                  operation_id='monitor:acked-monitor')
+        self.assertEqual(server.wait(submitted)['exitCode'], 0)
+        wait_for(lambda: server.proc.call('operationStatus',
+            operationId='monitor:acked-monitor')['response'] is not None)
+        first.close()
+        with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+            second = Runtime(self.root, AppServer)
+            self.addCleanup(second.close)
+        def completed():
+            with second.db() as db:
+                row = db.execute("SELECT record FROM runtime_monitors WHERE id='acked-monitor'").fetchone()
+            return json.loads(row[0])['status'] == 'completed'
+        wait_for(completed)
+        with second.db() as db:
+            notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:acked-monitor'").fetchall()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['exitCode'], 0)
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('command/exec'), 1)
 
     def test_claude_bridge_transport_reports_the_same_live_child_reattach(self):
         observed = []

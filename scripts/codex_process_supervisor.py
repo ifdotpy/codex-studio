@@ -83,7 +83,8 @@ class Journal:
                     closed_at REAL, closed_reason TEXT, generation INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS operations(
                     handle TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL,
-                    native_id INTEGER, accepted REAL NOT NULL,
+                    native_id INTEGER, accepted REAL NOT NULL, generation INTEGER,
+                    response TEXT, response_sequence INTEGER,
                     PRIMARY KEY(handle,operation_id));
                 CREATE TABLE IF NOT EXISTS events(
                     handle TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -116,6 +117,15 @@ class Journal:
             event_columns = {row[1] for row in db.execute("PRAGMA table_info(events)")}
             if "generation" not in event_columns:
                 db.execute("ALTER TABLE events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1")
+            operation_columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
+            if "generation" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN generation INTEGER")
+            if "response" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN response TEXT")
+            if "response_sequence" not in operation_columns:
+                db.execute("ALTER TABLE operations ADD COLUMN response_sequence INTEGER")
+            db.execute("CREATE INDEX IF NOT EXISTS operations_monitor_native ON operations("
+                       "handle,generation,native_id) WHERE substr(operation_id,1,8)='monitor:'")
 
     @contextmanager
     def db(self):
@@ -248,6 +258,12 @@ class Child:
                         db.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) "
                                    "VALUES (?,?,?,?,?,?)",
                                    (self.handle, sequence, kind, raw, len(raw.encode()), row[1]))
+                        if (kind == "stdout" and isinstance(payload, dict)
+                                and type(payload.get("id")) is int and "method" not in payload):
+                            db.execute("UPDATE operations SET response=?,response_sequence=? WHERE handle=? "
+                                       "AND native_id=? AND generation=? AND substr(operation_id,1,8)='monitor:' "
+                                       "AND response IS NULL",
+                                       (raw, sequence, self.handle, payload["id"], row[1]))
                         db.commit()
                         self.paused.clear()
                         self.output.notify_all()
@@ -309,13 +325,16 @@ class Child:
             # stdin before this commit succeeds.
             remote_id = native_id
             if "method" in message and isinstance(native_id, int):
-                row = db.execute("SELECT rpc_sequence FROM handles WHERE id=?", (self.handle,)).fetchone()
+                row = db.execute("SELECT rpc_sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                 remote_id = row[0] + 1
                 message = {**message, "id": remote_id}
                 body = json.dumps(message, separators=(",", ":"))
                 db.execute("UPDATE handles SET rpc_sequence=? WHERE id=?", (remote_id, self.handle))
-            db.execute("INSERT INTO operations VALUES (?,?,?,?,?)",
-                       (self.handle, operation_id, digest, remote_id, time.time()))
+            if not isinstance(native_id, int):
+                row = db.execute("SELECT generation FROM handles WHERE id=?", (self.handle,)).fetchone()
+            db.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) "
+                       "VALUES (?,?,?,?,?,?)",
+                       (self.handle, operation_id, digest, remote_id, time.time(), row[1] if isinstance(native_id, int) else row[0]))
             db.commit()
             self.process.stdin.write(body + "\n")
             self.process.stdin.flush()
@@ -498,6 +517,22 @@ class Supervisor:
         action = request.get("action")
         if action == "write":
             return child.write(request["operationId"], request.get("nativeId"), request["message"])
+        if action == "operationStatus":
+            operation_id = request.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id.startswith("monitor:"):
+                raise ValueError("Invalid monitor operation identity")
+            with self.journal.db() as db:
+                row = db.execute("SELECT native_id,generation,response,response_sequence FROM operations "
+                                 "WHERE handle=? AND operation_id=?", (handle, operation_id)).fetchone()
+                current, acknowledged = db.execute(
+                    "SELECT generation,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
+            if not row or row[1] != current or type(row[0]) is not int:
+                return {"accepted": False, "reason": (
+                    "operation_missing" if not row else
+                    "native_generation_changed" if row[1] != current else "rpc_identity_missing")}
+            return {"accepted": True, "nativeId": row[0],
+                    "response": json.loads(row[2]) if row[2] and type(row[3]) is int
+                    and row[3] <= acknowledged else None}
         if action == "ack":
             sequence = request.get("sequence")
             with self.journal.db() as db:

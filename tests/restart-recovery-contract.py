@@ -156,8 +156,15 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertTrue(agent['inFlight'])
         self.assertEqual(agent['turnId'], 'lost-turn')
         self.assertEqual(agent['restartRecovery']['stage'], 'reattached')
-        self.assertEqual(record('monitors','active-monitor')['status'], 'running')
+        monitor = record('monitors','active-monitor')
+        self.assertEqual(monitor['status'], 'lost')
+        self.assertIsNone(monitor.get('exitCode'))
+        self.assertEqual(monitor['operation'], {'accountKey': 'default'})
         self.assertEqual(record('tasks','active-task')['status'], 'running')
+        with self.runtime.db() as db:
+            notices = db.execute("SELECT id,status,text FROM runtime_events WHERE id='monitor:active-monitor'").fetchall()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0]['text'])['status'], 'lost')
         self.assertFalse(any(method in {'turn/start','turn/resume'} for method, _ in self.server.calls))
 
     def test_startup_opens_pending_accounts_before_runtime_is_exposed_and_records_each_result(self):
