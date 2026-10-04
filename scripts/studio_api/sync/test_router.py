@@ -160,12 +160,14 @@ class SyncRouterTests(unittest.TestCase):
                     [
                         {"$ref": "#/components/schemas/ResourceChangeEvent"},
                         {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                        {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
                     ],
                 )
                 components = app.openapi()["components"]["schemas"]
                 self.assertIn("ResourceRef", components)
                 self.assertIn("ResourceChangeEvent", components)
                 self.assertIn("ResourceHeartbeatEvent", components)
+                self.assertIn("ResourceTokenRatesEvent", components)
                 self.assertIn("resources", event_schema["x-sse-events"])
             else:
                 self.assertEqual(

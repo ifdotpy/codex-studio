@@ -10,6 +10,7 @@ from studio_api.sync.resources.models import (
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
     ResourceRef,
+    ResourceTokenRatesEvent,
     TranscriptResource,
 )
 
@@ -24,6 +25,8 @@ class ResourceContractTests(unittest.TestCase):
             ResourceRef.model_validate({"kind": "unknown"})
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a", "extra": True})
+        with self.assertRaises(ValidationError):
+            ResourceRef.model_validate({"kind": "panel", "agentId": ""})
 
     def test_event_envelopes_validate_safe_revision_and_typed_refs(self) -> None:
         event = ResourceChangeEvent.model_validate({
@@ -50,6 +53,58 @@ class ResourceContractTests(unittest.TestCase):
                     "epoch": "server-epoch",
                     "revision": invalid,
                 })
+
+    def test_token_rate_event_uses_exact_typed_workspace_snapshot_shape(self) -> None:
+        event = ResourceTokenRatesEvent.model_validate({
+            "protocol": 3,
+            "workspaceId": "workspace-a",
+            "epoch": "server-epoch",
+            "revision": 7,
+            "rates": {
+                "agent-a": {
+                    "turnId": "turn-a",
+                    "active": True,
+                    "estimated": False,
+                    "rate": 12.5,
+                    "outputTokens": 25,
+                }
+            },
+            "teams": {},
+        })
+        self.assertEqual(event.rates["agent-a"].outputTokens, 25)
+        with self.assertRaises(ValidationError):
+            ResourceTokenRatesEvent.model_validate({
+                "protocol": 3,
+                "workspaceId": "workspace-a",
+                "epoch": "server-epoch",
+                "revision": 7,
+                "rates": {"agent-a": {
+                    "turnId": "",
+                    "active": True,
+                    "estimated": False,
+                    "rate": 12.5,
+                    "outputTokens": 25,
+                }},
+                "teams": {},
+            })
+        with self.assertRaises(ValidationError):
+            ResourceTokenRatesEvent.model_validate({
+                "protocol": 3,
+                "workspaceId": "",
+                "epoch": "server-epoch",
+                "revision": 7,
+                "rates": {},
+                "teams": {},
+            })
+        with self.assertRaises(ValidationError):
+            ResourceTokenRatesEvent.model_validate({
+                "protocol": 3,
+                "workspaceId": "workspace-a",
+                "epoch": "server-epoch",
+                "revision": 7,
+                "rates": {"agent-a": {"rate": 12.5}},
+                "teams": {},
+            })
         with self.assertRaises(ValidationError):
             ResourceChangeEvent.model_validate({
                 "protocol": 3,

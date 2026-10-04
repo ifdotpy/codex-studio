@@ -4,32 +4,33 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, RootModel, StrictInt, StrictStr
+from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr
 
 from studio_api.models import ContractModel
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
 ResourceRevision = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_REVISION)]
+NonEmptyIdentifier = Annotated[StrictStr, Field(min_length=1)]
 
 
 class PanelResource(ContractModel):
     kind: Literal["panel"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class QueueResource(ContractModel):
     kind: Literal["queue"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class ReceiptsResource(ContractModel):
     kind: Literal["receipts"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class TerminalResource(ContractModel):
     kind: Literal["terminal"]
-    terminalId: StrictStr
+    terminalId: NonEmptyIdentifier
 
 
 class TerminalsResource(ContractModel):
@@ -42,7 +43,7 @@ class AccountsResource(ContractModel):
 
 class LimitsResource(ContractModel):
     kind: Literal["limits"]
-    accountKey: StrictStr
+    accountKey: NonEmptyIdentifier
 
 
 class ModelsResource(ContractModel):
@@ -51,27 +52,27 @@ class ModelsResource(ContractModel):
 
 class TasksResource(ContractModel):
     kind: Literal["tasks"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class TaskResource(ContractModel):
     kind: Literal["task"]
-    taskId: StrictStr
+    taskId: NonEmptyIdentifier
 
 
 class WorkspaceResource(ContractModel):
     kind: Literal["workspace"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class VoiceResource(ContractModel):
     kind: Literal["voice"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class SessionCostResource(ContractModel):
     kind: Literal["session-cost"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class CostsResource(ContractModel):
@@ -84,12 +85,12 @@ class DesktopResource(ContractModel):
 
 class WorktreeDiskResource(ContractModel):
     kind: Literal["worktree-disk"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 class RoomResource(ContractModel):
     kind: Literal["room"]
-    roomId: StrictStr
+    roomId: NonEmptyIdentifier
 
 
 class StateResource(ContractModel):
@@ -106,7 +107,7 @@ class TranscriptsResource(ContractModel):
 
 class TranscriptResource(ContractModel):
     kind: Literal["transcript"]
-    agentId: StrictStr
+    agentId: NonEmptyIdentifier
 
 
 ResourceRefValue = Annotated[
@@ -143,8 +144,8 @@ class ResourceChangeEvent(ContractModel):
     """Named `resources` SSE payload. A change invalidates the listed refs."""
 
     protocol: Literal[3]
-    workspaceId: StrictStr
-    epoch: StrictStr
+    workspaceId: NonEmptyIdentifier
+    epoch: NonEmptyIdentifier
     revision: ResourceRevision
     reason: Literal["initial", "change", "reconnect", "overflow", "workspace"]
     resources: list[ResourceRef]
@@ -154,6 +155,34 @@ class ResourceHeartbeatEvent(ContractModel):
     """Named `heartbeat` SSE payload; it never requests a resource read."""
 
     protocol: Literal[3]
-    workspaceId: StrictStr
-    epoch: StrictStr
+    workspaceId: NonEmptyIdentifier
+    epoch: NonEmptyIdentifier
     revision: ResourceRevision
+
+
+class TokenRateValue(ContractModel):
+    """One active or completed agent turn's volatile token-rate snapshot."""
+
+    turnId: NonEmptyIdentifier
+    active: StrictBool
+    estimated: StrictBool
+    rate: StrictInt | StrictFloat
+    outputTokens: StrictInt | StrictFloat
+
+
+class ResourceTokenRatesEvent(ContractModel):
+    """Named `token-rates` SSE payload; values come from workspace_snapshot()."""
+
+    protocol: Literal[3]
+    workspaceId: NonEmptyIdentifier
+    epoch: NonEmptyIdentifier
+    revision: ResourceRevision
+    rates: dict[NonEmptyIdentifier, TokenRateValue]
+    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+
+
+class TokenRateSnapshot(ContractModel):
+    """Typed payload accepted from the token-rate producer boundary."""
+
+    rates: dict[NonEmptyIdentifier, TokenRateValue]
+    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]

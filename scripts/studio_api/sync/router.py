@@ -31,6 +31,7 @@ from studio_api.sync.resources.models import (
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
     ResourceRef,
+    ResourceTokenRatesEvent,
 )
 
 if TYPE_CHECKING:
@@ -198,10 +199,12 @@ def create_router(context: ApiContext) -> APIRouter:
                             "oneOf": [
                                 {"$ref": "#/components/schemas/ResourceChangeEvent"},
                                 {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                                {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
                             ],
                             "x-sse-events": {
                                 "resources": "ResourceChangeEvent",
                                 "heartbeat": "ResourceHeartbeatEvent",
+                                "token-rates": "ResourceTokenRatesEvent",
                             },
                         }
                     }
@@ -360,6 +363,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 ref_template="#/components/schemas/{model}"
             ),
             "ResourceHeartbeatEvent": ResourceHeartbeatEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "ResourceTokenRatesEvent": ResourceTokenRatesEvent.model_json_schema(
                 ref_template="#/components/schemas/{model}"
             ),
         },
