@@ -57,7 +57,7 @@ export default function RadioChat({
   const [error, setError] = useState("");
   const [target, setTarget] = useState("both");
   const locked = useRef(false);
-  const members = room.members
+  const members = (room.members || [])
     .map((id) => data.threads.find((a) => a.id === id))
     .filter((a) => !!a);
   const messages = useMessages(room.id, "room", false, data.stateDir);
@@ -115,10 +115,15 @@ export default function RadioChat({
       notify("The shared chat project is unavailable. Refresh Studio.");
       return;
     }
+    const teamId = radio.teamId || room.peerTeamId;
+    if (!teamId) {
+      notify("The shared chat identity is unavailable. Refresh Studio.");
+      return;
+    }
     const base = {
       action: "radio" as const,
       path,
-      team_id: radio.teamId || room.peerTeamId,
+      team_id: teamId,
       request_id: crypto.randomUUID(),
       expected_revision: radio.revision,
     };
@@ -325,7 +330,10 @@ export default function RadioChat({
             aria-label="Reply from"
             data={[
               { value: "both", label: "Both agents" },
-              ...members.map((a) => ({ value: a.id, label: a.name })),
+              ...members.map((a) => ({
+                value: a.id,
+                label: a.name || "Agent",
+              })),
             ]}
             value={target}
             onChange={(value) => setTarget(value || "both")}

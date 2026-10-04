@@ -7,7 +7,11 @@ import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ModelPicker, type ModelOption } from "./ModelPicker";
 import "./shared-chat-create.css";
 
-type Participant = { account_key: string; model: string; effort?: string };
+type Participant = {
+  account_key: string;
+  model: string;
+  effort?: string | null;
+};
 type SharedCreateRequest = Extract<
   PostBody<"/api/peer-teams">,
   { action: "radio"; radio_action: "create" }
@@ -186,16 +190,15 @@ export default function SharedChatCreate({
     lock.current = true;
     setPending(true);
     setError("");
-    let next = attempt || {
-      body: {
-        action: "radio",
-        radio_action: "create",
-        request_id: crypto.randomUUID(),
-        path,
-        name: name.trim() || "Shared chat",
-        participants,
-      },
+    const body: SharedCreateRequest = {
+      action: "radio",
+      radio_action: "create",
+      request_id: crypto.randomUUID(),
+      path,
+      name: name.trim() || "Shared chat",
+      participants,
     };
+    let next: Creation = attempt || { body };
     remember(next);
     try {
       if (!next.roomId && !next.rejected) {
@@ -235,12 +238,22 @@ export default function SharedChatCreate({
   const projects = [
     ...new Map(
       [
-        ...(data.runtime?.projects || []).map(
-          (p) => [p.path, p.name || p.path] as const,
+        ...(data.runtime?.projects || []).flatMap((project) => {
+          const projectPath = project.path;
+          if (typeof projectPath !== "string" || !projectPath) return [];
+          const label = project.name;
+          return [
+            [
+              projectPath,
+              typeof label === "string" && label ? label : projectPath,
+            ] as const,
+          ];
+        }),
+        ...data.threads.flatMap((thread) =>
+          typeof thread.cwd === "string" && thread.cwd
+            ? [[thread.cwd, thread.cwd] as const]
+            : [],
         ),
-        ...data.threads
-          .filter((a) => a.cwd)
-          .map((a) => [a.cwd!, a.cwd!] as const),
       ].map(([path, label]) => [path, { value: path, label }]),
     ).values(),
   ];

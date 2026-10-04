@@ -566,7 +566,7 @@ export default function Accounts({
                   disabled={
                     !!pending ||
                     account.status !== "ready" ||
-                    account.disconnected ||
+                    !!account.disconnected ||
                     (pinned && !owner) ||
                     (transferring &&
                       account.id !== teamTransfer?.targetAccountKey)
@@ -725,7 +725,7 @@ export default function Accounts({
                         disabled={
                           !!pending ||
                           account.status !== "ready" ||
-                          account.disconnected
+                          !!account.disconnected
                         }
                         loading={pending === `default:${account.id}`}
                         aria-label={`Use ${account.email || account.label} by default`}

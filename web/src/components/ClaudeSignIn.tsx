@@ -7,7 +7,7 @@ type Receipt = PostResult<"/api/accounts/claude/login">;
 type LoginAction = "start" | "code" | "cancel";
 const active = (receipt: Receipt | null) =>
   !receipt || ["starting", "pending"].includes(receipt.status);
-function authUrl(value?: string): string | null {
+function authUrl(value?: string | null): string | null {
   try {
     const url = new URL(value || "");
     if (

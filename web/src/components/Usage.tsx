@@ -4,7 +4,7 @@ import { weeklyRunway } from "../usage/weeklyRunway";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
-import type { Agent, Json } from "../types";
+import type { Agent, Json, JsonValue } from "../types";
 import { errorText, get, post, type GetResult } from "../api";
 import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -39,8 +39,17 @@ type LimitBucket = {
   data: Json;
   windows: LimitWindow[];
 };
+type AvailableReset = {
+  id: string;
+  title?: string;
+  description?: string;
+  expiresAt?: number;
+  resetType?: string;
+};
 const number = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
+const jsonObject = (value: JsonValue | null | undefined): Json | null =>
+  value && typeof value === "object" && !Array.isArray(value) ? value : null;
 const percentage = (value: unknown) =>
   number(value) && value >= 0 && value <= 100 ? value : null;
 export const formatPercent = (value: number) =>
@@ -52,22 +61,26 @@ const duration = (minutes: unknown, fallback: string) => {
   return `${minutes}m`;
 };
 export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
-  const reported = limits?.data?.rateLimitsByLimitId;
+  const responseData = jsonObject(limits?.data);
+  const reported = jsonObject(responseData?.rateLimitsByLimitId);
+  const rateLimits = jsonObject(responseData?.rateLimits);
   const buckets =
     reported && Object.keys(reported).length
       ? reported
-      : limits?.data?.rateLimits
+      : rateLimits
         ? {
-            [limits.data.rateLimits.limitId || "codex"]: limits.data.rateLimits,
+            [typeof rateLimits.limitId === "string" && rateLimits.limitId
+              ? rateLimits.limitId
+              : "codex"]: rateLimits,
           }
         : {};
   return Object.entries(buckets)
-    .filter(([, data]) => data && typeof data === "object")
-    .map(([id, value]) => {
-      const data = value as Json;
+    .flatMap(([id, value]) => {
+      const data = jsonObject(value);
+      if (!data) return [];
       const windows = ["primary", "secondary"].flatMap((key) => {
-        const window = data[key];
-        if (!window || typeof window !== "object") return [];
+        const window = jsonObject(data[key]);
+        if (!window) return [];
         const used = percentage(window.usedPercent);
         const reset =
           number(window.resetsAt) && window.resetsAt > 0
@@ -85,17 +98,18 @@ export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
           },
         ];
       });
-      if (data.individualLimit)
+      const individualLimit = jsonObject(data.individualLimit);
+      if (individualLimit)
         windows.push({
           label: "Individual",
-          remaining: percentage(data.individualLimit.remainingPercent),
+          remaining: percentage(individualLimit.remainingPercent),
           reset: null,
           expired: false,
         });
       return {
         id,
         name:
-          data.limitName ||
+          (typeof data.limitName === "string" && data.limitName) ||
           (id === "codex" ? "Codex" : id === "claude" ? "Claude" : id),
         data,
         windows,
@@ -104,7 +118,8 @@ export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
     .sort((a, b) => {
       const rank = (bucket: LimitBucket) =>
         ["codex", "claude"].includes(bucket.id) ||
-        ["codex", "claude"].includes(bucket.data.limitId)
+        (typeof bucket.data.limitId === "string" &&
+          ["codex", "claude"].includes(bucket.data.limitId))
           ? 0
           : /spark/i.test(bucket.name)
             ? 2
@@ -177,6 +192,7 @@ export default function Usage({
     selectedAccountKey,
     activeAccount?.accountId,
   );
+  const limitsData = jsonObject(limits?.data);
   const loadingLimits =
     activeAccount?.loading ?? limitsLoading ?? !reportedLimits;
   const accountAgent = { ...agent, accountKey: selectedAccountKey };
@@ -214,7 +230,7 @@ export default function Usage({
     setResetError("");
     setResetNotice("");
     try {
-      const accountId = limits?.data?.accountId;
+      const accountId = limitsData?.accountId;
       if (typeof accountId !== "string")
         throw new Error("Refresh limits before using this reset credit.");
       const key = `${accountId}:${creditId}`;
@@ -264,7 +280,7 @@ export default function Usage({
   };
   const accountKey = selectedAccountKey;
   const [costs, setCosts] = useState<
-    (Partial<GetResult<"/api/costs">> & { error?: string }) | null
+    (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
   const costScope = JSON.stringify([stateDir, rootId]);
@@ -386,22 +402,47 @@ export default function Usage({
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
     return () => window.clearInterval(timer);
   }, []);
-  const resetCredits = limits?.data?.rateLimitResetCredits;
+  const resetCredits = jsonObject(limitsData?.rateLimitResetCredits);
   const resetCount = number(resetCredits?.availableCount)
     ? resetCredits.availableCount
     : null;
-  const availableResets: Json[] = Array.isArray(resetCredits?.credits)
-    ? resetCredits.credits.filter(
-        (credit: Json) =>
-          credit &&
-          typeof credit.id === "string" &&
-          credit.status === "available" &&
-          (!number(credit.expiresAt) || credit.expiresAt > now),
-      )
+  const availableResets: AvailableReset[] = Array.isArray(resetCredits?.credits)
+    ? resetCredits.credits.flatMap((value) => {
+        const credit = jsonObject(value);
+        if (
+          !credit ||
+          typeof credit.id !== "string" ||
+          credit.status !== "available" ||
+          (number(credit.expiresAt) && credit.expiresAt <= now)
+        )
+          return [];
+        return [
+          {
+            id: credit.id,
+            ...(typeof credit.title === "string"
+              ? { title: credit.title }
+              : {}),
+            ...(typeof credit.description === "string"
+              ? { description: credit.description }
+              : {}),
+            ...(number(credit.expiresAt)
+              ? { expiresAt: credit.expiresAt }
+              : {}),
+            ...(typeof credit.resetType === "string"
+              ? { resetType: credit.resetType }
+              : {}),
+          },
+        ];
+      })
     : [];
-  const c = agent.contextUsage;
-  const known = c && number(c.tokens) && number(c.window) && c.window > 0;
-  const percent = known ? Math.round((c.tokens! / c.window!) * 100) : null;
+  const contextUsage = jsonObject(agent.contextUsage);
+  const contextTokens = contextUsage?.tokens;
+  const contextWindow = contextUsage?.window;
+  const known =
+    number(contextTokens) && number(contextWindow) && contextWindow > 0;
+  const percent = known
+    ? Math.round((contextTokens / contextWindow) * 100)
+    : null;
   const buckets = readBuckets(limits, now);
   const recovered = useRecoveredLimit(accountAgent, limits, now);
   const recovery = recovered ? null : limitRecovery(accountAgent, limits, now);
@@ -485,7 +526,7 @@ export default function Usage({
           <strong>Chat context</strong>
           <p>
             {known
-              ? `${c!.tokens!.toLocaleString()} of ${c!.window!.toLocaleString()} tokens used (${percent}%).`
+              ? `${contextTokens.toLocaleString()} of ${contextWindow.toLocaleString()} tokens used (${percent}%).`
               : "No context data yet."}
           </p>
           {agent.compactions !== undefined && (
@@ -707,7 +748,7 @@ export default function Usage({
                   >
                     <header>
                       <strong>{bucket.name}</strong>
-                      {bucket.data.planType && (
+                      {typeof bucket.data.planType === "string" && (
                         <span>{bucket.data.planType}</span>
                       )}
                     </header>
@@ -788,17 +829,19 @@ export default function Usage({
                         No limit windows reported.
                       </p>
                     )}
-                    {bucket.data.credits && (
+                    {jsonObject(bucket.data.credits) && (
                       <div className="account-limit-credits">
                         <span>Credits</span>
                         <strong>
-                          {bucket.data.credits.unlimited
+                          {jsonObject(bucket.data.credits)?.unlimited === true
                             ? "Unlimited"
-                            : bucket.data.credits.balance != null
-                              ? String(bucket.data.credits.balance)
-                              : bucket.data.credits.hasCredits === true
+                            : jsonObject(bucket.data.credits)?.balance != null
+                              ? String(jsonObject(bucket.data.credits)?.balance)
+                              : jsonObject(bucket.data.credits)?.hasCredits ===
+                                  true
                                 ? "Available"
-                                : bucket.data.credits.hasCredits === false
+                                : jsonObject(bucket.data.credits)
+                                      ?.hasCredits === false
                                   ? "None"
                                   : "Unavailable"}
                         </strong>
@@ -902,7 +945,7 @@ export default function Usage({
                             resetPending ||
                             resetApplied.includes(resetAppliedKey(credit.id)) ||
                             credit.resetType !== "codexRateLimits" ||
-                            !limits?.data?.accountId
+                            typeof limitsData?.accountId !== "string"
                           }
                           onClick={() => {
                             setConfirmReset(credit.id);
