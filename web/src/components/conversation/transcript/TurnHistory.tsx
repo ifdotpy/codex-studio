@@ -387,10 +387,14 @@ export default function TurnHistory({
       groups
         .flatMap((group) => group.turns || [group])
         .filter((turn) => turn.outcome === "failed")
-        .map((turn) => turn.items[0].turnId),
+        .flatMap((turn) => {
+          const turnId = turn.items[0].turnId;
+          return typeof turnId === "string" ? [turnId] : [];
+        }),
     );
     const byTurn = new Map<string, Message[]>();
     for (const item of items) {
+      if (typeof item.turnId !== "string") continue;
       if (!failedTurns.has(item.turnId)) continue;
       const turn = byTurn.get(item.turnId) || [];
       turn.push(item);
@@ -404,18 +408,29 @@ export default function TurnHistory({
     );
   }, [items, groups]);
   if (!enabled)
-    return <>{messages(items, renderMessage, agentId, agent?.cwd)}</>;
+    return (
+      <>{messages(items, renderMessage, agentId, agent?.cwd ?? undefined)}</>
+    );
   return (
     <>
       {groups.map((group) => {
-        if (group.items[0].role === "user" || !group.items[0].turnId)
-          return (
-            <Fragment key={messageRenderKey(group.items[0])}>
-              {messages(group.items, renderMessage, agentId, agent?.cwd)}
-            </Fragment>
-          );
         const outcomeTurn = group.turns?.at(-1) || group;
         const turnId = outcomeTurn.items[0].turnId;
+        if (
+          group.items[0].role === "user" ||
+          typeof group.items[0].turnId !== "string" ||
+          typeof turnId !== "string"
+        )
+          return (
+            <Fragment key={messageRenderKey(group.items[0])}>
+              {messages(
+                group.items,
+                renderMessage,
+                agentId,
+                agent?.cwd ?? undefined,
+              )}
+            </Fragment>
+          );
         return (
           <Turn
             key={group.id}

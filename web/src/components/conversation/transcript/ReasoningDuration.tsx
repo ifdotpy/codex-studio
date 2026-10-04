@@ -5,7 +5,13 @@ import "./reasoning-duration.css";
 
 export default function ReasoningDuration({ item }: { item: Message }) {
   const [elapsed, setElapsed] = useState(0);
-  const running = typeof item.reasoningSince === "number";
+  const since =
+    typeof item.reasoningSince === "number" ? item.reasoningSince : undefined;
+  const observedAt =
+    typeof item.reasoningObservedAt === "number"
+      ? item.reasoningObservedAt
+      : undefined;
+  const running = since !== undefined;
   useEffect(() => {
     setElapsed(0);
     if (!running) return;
@@ -20,10 +26,7 @@ export default function ReasoningDuration({ item }: { item: Message }) {
     0,
     Math.floor(
       (item.reasoningMs || 0) / 1000 +
-        (running
-          ? Math.max(0, item.reasoningObservedAt - item.reasoningSince) +
-            elapsed
-          : 0),
+        (running ? Math.max(0, (observedAt ?? since) - since) + elapsed : 0),
     ),
   );
   const duration =

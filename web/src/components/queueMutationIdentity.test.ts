@@ -6,9 +6,13 @@ describe("queueMutationMessageId", () => {
     expect(
       queueMutationMessageId({ action: "cancel", message_id: "wire-id" }),
     ).toBe("wire-id");
-    expect(queueMutationMessageId({ action: "edit", id: "legacy-id" })).toBe(
-      "legacy-id",
-    );
+    expect(
+      queueMutationMessageId({
+        action: "edit",
+        id: "legacy-id",
+        text: "updated",
+      }),
+    ).toBe("legacy-id");
   });
 
   it("uses the message identity when both forms are present", () => {
@@ -23,7 +27,11 @@ describe("queueMutationMessageId", () => {
 
   it("does not infer a message identity for queue-wide reorder", () => {
     expect(
-      queueMutationMessageId({ action: "reorder", ordered_ids: ["one"] }),
+      queueMutationMessageId({
+        action: "reorder",
+        ordered_ids: ["one"],
+        expected_revision: "revision-1",
+      }),
     ).toBeUndefined();
   });
 });

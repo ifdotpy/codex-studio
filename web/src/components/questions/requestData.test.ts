@@ -18,7 +18,7 @@ describe("requestQuestions", () => {
             isSecret: false,
             options: [
               { label: "JSON", description: "Structured output" },
-              "Text",
+              { label: "Text" },
             ],
           },
           {
@@ -126,13 +126,19 @@ describe("requestApprovalDetails", () => {
   it("prefers explicit request command and permissions", () => {
     const request: RequestDto = {
       id: "approval-2",
-      params: { command: ["git", "status"], permissions: ["workspace-write"] },
-      preview: { command: ["npm", "test"], changes: ["change-preview"] },
+      params: {
+        command: ["git", "status"],
+        permissions: { mode: "workspace-write" },
+      },
+      preview: {
+        command: ["npm", "test"],
+        changes: { files: ["change-preview"] },
+      },
     };
 
     expect(requestApprovalDetails(request)).toEqual({
       command: ["git", "status"],
-      permissions: ["workspace-write"],
+      permissions: { mode: "workspace-write" },
     });
   });
 });

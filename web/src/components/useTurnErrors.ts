@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
-import type { Agent, Json, Message } from "../types";
+import { get } from "../api";
+import type { Agent, Message } from "../types";
 
 const cachedErrors = new Map<string, Record<string, unknown>>();
 const inFlight = new Map<string, Promise<Record<string, unknown>>>();
@@ -40,20 +40,21 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     )
       errors[agent.lastCompletedTurn] = agent.error;
     const existing = new Set(
-      items
-        .filter((item) => item.nativeNotice === "error")
-        .map((item) => item.turnId),
+      items.flatMap((item) =>
+        item.nativeNotice === "error" && typeof item.turnId === "string"
+          ? [item.turnId]
+          : [],
+      ),
     );
     const turns = [
       ...new Set(
-        items
-          .filter(
-            (item) =>
-              item.turnStatus === "failed" &&
-              item.turnId &&
-              !existing.has(item.turnId),
-          )
-          .map((item) => String(item.turnId)),
+        items.flatMap((item) =>
+          item.turnStatus === "failed" &&
+          typeof item.turnId === "string" &&
+          !existing.has(item.turnId)
+            ? [item.turnId]
+            : [],
+        ),
       ),
     ];
     return { errors, resolved, existing, turns };
@@ -78,25 +79,30 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     if (!agent?.id || !agent.threadId || !requestKey) return;
     let active = true;
     const requested = requestKey.split(",");
-    const params = new URLSearchParams({
-      agent: agent.id,
-      scope: "agent",
-      view: "turn-errors",
-      thread: agent.threadId,
-      turns: requestKey,
-      limit: "1",
-    });
+    const agentId = agent.id;
+    const threadId = agent.threadId;
     const key = `${scope}:${requestKey}`;
-    let request = inFlight.get(key);
-    if (!request) {
-      request = api<{ turns?: Json[] }>(`/api/analytics?${params}`, undefined, {
+    const existingRequest = inFlight.get(key);
+    let request: Promise<Record<string, unknown>>;
+    if (existingRequest) request = existingRequest;
+    else {
+      request = get("/api/analytics", {
+        query: {
+          agent: agentId,
+          scope: "agent",
+          view: "turn-errors",
+          thread: threadId,
+          turns: requestKey,
+          limit: "1",
+        },
         timeoutMs: 60000,
       }).then((data) => {
         const recovered: Record<string, unknown> = {};
         for (const turn of data.turns || []) {
           if (
-            turn.agentId === agent.id &&
-            turn.threadId === agent.threadId &&
+            turn.agentId === agentId &&
+            turn.threadId === threadId &&
+            typeof turn.turnId === "string" &&
             requested.includes(turn.turnId) &&
             turn.status === "failed" &&
             turn.error
@@ -150,24 +156,22 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
   const enriched = useMemo(() => {
     const last = new Map<string, number>();
     items.forEach((item, index) => {
-      if (item.turnId) last.set(item.turnId, index);
+      if (typeof item.turnId === "string") last.set(item.turnId, index);
     });
     if (!Object.keys(errors).length) return items;
     return items.flatMap((item, index): Message[] => {
-      const error = errors[item.turnId];
-      if (
-        !error ||
-        existing.has(item.turnId) ||
-        last.get(item.turnId) !== index
-      )
+      const turnId = item.turnId;
+      if (typeof turnId !== "string") return [item];
+      const error = errors[turnId];
+      if (!error || existing.has(turnId) || last.get(turnId) !== index)
         return [item];
       return [
         item,
         {
-          id: `turn-error:${agent?.id}:${agent?.threadId}:${item.turnId}`,
+          id: `turn-error:${agent?.id}:${agent?.threadId}:${turnId}`,
           role: "system",
           text: "",
-          turnId: item.turnId,
+          turnId,
           turnStatus: "failed",
           nativeNotice: "error",
           nativeError: error,

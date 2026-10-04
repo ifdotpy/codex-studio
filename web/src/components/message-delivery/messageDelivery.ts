@@ -1,6 +1,19 @@
 import type { Message } from "../../types";
 import type { OutgoingMessage } from "../../sync/send";
 
+const deliveryLabels: Record<string, string> = {
+  sending: "Sending…",
+  reserved: "Starting…",
+  dispatching: "Sending…",
+  pending: "Queued",
+  queued: "Waiting to send",
+  paused: "Retries paused",
+  uncertain: "Delivery unconfirmed",
+  failed: "Not sent",
+  accepted: "Sent",
+  cancelled: "Cancelled",
+};
+
 export function explicitQueue(item: Record<string, unknown>) {
   if (item.localDelivery && item.deliveryStatus === "queued") return false;
   return (
@@ -11,10 +24,11 @@ export function explicitQueue(item: Record<string, unknown>) {
 }
 
 export function dispatchedMessage(item: Message) {
+  const deliveryStatus = item.deliveryStatus;
   return (
     item.materialized === true ||
     ["reserved", "dispatching", "delivered", "sent"].includes(
-      item.deliveryStatus,
+      typeof deliveryStatus === "string" ? deliveryStatus : "",
     ) ||
     (!item.localDelivery && item.materialized !== false && !item.pending)
   );
@@ -101,7 +115,7 @@ export function outgoingTranscript(
       at: entry.created / 1000,
       deliveryStatus:
         entry.status === "accepted"
-          ? ["queued", "pending"].includes(entry.receipt?.status)
+          ? ["queued", "pending"].includes(entry.receipt?.status || "")
             ? "pending"
             : "accepted"
           : entry.status,
@@ -119,20 +133,5 @@ export function outgoingTranscript(
 export function deliveryLabel(item: Message) {
   const status = item.deliveryStatus || (item.pending ? "pending" : undefined);
   if (status === "sending" && item.pending) return "Waiting for agent";
-  return (
-    (
-      {
-        sending: "Sending…",
-        reserved: "Starting…",
-        dispatching: "Sending…",
-        pending: "Queued",
-        queued: "Waiting to send",
-        paused: "Retries paused",
-        uncertain: "Delivery unconfirmed",
-        failed: "Not sent",
-        accepted: "Sent",
-        cancelled: "Cancelled",
-      } as Record<string, string>
-    )[status] || ""
-  );
+  return status ? deliveryLabels[status] || "" : "";
 }
