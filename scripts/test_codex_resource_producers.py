@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 """Domain producer publications reach registered resource subscribers."""
-from test_isolation import isolate_supervisor_environment
-
-isolate_supervisor_environment()
-
 import asyncio
 from contextlib import closing, contextmanager
 import json
@@ -14,6 +10,13 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "scripts"))
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
 
 from codex_costs import CostReader, _publish_costs
 from codex_session_costs import SessionCostReader

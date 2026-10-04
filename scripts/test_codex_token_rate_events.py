@@ -2,17 +2,19 @@
 """Token-rate resource publication follows actual telemetry changes."""
 import asyncio
 import threading
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "scripts"))
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from pathlib import Path
-from unittest.mock import patch
-import sys
-import tempfile
-import unittest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_token_rate import TokenRates
 from studio_api.sync.resources import hub as resource_hub
 from studio_api.sync.resources.hub import ResourceHub, register_resource_hub, unregister_resource_hub
