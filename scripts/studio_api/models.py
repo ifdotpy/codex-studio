@@ -4,7 +4,13 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, JsonValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetCoreSchemaHandler,
+    JsonValue as JsonValue,
+)
 from pydantic_core import CoreSchema, core_schema
 
 
