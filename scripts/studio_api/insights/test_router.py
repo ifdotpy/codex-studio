@@ -33,6 +33,13 @@ class _Runtime:
 
     def analytics(self, **options: str) -> dict[str, JsonValue]:
         self.analytics_calls.append(options)
+        if options.get("view") == "message-info":
+            return {
+                "at": 123.0,
+                "tokens": {"outputTokens": 1200, "reasoningOutputTokens": 350},
+                "turnDurationMs": 2500,
+                "responseRate": 48.0,
+            }
         if getattr(self, "invalid_response", False):
             return {"unexpected": "invalid output"}
         result: dict[str, JsonValue] = {
@@ -188,6 +195,11 @@ class InsightsRouterTests(unittest.TestCase):
         self.assertEqual(item_model("calls"), "AnalyticsItemRecord")
         self.assertEqual(item_model("turns"), "AnalyticsTurnRecord")
         self.assertEqual(item_model("rateLimits"), "AnalyticsRateLimitRecord")
+        rate_schema = response_model["properties"]["responseRate"]
+        self.assertIn(
+            {"type": "number"},
+            [variant for variant in rate_schema["anyOf"] if variant.get("type")],
+        )
 
     def test_routes_validate_through_the_real_api_context_sender(self) -> None:
         context = ApiContext.for_schema()
@@ -200,12 +212,25 @@ class InsightsRouterTests(unittest.TestCase):
 
         analytics = client.get("/api/analytics?timing=1")
         costs = client.get("/api/costs")
+        message_info = client.get(
+            "/api/analytics?agent=agent-a&view=message-info&item=item-a&turn=turn-a"
+        )
 
         self.assertEqual(analytics.status_code, 200)
         self.assertEqual(analytics.json(), {"at": 123.0, "tokens": {"inputTokens": 7}})
         self.assertIn("Server-Timing", analytics.headers)
         self.assertEqual(costs.status_code, 200)
         self.assertIsNone(costs.json()["data"])
+        self.assertEqual(message_info.status_code, 200)
+        self.assertEqual(
+            message_info.json(),
+            {
+                "at": 123.0,
+                "tokens": {"outputTokens": 1200, "reasoningOutputTokens": 350},
+                "turnDurationMs": 2500,
+                "responseRate": 48.0,
+            },
+        )
 
     def test_analytics_keeps_first_query_value_and_timing_header(self) -> None:
         response = self.client.get(

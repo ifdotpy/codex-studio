@@ -224,7 +224,7 @@ class InsightsModelTests(unittest.TestCase):
     def test_analytics_record_dtos_match_known_producer_shapes(self) -> None:
         payload = {
             "at": 123.0,
-            "responseRate": {"rate": 40.0, "outputTokens": 80, "durationSeconds": 2.0},
+            "responseRate": 40.0,
             "tokens": {"outputTokens": 8, "reasoningOutputTokens": 2},
             "timeline": [{
                 "id": "usage-a",

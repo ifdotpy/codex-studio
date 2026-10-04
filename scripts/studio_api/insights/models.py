@@ -470,12 +470,6 @@ class AnalyticsOperationCounts(ContractModel):
     approvalCounts: dict[str, int]
 
 
-class AnalyticsResponseRate(ContractModel):
-    rate: int | float
-    outputTokens: int | float
-    durationSeconds: int | float
-
-
 class AnalyticsResponse(ResponseModel):
     version: Literal[1] | None = None
     generatedAt: float | None = None
@@ -518,7 +512,8 @@ class AnalyticsResponse(ResponseModel):
     accountLabel: str | None = None
     provider: str | None = None
     turnDurationMs: int | float | None = None
-    responseRate: AnalyticsResponseRate | None = None
+    # MessageInfo returns the observed per-response rate as a scalar number.
+    responseRate: int | float | None = None
     tokens: AnalyticsProviderTokens | None = None
 
 class AccountCostData(ContractModel):
