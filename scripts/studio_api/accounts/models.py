@@ -475,6 +475,7 @@ class LimitsQuery(ContractModel):
 class ModelsQuery(ContractModel):
     account_key: str = "default"
     workers: str | None = None
+    retry: Literal["1"] | None = None
 
 
 class ClaudeLoginQuery(ContractModel):

@@ -10,6 +10,7 @@ import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
+import { watchResourceReads } from "./watchResourceReads";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import TokenRate from "./TokenRate";
@@ -304,14 +305,7 @@ export default function Usage({
     sessionCostState.scope !== costScope || sessionCostState.updating;
   useEffect(() => {
     let active = true;
-    let timer: number;
-    setSessionCostState({
-      scope: costScope,
-      value: peekSessionCost(stateDir, rootId),
-      updating: true,
-    });
     const load = async () => {
-      let delay = 10000;
       setSessionCostState((previous) =>
         previous.scope === costScope
           ? { ...previous, updating: true }
@@ -339,7 +333,6 @@ export default function Usage({
               updating: Boolean(cached),
             };
           });
-          delay = 2000;
         } else {
           const cached = storeSessionCost(stateDir, rootId, value);
           setSessionCostState({
@@ -347,7 +340,6 @@ export default function Usage({
             value: cached || value,
             updating: Boolean(value.refreshing),
           });
-          if (value.refreshing) delay = 2000;
         }
       } catch {
         if (active)
@@ -359,19 +351,22 @@ export default function Usage({
                 : peekSessionCost(stateDir, rootId),
             updating: false,
           }));
-      } finally {
-        if (active) timer = window.setTimeout(load, delay);
       }
     };
-    void load();
+    const stop = watchResourceReads(
+      { kind: "session-cost", agentId: agent.id },
+      load,
+      () => {
+        // Keep the cached value while the session cost service is unavailable.
+      },
+    );
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      stop();
     };
   }, [agent.id, costScope, rootId, stateDir]);
   useEffect(() => {
     let active = true;
-    let timer: number;
     const load = async () => {
       try {
         const result = await get("/api/costs", {
@@ -382,22 +377,26 @@ export default function Usage({
         if (result.accountKey !== accountKey)
           throw new Error("Cost account mismatch");
         setCosts(result);
-        timer = window.setTimeout(load, result.refreshing ? 5000 : 60000);
       } catch {
         if (active) {
           setCosts((previous) => ({
             ...previous,
             error: "Local costs unavailable",
           }));
-          timer = window.setTimeout(load, 60000);
         }
       }
     };
     setCosts(null);
-    void load();
+    const stop = watchResourceReads({ kind: "costs" }, load, () => {
+      if (active)
+        setCosts((previous) => ({
+          ...previous,
+          error: "Local costs unavailable",
+        }));
+    });
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      stop();
     };
   }, [accountKey]);
   const [now, setNow] = useState(() => Date.now() / 1000);

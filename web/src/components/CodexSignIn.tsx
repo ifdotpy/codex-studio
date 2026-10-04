@@ -20,7 +20,6 @@ export default function CodexSignIn({
       <AccountSignIn
         key={`${state.scope}:${account.id}`}
         state={state}
-        opened
         targetAccount={account}
       />
     </Modal>

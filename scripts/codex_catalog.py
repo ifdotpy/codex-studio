@@ -4,8 +4,22 @@ from __future__ import annotations
 import concurrent.futures
 import contextvars
 import copy
+import logging
 import threading
 import time
+from collections.abc import Callable
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _publish_after_commit(callback: Callable[[], None] | None) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        _LOGGER.exception("Could not publish model catalog invalidation")
 
 
 class CatalogPending(RuntimeError):
@@ -31,7 +45,9 @@ class ModelCatalogCache:
         self.lock = threading.Lock()
         self.entries = {}
 
-    def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False):
+    def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False,
+             retry=False,
+             on_commit: Callable[[], None] | None = None):
         """stale_ok serves an expired catalog for display while it refreshes; never for admission."""
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
@@ -41,27 +57,48 @@ class ModelCatalogCache:
             entry = self.entries.get(account)
             same = (entry is not None and entry["server"] is server
                     and entry["connectionId"] == connection_id)
+            cached_success = False
             if same and entry["expires"] > self.clock():
-                result = copy.deepcopy(entry["value"])
+                if entry.get("error") is not None:
+                    # A deliberate user retry can replace only a completed terminal
+                    # failure. Pending requests and successful snapshots stay shared.
+                    if not (retry and entry["future"].done()):
+                        raise CatalogUnavailable(entry["error"])
+                else:
+                    result = copy.deepcopy(entry["value"])
+                    cached_success = True
+            if cached_success:
                 future = None
+            elif not same or entry["future"].done():
+                if stale_ok and same and entry.get("value") is not None:
+                    stale = copy.deepcopy(entry["value"])
+                entry = {"server": server, "connectionId": connection_id,
+                         "future": concurrent.futures.Future(),
+                         "expires": 0, "value": entry["value"] if same and entry else None,
+                         "error": None}
+                self.entries[account] = entry
+                start = True
+                future = entry["future"]
             else:
                 if stale_ok and same and entry.get("value") is not None:
                     stale = copy.deepcopy(entry["value"])
-                if not same or entry["future"].done():
-                    entry = {"server": server, "connectionId": connection_id,
-                             "future": concurrent.futures.Future(),
-                             "expires": 0, "value": entry["value"] if same and entry else None}
-                    self.entries[account] = entry
-                    start = True
                 future = entry["future"]
         if start:
             rows, seen_cursors, seen_models = [], set(), set()
             first_page = None
 
             def fail(error):
+                failure = CatalogUnavailable(
+                    f"Model catalog unavailable; no workers were created: {error}")
+                committed = False
+                with self.lock:
+                    if self.entries.get(account) is entry and not future.done():
+                        entry.update(error=str(failure), expires=self.clock() + self.ttl)
+                        committed = True
+                if committed:
+                    _publish_after_commit(on_commit)
                 if not future.done():
-                    future.set_exception(CatalogUnavailable(
-                        f"Model catalog unavailable; no workers were created: {error}"))
+                    future.set_exception(failure)
 
             def complete(native_future):
                 nonlocal first_page
@@ -92,9 +129,13 @@ class ModelCatalogCache:
                     value = {**first_page, 'data': rows}
                     if 'nextCursor' in first_page or seen_cursors:
                         value['nextCursor'] = None
+                    committed = False
                     with self.lock:
                         if self.entries.get(account) is entry:
                             entry.update(value=value, expires=self.clock() + self.ttl)
+                            committed = True
+                    if committed:
+                        _publish_after_commit(on_commit)
                     future.set_result(value)
                 except Exception as error:
                     fail(error)
@@ -132,6 +173,7 @@ class ModelCatalogCache:
 
 # Set only by display reads (/api/models). Admission never serves an expired list.
 DISPLAY_READ = contextvars.ContextVar("studio_catalog_display_read", default=False)
+DISPLAY_RETRY = contextvars.ContextVar("studio_catalog_display_retry", default=False)
 
 
 def runtime_catalog(runtime, account, *, stale_ok=None):
@@ -156,4 +198,15 @@ def runtime_catalog(runtime, account, *, stale_ok=None):
         def submit(_method, _params):
             return submit_model_catalog(home, executable=executable, isolated=account != "default", current=current)
 
-    return cache.read(account, server, connection_id, current, submit=submit, stale_ok=stale_ok)
+    from studio_api.accounts.events import publish_models_change
+
+    return cache.read(
+        account,
+        server,
+        connection_id,
+        current,
+        submit=submit,
+        stale_ok=stale_ok,
+        retry=DISPLAY_RETRY.get(),
+        on_commit=lambda: publish_models_change(runtime.root),
+    )

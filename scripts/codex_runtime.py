@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import copy
 import concurrent.futures
+from dataclasses import dataclass
 from contextlib import contextmanager
 import fcntl
 import json
@@ -22,6 +23,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from codex_accounts import AccountStore
 from codex_account_transfer import transfer_store
@@ -51,6 +53,64 @@ from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
+
+if TYPE_CHECKING:
+    from studio_api.sync.resources.models import ResourceRef
+
+MAX_STAGED_RESOURCE_CHANGES = 256
+MAX_QUEUED_RESOURCE_CHANGES = 4096
+MAX_RECOVERY_TOKEN_OBSERVATIONS = 4096
+WORKSPACE_AGENT_RESOURCE_FIELDS = (
+    "name", "status", "parentId", "rootId", "threadId", "deletedAt", "isLead", "role",
+    "sharedRoomId", "model", "provider", "effort", "fastMode", "concurrency", "accountKey",
+    "cwd", "worktree", "worktreePreparation", "turnId", "turnStatus", "inFlight", "error",
+    "canSend", "launcherAlive", "empty", "yoloMode", "agentMode", "agentModeRevision",
+    "agentModeSupported", "subagentConcurrencyVersion", "workerDefaults", "reviewDefaults",
+    "pendingSettings", "pendingSettingsAccountKey", "queuedSettings", "quickCreate",
+    "nativeThreadBlock", "nativeSafetyBuffering", "nativeSafetyRetry", "nativeTurnError",
+    "readState", "nativeLimitErrorAt", "startAttempt", "unreadCount", "lastReadAt",
+    "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
+    "imageWorkspaceRepo", "imageWorkspaceBaseRepo",
+)
+WORKTREE_DISK_AGENT_RESOURCE_FIELDS = (
+    "cwd", "worktree", "worktreeReady", "deletedAt", "imageWorkspace",
+    "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceRepo",
+    "imageWorkspaceBaseRepo", "imageWorkspaceCollect",
+)
+
+
+@dataclass(frozen=True)
+class TokenRateObservation:
+    agent: dict[str, object]
+    method: str
+    params: dict[str, object]
+    account_key: str
+    connection_id: str | None
+    observed_at: float
+
+
+def workspace_agent_resource_changed(previous: dict[str, object] | None, current: dict[str, object]) -> bool:
+    return previous is None or any(
+        previous.get(field) != current.get(field)
+        for field in WORKSPACE_AGENT_RESOURCE_FIELDS
+    )
+
+
+TRANSCRIPT_AGENT_RESOURCE_FIELDS = (
+    # Fields returned in the transcript envelope or used to derive visible item state.
+    "id", "deletedAt", "status", "activity", "inFlight", "contextUsage",
+    "compactions", "compactionsObservedOnly", "autoWake", "turnId", "threadId",
+    "restoredCheckpoint",
+)
+
+
+def transcript_agent_resource_changed(
+    previous: dict[str, object] | None, current: dict[str, object]
+) -> bool:
+    return previous is None or any(
+        previous.get(field) != current.get(field)
+        for field in TRANSCRIPT_AGENT_RESOURCE_FIELDS
+    )
 
 def sqlite_busy(error):
     if not isinstance(error, sqlite3.OperationalError):
@@ -1297,6 +1357,8 @@ class AppServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(5)
+        if self.supervisor_mode:
+            self.proc.detach()
         # The caller can hold a Runtime lock needed by queued callbacks. Never
         # join their dispatcher here; it drains accepted work independently.
         if threading.current_thread() is not self.reader:
@@ -1394,6 +1456,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.monitor_threads = set()
         self.offline = False
         self.changed = threading.Event()
+        self._committed_resource_changes: dict[str, ResourceRef] = {}
+        self._committed_resource_overflow = False
+        self._committed_resource_lock = threading.Lock()
         self.closed = False
         self._fast_delivery_enabled = False
         self._wal_keeper = None
@@ -1823,6 +1888,84 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local.depth = 1
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
         pending[db] = []
+        resource_changes = local.__dict__.setdefault("after_commit_resources", {})
+        resource_changes[db] = {}
+        resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
+        resource_overflow[db] = False
+        if db.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
+        ).fetchone():
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_insert")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_update")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_delete")
+            def stage_event_resource(agent_id):
+                if isinstance(agent_id, str) and agent_id:
+                    self._stage_event_resources(db, agent_id)
+
+            def stage_transcript_resource(agent_id, event_kind):
+                if isinstance(agent_id, str) and agent_id and event_kind == "user":
+                    self._stage_transcript_resource(db, agent_id)
+
+            db.create_function("studio_stage_event_resource", 1, stage_event_resource)
+            db.create_function("studio_stage_transcript_resource", 2, stage_transcript_resource)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_insert
+                AFTER INSERT ON main.runtime_events
+                BEGIN
+                  SELECT studio_stage_event_resource(NEW.agent);
+                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
+                END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_update
+                AFTER UPDATE ON main.runtime_events
+                WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent
+                  OR OLD.kind IS NOT NEW.kind OR OLD.text IS NOT NEW.text
+                  OR OLD.status IS NOT NEW.status OR OLD.created IS NOT NEW.created
+                  OR OLD.epoch IS NOT NEW.epoch OR OLD.turn_id IS NOT NEW.turn_id
+                  OR OLD.error IS NOT NEW.error
+                BEGIN
+                  SELECT studio_stage_event_resource(OLD.agent);
+                  SELECT studio_stage_event_resource(NEW.agent);
+                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
+                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
+                END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_delete
+                AFTER DELETE ON main.runtime_events
+                BEGIN
+                  SELECT studio_stage_event_resource(OLD.agent);
+                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
+                END;
+            """)
+        if db.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_items'"
+        ).fetchone():
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_insert")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_update")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_delete")
+            db.create_function(
+                "studio_stage_item_transcript",
+                1,
+                lambda agent_id: self._stage_transcript_resource(db, agent_id)
+                if isinstance(agent_id, str) and agent_id else None,
+            )
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_insert
+                AFTER INSERT ON main.runtime_items
+                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_update
+                AFTER UPDATE ON main.runtime_items WHEN OLD.record IS NOT NEW.record
+                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_delete
+                AFTER DELETE ON main.runtime_items
+                BEGIN SELECT studio_stage_item_transcript(OLD.agent); END;
+            """)
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
         original_commit, original_rollback = db.commit, db.rollback
@@ -1832,6 +1975,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         def commit_analytics():
             original_commit()
+            self._queue_staged_resource_changes(resource_changes, resource_overflow, db)
             captures = analytics.get(db, {})
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
             self.schedule_analytics_captures(captures.get("captures", []),
@@ -1840,16 +1984,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         def rollback_analytics():
             original_rollback()
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
+            resource_changes[db] = {}
+            resource_overflow[db] = False
 
         db.commit = commit_analytics
         db.rollback = rollback_analytics
         previous_timeout = None
-        if busy_timeout is not None:
-            previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
-            db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
+        previous_resource_db = getattr(local, "resource_db", None)
         try:
+            local.resource_db = db
+            if busy_timeout is not None:
+                previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+                db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
             with sqlite_scope(db, "Runtime.db"):
                 yield db
+            self._queue_staged_resource_changes(resource_changes, resource_overflow, db)
+            resource_changes.pop(db, None)
+            resource_overflow.pop(db, None)
             captures = analytics.pop(db)
             self.schedule_analytics_captures(captures["captures"], overflow=captures["overflow"])
             if getattr(local, "agent_cache_dirty", False):
@@ -1864,6 +2015,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except BaseException:
             pending.pop(db, None)
             analytics.pop(db, None)
+            resource_changes.pop(db, None)
+            resource_overflow.pop(db, None)
             # An explicit commit inside the context can already have made work visible.
             self.changed.set()
             raise
@@ -1881,6 +2034,146 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 local.depth = 0
             else:
                 db.close()
+            local.resource_db = previous_resource_db
+
+    def _stage_resource_change(self, db, resource: ResourceRef) -> None:
+        """Associate a typed invalidation with the transaction that made it visible."""
+        local = self.__dict__.get("_callback_db")
+        changes = getattr(local, "after_commit_resources", {}).get(db) if local else None
+        if changes is not None:
+            key = resource.model_dump_json(by_alias=True)
+            if key not in changes and len(changes) >= MAX_STAGED_RESOURCE_CHANGES:
+                getattr(local, "after_commit_resource_overflow", {})[db] = True
+            else:
+                changes[key] = resource
+
+    def _stage_event_resources(self, db, agent_id: str, *, queue: bool = True, receipts: bool = True) -> None:
+        from studio_api.sync.resources.models import QueueResource, ReceiptsResource, ResourceRef
+
+        if queue:
+            self._stage_resource_change(
+                db, ResourceRef(QueueResource(kind="queue", agentId=agent_id))
+            )
+        if receipts:
+            self._stage_resource_change(
+                db, ResourceRef(ReceiptsResource(kind="receipts", agentId=agent_id))
+            )
+
+    def _stage_transcript_resource(self, db, agent_id: str) -> None:
+        from studio_api.sync.resources.models import ResourceRef, TranscriptResource
+
+        self._stage_resource_change(
+            db, ResourceRef(TranscriptResource(kind="transcript", agentId=agent_id))
+        )
+
+    def _stage_team_task_resources(self, db, agent_id: str) -> None:
+        row = db.execute(
+            "SELECT json_extract(record,'$.rootId') FROM runtime_agents WHERE id=?",
+            (agent_id,),
+        ).fetchone()
+        if row is None:
+            return
+        root_id = row[0] or agent_id
+        self._stage_task_resources_for_root(db, str(root_id))
+
+    def _stage_task_resources_for_root(self, db, root_id: str) -> None:
+        from studio_api.sync.resources.models import ResourceRef, TasksResource
+
+        members = db.execute(
+            "SELECT id FROM runtime_agents WHERE (id=? OR json_extract(record,'$.rootId')=?) "
+            "AND json_extract(record,'$.deletedAt') IS NULL",
+            (root_id, root_id),
+        )
+        for member in members:
+            self._stage_resource_change(
+                db, ResourceRef(TasksResource(kind="tasks", agentId=str(member[0])))
+            )
+
+    def _publish_token_rate_observation(self, observation: TokenRateObservation) -> None:
+        from codex_token_rate import token_rates
+
+        token_rates(self).observe(
+            observation.agent,
+            observation.method,
+            observation.params,
+            observation.account_key,
+            observation.connection_id,
+            observation.observed_at,
+        )
+
+    @contextmanager
+    def _token_rate_observation_batch(self):
+        """Defer committed recovery observations until its outer runtime lock releases."""
+        local = self.__dict__.setdefault("_token_rate_observation_local", threading.local())
+        previous = getattr(local, "observations", None)
+        if previous is not None:
+            yield previous
+            return
+        observations: list[TokenRateObservation] = []
+        local.observations = observations
+        try:
+            yield observations
+        finally:
+            local.observations = None
+            for observation in observations:
+                self._publish_token_rate_observation(observation)
+
+    @staticmethod
+    def _token_rate_observation_limit() -> int:
+        return MAX_RECOVERY_TOKEN_OBSERVATIONS
+
+    def _dispatch_token_rate_observation(self, observation: TokenRateObservation) -> None:
+        local = self.__dict__.setdefault("_token_rate_observation_local", threading.local())
+        observations = getattr(local, "observations", None)
+        if observations is None:
+            self._publish_token_rate_observation(observation)
+            return
+        if len(observations) >= MAX_RECOVERY_TOKEN_OBSERVATIONS:
+            raise RuntimeError("Recovery produced too many token-rate observations")
+        observations.append(observation)
+
+    def _queue_staged_resource_changes(self, staged, overflowed, db):
+        changes = staged.get(db)
+        overflow = bool(overflowed.get(db))
+        if not changes and not overflow:
+            return
+        staged[db] = {}
+        overflowed[db] = False
+        with self._committed_resource_lock:
+            if overflow:
+                self._committed_resource_overflow = True
+            for key, resource in changes.items():
+                if key not in self._committed_resource_changes and len(self._committed_resource_changes) >= MAX_QUEUED_RESOURCE_CHANGES:
+                    self._committed_resource_overflow = True
+                    break
+                self._committed_resource_changes[key] = resource
+        # `schedule` drains this exact queue. Its ordinary timeout is not a
+        # resource scan and this wake avoids adding notification latency.
+        self.changed.set()
+
+    def _publish_committed_resource_changes(self):
+        # Detach first: commits queued after this snapshot stay pending for the
+        # next scheduler pass, whose lock barriers cover their own transactions.
+        with self._committed_resource_lock:
+            resources = self._committed_resource_changes
+            self._committed_resource_changes = {}
+            overflow = self._committed_resource_overflow
+            self._committed_resource_overflow = False
+        # Mutations often enter db() while Runtime.lock is held. A cross-thread
+        # lock barrier ensures their transaction scope has left that critical
+        # section before the watcher/client fanout runs.
+        with self.lock:
+            pass
+        with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
+            pass
+        if resources:
+            from studio_api.sync.resources.hub import publish_resources
+
+            publish_resources(self.root, *resources.values())
+        if overflow:
+            from studio_api.sync.resources.hub import publish_resource_overflow
+
+            publish_resource_overflow(self.root)
 
     def analytics_safe(self, db, operation, *args, **kwargs):
         """Keep analytics waits outside the main writer and its caller's lock."""
@@ -2373,10 +2666,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
-        previous = None
-        if table == "agents":
-            previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
-            previous = json.loads(previous_row[0]) if previous_row else None
+        previous_row = db.execute(f"SELECT record FROM runtime_{table} WHERE id=?", (record["id"],)).fetchone()
+        previous = json.loads(previous_row[0]) if previous_row else None
+        changed = previous != record
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
         if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
@@ -2425,10 +2717,59 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_entity_put(db, "room", room["id"], room)
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
-            self.touch_ui(record["id"])
+            self.touch_ui(record["id"], db, publish_resource=False)
         elif table == "work":
             # Work ownership and status retain deleted owners in the scheduler roster.
             self.__dict__.pop("_scheduler_agent_roster", None)
+        if changed:
+            from studio_api.sync.resources.models import (
+                ResourceRef, RoomResource, TaskResource, WorkspaceResource, WorktreeDiskResource,
+            )
+
+            if table == "agents":
+                agent_id = str(record["id"])
+                if transcript_agent_resource_changed(previous, record):
+                    self._stage_transcript_resource(db, agent_id)
+                if workspace_agent_resource_changed(previous, record):
+                    self._stage_resource_change(
+                        db, ResourceRef(WorkspaceResource(kind="workspace", agentId=agent_id))
+                    )
+                if previous is None or any(
+                    previous.get(field) != record.get(field)
+                    for field in WORKTREE_DISK_AGENT_RESOURCE_FIELDS
+                ):
+                    self._stage_resource_change(
+                        db, ResourceRef(WorktreeDiskResource(kind="worktree-disk", agentId=agent_id))
+                    )
+                if previous is not None and any(
+                    previous.get(field) != record.get(field)
+                    for field in ("rootId", "deletedAt")
+                ):
+                    self._stage_task_resources_for_root(
+                        db, str(previous.get("rootId") or agent_id)
+                    )
+                    self._stage_task_resources_for_root(
+                        db, str(record.get("rootId") or agent_id)
+                    )
+            elif table == "tasks":
+                self._stage_resource_change(
+                    db, ResourceRef(TaskResource(kind="task", taskId=str(record["id"])))
+                )
+                for owner in {
+                    str(value) for value in ((previous or {}).get("agent"), record.get("agent"))
+                    if value
+                }:
+                    self._stage_team_task_resources(db, owner)
+                    # Transcript items can project the durable task status as toolStatus.
+                    self._stage_transcript_resource(db, owner)
+            elif table == "rooms":
+                self._stage_resource_change(
+                    db, ResourceRef(RoomResource(kind="room", roomId=str(record["id"])))
+                )
+            elif table == "work":
+                owners = {(previous or {}).get("owner"), record.get("owner")}
+                for owner in {str(v) for v in owners if v}:
+                    self._stage_team_task_resources(db, owner)
 
     def invalidate_agent_records(self, _key=None):
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
@@ -2440,7 +2781,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         local.agent_cache_dirty = True
         self.invalidate_agent_records(key)
 
-    def touch_ui(self, key):
+    def touch_ui(self, key, db=None, *, publish_resource=True):
+        if db is None:
+            local = self.__dict__.get("_callback_db")
+            db = getattr(local, "resource_db", None) if local else None
+        if db is not None and publish_resource:
+            self._stage_transcript_resource(db, str(key))
         with self.ui_condition:
             self.ui_revisions[key] = self.ui_revisions.get(key, 0) + 1
             self.ui_condition.notify_all()
@@ -2510,6 +2856,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return server
         selected = None
         while True:
+            desktop_changed = False
             with self.start_lock:
                 if self.closed:
                     raise RuntimeError("Runtime is stopped")
@@ -2530,6 +2877,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.servers.pop(account_key, None)
                         server = None
                     if server is None:
+                        desktop_changed = True
                         connection_id = uid()
                         self.connection_ids[account_key] = connection_id
                         self.offline_accounts.discard(account_key)
@@ -2579,10 +2927,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 raise RuntimeError("Late native callbacks did not drain; runtime lease retained")
                             raise RuntimeError("Runtime is stopped")
                         startup_memory_mark("account-server-start:" + account_key)
-                    return server
+            if not needs_executable:
+                if desktop_changed:
+                    self._publish_desktop_resource()
+                return server
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self)
+
+    def _publish_desktop_resource(self) -> None:
+        from studio_api.sync.resources.models import DesktopResource, ResourceRef
+
+        resource = ResourceRef(DesktopResource(kind="desktop"))
+        key = resource.model_dump_json(by_alias=True)
+        with self._committed_resource_lock:
+            if key not in self._committed_resource_changes and len(self._committed_resource_changes) >= MAX_QUEUED_RESOURCE_CHANGES:
+                self._committed_resource_overflow = True
+            else:
+                self._committed_resource_changes[key] = resource
+        self.changed.set()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -2648,9 +3011,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     except (TypeError, ValueError):
                         previous = {}
                     if previous.get("id") == current["id"] and previous.get("status") == "lost":
-                        db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
-                                   ("Native command reattached; discard the provisional disconnect notice.",
-                                    "monitor:" + current["id"]))
+                        changed = db.execute("UPDATE runtime_events SET status='cancelled',error=? WHERE id=?",
+                                             ("Native command reattached; discard the provisional disconnect notice.",
+                                              "monitor:" + current["id"]))
+                        if changed.rowcount and current.get("agent"):
+                            self._stage_event_resources(db, str(current["agent"]))
             bindings.append({"key": monitor["id"], "operation": operation,
                              "nativeId": proof["nativeId"], "response": proof.get("response")})
         return bindings
@@ -2750,6 +3115,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record.pop("reattachRecovery", None)
                 self.put(db, "tasks", record)
             self.changed.set()
+        self._publish_desktop_resource()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None):
         from codex_agent_modes import mode_fields
@@ -2895,9 +3261,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def disconnected(self, account_key="default", connection_id=None):
         from codex_connection_recovery import supervisor_identity
+        desktop_changed = False
         with self.lock, self.db() as db:
             if connection_id is not None and self.connection_ids.get(account_key) != connection_id:
                 return
+            desktop_changed = account_key not in self.offline_accounts
             self.offline_accounts.add(account_key)
             if account_key == "default":
                 self.offline = True
@@ -2930,7 +3298,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
                     a["inFlight"] = False
                 self.put(db, "agents", a)
-                db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
+                uncertain = db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
+                if uncertain.rowcount:
+                    self._stage_event_resources(db, str(a["id"]))
             for task in active_task_records(db):
                 if task.get("agent") in ids and task.get("status") in {"running", "starting", "approval"}:
                     task["reattachRecovery"] = {"accountKey": account_key,
@@ -2962,6 +3332,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         voice = getattr(self, "_voice_store", None)
         if voice:
             voice.disconnected_native(account_key, connection_id)
+        if desktop_changed:
+            self._publish_desktop_resource()
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
         key = agent + ":" + key
@@ -3011,7 +3383,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if role == "assistant":
             from codex_radio import observe_item
             observe_item(self, db, agent, key, role, text, metadata)
-        self.touch_ui(agent)
+        self.touch_ui(agent, db)
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
@@ -3037,6 +3409,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a["status"] = "queued"
             self.put(db, "agents", a)
         if inserted.rowcount:
+            agent_id = str(a["id"])
+            self._stage_event_resources(db, agent_id)
             self.mark_event_timing(db, [key], "enqueuedAt")
             if kind != "rule":
                 self.rule_event(db, a, kind, text, key)
@@ -3882,12 +4256,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         submitted = bool(attempt.get("submitted"))
         for event_id in attempt.get("events", []):
-            db.execute("UPDATE runtime_events SET status=?,turn_id=?,error=? "
-                       "WHERE id=? AND agent=? AND status IN ('reserved','dispatching')",
-                       ("uncertain" if submitted else "pending",
-                        attempt.get("turnId") if submitted else None,
-                        "Legacy native steer outcome is unknown" if submitted else None,
-                        event_id, a["id"]))
+            changed = db.execute("UPDATE runtime_events SET status=?,turn_id=?,error=? "
+                                 "WHERE id=? AND agent=? AND status IN ('reserved','dispatching')",
+                                 ("uncertain" if submitted else "pending",
+                                  attempt.get("turnId") if submitted else None,
+                                  "Legacy native steer outcome is unknown" if submitted else None,
+                                  event_id, a["id"]))
+            if changed.rowcount:
+                self._stage_event_resources(db, str(a["id"]))
         if not submitted and attempt.get("events"):
             item_id = a["id"] + ":" + attempt["events"][0]
             self.delete_search_item(db, item_id)
@@ -4584,6 +4960,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 break
             try:
+                self._publish_committed_resource_changes()
                 self.monitors_tick()
                 self.rules_tick()
                 self.capacity_tick()
@@ -4966,10 +5343,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if command_index is not None:
                         rows = rows[:command_index] if command_index else rows[:1]
                 for event in rows:
-                    db.execute(
+                    reserved = db.execute(
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
                         (event["id"],),
                     )
+                    if reserved.rowcount:
+                        self._stage_event_resources(db, str(a["id"]))
                 reserved_count += len(rows)
                 self.mark_event_timing(db, [r["id"] for r in rows], "dispatchPickedAt")
                 self.capacity_reset(db, a)
@@ -5097,10 +5476,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             current["error"] = None
                         self.put(db, "agents", current)
                     for r in rows:
-                        db.execute(
+                        dispatching = db.execute(
                             "UPDATE runtime_events SET status='dispatching' WHERE id=? AND status='reserved'",
                             (r["id"],),
                         )
+                        if dispatching.rowcount:
+                            self._stage_event_resources(db, str(a["id"]))
             else:
                 timing["preparedAt"] = time.monotonic_ns()
             try:
@@ -5122,8 +5503,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 if busy_at_reservation:
                     for r in rows:
-                        db.execute("UPDATE runtime_events SET status='dispatching' "
-                                   "WHERE id=? AND status='reserved'", (r["id"],))
+                        dispatching = db.execute("UPDATE runtime_events SET status='dispatching' "
+                                                 "WHERE id=? AND status='reserved'", (r["id"],))
+                        if dispatching.rowcount:
+                            self._stage_event_resources(db, str(a["id"]))
                 self.assert_workspace_available(db, current)
                 assert_native_thread_open(current)
                 from codex_team_isolation import assert_events
@@ -5282,6 +5665,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        "WHERE id=? AND agent=? AND epoch=? AND status IN ('dispatching','uncertain')",
                        (turn, event_id, a["id"], attempt["epoch"]))
             if delivered.rowcount:
+                self._stage_event_resources(db, str(a["id"]))
                 from codex_efficiency import remember_context_manifest
                 remember_context_manifest(db, a["id"], event_id)
             self.sync_chat_delivery(db, event_id, a["id"])
@@ -5667,6 +6051,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not self.connection_current(account_key, connection_id):
             return
         method, p = message.get("method"), message.get("params", {})
+        token_observation: TokenRateObservation | None = None
         voice = getattr(self, "_voice_store", None)
         if voice and voice.native_notification(message, account_key, connection_id):
             return
@@ -5759,7 +6144,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     **({"readAt": current["readAt"]} if current.get("readAt") else {}),
                     "error": None,
                 }
-                self.store_rate_limits(account_key, value)
+                changed = self.store_rate_limits(account_key, value)
             self.usage_resume_limits_changed(account_key, value)
             return
         if method == "command/exec/outputDelta":
@@ -5864,6 +6249,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                "AND epoch=? AND turn_id=? AND status IN ('dispatching','uncertain')",
                                (item["clientId"], a["id"], operation["epoch"], operation["turnId"]))
                     if delivered.rowcount:
+                        self._stage_event_resources(db, str(a["id"]))
                         from codex_efficiency import remember_context_manifest
                         remember_context_manifest(db, a["id"], item["clientId"])
                     self.sync_chat_delivery(db, item["clientId"], a["id"])
@@ -6214,7 +6600,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 restart.update(stage='finished', reconciledAt=time.time(),
                                outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
-                token_rates(self).observe(a, method, p, account_key, connection_id, token_rate_at)
+                token_observation = TokenRateObservation(
+                    agent=copy.deepcopy(a),
+                    method=method,
+                    params=copy.deepcopy(p),
+                    account_key=account_key,
+                    connection_id=connection_id,
+                    observed_at=token_rate_at,
+                )
             self.put(db, "agents", a)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.
@@ -6231,6 +6624,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_budget import budget_status
                 if budget_status(self, db, a, check_coverage=False)["reached"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
+        if token_observation is not None:
+            self._dispatch_token_rate_observation(token_observation)
 
     def request(self, message, account_key="default", connection_id=None):
         token_rate_received_at = time.time()
@@ -6939,6 +7334,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "rateLimits": self.rate_limits,
                     "rateLimitsByAccount": self.rate_limits_by_account.copy(),
                 })
+                from studio_api.sync.resources.models import LimitsResource, ResourceRef
+
+                self._stage_resource_change(
+                    db,
+                    ResourceRef(LimitsResource(kind="limits", accountKey=account_key)),
+                )
+        return changed
 
     def limit_refresh_lock(self, account_key):
         with self.lock:

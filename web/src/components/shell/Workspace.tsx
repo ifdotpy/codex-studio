@@ -43,6 +43,7 @@ import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
+import { watchResourceReads } from "../watchResourceReads";
 import TeamChats from "./messages/TeamChats";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import "./Workspace.css";
@@ -187,10 +188,15 @@ export function Workspace(props: Props) {
   }
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
-    if (!props.opened) return;
-    const timer = setInterval(reload, 5000);
-    return () => clearInterval(timer);
-  }, [props.opened, reload]);
+    if (!props.opened || !agentId) return;
+    return watchResourceReads(
+      { kind: "workspace", agentId },
+      async () => reload(),
+      () => {
+        // The current panel remains visible until its next workspace change.
+      },
+    );
+  }, [props.opened, agentId, reload]);
   const run = useCallback(
     async <Path extends ApiPostPath>(
       path: Path,

@@ -402,7 +402,9 @@ class TerminalsContract(unittest.TestCase):
                     {"agent": self.agent["id"], "command": "must-not-run"},
                     headers,
                 )
-            self.assertEqual(removed.exception.code, 404)
+            # Unknown POST paths are handled by the GET-only static fallback,
+            # which correctly reports a method mismatch before its API 404.
+            self.assertEqual(removed.exception.code, 405)
         finally:
             server.shutdown()
             server.server_close()

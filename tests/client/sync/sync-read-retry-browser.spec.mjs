@@ -14,6 +14,29 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
   const workspaceId = "e".repeat(32);
   const attempts = new Map();
   const streams = new Set();
+  let revision = 0;
+  const invalidate = (agentId) => {
+    const resource = { kind: "transcript", agentId };
+    for (const stream of streams) {
+      if (
+        !stream.resources.some(
+          (entry) => JSON.stringify(entry) === JSON.stringify(resource),
+        )
+      )
+        continue;
+      revision++;
+      stream.response.write(
+        `event: resources\ndata: ${JSON.stringify({
+          protocol: 3,
+          workspaceId,
+          epoch: "fixture-epoch",
+          revision,
+          reason: "change",
+          resources: [resource],
+        })}\n\n`,
+      );
+    }
+  };
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
@@ -33,9 +56,23 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         json({ protocolVersion: 1, capabilities: ["streamChanges"] });
       else if (url.pathname === "/api/sync/stream") {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(": connected\n\n");
-        streams.add(res);
-        res.on("close", () => streams.delete(res));
+        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        res.write(
+          `event: resources\ndata: ${JSON.stringify({
+            protocol: 3,
+            workspaceId,
+            epoch: "fixture-epoch",
+            revision: 0,
+            reason: "initial",
+            resources,
+          })}\n\n`,
+        );
+        const stream = {
+          response: res,
+          resources: JSON.parse(url.searchParams.get("resources") || "[]"),
+        };
+        streams.add(stream);
+        res.on("close", () => streams.delete(stream));
       } else if (url.pathname === "/api/sync/pull") {
         const scope = url.searchParams.get("scope");
         const kind = scope.slice(11);
@@ -43,6 +80,8 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         attempts.set(kind, count);
         if (["429", "503"].includes(kind) && count === 1)
           return json({ error: "Temporary failure" }, Number(kind));
+        if (kind === "persistent503")
+          return json({ error: "Temporary failure" }, 503);
         if (kind === "403") return json({ error: "Access denied" }, 403);
         json({
           workspaceId: kind === "workspace" ? "f".repeat(32) : workspaceId,
@@ -75,7 +114,9 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
       const originalFetch = window.fetch;
       window.transientAttempts = {};
       window.fetch = (...args) => {
-        const url = new URL(String(args[0]), location.href);
+        const request =
+          args[0] instanceof Request ? args[0] : new Request(args[0], args[1]);
+        const url = new URL(request.url);
         const kind = url.searchParams.get("scope")?.slice(11);
         if (
           url.pathname === "/api/sync/pull" &&
@@ -111,9 +152,28 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         );
       }, kind);
       try {
-        await page.waitForFunction(
-          () => window.states.length >= 2 && window.states.at(-1) === "live",
-          undefined,
+        for (
+          let attempt = 0;
+          attempt < 100 && attempts.get(kind) !== 2;
+          attempt++
+        )
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(
+          attempts.get(kind),
+          ["timeout", "network", "408"].includes(kind) ? 1 : 2,
+          `${kind} retries once on the same live-stream notification`,
+        );
+        if (["timeout", "network", "408"].includes(kind))
+          assert.equal(
+            await page.evaluate((kind) => window.transientAttempts[kind], kind),
+            2,
+          );
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        assert.equal(
+          attempts.get(kind),
+          ["timeout", "network", "408"].includes(kind) ? 1 : 2,
+          `${kind} does not continue retrying during a healthy quiet period`,
         );
       } catch (error) {
         console.error(
@@ -126,18 +186,6 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         );
         throw error;
       }
-      assert.ok(
-        await page.evaluate(() =>
-          window.states.some((state) => state !== "live"),
-        ),
-        `${kind} must fail before it recovers without a resume event.`,
-      );
-      if (["timeout", "network", "408"].includes(kind))
-        assert.equal(
-          await page.evaluate((kind) => window.transientAttempts[kind], kind),
-          2,
-        );
-      else assert.equal(attempts.get(kind), 2);
       await page.evaluate(() => window.stop());
     }
     for (const kind of ["403", "workspace"]) {
@@ -162,6 +210,34 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     await page.evaluate(() => {
       window.states = [];
       window.stop = window.client.subscribeProjection(
+        "transcript:persistent503",
+        () => {},
+        (error) => window.states.push(error ? String(error) : "live"),
+      );
+    });
+    for (
+      let attempt = 0;
+      attempt < 100 && attempts.get("persistent503") !== 3;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(attempts.get("persistent503"), 3);
+    assert.ok(
+      await page.evaluate(() =>
+        window.states.some((state) => state !== "live"),
+      ),
+      "The exhausted transient retry budget leaves a visible read error",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(
+      attempts.get("persistent503"),
+      3,
+      "An exhausted notification does not trigger perpetual retries",
+    );
+    await page.evaluate(() => window.stop());
+    await page.evaluate(() => {
+      window.states = [];
+      window.stop = window.client.subscribeProjection(
         "transcript:decode",
         () => {},
         (error) => window.states.push(error ? String(error) : "live"),
@@ -170,14 +246,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     await page.waitForFunction(() =>
       window.states.some((state) => state !== "live"),
     );
-    for (const response of streams)
-      response.write(
-        `data: ${JSON.stringify({
-          protocol: 2,
-          workspaceId,
-          generations: { state: 2, drafts: 2, transcripts: 2 },
-        })}\n\n`,
-      );
+    invalidate("decode");
     await page.waitForFunction(() => window.states.at(-1) === "live");
     assert.equal(
       attempts.get("decode"),
@@ -188,7 +257,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     expect(errors).toEqual([]);
     console.log("sync read retry browser contract passed");
   } finally {
-    for (const response of streams) response.end();
+    for (const stream of streams) stream.response.end();
     await server.close();
   }
 });

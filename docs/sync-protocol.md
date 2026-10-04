@@ -1,12 +1,158 @@
-# Sync protocol v1
+# Sync protocols
 
-This document is the normative contract for web, mobile web, native, and peer
-sync clients. It replaces the entity reset notes in `sync.md`; that file links
-here. The wire format is HTTP/1.1 JSON and Server-Sent Events (SSE). Protocol
-version 1 is additive: `/api/sync/pull` remains supported and old clients may
-ignore every new endpoint and field.
+This document defines Studio's change notifications and durable pull recovery.
+The renderer uses protocol 3 for live notifications. Protocol 1 remains the
+legacy scoped payload/cursor contract described below; protocol 2 is the older
+generation stream. Pull projection schemas and transport versions are separate.
 
-## Negotiation and compatibility
+## Protocol 3: resource changes without polling
+
+The server sends small typed messages identifying changed resources. A subscribed
+consumer reads that resource once after an initial notification, a real change,
+or reconnection. A quiet interface sends no background state requests. This
+covers panels, queue and receipts, terminals, accounts and login status, models,
+limits and costs, tasks, workspace, desktop status, worktree sizes, transcripts,
+rooms, drafts and voice records. User actions, media transport, and recovery of
+an already accepted write retain their own request identities and lifecycles.
+
+### Authoritative types
+
+[Python resource models](../scripts/studio_api/sync/resources/models.py) own the
+closed resource union and named event envelopes. OpenAPI publishes those models;
+`npm run api:generate` emits both TypeScript declarations and standalone runtime
+validators. `npm run api:check` rejects stale output. Renderer handlers validate
+incoming JSON as unknown before using it. Do not maintain a second handwritten
+wire schema or cast incoming JSON to a generated type.
+
+The existing native EventSource transport and RxDB projection cache remain in
+use. Adding a separate query cache is unnecessary for this contract. FastAPI
+owns SSE framing; Ajv compiles the Python/OpenAPI schemas at build time so the
+browser needs no schema compiler or dynamic code evaluation.
+
+### Subscription and notification
+
+A same-origin EventSource requests `/api/sync/stream?protocol=3&resources=...`.
+`resources` is a URL-encoded JSON array of the generated resource union. References
+identify a resource kind and, where required, its nonempty agent, task, terminal,
+room or account identifier. Per-agent transcript references prevent a change in
+one conversation from reloading unrelated conversations.
+
+Named `resources` events carry protocol, workspace identity, process epoch,
+monotonic revision, reason and affected resource references. The authoritative
+field definitions and accepted reasons are in the Python models. The initial
+notification reconciles all subscribed resources. Ordinary change notifications
+contain only affected references. Subscribers coalesce duplicate references and
+serialize reads; a notification arriving during a read schedules one further
+read so the update cannot be lost.
+
+The server installs a subscription and captures its initial state without a gap
+that could lose a committed change. Producers notify only after a successful
+mutation is visible. Rollbacks, no-op writes and projection-cache maintenance
+must not produce a resource change. Completing an asynchronous refresh may
+notify waiting consumers even when its data is unchanged, because its loading
+or error state has settled. Fetching an unchanged projection must not recursively
+invalidate that projection. Queues and pending references are
+bounded; overflow requires explicit reconciliation rather than silent loss.
+
+Where browser coordination is available, one stream owner combines the active
+subscriptions from tabs and distributes validated events. Without that
+coordination, a tab may open its own stream. Neither case enables HTTP polling.
+Unused subscriptions and their source watchers are released. A new owner requests
+peer subscriptions again. Peer heartbeats do not replay unchanged resource
+baselines. The owner retains versions for its active aggregate and at most 128
+inactive references; an evicted reference requires a fresh server baseline.
+A late follower receives a targeted baseline without waiting for a source change.
+
+### Connection loss and recovery
+
+Named `heartbeat` events prove liveness and never trigger resource reads.
+Comment-only SSE heartbeats are insufficient for a browser silence timeout
+because EventSource does not expose them to JavaScript. A silent, failed or
+closed stream changes the visible connection state; reconnect attempts use
+bounded increasing delay with jitter. Voice capture closes when the connection
+becomes unavailable.
+
+There is no periodic `/api/sync/generations` request and no polling fallback.
+While the stream is unavailable, automatic state updates are unavailable.
+A successful reconnection reconciles the current subscriptions once. It does
+not retry user commands, messages, credit charges or other writes.
+
+A transient failure while reconciling a notified resource may retry that same
+outstanding read a finite number of times, with backoff and jitter. These retries
+stop when the connection is unavailable or the consumer unsubscribes. Exhaustion
+leaves a visible error until an explicit retry or a new change/reconnection; it
+must not start a periodic refresh loop. Successful reads do not schedule retries.
+Draft storage bootstrap permits three delayed retries (1, 3 and 10 seconds) after
+its initial attempt, then pauses until explicit activity or resume. Pending-write
+recovery keeps its existing journal and operation identities.
+
+An unchanged reconnect baseline still reconciles a subscribed consumer once.
+For transcript prefetch, repeated notifications for the same version during an
+active history read are coalesced; a newer version schedules a follow-up read.
+If that read fails, a coalesced recovery signal permits one further attempt.
+Paginated catch-up drains all available pages before resolving the notification,
+with cancellation and a cursor-progress check.
+
+An epoch distinguishes a server process restart from an old event revision.
+The client rejects malformed messages, incompatible protocol versions and
+another workspace's events. Duplicate notifications within an epoch do not
+cause repeated reads. Stream revisions are transient notification sequence
+numbers; they are not durable projection cursors. Reconnect/reset uses current
+resource reads, so missed notifications do not require an unbounded event log.
+
+Named `token-rates` events preserve live token-rate telemetry on the same stream.
+They use the generated Python contract and update the existing renderer cache;
+they do not cause a periodic limits or costs request.
+
+### Notifications from other processes
+
+Supported CLI writers publish their committed resource changes through the
+[authenticated notification relay](../scripts/studio_api/sync/resources/relay/README.md).
+`POST /api/sync/notify` accepts the Python-defined request identity and resource
+references; the ordinary API token and request-boundary checks still apply.
+The CLI verifies that the API state directory matches the source write's root
+before sending a notification.
+
+A bounded process-local receipt cache acknowledges an identical retry without
+republishing it; reusing a retained identity with a different body returns 409.
+After receipt eviction or server restart, repeating an invalidation is safe.
+This is not durable exactly-once delivery. A lost or truncated response retries
+only the same notification, never the original command or database write.
+If notification delivery remains unconfirmed, the CLI reports that the source
+change has committed. Reconnecting the stream obtains a full subscription
+baseline. Arbitrary external SQL writes are not supported event sources.
+
+### Worktree measurements
+
+Worktree size notifications report completed measurements. The scanner wakes
+on a request, rather than scanning on a timer. A cached size is not evidence
+that arbitrary external filesystem writes have been detected: repository trees
+are not recursively watched by the progress observer. The response's measurement
+time identifies the age of the returned result.
+
+### Progress files and layout measurements
+
+An explicit native filesystem observer watches only the progress file belonging
+to an actively subscribed panel. Watching its parent catches atomic replacement,
+creation and deletion, but events for other names are ignored. Reads retain the
+existing path, symlink and size checks. Content/revision changes invalidate the
+panel. The last unsubscribe removes the watch. The observer does not watch
+repositories, SQLite files, logs or `PROGRESS.layout.json`, and does not silently
+switch to filesystem polling.
+
+Layout measurements are sent when the actual measurement changes. They do not
+renew themselves on a timer; an old measurement may become unmeasured under the
+existing freshness policy. The layout response schema accepts the stored
+per-client report shape, whose revision may be absent, while the top-level
+response retains its current file revision.
+
+## Legacy protocol 1
+
+The remaining sections describe the legacy scoped payload transport. Their
+fallback rules apply to legacy clients only; the protocol-3 renderer never
+uses a periodic pull fallback.
+
+### Negotiation and compatibility
 
 `GET /api/sync/protocol` returns `protocolVersion: 1`, supported versions,
 capabilities (`pull`, `stream`, `streamChanges`, `entityReset`, `unixSocket`),
@@ -29,7 +175,7 @@ changing local state. During rollout, new clients use only capabilities
 explicitly advertised by the server; old servers and renderers continue using
 pull.
 
-## Identity and scopes
+### Identity and scopes
 
 `GET /api/sync/identity` returns the stable `workspaceId`. Every pull result
 and stream event includes it. Clients must not apply data from another
@@ -50,7 +196,7 @@ each scope's sequence space. A scope cursor advances only after its documents
 are durably applied. A client may coalesce multiple changes to one document
 by retaining the greatest `seq`.
 
-## Pull pages and cursors
+### Pull pages and cursors
 
 `GET /api/sync/pull?scope=<scope>&after=<seq>&limit=<n>` returns
 `workspaceId`, `documents`, and `checkpoint: {seq}`. Limits are clamped to
@@ -75,7 +221,7 @@ request bodies, and tokens. Streams and writes do not enter this journal.
 The first journal write preserves a nonempty previous session in
 `http-requests.previous.json`.
 
-## Entity floor, reset, and fresh baselines
+### Entity floor, reset, and fresh baselines
 
 The entity server retains at most 10,000 non-transcript tombstones. Pruning is
 asynchronous, in batches of at most 500 rows per committed transaction, with
@@ -100,7 +246,7 @@ fresh baseline includes all live rows and all tombstones newer than
 continuing a reset baseline and prevents repeated reset responses while the
 checkpoint crosses old live rows.
 
-## Drafts and transcripts
+### Drafts and transcripts
 
 Draft writes use the existing authenticated `/api/sync/drafts` endpoint and
 workspace header. A draft pull returns the latest retained row per draft ID;
@@ -118,7 +264,7 @@ full snapshot. A transcript retention floor or deleted/recreated projection
 also requires a full pull. Clients must not infer a full transcript from a
 delta.
 
-## Resumable change stream
+### Resumable change stream
 
 Subscribe with:
 
@@ -175,7 +321,7 @@ authorization are handled by the same local-origin policy as other read APIs.
 Peer clients must use their own workspace identity and must not treat a stream
 connection as write authorization.
 
-## Authentication and transports
+### Authentication and transports
 
 The HTTP API binds only to `127.0.0.1`. Tailscale Serve may proxy this listener
 over HTTPS using the existing exact-origin and Tailscale-source validation;
@@ -185,7 +331,7 @@ paths over the state-directory Unix socket, mode `0600`; the socket is an
 additional local transport, not a non-loopback listener. Both transports
 enforce protocol/workspace checks and normal write tokens.
 
-## Native client requirements
+### Native client requirements
 
 A native client porting this contract must: negotiate version/capabilities;
 validate the workspace identity; persist scope cursors only after applying
@@ -202,7 +348,7 @@ failure. It must never interpret a stream cursor as authorization or repeat a
 write because a response was lost. No changes to the separate Attar Rust
 branch are part of this task.
 
-## Limits
+### Limits
 
 The server clamps pull and stream batches, and every stream handler owns only
 one bounded result batch. SSE is a delivery hint with replay from current

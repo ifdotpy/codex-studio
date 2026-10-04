@@ -7,7 +7,11 @@ import {
   useState,
 } from "react";
 import { NetworkTimeoutError } from "../../api";
-import { onResume } from "../../sync/resume";
+import {
+  watchResourceChanges,
+  watchResourceConnection,
+  type ResourceConnectionState,
+} from "../../sync/client";
 import ErrorDescription from "../ErrorDescription";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import PreviewModal from "../PreviewModal";
@@ -28,7 +32,6 @@ interface ProgressState extends CachedProgress {
   error: unknown;
 }
 
-const pollIntervalMs = 1000;
 const readTimeoutMs = 8000;
 
 export default function AgentPanel({
@@ -43,11 +46,12 @@ export default function AgentPanel({
     const cached = peekProgress(stateDir, agentId);
     return cached ? { ...cached, cached: true, error: null } : null;
   });
+  const [connection, setConnection] =
+    useState<ResourceConnectionState>("connecting");
   const refresh = useRef<(() => void) | undefined>(undefined);
 
   useEffect(() => {
     let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     let request:
       | { controller: AbortController; started: number; expired: boolean }
       | undefined;
@@ -62,7 +66,6 @@ export default function AgentPanel({
       cached: true,
     });
     const read = async () => {
-      clearTimeout(timer);
       if (!active || !visible()) return;
       if (request) {
         // A suspended mobile browser can return before its deadline timer runs.
@@ -126,22 +129,23 @@ export default function AgentPanel({
       } finally {
         clearTimeout(deadline);
         if (request === current) request = undefined;
-        if (active && visible())
-          timer = setTimeout(
-            () => void read(),
-            refreshPending ? 0 : pollIntervalMs,
-          );
-        refreshPending = false;
+        if (active && visible() && refreshPending) {
+          refreshPending = false;
+          queueMicrotask(() => void read());
+        }
       }
     };
     const wake = () => {
       void read();
     };
     refresh.current = wake;
-    const stopResume = onResume(wake);
+    const stopResourceChanges = watchResourceChanges(
+      { kind: "panel", agentId },
+      wake,
+    );
+    const stopConnection = watchResourceConnection(setConnection);
     const visibility = () => {
       if (!document.hidden && navigator.onLine !== false) return;
-      clearTimeout(timer);
       request?.controller.abort();
       setState((previous) => {
         const cached =
@@ -159,12 +163,11 @@ export default function AgentPanel({
     };
     document.addEventListener("visibilitychange", visibility);
     window.addEventListener("offline", visibility);
-    wake();
     return () => {
       active = false;
-      clearTimeout(timer);
       request?.controller.abort();
-      stopResume();
+      stopResourceChanges();
+      stopConnection();
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("offline", visibility);
       if (refresh.current === wake) refresh.current = undefined;
@@ -185,6 +188,7 @@ export default function AgentPanel({
     <ProgressDisplay
       key={scope}
       current={current}
+      connection={connection}
       agentId={agentId}
       scope={scope}
       stateDir={stateDir}
@@ -195,12 +199,14 @@ export default function AgentPanel({
 
 function ProgressDisplay({
   current,
+  connection,
   agentId,
   scope,
   stateDir,
   retry,
 }: {
   current: ProgressState;
+  connection: ResourceConnectionState;
   agentId: string;
   scope: string;
   stateDir: string;
@@ -459,6 +465,11 @@ function ProgressDisplay({
             {current.cached && (
               <span className="agent-panel-compact-saved">Saved copy</span>
             )}
+            {connection !== "live" && (
+              <span className="agent-panel-compact-saved" role="status">
+                {connection === "offline" ? "Updates offline" : "Reconnecting"}
+              </span>
+            )}
             {Boolean(current.error || reportError) && (
               <button
                 type="button"
@@ -498,6 +509,11 @@ function ProgressDisplay({
             <code>PROGRESS.md</code>
           </button>
           {current.cached && <span>Saved copy</span>}
+          {connection !== "live" && (
+            <span role="status">
+              {connection === "offline" ? "Updates offline" : "Reconnecting"}
+            </span>
+          )}
           {Boolean(current.error) && current.markdown.trim() && (
             <>
               <span>Cannot read PROGRESS.md.</span>

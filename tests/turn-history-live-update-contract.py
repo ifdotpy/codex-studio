@@ -29,6 +29,15 @@ spec = importlib.util.spec_from_file_location('turn_items_fixture', ROOT / 'test
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 BASELINE = subprocess.check_output(['git', 'show', '391b3060:scripts/codex_turn_recovery.py'], cwd=ROOT)
+# This contract tests the released updater, separate from current SSE callers.
+REVIEWED_SOURCES = {
+    name: subprocess.check_output(['git', 'show', commit + ':scripts/' + name + '.py'], cwd=ROOT)
+    for name, commit in (
+        ('codex_runtime', '85f3f8d892727837f79c11f3e6c41dfc18694d1d'),
+        ('codex_turn_recovery', 'd4788f80'),
+        ('codex_connection_recovery', 'd4788f80'),
+    )
+}
 
 
 def clone(function, namespace):
@@ -39,7 +48,8 @@ def clone(function, namespace):
 
 @contextmanager
 def reviewed_fixture():
-    source = Path(os.environ.get('STUDIO_TURN_UPDATE_RUNTIME_SOURCE', ROOT / 'scripts/codex_runtime.py')).read_bytes()
+    runtime_source = os.environ.get('STUDIO_TURN_UPDATE_RUNTIME_SOURCE')
+    source = Path(runtime_source).read_bytes() if runtime_source else REVIEWED_SOURCES['codex_runtime']
     if hashlib.sha256(source).hexdigest() not in update.RUNTIME_HASHES:
         raise AssertionError('The fixture needs a reviewed runtime source; set STUDIO_TURN_UPDATE_RUNTIME_SOURCE')
     with tempfile.TemporaryDirectory(prefix='studio-turn-history-update-') as folder:
@@ -51,17 +61,20 @@ def reviewed_fixture():
             vars(target).update(vars(original))
         for name, loaded in modules.items():
             loaded.__file__ = str(scripts / (name + '.py'))
-            raw = source if name == 'codex_runtime' else (ROOT / 'scripts' / (name + '.py')).read_bytes()
+            raw = source if name == 'codex_runtime' else REVIEWED_SOURCES[name]
             Path(loaded.__file__).write_bytes(raw)
         owner = type('TurnRecoveryMixin', (), {'__module__': 'codex_turn_recovery'})
         for name in update.TURN_CALLERS:
-            setattr(owner, name, clone(getattr(codex_turn_recovery.TurnRecoveryMixin, name), vars(turns)))
+            method, _ = source_function(REVIEWED_SOURCES['codex_turn_recovery'],
+                                        ['TurnRecoveryMixin', name], vars(turns))
+            setattr(owner, name, method)
         turns.TurnRecoveryMixin = module.TurnRecoveryMixin = owner
         turns.read_native_turn, _ = source_function(BASELINE, ['read_native_turn'], vars(turns), '<baseline-391b3060>')
         method, _ = source_function(source, ['Runtime', 'connection_current'], vars(module))
         module.Runtime = type('Runtime', (owner,), {'__module__': 'codex_runtime', 'connection_current': method})
         for name in update.CONNECTION_CALLERS:
-            setattr(connection, name, clone(getattr(codex_connection_recovery, name), vars(connection)))
+            method, _ = source_function(REVIEWED_SOURCES['codex_connection_recovery'], [name], vars(connection))
+            setattr(connection, name, method)
         runtime = module.Runtime.__new__(module.Runtime)
         runtime.lock = threading.RLock()
         runtime.closed = False

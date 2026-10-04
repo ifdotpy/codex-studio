@@ -147,6 +147,7 @@ function startRead(stateDir: string, agentId: string): Pending {
       !valid({ ...value, scope }, scope)
     )
       throw new Error("The PROGRESS.md response is invalid.");
+    if (value.error) throw new Error(value.error);
     if (controller.signal.aborted)
       throw new DOMException("Aborted", "AbortError");
     return {

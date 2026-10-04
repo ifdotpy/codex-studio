@@ -33,13 +33,23 @@ class VoiceStore(NativeVoice):
         self.init_native()
         self.prune_audio()
 
+    def _publish_voice(self, agent):
+        from studio_api.sync.resources.hub import publish_resources
+        from studio_api.sync.resources.models import ResourceRef, VoiceResource
+
+        publish_resources(
+            self.runtime.root,
+            ResourceRef(VoiceResource(kind="voice", agentId=agent)),
+        )
+
     def _agent(self, agent):
         row = self.runtime.agent(agent)
         if not row.get("isLead") or row.get("deletedAt"):
             raise ValueError("Voice is available in an orchestrator chat only")
         return row
 
-    def record(self, agent, session_id, event_id, kind, text="", item_id="", previous_item_id="", payload=None, _internal=False):
+    def record(self, agent, session_id, event_id, kind, text="", item_id="", previous_item_id="", payload=None,
+               _internal=False, _publish=True, _with_status=False):
         self._agent(agent)
         if kind in {"orchestrator", "assistant"} and not _internal:
             raise ValueError("Only the orchestrator can publish speech")
@@ -64,11 +74,16 @@ class VoiceStore(NativeVoice):
             if old:
                 if tuple(old[k] for k in ("id","agent","session","kind","text","item_id","previous_item_id","payload")) != values:
                     raise ValueError("Voice event identity conflicts with its original content")
-                return dict(old)
+                result = dict(old)
+                return (result, False) if _with_status else result
             if session_id and not db.execute("SELECT 1 FROM voice_sessions WHERE id=? AND agent=?", (session_id,agent)).fetchone():
                 raise ValueError("Unknown voice session")
             db.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES(?,?,?,?,?,?,?,?,?)", (*values,time.time()))
-            return dict(db.execute("SELECT * FROM voice_records WHERE id=?", (event_id,)).fetchone())
+            result = dict(db.execute("SELECT * FROM voice_records WHERE id=?", (event_id,)).fetchone())
+            inserted = True
+        if inserted and _publish:
+            self._publish_voice(agent)
+        return (result, inserted) if _with_status else result
 
     def history(self, agent):
         data = self.records(agent)
@@ -92,7 +107,12 @@ class VoiceStore(NativeVoice):
             current = self._agent(agent)
             if epoch is not None and (current["epoch"] != epoch or not current.get("autoWake")):
                 raise ValueError("The orchestrator turn is stopped or replaced")
-            row = self.record(agent, "", "speak:" + (request_id or uuid.uuid4().hex), "orchestrator", text, _internal=True)
+            row, inserted = self.record(
+                agent, "", "speak:" + (request_id or uuid.uuid4().hex), "orchestrator", text,
+                _internal=True, _publish=False, _with_status=True,
+            )
+        if inserted:
+            self._publish_voice(agent)
         with self.runtime.db() as db:
             active = db.execute("SELECT id FROM voice_sessions WHERE agent=? AND state='ready' AND ended IS NULL", (agent,)).fetchone()
         if active:
@@ -107,6 +127,7 @@ class VoiceStore(NativeVoice):
         if edited_text is not None and (not isinstance(edited_text, str) or not edited_text.strip() or len(edited_text) > 32000):
             raise ValueError("Edited transcript must contain 1 to 32000 characters")
         encoded = json.dumps(record_ids)
+        inserted = False
         with self.runtime.lock, self.runtime.db() as db:
             old = db.execute("SELECT * FROM voice_deliveries WHERE id=?", (message_id,)).fetchone()
             if old:
@@ -135,7 +156,9 @@ class VoiceStore(NativeVoice):
                 if len(text) > 32000:
                     raise ValueError("The transcript exceeds 32000 characters. Send a smaller selection; no text was truncated")
                 db.execute("INSERT INTO voice_deliveries(id,agent,records,text,edited_text) VALUES(?,?,?,?,?)", (message_id,agent,encoded,text,edited_text))
-        return self.runtime.send(agent,text,message_id=message_id,delivery="queue")
+        result = self.runtime.send(agent,text,message_id=message_id,delivery="queue")
+        self._publish_voice(agent)
+        return result
 
     def audio(self, agent, session_id, chunk_id, audio, mime):
         self._agent(agent)

@@ -739,7 +739,9 @@ class PanelLayoutReport(ContractModel):
     client: StrictStr
     sequence: StrictInt
     renderer: StrictStr
-    revision: StrictStr
+    # Older layout feedback may include this redundant value. New reports do
+    # not: their authoritative revision is stored on PanelLayoutResult.
+    revision: StrictStr | None = None
     sha256: StrictStr | None = None
     width: StrictInt | StrictFloat | None = None
     height: StrictInt | StrictFloat | None = None

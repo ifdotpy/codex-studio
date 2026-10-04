@@ -41,12 +41,14 @@ def reviewed_fixture():
         modules = {}
         for name, real in (('codex_runtime', codex_runtime), ('codex_session_costs', codex_session_costs)):
             path = scripts / (name + '.py')
-            # This released patch checks its reviewed source, before later cost fixes.
+            # This released updater checks its reviewed source and caller code.
+            # Later resource publishers can set the fixture signal during setup.
             reviewed = subprocess.check_output(['git', 'show', '85f3f8d8:scripts/' + path.name], cwd=ROOT)
             path.write_bytes(reviewed)
             module = ModuleType(name)
             vars(module).update(vars(real))
             module.__file__ = str(path)
+            exec(compile(reviewed, str(path), 'exec'), vars(module))
             baseline = subprocess.check_output(['git', 'show', '36f1143d:scripts/' + path.name], cwd=ROOT)
             for entry in update.FUNCTIONS:
                 source, owner, method, *_ = entry
@@ -59,7 +61,7 @@ def reviewed_fixture():
             modules[name] = module
         # Keep AppServer callbacks in the isolated module namespace as well.
         app = modules['codex_runtime'].AppServer
-        current = codex_runtime.AppServer.dispatch
+        current = app.dispatch
         app.dispatch = FunctionType(current.__code__, vars(modules['codex_runtime']),
                                     current.__name__, current.__defaults__)
         runtime = modules['codex_runtime'].Runtime.__new__(modules['codex_runtime'].Runtime)
@@ -78,7 +80,8 @@ def reviewed_fixture():
 def actual_runtime_fixture():
     with reviewed_fixture() as (_, modules, scripts):
         case = stale_ack.StaleToolRequestAckContract()
-        case.setUp()
+        with patch.object(stale_ack, 'Runtime', modules['codex_runtime'].Runtime):
+            case.setUp()
         case.runtime.__class__ = modules['codex_runtime'].Runtime
         try:
             yield case, modules, scripts
@@ -242,7 +245,8 @@ class RequestCostUpdateContract(unittest.TestCase):
     def test_historical_dispatch_for_another_runtime_gets_no_ack_guard(self):
         with actual_runtime_fixture() as (case, modules, _):
             other = stale_ack.StaleToolRequestAckContract()
-            other.setUp()
+            with patch.object(stale_ack, 'Runtime', modules['codex_runtime'].Runtime):
+                other.setUp()
             other.runtime.__class__ = modules['codex_runtime'].Runtime
             try:
                 other.runtime.connection_ids['default'] = 'new'

@@ -28,6 +28,11 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 BASELINE = subprocess.check_output(
     ["git", "show", "85f3f8d8:scripts/codex_session_costs.py"], cwd=ROOT)
+# This released updater accepts only its reviewed source versions.
+REVIEWED_COSTS = subprocess.check_output(
+    ["git", "show", "d4788f80:scripts/codex_session_costs.py"], cwd=ROOT)
+REVIEWED_RUNTIME = subprocess.check_output(
+    ["git", "show", "85f3f8d8:scripts/codex_runtime.py"], cwd=ROOT)
 
 
 @contextmanager
@@ -35,7 +40,7 @@ def reviewed_fixture():
     with tempfile.TemporaryDirectory(prefix="studio-nullable-cost-update-") as folder:
         scripts = Path(folder)
         path = scripts / "codex_session_costs.py"
-        raw = (ROOT / "scripts/codex_session_costs.py").read_bytes()
+        raw = REVIEWED_COSTS
         path.write_bytes(raw)
         costs = ModuleType("codex_session_costs")
         costs.__file__ = str(path)
@@ -45,7 +50,7 @@ def reviewed_fixture():
         costs.SessionCostReader._compute = old
         runtime_module = ModuleType("codex_runtime")
         runtime_path = scripts / "codex_runtime.py"
-        runtime_path.write_bytes((ROOT / "scripts/codex_runtime.py").read_bytes())
+        runtime_path.write_bytes(REVIEWED_RUNTIME)
         runtime_module.__file__ = str(runtime_path)
         exec("class Runtime:\n    pass\n", vars(runtime_module))
         runtime = runtime_module.Runtime()

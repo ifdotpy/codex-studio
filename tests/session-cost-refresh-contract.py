@@ -71,6 +71,31 @@ class SessionCostRefreshContract(unittest.TestCase):
                        (json.dumps(record),))
             db.execute("INSERT INTO analytics_usage_roots VALUES ('lead',1)")
 
+    def test_background_refresh_publishes_after_refresh_state_is_released(self):
+        observations = []
+
+        def publish(state_dir, agent_id):
+            acquired = self.reader.lock.acquire(blocking=False)
+            observations.append((state_dir, agent_id, acquired, "lead" in self.reader.refreshing))
+            if acquired:
+                self.reader.lock.release()
+
+        with patch("codex_session_costs._publish_session_cost", side_effect=publish):
+            self.reader._background_refresh("lead", "lead")
+
+        self.assertEqual(observations, [(self.db_path.parent, "lead", True, False)])
+
+    def test_persistent_refresh_failure_publishes_once_and_cools_down(self):
+        with patch.object(self.reader, "_compute_shared", side_effect=ValueError("persistent source error")), \
+                patch("codex_session_costs._publish_session_cost") as publish:
+            self.reader._background_refresh("lead", "lead")
+            self.assertEqual(publish.call_count, 1)
+            with self.assertRaisesRegex(ValueError, "persistent source error"):
+                self.reader.snapshot("lead")
+            self.reader._background_refresh("lead", "lead")
+            self.assertEqual(publish.call_count, 1)
+            self.assertEqual(self.reader.refresh_checks["lead"], self.clock[0])
+
     def test_append_decodes_only_new_rows_and_keeps_exact_usage(self):
         self.write_rows(*({"type": "user", "text": "x" * 100} for _ in range(1000)))
         self.reader._log_rows(self.log)
@@ -241,7 +266,7 @@ class SessionCostRefreshContract(unittest.TestCase):
             for _ in range(8):
                 stale = self.reader.snapshot("lead")
                 self.assertEqual(stale["totalUSD"], initial["totalUSD"])
-                self.assertTrue(stale["refreshing"])
+                self.assertFalse(stale["refreshing"], "cooldown snapshots are settled when no worker runs")
             worker.assert_not_called()
             self.clock[0] += 10
             self.reader.snapshot("lead")

@@ -175,26 +175,28 @@ class TurnRecoveryContract(unittest.TestCase):
                                        (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
 
     def test_absent_input_after_native_child_replacement_restores_exact_batch(self):
-        a = self.lose_start_receipt()
-        self.server.native['turns'] = []
-        self.server.supervisor_mode = True
-        self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
-        with self.runtime.lock, self.runtime.db() as db:
-            current = self.runtime.agent(self.key, db)
-            current['startAttempt']['supervisorIdentity'] = {
-                'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
-            current['startAttempt']['connectionId'] = 'old-connection'
-            self.runtime.put(db, 'agents', current)
-        before = sum(method == 'turn/start' for method, _ in self.server.calls)
-        result = self.runtime.reconcile_turn(self.key)
-        self.assertEqual(result['status'], 'input_restored')
-        current = self.runtime.agent(self.key)
-        self.assertEqual((current['status'], current['inFlight'], current['error']), ('queued', False, None))
-        self.assertNotIn('startAttempt', current)
-        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
-                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'pending')
+        # Inspect restored input before automatic recovery or delivery.
+        with patch.object(self.runtime, 'dispatch_candidates', return_value=None):
+            a = self.lose_start_receipt()
+            self.server.native['turns'] = []
+            self.server.supervisor_mode = True
+            self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(self.key, db)
+                current['startAttempt']['supervisorIdentity'] = {
+                    'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
+                current['startAttempt']['connectionId'] = 'old-connection'
+                self.runtime.put(db, 'agents', current)
+            before = sum(method == 'turn/start' for method, _ in self.server.calls)
+            result = self.runtime.reconcile_turn(self.key)
+            self.assertEqual(result['status'], 'input_restored')
+            current = self.runtime.agent(self.key)
+            self.assertEqual((current['status'], current['inFlight'], current['error']), ('queued', False, None))
+            self.assertNotIn('startAttempt', current)
+            self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                           (a['startAttempt']['events'][0],)).fetchone()[0], 'pending')
 
     def test_absent_input_does_not_restore_when_native_child_is_active(self):
         self.lose_start_receipt()
@@ -261,27 +263,29 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
 
     def test_old_unknown_start_waits_for_supervisor_ack(self):
-        self.lose_start_receipt()
-        self.server.native['turns'] = []
-        self.server.supervisor_mode = True
-        class Journal:
-            def __init__(self):
-                self.acknowledged = 2
-                self.actions = []
-            def call(self, action):
-                self.actions.append(action)
-                return {'sequence': 3, 'acknowledged': self.acknowledged, 'backpressure': False}
-        journal = Journal()
-        self.server.proc = journal
-        with self.runtime.lock, self.runtime.db() as db:
-            current = self.runtime.agent(self.key, db)
-            current['startAttempt']['created'] = time.time() - 700
-            self.runtime.put(db, 'agents', current)
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
-        self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
-        journal.acknowledged = 3
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'held')
-        self.assertEqual(journal.actions, ['status', 'status'])
+        # Commits wake automatic recovery. This fixture owns two manual probes.
+        with patch.object(self.runtime, 'queue_turn_recovery', return_value=None):
+            self.lose_start_receipt()
+            self.server.native['turns'] = []
+            self.server.supervisor_mode = True
+            class Journal:
+                def __init__(self):
+                    self.acknowledged = 2
+                    self.actions = []
+                def call(self, action):
+                    self.actions.append(action)
+                    return {'sequence': 3, 'acknowledged': self.acknowledged, 'backpressure': False}
+            journal = Journal()
+            self.server.proc = journal
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(self.key, db)
+                current['startAttempt']['created'] = time.time() - 700
+                self.runtime.put(db, 'agents', current)
+            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+            self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
+            journal.acknowledged = 3
+            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'held')
+            self.assertEqual(journal.actions, ['status', 'status'])
 
     def test_start_pace_counts_only_recent_unresolved_codex_starts(self):
         now = time.time()

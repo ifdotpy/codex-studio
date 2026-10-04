@@ -1,7 +1,7 @@
 import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { errorText, post, save, saved, type PostResult } from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
@@ -12,11 +12,9 @@ const active = (status?: string) =>
 
 export default function AccountSignIn({
   state,
-  opened,
   targetAccount,
 }: {
   state: ReturnType<typeof useAccounts>;
-  opened: boolean;
   targetAccount?: Account;
 }) {
   const storageKey = `account-sign-in:${state.scope || "local"}${targetAccount ? `:${targetAccount.id}` : ""}`;
@@ -50,21 +48,6 @@ export default function AccountSignIn({
       ],
     }));
   };
-  useEffect(() => {
-    if (!opened || !active(receipt?.status)) return;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (document.visibilityState !== "hidden" && navigator.onLine)
-        await state.refresh();
-      if (live) timer = setTimeout(poll, 2500);
-    };
-    timer = setTimeout(poll, 2500);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [opened, receipt?.requestId, receipt?.status, state.refresh]);
   const run = async (name: string, action: () => Promise<void>) => {
     if (lock.current) return;
     lock.current = true;

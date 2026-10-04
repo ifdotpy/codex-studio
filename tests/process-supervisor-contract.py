@@ -132,7 +132,7 @@ def wait_for(fn, timeout=5):
 
 class StdoutPersistenceContract(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-', dir='/tmp')
+        self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-')
         self.root = Path(self.temp.name)
         self.supervisor = process_supervisor.Supervisor(self.root)
         self.supervisor.journal = process_supervisor.Journal(self.root)
@@ -371,7 +371,7 @@ class JournalRetentionContract(unittest.TestCase):
 
 class ProcessSupervisorContract(unittest.TestCase):
     def setUp(self):
-        self.temp=tempfile.TemporaryDirectory(prefix='o6-',dir='/tmp')
+        self.temp=tempfile.TemporaryDirectory(prefix='o6-')
         self.root=Path(self.temp.name).resolve()
         self.binary=self.root/'fake-native'
         # The Apple developer launcher adds SDK environment variables. Use the

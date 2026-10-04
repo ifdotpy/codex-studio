@@ -27,6 +27,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 BASELINE = subprocess.check_output(['git', 'show', '31f92edd:scripts/codex_analytics.py'], cwd=ROOT)
 INTERMEDIATE = subprocess.check_output(['git', 'show', '85f3f8d892727837f79c11f3e6c41dfc18694d1d:scripts/codex_analytics.py'], cwd=ROOT)
+REVIEWED_RUNTIME = subprocess.check_output(['git', 'show', '85f3f8d892727837f79c11f3e6c41dfc18694d1d:scripts/codex_runtime.py'], cwd=ROOT)
 
 
 @contextmanager
@@ -43,7 +44,7 @@ def reviewed_fixture(baseline=BASELINE):
         analytics.AnalyticsMixin.analytics_event = old
         runtime_module = ModuleType('codex_runtime')
         runtime_path = scripts / 'codex_runtime.py'
-        runtime_path.write_bytes((ROOT / 'scripts/codex_runtime.py').read_bytes())
+        runtime_path.write_bytes(REVIEWED_RUNTIME)
         runtime_module.__file__ = str(runtime_path)
         runtime_module.Runtime = type('Runtime', (analytics.AnalyticsMixin,), {
             'records': lambda _self, _db, _table: [],

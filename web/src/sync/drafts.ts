@@ -123,6 +123,7 @@ export function useSyncedDrafts() {
   const [syncFailed, setSyncFailed] = useState(false);
   const localErrorValue = useRef(initialLocalError);
   const syncFailureValue = useRef(false);
+  const retryDraftBootstrap = useRef<() => void>(() => {});
   const reportLocalError = useCallback((message: string) => {
     if (localErrorValue.current === message) return;
     localErrorValue.current = message;
@@ -134,18 +135,23 @@ export function useSyncedDrafts() {
     setSyncFailed(failed);
   }, []);
   const [syncNotice, setSyncNotice] = useState("");
+  const [bootstrapPaused, setBootstrapPaused] = useState(false);
   useEffect(() => {
     if (!syncFailed) {
       setSyncNotice("");
       return;
     }
+    if (bootstrapPaused) {
+      setSyncNotice("Draft sync paused. Edit a draft or reconnect to retry.");
+      return;
+    }
     // Brief network interruptions recover without moving the conversation.
-    const timer = setTimeout(
-      () => setSyncNotice("Draft sync paused. Retrying automatically."),
-      8000,
-    );
+    setSyncNotice("");
+    const timer = setTimeout(() => {
+      setSyncNotice("Draft sync paused. Retrying automatically.");
+    }, 8000);
     return () => clearTimeout(timer);
-  }, [syncFailed]);
+  }, [syncFailed, bootstrapPaused]);
   const versions = useRef<DraftVersion[]>([]);
   const decoded = useRef(new WeakMap<object, DraftVersion>());
   const decodeDrafts = useCallback(
@@ -545,6 +551,7 @@ export function useSyncedDrafts() {
       const next = typeof value === "function" ? value(previous) : value;
       current.current = next;
       publishDraftChanges(previous, next);
+      retryDraftBootstrap.current();
       const updated = Math.max(
         Date.now(),
         ...versions.current.map((version) => version.updated + 1),
@@ -624,8 +631,16 @@ export function useSyncedDrafts() {
       unsubscribe = () => {},
       cancel = () => {};
     let retry: ReturnType<typeof setTimeout> | undefined;
+    const bootstrapRetryDelays = [1_000, 3_000, 10_000];
+    let bootstrapRetryCount = 0;
     let starting = false,
       started = false;
+    const recoverBootstrap = () => {
+      if (stopped || started) return;
+      bootstrapRetryCount = 0;
+      setBootstrapPaused(false);
+      start();
+    };
     const start = () => {
       if (stopped || starting || started) return;
       clearTimeout(retry);
@@ -666,6 +681,9 @@ export function useSyncedDrafts() {
           });
           unsubscribe = () => sub.unsubscribe();
           started = true;
+          bootstrapRetryCount = 0;
+          setBootstrapPaused(false);
+          reportSyncFailure(false);
           importUnassigned.current = false;
         })
         .catch(() => {
@@ -673,13 +691,16 @@ export function useSyncedDrafts() {
             reportSyncFailure(true);
             unsubscribe();
             cancel();
-            retry = setTimeout(start, 3000);
+            const delay = bootstrapRetryDelays[bootstrapRetryCount++];
+            if (delay === undefined) setBootstrapPaused(true);
+            else retry = setTimeout(start, delay);
           }
         })
         .finally(() => {
           starting = false;
         });
     };
+    retryDraftBootstrap.current = recoverBootstrap;
     queueLegacyUpdates(localRecovery.imported);
     start();
     const scanLegacyStorage = () => {
@@ -701,12 +722,15 @@ export function useSyncedDrafts() {
       }
     };
     const stopResume = onResume(() => {
-      start();
+      recoverBootstrap();
       scanLegacyStorage();
       void flushDrafts();
     });
+    const onOnline = () => recoverBootstrap();
+    window.addEventListener("online", onOnline);
     const onStorage = (event: StorageEvent) => {
       if (event.key !== storageKey.current) return;
+      recoverBootstrap();
       scanLegacyStorage();
     };
     window.addEventListener("storage", onStorage);
@@ -719,7 +743,9 @@ export function useSyncedDrafts() {
       clearTimeout(retry);
       clearInterval(writeTimer);
       stopResume();
+      window.removeEventListener("online", onOnline);
       window.removeEventListener("storage", onStorage);
+      retryDraftBootstrap.current = () => {};
       unsubscribe();
       cancel();
     };

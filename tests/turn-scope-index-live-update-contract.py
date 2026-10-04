@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import FunctionType, ModuleType
@@ -22,10 +23,31 @@ spec = importlib.util.spec_from_file_location('index_update_fixture',
     Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+REVIEWED_RUNTIME = subprocess.check_output(['git', 'show',
+    '85f3f8d892727837f79c11f3e6c41dfc18694d1d:scripts/codex_runtime.py'], cwd=ROOT)
+
+
+@contextmanager
+def reviewed_runtime():
+    with tempfile.TemporaryDirectory(prefix='studio-index-reviewed-source-') as folder:
+        source = Path(folder) / 'codex_runtime.py'
+        source.write_bytes(REVIEWED_RUNTIME)
+        helper = source.with_name('codex_turn_scope_index_update.py')
+        helper.write_bytes(Path(update.__file__).read_bytes())
+        module = ModuleType('codex_runtime')
+        module.__file__ = str(source)
+        with (patch.dict(sys.modules, {'codex_runtime': module}),
+              patch.dict(globals(), {'codex_runtime': module}),
+              patch.object(update, '__file__', str(helper))):
+            exec(compile(REVIEWED_RUNTIME, str(source), 'exec'), vars(module))
+            module.Runtime.image_workspace_support = staticmethod(fixture.Runtime.image_workspace_support)
+            with patch.object(fixture, 'Runtime', module.Runtime):
+                yield module
 
 
 class TurnScopeIndexUpdate(unittest.TestCase):
     def setUp(self):
+        self.enterContext(reviewed_runtime())
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.FakeServer)
         self.runtime.closed = True
@@ -226,7 +248,7 @@ class TurnScopeIndexUpdate(unittest.TestCase):
     def test_changed_source_rejects_before_sql(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / 'codex_runtime.py'
-            source.write_bytes((ROOT / 'scripts' / source.name).read_bytes() + b'\n# changed\n')
+            source.write_bytes(REVIEWED_RUNTIME + b'\n# changed\n')
             with (patch.object(codex_runtime, '__file__', str(source)),
                   patch.object(update, '__file__', str(source.with_name('codex_turn_scope_index_update.py'))),
                   self.trace() as queries):

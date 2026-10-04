@@ -10,19 +10,100 @@ import {
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
+import {
+  isResourceChangeEvent,
+  isResourceHeartbeatEvent,
+} from "../../../web/src/generated/stream-validators.js";
 
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Terminal UI transport fixture; Python terminal contracts exercise actual PTYs.
   const skill = testRepo;
+  const workspaceId = "1234567890abcdef1234567890abcdef";
+  const epoch = "terminal-dock-fixture";
+  let resourceRevision = 0;
+  const resourceStreams = new Set();
+  const writeResourceEvent = (stream, reason, resources = stream.resources) => {
+    if (reason !== "initial") resourceRevision++;
+    const event = {
+      protocol: 3,
+      workspaceId,
+      epoch,
+      revision: resourceRevision,
+      reason,
+      resources,
+    };
+    assert.ok(isResourceChangeEvent(event));
+    stream.response.write(
+      `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
+    );
+  };
+  const publishResourceChanges = (resources) => {
+    for (const stream of resourceStreams) {
+      const changed = resources.filter((resource) =>
+        stream.resources.some(
+          (subscribed) =>
+            JSON.stringify(subscribed) === JSON.stringify(resource),
+        ),
+      );
+      if (changed.length) writeResourceEvent(stream, "change", changed);
+    }
+  };
   const { chromium } = createRequire(join(skill, "web/package.json"))(
     "playwright-core",
   );
   const root = await mkdtemp(join(tmpdir(), "codex-terminal-dock-"));
   const server = createServer(async (req, res) => {
     try {
-      const name = new URL(req.url, "http://localhost").pathname;
+      const url = new URL(req.url, "http://localhost");
+      const name = url.pathname;
+      if (name === "/api/sync/identity") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ workspaceId }));
+        return;
+      }
+      if (name === "/api/sync/stream") {
+        const stream = {
+          response: res,
+          resources: JSON.parse(url.searchParams.get("resources") || "[]"),
+        };
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+        resourceStreams.add(stream);
+        writeResourceEvent(stream, "initial");
+        const heartbeat = setInterval(() => {
+          const value = {
+            protocol: 3,
+            workspaceId,
+            epoch,
+            revision: resourceRevision,
+          };
+          assert.ok(isResourceHeartbeatEvent(value));
+          res.write(`event: heartbeat\ndata: ${JSON.stringify(value)}\n\n`);
+        }, 1000);
+        res.on("close", () => {
+          clearInterval(heartbeat);
+          resourceStreams.delete(stream);
+        });
+        return;
+      }
+      if (name.startsWith("/api/sync/")) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            workspaceId,
+            documents: [],
+            checkpoint: { seq: 0 },
+            initialHigh: 0,
+            maxSeq: 0,
+          }),
+        );
+        return;
+      }
       const path = join(skill, "web/dist", name === "/" ? "index.html" : name);
       res.setHeader(
         "Content-Type",
@@ -129,10 +210,17 @@ test("Terminal dock", async () => {
         writes.push({ path, body });
       }
       let value = {};
+      if (path === "/api/sync/identity" || path === "/api/sync/stream")
+        return route.continue();
       if (path.startsWith("/api/sync/"))
         return route.fulfill({
-          status: 404,
-          json: { error: "No replication in this transport fixture" },
+          status: 200,
+          json: {
+            workspaceId,
+            documents: [],
+            checkpoint: { seq: 0 },
+            maxSeq: 0,
+          },
         });
       if (path === "/api/accounts")
         value = { accounts: [], defaultAccountKey: "default" };
@@ -156,6 +244,7 @@ test("Terminal dock", async () => {
         };
         shells.unshift(value);
         outputs.set(value.id, "Direct shell ready\r\n$ ");
+        publishResourceChanges([{ kind: "terminals" }]);
       } else if (path === "/api/terminals/output") {
         if (url.searchParams.get("history") === "1") {
           archiveReads.push(Number(url.searchParams.get("offset")));
@@ -212,7 +301,14 @@ test("Terminal dock", async () => {
             },
           });
         }
-        outputs.set(body.id, (outputs.get(body.id) || "") + body.text);
+        const output = (outputs.get(body.id) || "") + body.text;
+        const commandOutput =
+          body.text.includes("\r") && output.includes("printf terminal-ok\r")
+            ? "terminal-ok\r\n"
+            : "";
+        outputs.set(body.id, output + commandOutput);
+        if (body.text.includes("\r"))
+          publishResourceChanges([{ kind: "terminal", terminalId: body.id }]);
       } else if (path === "/api/terminals/rename") {
         Object.assign(
           shells.find((item) => item.id === body.id),
@@ -223,6 +319,10 @@ test("Terminal dock", async () => {
           shells.find((item) => item.id === body.id),
           { status: "closed" },
         );
+        publishResourceChanges([
+          { kind: "terminals" },
+          { kind: "terminal", terminalId: body.id },
+        ]);
       }
       await route.fulfill({ json: value });
     });
@@ -237,10 +337,8 @@ test("Terminal dock", async () => {
       .filter({ hasText: "250" })
       .waitFor({ timeout: 10000 })
       .catch(async (error) => {
-        await page.screenshot({
-          path: join(root, "terminal-start-failure.png"),
-        });
-        console.error(await page.locator("body").innerText(), errors);
+        if (!page.isClosed())
+          console.error(await page.locator("body").innerText(), errors);
         throw error;
       });
     const closedGeometry = await page.evaluate(() => {
@@ -305,8 +403,7 @@ test("Terminal dock", async () => {
     await dock.getByLabel("Find terminal", { exact: true }).fill("Shell 249");
     await dock.getByRole("button", { name: /Shell 249 Your terminal/ }).click();
     await dock.getByText("Session ended", { exact: true }).waitFor();
-    // Output polls faster than the session list. Wait for the close control's
-    // session record to report the exit before checking the completed-session path.
+    // The terminal status notification reports the exit before the completed-session path.
     await dock
       .locator(".terminal-detail-status")
       .filter({ hasText: /^exited/ })
@@ -324,7 +421,7 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Terminal 251", exact: true })
       .waitFor();
-    await dock.locator(".xterm-helper-textarea").waitFor();
+    await dock.locator(".xterm-helper-textarea").waitFor({ state: "attached" });
     const created = writes.find(
       (write) => write.path === "/api/terminals/create",
     );
@@ -450,6 +547,7 @@ test("Terminal dock", async () => {
       "Hide and reconnect must not create a shell",
     );
     failOutput = true;
+    publishResourceChanges([{ kind: "terminal", terminalId: created.body.id }]);
     await dock
       .getByText("Terminal connection interrupted", { exact: false })
       .waitFor();
@@ -495,6 +593,7 @@ test("Terminal dock", async () => {
     );
     await dock.getByRole("button", { name: "Reconnect", exact: true }).click();
     truncateOutput = true;
+    publishResourceChanges([{ kind: "terminal", terminalId: created.body.id }]);
     await dock
       .getByText(
         "Earlier output exceeded the retained buffer. The latest output is shown.",
@@ -622,7 +721,15 @@ test("Terminal dock", async () => {
       viewport: { width: 1280, height: 960 },
     });
     const errors = [];
+    const terminalOutputReads = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (
+        request.method() === "GET" &&
+        new URL(request.url()).pathname === "/api/terminals/output"
+      )
+        terminalOutputReads.push(Date.now());
+    });
     await page.goto(liveOrigin);
     assert.equal(
       await page.locator("#import-chat, #other-sessions").count(),
@@ -634,12 +741,17 @@ test("Terminal dock", async () => {
       .click();
     await dock.locator(".xterm-helper-textarea").waitFor();
     await dock.locator(".xterm-helper-textarea").focus();
+    const readsBeforeAppend = terminalOutputReads.length;
     await page.keyboard.type("printf 'PTY_RESULT:%s\\n' \"$PWD\"");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() =>
       document
         .querySelector(".xterm-accessibility-tree")
         ?.textContent.includes("PTY_RESULT:/"),
+    );
+    assert.ok(
+      terminalOutputReads.length > readsBeforeAppend,
+      "the appended PTY output triggered a targeted output read",
     );
     const sessions = await (await fetch(liveOrigin + "/api/terminals")).json();
     assert.equal(sessions.items.length, 1);
@@ -662,6 +774,7 @@ test("Terminal dock", async () => {
         .querySelector(".xterm-accessibility-tree")
         ?.textContent.includes("PTY_RESULT:/"),
     );
+    const readsBeforeExit = terminalOutputReads.length;
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("exit");
     await page.keyboard.press("Enter");
@@ -674,6 +787,17 @@ test("Terminal dock", async () => {
       document
         .querySelector(".terminal-detail-status")
         ?.textContent?.startsWith("exited"),
+    );
+    assert.ok(
+      terminalOutputReads.length > readsBeforeExit,
+      "the PTY exit notification triggered a targeted output read",
+    );
+    const readsAfterExit = terminalOutputReads.length;
+    await page.waitForTimeout(3200);
+    assert.equal(
+      terminalOutputReads.length,
+      readsAfterExit,
+      "an idle terminal performs no periodic output reads",
     );
     const after = await (await fetch(liveOrigin + "/api/state")).json();
     const ownerBefore = initial.threads.find(

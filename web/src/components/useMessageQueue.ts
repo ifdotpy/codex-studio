@@ -5,6 +5,8 @@ import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
+import { watchResourceReads } from "./watchResourceReads";
+import { createQueueResourceRefresh } from "./queueResourceRefresh";
 
 type QueueView =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
@@ -76,8 +78,6 @@ export function useMessageQueue(p: {
   observed?: (ids: string[]) => void;
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
-  pendingDelivery?: boolean;
-  refreshDelivery?: () => Promise<void>;
 }) {
   const key = `studio-queue-change:${p.scope}:${p.id}`;
   const currentKey = useRef(key);
@@ -100,6 +100,10 @@ export function useMessageQueue(p: {
   });
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
+  const resourceRefresh = useRef<{
+    key: string;
+    gate: ReturnType<typeof createQueueResourceRefresh>;
+  } | null>(null);
   const serial = useRef(0);
   const view = state.key === key ? state.view : emptyQueue;
   const pending =
@@ -129,33 +133,25 @@ export function useMessageQueue(p: {
     setPending({ key, request: readQueueRequest(key) });
     if (!p.enabled || !p.id) return;
     let active = true;
-    let polling = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      if (!active || polling) return;
-      clearTimeout(timer);
-      if (document.hidden || navigator.onLine === false) return;
-      polling = true;
-      try {
-        if (!locks.current.has(key)) await reload();
-        // A committed send can outlive a lost stream notification. Reconcile
-        // only while this chat has an unresolved delivery, through shared sync.
-        if (active && p.pendingDelivery) await p.refreshDelivery?.();
-      } catch (error) {
+    const gate = createQueueResourceRefresh(
+      () => locks.current.has(key),
+      reload,
+    );
+    resourceRefresh.current = { key, gate };
+    const stop = watchResourceReads(
+      { kind: "queue", agentId: p.id },
+      gate.invalidate,
+      (error) => {
         if (active) setFailure({ key, text: errorText(error) });
-      } finally {
-        polling = false;
-        if (active) timer = setTimeout(poll, 3000);
-      }
-    };
-    void poll();
-    const stop = onResume(() => void poll());
+      },
+    );
     return () => {
       active = false;
-      clearTimeout(timer);
       stop();
+      if (resourceRefresh.current?.gate === gate)
+        resourceRefresh.current = null;
     };
-  }, [key, reload, p.enabled, p.id, p.pendingDelivery, p.refreshDelivery]);
+  }, [key, reload, p.enabled, p.id]);
 
   const clearRequest = async (request: QueueMutation) => {
     const next = await updateLocalDraft<unknown>(key, null, (current) =>
@@ -218,6 +214,12 @@ export function useMessageQueue(p: {
     } finally {
       locks.current.delete(key);
       setBusy((value) => (value === key ? null : value));
+      const deferred = resourceRefresh.current;
+      if (deferred?.key === key)
+        void deferred.gate.flush().catch((error) => {
+          if (currentKey.current === key)
+            setFailure({ key, text: errorText(error) });
+        });
     }
   };
   const mutate = async (change: QueueChange) => {

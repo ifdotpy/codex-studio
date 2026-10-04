@@ -4,6 +4,7 @@ import ClaudeProfile from "./ClaudeProfile";
 import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
+import { watchResourceReads } from "./watchResourceReads";
 import { accountLimits } from "../usage/accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
@@ -106,11 +107,16 @@ export function useAccounts(stateDir?: string) {
   }, [stateDir]);
   useEffect(() => {
     if (!stateDir) return;
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 30000);
+    const stop = watchResourceReads(
+      { kind: "accounts" },
+      async () => {
+        await refresh();
+      },
+      (failure) => setError(errorText(failure)),
+    );
     return () => {
       latestRead.current++;
-      window.clearInterval(timer);
+      stop();
     };
   }, [stateDir, refresh]);
   return { data, setData, error, refresh, scope: stateDir };
@@ -132,20 +138,27 @@ function AccountCapacity({
     let live = true;
     setLimits(null);
     setLimitsError(null);
-    void get("/api/limits", {
-      query: { account_key: account.id },
-      timeoutMs: 25000,
-    })
-      .then((result) => {
+    const stop = watchResourceReads(
+      { kind: "limits", accountKey: account.id },
+      async () => {
+        const result = await get("/api/limits", {
+          query: { account_key: account.id },
+          timeoutMs: 25000,
+        });
         if (!accountLimits(result, account.id, account.accountId))
           throw new Error("Limits belong to another account.");
-        if (live) setLimits(result);
-      })
-      .catch((error) => {
+        if (live) {
+          setLimits(result);
+          setLimitsError(null);
+        }
+      },
+      (error) => {
         if (live) setLimitsError(error);
-      });
+      },
+    );
     return () => {
       live = false;
+      stop();
     };
   }, [account.id, account.accountId, account.status, account.provider, opened]);
   if (account.status !== "ready") return null;
@@ -675,7 +688,7 @@ export default function Accounts({
         closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
       >
         {adding ? (
-          <AccountSignIn state={state} opened={managerOnly || opened} />
+          <AccountSignIn state={state} />
         ) : (
           <Button
             onClick={() => setAdding(true)}
