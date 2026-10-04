@@ -7,7 +7,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { get, post, errorText } from "../api";
+import { get, post, ApiError, errorText } from "../api";
 import type { Agent, Message } from "../types";
 
 export type ChatReadState = {
@@ -153,10 +153,29 @@ export function useChatReadState(
           },
         };
         const requestWorkspace = latest.current.workspaceId;
-        const canonical = await post("/api/organization", body, {
-          workspaceId: requestWorkspace,
-          timeoutMs: 15000,
-        });
+        let canonical: Agent;
+        for (let retry = 0; ; retry++) {
+          try {
+            canonical = await post("/api/organization", body, {
+              workspaceId: requestWorkspace,
+              timeoutMs: 15000,
+            });
+            break;
+          } catch (error) {
+            const transient =
+              error instanceof TypeError ||
+              (error instanceof ApiError &&
+                (error.status >= 500 || [408, 429].includes(error.status)));
+            if (!read || !transient || retry >= 2) throw error;
+            current.uncertain.add(proof.id);
+            await new Promise((resolve) =>
+              setTimeout(resolve, 1000 * (retry + 1)),
+            );
+            // Retry the exact compare-and-set body; a queued Unread follows it.
+            if (!valid()) return;
+            if (latest.current.opened !== proof.id) throw error;
+          }
+        }
         if (!valid()) return;
         const state = storedState(canonical);
         if (
