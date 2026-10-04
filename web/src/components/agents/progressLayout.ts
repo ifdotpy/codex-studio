@@ -1,24 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 import { post, ApiError } from "../../api";
 import { onResume } from "../../sync/resume";
+import type { components } from "../../generated/api";
+import {
+  layoutReportFor,
+  type LayoutMeasurement,
+} from "./progressLayoutReport";
 
-export interface ProgressLayout {
-  revision: string;
-  width: number;
-  height: number;
-  contentWidth: number;
-  contentHeight: number;
-  overflowX: number;
-  overflowY: number;
-  totalLines: number;
-  visibleLines: number;
-  lastVisibleLine: string | null;
-  lastVisibleHeading: string | null;
-  fits: boolean;
-  reason: null | "overflow" | "unsupported";
-}
+export type ProgressLayout = Pick<
+  components["schemas"]["PanelLayoutBody"],
+  | "revision"
+  | "width"
+  | "height"
+  | "contentWidth"
+  | "contentHeight"
+  | "overflowX"
+  | "overflowY"
+  | "totalLines"
+  | "visibleLines"
+  | "lastVisibleLine"
+  | "lastVisibleHeading"
+  | "fits"
+  | "reason"
+>;
 const client = crypto.randomUUID();
 let sequence = 0;
+const maxAutomaticRetries = 5;
+const maxRetryDelayMs = 30000;
 
 export function useProgressLayoutReport(
   agent: string,
@@ -40,10 +48,11 @@ export function useProgressLayoutReport(
     let timer: ReturnType<typeof setTimeout> | undefined;
     let pending = false;
     let sent = "";
-    let sentAt = 0;
     let failures = 0;
     let retryAt = 0;
     let retryKey = "";
+    let exhaustedKey = "";
+    let measurement: LayoutMeasurement | undefined;
     const visible = () => !document.hidden && navigator.onLine !== false;
     const send = async () => {
       clearTimeout(timer);
@@ -54,6 +63,8 @@ export function useProgressLayoutReport(
         return;
       }
       const fingerprint = JSON.stringify(candidate);
+      if (exhaustedKey && fingerprint !== exhaustedKey) exhaustedKey = "";
+      if (fingerprint === sent || fingerprint === exhaustedKey) return;
       if (request) {
         pending = true;
         if (fingerprint !== requestKey) request.abort();
@@ -63,32 +74,34 @@ export function useProgressLayoutReport(
         timer = setTimeout(() => void send(), retryAt - Date.now());
         return;
       }
-      const remaining = 30000 - (Date.now() - sentAt);
-      if (fingerprint === sent && remaining > 0) {
-        timer = setTimeout(() => void send(), remaining);
-        return;
-      }
       const current = new AbortController();
       request = current;
       requestKey = fingerprint;
-      try {
-        await post(
-          "/api/panel/layout",
-          {
-            agent,
-            client,
-            sequence: ++sequence,
-            renderer: "progress-markdown-v2",
-            ...candidate,
-          },
-          { timeoutMs: 8000, signal: current.signal },
-        );
-        if (!active || current.signal.aborted) return;
-        sent = fingerprint;
-        sentAt = Date.now();
+      const nextMeasurement = layoutReportFor(
+        measurement,
+        agent,
+        client,
+        candidate,
+        sequence + 1,
+      );
+      if (nextMeasurement !== measurement) {
+        sequence += 1;
         failures = 0;
         retryAt = 0;
         retryKey = "";
+      }
+      measurement = nextMeasurement;
+      try {
+        await post("/api/panel/layout", nextMeasurement.body, {
+          timeoutMs: 8000,
+          signal: current.signal,
+        });
+        if (!active || current.signal.aborted) return;
+        sent = fingerprint;
+        failures = 0;
+        retryAt = 0;
+        retryKey = "";
+        exhaustedKey = "";
         setFailure(null);
       } catch (error) {
         if (!active || current.signal.aborted || !visible()) return;
@@ -98,15 +111,28 @@ export function useProgressLayoutReport(
           latest.current?.revision === candidate.revision
         )
           setFailure({ scope, revision: candidate.revision, error });
-        failures = Math.min(failures + 1, 5);
+        failures += 1;
         retryKey = fingerprint;
-        retryAt = Date.now() + Math.min(30000, 2000 * 2 ** (failures - 1));
+        if (failures > maxAutomaticRetries) {
+          retryAt = 0;
+          exhaustedKey = fingerprint;
+        } else {
+          retryAt =
+            Date.now() + Math.min(maxRetryDelayMs, 2000 * 2 ** (failures - 1));
+        }
       } finally {
         if (request === current) request = undefined;
-        if (active && visible() && latest.current)
+        if (active && visible() && latest.current && pending)
+          timer = setTimeout(() => void send(), 0);
+        else if (
+          active &&
+          visible() &&
+          retryAt &&
+          failures <= maxAutomaticRetries
+        )
           timer = setTimeout(
             () => void send(),
-            pending ? 0 : retryAt ? Math.max(0, retryAt - Date.now()) : 30000,
+            Math.max(0, retryAt - Date.now()),
           );
         pending = false;
       }
@@ -117,6 +143,8 @@ export function useProgressLayoutReport(
     wake.current = refresh;
     const stopResume = onResume(() => {
       retryAt = 0;
+      failures = 0;
+      exhaustedKey = "";
       refresh();
     });
     const pause = () => {

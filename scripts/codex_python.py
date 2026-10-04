@@ -14,7 +14,7 @@ import tempfile
 from typing import Mapping, Sequence
 
 
-API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn"
+API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn, watchdog"
 MINIMUM_PYTHON = (3, 11)
 
 

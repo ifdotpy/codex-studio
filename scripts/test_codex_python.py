@@ -94,7 +94,7 @@ class PythonResolutionTests(unittest.TestCase):
         ).stdout.strip()
         dependency_dir = Path(site_packages)
         dependency_dir.mkdir(parents=True, exist_ok=True)
-        for module_name in ("fastapi", "httpx", "pydantic", "uvicorn"):
+        for module_name in ("fastapi", "httpx", "pydantic", "uvicorn", "watchdog"):
             (dependency_dir / f"{module_name}.py").write_text("READY = True\n")
 
         shutil.copyfile(Path(__file__).with_name("codex-canvas"), scripts / "codex-canvas")
