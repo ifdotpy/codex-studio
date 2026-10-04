@@ -3280,7 +3280,8 @@ export interface components {
       provisionalUsage?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Ratelimits */
       rateLimits?: components["schemas"]["AnalyticsRateLimitRecord"][] | null;
-      responseRate?: components["schemas"]["AnalyticsResponseRate"] | null;
+      /** Responserate */
+      responseRate?: number | null;
       /** Runid */
       runId?: string | null;
       summary?: components["schemas"]["AnalyticsSummary"] | null;
@@ -3301,15 +3302,6 @@ export interface components {
       turns?: components["schemas"]["AnalyticsTurnRecord"][] | null;
       /** Version */
       version?: 1 | null;
-    };
-    /** AnalyticsResponseRate */
-    AnalyticsResponseRate: {
-      /** Durationseconds */
-      durationSeconds: number;
-      /** Outputtokens */
-      outputTokens: number;
-      /** Rate */
-      rate: number;
     };
     /**
      * AnalyticsScope
