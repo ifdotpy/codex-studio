@@ -41,11 +41,19 @@ export type ApiRequestBodyFor<Operation> = Operation extends {
   ? Body
   : never;
 
+type IsSuccessStatus<Status> = Status extends number
+  ? `${Status}` extends `2${string}`
+    ? true
+    : false
+  : Status extends `2${string}`
+    ? true
+    : false;
+
 export type ApiSuccessBodyFor<Operation> = Operation extends {
   responses: infer Responses;
 }
   ? {
-      [Status in keyof Responses]: Status extends `2${string}`
+      [Status in keyof Responses]: IsSuccessStatus<Status> extends true
         ? Responses[Status] extends {
             content: { "application/json": infer Body };
           }

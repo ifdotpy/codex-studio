@@ -13,7 +13,7 @@ type FixturePaths = {
         query: { cursor: string; limit?: number };
       };
       responses: {
-        "200": { content: { "application/json": { items: string[] } } };
+        200: { content: { "application/json": { items: string[] } } };
       };
     };
     post: {
@@ -24,14 +24,14 @@ type FixturePaths = {
         };
       };
       responses: {
-        "200": { content: { "application/json": { id: string } } };
+        200: { content: { "application/json": { id: string } } };
       };
     };
   };
   "/health": {
     get: {
       responses: {
-        "200": { content: { "application/json": { healthy: boolean } } };
+        200: { content: { "application/json": { healthy: boolean } } };
       };
     };
   };
@@ -80,6 +80,17 @@ function compileTimeContractAssertions() {
   fixturePost("/items", { id: "1", state: "open" });
   fixturePost("/mutation", { name: "sample" });
   fixtureSyncGet("/items", { query: { cursor: "same-query" } });
+  const readResult: Promise<{ healthy: boolean }> = fixtureGet("/health");
+  const writeResult: Promise<{ id: string }> = fixturePost("/items", {
+    id: "1",
+    state: "open",
+  });
+  const emptyWriteResult: Promise<undefined> = fixturePost("/mutation", {
+    name: "empty response",
+  });
+  void readResult;
+  void writeResult;
+  void emptyWriteResult;
 
   // @ts-expect-error a required query object must be supplied
   fixtureGet("/items");
