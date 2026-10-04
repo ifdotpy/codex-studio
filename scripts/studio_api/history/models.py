@@ -249,7 +249,7 @@ class TranscriptQuery(ContractModel):
     before: StrictStr | None = None
     around: StrictStr | None = None
     after: StrictStr | None = None
-    limit: StrictStr | None = None
+    limit: int | None = Field(default=None, strict=False)
 
 
 class TranscriptItemQuery(ContractModel):
@@ -260,12 +260,12 @@ class TranscriptItemQuery(ContractModel):
 class TranscriptSearchQuery(ContractModel):
     id: StrictStr | None = None
     q: StrictStr | None = None
-    limit: StrictStr | None = None
+    limit: int | None = Field(default=None, strict=False)
 
 
 class SearchQuery(ContractModel):
     q: StrictStr | None = None
-    limit: StrictStr | None = None
+    limit: int | None = Field(default=None, strict=False)
 
 
 class CheckpointsQuery(ContractModel):

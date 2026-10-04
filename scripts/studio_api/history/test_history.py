@@ -7,12 +7,13 @@ import json
 import sqlite3
 import sys
 import threading
+from types import ModuleType
 import unittest
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Callable, Iterator, cast
 from unittest.mock import patch
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse
@@ -25,7 +26,8 @@ from studio_api.history.models import CheckpointCaptureResponse, TranscriptRecor
 from studio_api.models import ErrorResponse, ResponseModel
 
 if TYPE_CHECKING:
-    from studio_api.context import ApiContext
+    from codex_canvas import Canvas
+    from studio_api.context import ApiContext, HeaderCollection, RemoteAccessContract
 
 
 class FakeRuntime:
@@ -119,6 +121,8 @@ class FakeCanvas:
             "tail": "legacy tail",
         }
 
+    runtime: FakeRuntime
+
 class FakeContext:
     def __init__(self) -> None:
         self.canvas = FakeCanvas()
@@ -180,6 +184,12 @@ class HistoryRouteTests(unittest.TestCase):
             },
             {"q", "limit"},
         )
+        limit_schema = next(
+            parameter["schema"]
+            for parameter in parameters
+            if parameter["name"] == "limit"
+        )
+        self.assertEqual(limit_schema["anyOf"][0]["type"], "integer")
         self.assertIn("400", self.app.openapi()["paths"]["/api/transcript/page"]["get"]["responses"])
         self.assertIn("404", self.app.openapi()["paths"]["/api/transcript/page"]["get"]["responses"])
 
@@ -258,6 +268,18 @@ class HistoryRouteTests(unittest.TestCase):
                 {"agent": "agent-1", "message_id": "m-1", "id": "request-1", "before": True},
             ),
         )
+
+    def test_numeric_query_limits_are_typed_and_invalid_values_fail_before_service(self) -> None:
+        response = self.client.get("/api/search?q=hello&limit=8")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.context.runtime.calls[-1],
+            ("search_work", {"query": "hello", "limit": "8"}),
+        )
+        call_count = len(self.context.runtime.calls)
+        invalid = self.client.get("/api/search?q=hello&limit=not-a-number")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(len(self.context.runtime.calls), call_count)
 
     def test_transcript_contract_accepts_runtime_item_producer_record(self) -> None:
         from codex_runtime import Runtime
@@ -341,6 +363,100 @@ class HistoryRouteTests(unittest.TestCase):
         self.assertEqual(parsed.historyBoundary, 1)
         self.assertNotIn("historyDelta", summary)
         producer.connection.close()
+
+    def test_history_routes_through_core_context_sender_and_request_boundary(self) -> None:
+        from studio_api.context import ApiContext
+
+        class Remote:
+            @staticmethod
+            def origin() -> str:
+                return "http://testserver"
+
+            @staticmethod
+            def request_origin(_headers: HeaderCollection, _peer: str, _port: int) -> str:
+                return "http://testserver"
+
+        class CanvasFixture:
+            root = Path(".")
+
+            def __init__(self) -> None:
+                self.runtime = FakeRuntime()
+
+        context = ApiContext(
+            cast("Canvas", CanvasFixture()), token="history-test-token",
+            remote=cast("RemoteAccessContract", Remote()),
+            schema_only=True,
+        )
+        fake_modules: dict[str, ModuleType] = {}
+        for domain in ("accounts", "agents", "federation", "insights", "io", "system", "voice", "work"):
+            package_name = f"studio_api.{domain}"
+            package = ModuleType(package_name)
+            package.__path__ = []
+            router_module = ModuleType(f"{package_name}.router")
+
+            def empty_router(_context: object) -> APIRouter:
+                return APIRouter()
+
+            router_module.create_router = empty_router  # type: ignore[attr-defined]
+            fake_modules[package_name] = package
+            fake_modules[router_module.__name__] = router_module
+        sync_router = ModuleType("studio_api.sync.router")
+        sync_router.create_router = lambda _context: APIRouter()  # type: ignore[attr-defined]
+        fake_modules[sync_router.__name__] = sync_router
+
+        with patch.dict(sys.modules, fake_modules):
+            from studio_api.app import create_app
+
+            app = create_app(context)
+            schema = cast(dict[str, object], app.openapi())
+            paths = cast(dict[str, object], schema["paths"])
+            transcript_path = cast(dict[str, object], paths["/api/transcript/page"])
+            get_operation = cast(dict[str, object], transcript_path["get"])
+            parameters = cast(list[dict[str, object]], get_operation["parameters"])
+            limit_parameter = next(
+                parameter for parameter in parameters
+                if parameter["name"] == "limit"
+            )
+            limit_schema = cast(dict[str, object], limit_parameter["schema"])
+            while "$ref" in limit_schema:
+                reference = cast(str, limit_schema["$ref"])
+                target: object = schema
+                for part in reference.removeprefix("#/").split("/"):
+                    target = cast(dict[str, object], target)[part]
+                limit_schema = cast(dict[str, object], target)
+            schema_types = [limit_schema.get("type")]
+            schema_types.extend(
+                branch.get("type")
+                for branch in cast(list[dict[str, object]], limit_schema.get("anyOf", []))
+            )
+            self.assertIn("integer", schema_types)
+            client = TestClient(app)
+            auth = {"Origin": "http://testserver", "X-Canvas-Token": "history-test-token"}
+            wrong_token = client.post(
+                "/api/branch",
+                json={"agent": "agent-1", "message_id": "m-1", "id": "request-1"},
+                headers={**auth, "X-Canvas-Token": "wrong"},
+            )
+            self.assertEqual(wrong_token.status_code, 403)
+            invalid = client.post(
+                "/api/branch",
+                json={"agent": "agent-1", "message_id": "m-1", "id": "request-1", "before": "yes"},
+                headers=auth,
+            )
+            self.assertEqual(invalid.status_code, 400)
+            self.assertEqual(invalid.json()["error"], "Invalid request")
+            runtime = cast(FakeRuntime, context.runtime)
+            self.assertFalse(any(call[0] == "branch" for call in runtime.calls))
+            page = client.get("/api/transcript/page?id=agent-1", headers=auth)
+            self.assertEqual(page.status_code, 200)
+            self.assertEqual(page.json()["items"][0]["text"], "hello")
+            first_checkpoint = client.get("/api/checkpoints?agent=agent-1", headers=auth)
+            etag = first_checkpoint.headers["etag"]
+            second_checkpoint = client.get(
+                "/api/checkpoints?agent=agent-1",
+                headers={**auth, "If-None-Match": etag},
+            )
+            self.assertEqual(second_checkpoint.status_code, 304)
 
 
 if __name__ == "__main__":

@@ -127,7 +127,7 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
-        limit = query.limit or "120"
+        limit = str(query.limit) if query.limit is not None else "120"
         return context.send(
             request,
             runtime.transcript(
@@ -163,7 +163,12 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": "Not found"}, status=404)
         return context.send(
             request,
-            _search_history(runtime, query.id, query.q, query.limit or "100")
+            _search_history(
+                runtime,
+                query.id,
+                query.q,
+                str(query.limit) if query.limit is not None else "100",
+            )
         )
 
     @router.get("/api/search/item", response_model=SearchItemResponse,
@@ -187,7 +192,10 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": "Not found"}, status=404)
         return context.send(
             request,
-            runtime.search_work(query.q, limit=query.limit or "50")
+            runtime.search_work(
+                query.q,
+                limit=str(query.limit) if query.limit is not None else "50",
+            )
         )
 
     @router.get("/api/checkpoints", response_model=CheckpointsResponse,
