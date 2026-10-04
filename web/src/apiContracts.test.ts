@@ -1,10 +1,51 @@
 import { expect, it } from "vitest";
 import { serializePrimitiveParam } from "openapi-fetch";
 import type {
+  ApiSuccessBodyFor,
   ApiGetContract,
   ApiPostContract,
   ApiSyncGetContract,
 } from "./apiContracts";
+
+type Equal<Actual, Expected> =
+  (<Value>() => Value extends Actual ? 1 : 2) extends <
+    Value,
+  >() => Value extends Expected ? 1 : 2
+    ? (<Value>() => Value extends Expected ? 1 : 2) extends <
+        Value,
+      >() => Value extends Actual ? 1 : 2
+      ? true
+      : false
+    : false;
+type Assert<Condition extends true> = Condition;
+type NotNever<Value> = [Value] extends [never] ? false : true;
+
+type NumericSuccess = ApiSuccessBodyFor<{
+  responses: { 200: { content: { "application/json": { value: number } } } };
+}>;
+type StringSuccess = ApiSuccessBodyFor<{
+  responses: {
+    "200": { content: { "application/json": { value: string } } };
+  };
+}>;
+type EmptySuccess = ApiSuccessBodyFor<{ responses: { 204: {} } }>;
+type ResponseStatusAssertions = [
+  Assert<Equal<NumericSuccess, { value: number }>>,
+  Assert<NotNever<NumericSuccess>>,
+  Assert<Equal<StringSuccess, { value: string }>>,
+  Assert<NotNever<StringSuccess>>,
+  Assert<Equal<EmptySuccess, undefined>>,
+  Assert<NotNever<EmptySuccess>>,
+];
+const responseStatusAssertions: ResponseStatusAssertions = [
+  true,
+  true,
+  true,
+  true,
+  true,
+  true,
+];
+void responseStatusAssertions;
 
 type FixturePaths = {
   "/items": {
