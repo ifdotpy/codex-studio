@@ -1367,6 +1367,10 @@ class SyncStreamQuery(ContractModel):
     protocol: str | None = None
     scope: str | None = None
     after: int | None = None
+    resources: str | None = Field(
+        default=None,
+        description="Protocol 3 JSON-encoded array of ResourceRef values",
+    )
 
 
 class TranscriptStreamQuery(ContractModel):

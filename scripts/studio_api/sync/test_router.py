@@ -19,6 +19,7 @@ from unittest.mock import patch
 from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
+from studio_api.responses import install_error_response_docs
 from studio_api.sync.router import create_router
 
 
@@ -148,13 +149,29 @@ class SyncRouterTests(unittest.TestCase):
     def test_stream_openapi_declares_event_stream_without_json_success(self) -> None:
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))
+        install_error_response_docs(app)
         paths = app.openapi()["paths"]
         for path in ("/api/sync/stream", "/api/transcript/stream"):
             responses = paths[path]["get"]["responses"]
-            self.assertEqual(
-                responses["200"]["content"],
-                {"text/event-stream": {"schema": {"type": "string"}}},
-            )
+            if path == "/api/sync/stream":
+                event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
+                self.assertEqual(
+                    event_schema["oneOf"],
+                    [
+                        {"$ref": "#/components/schemas/ResourceChangeEvent"},
+                        {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                    ],
+                )
+                components = app.openapi()["components"]["schemas"]
+                self.assertIn("ResourceRef", components)
+                self.assertIn("ResourceChangeEvent", components)
+                self.assertIn("ResourceHeartbeatEvent", components)
+                self.assertIn("resources", event_schema["x-sse-events"])
+            else:
+                self.assertEqual(
+                    responses["200"]["content"],
+                    {"text/event-stream": {"schema": {"type": "string"}}},
+                )
             self.assertIn("400", responses)
             self.assertIn("application/json", responses["400"]["content"])
 

@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
 from studio_api.models import ErrorResponse
+from studio_api.responses import register_route_components
 from studio_api.sync.models import (
     DraftPushRequest,
     SyncGenerationState,
@@ -25,6 +26,11 @@ from studio_api.sync.models import (
     SyncPullResetResponse,
     SyncStreamQuery,
     TranscriptStreamQuery,
+)
+from studio_api.sync.resources.models import (
+    ResourceChangeEvent,
+    ResourceHeartbeatEvent,
+    ResourceRef,
 )
 
 if TYPE_CHECKING:
@@ -186,7 +192,20 @@ def create_router(context: ApiContext) -> APIRouter:
         responses={
             200: {
                 "description": "Server-sent sync updates",
-                "content": {"text/event-stream": {"schema": {"type": "string"}}},
+                "content": {
+                    "text/event-stream": {
+                        "schema": {
+                            "oneOf": [
+                                {"$ref": "#/components/schemas/ResourceChangeEvent"},
+                                {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                            ],
+                            "x-sse-events": {
+                                "resources": "ResourceChangeEvent",
+                                "heartbeat": "ResourceHeartbeatEvent",
+                            },
+                        }
+                    }
+                },
             },
             **ERROR_RESPONSES,
         },
@@ -331,6 +350,20 @@ def create_router(context: ApiContext) -> APIRouter:
                 await asyncio.sleep(SHARED_STREAM_POLL_SECONDS)
 
         return _stream_response(events())
+
+    resource_event_route = router.routes[-1]
+    register_route_components(
+        resource_event_route,
+        {
+            "ResourceRef": ResourceRef.model_json_schema(ref_template="#/components/schemas/{model}"),
+            "ResourceChangeEvent": ResourceChangeEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "ResourceHeartbeatEvent": ResourceHeartbeatEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
 
     @router.get(
         "/api/transcript/stream",
