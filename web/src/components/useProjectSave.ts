@@ -17,6 +17,13 @@ type PostBody<Path extends PostPath> = paths[Path] extends {
   : never;
 type PostResult<Path extends PostPath> = Awaited<ReturnType<typeof post<Path>>>;
 
+export function persistedProjectRequest<Path extends ApiPostPath>(
+  persisted: PostBody<Path> | null,
+  next: PostBody<Path>,
+): PostBody<Path> {
+  return persisted ?? next;
+}
+
 // Project metadata uses exact values and revision checks for a safe retry.
 export function useProjectSave<Path extends PostPath>(
   path: Path,
@@ -57,8 +64,8 @@ export function useProjectSave<Path extends PostPath>(
   const submit = async (body: PostBody<Path>) => {
     if (lock.current) return;
     lock.current = true;
-    request.current ??= body;
-    const requestBody = request.current;
+    const requestBody = persistedProjectRequest(request.current, body);
+    request.current = requestBody;
     setPending(true);
     setFrozen(true);
     setError("");

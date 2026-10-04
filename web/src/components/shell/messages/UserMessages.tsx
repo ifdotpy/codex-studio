@@ -1,8 +1,8 @@
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
 import { get, post, ApiError, errorText, save, saved } from "../../../api";
-import type { Complaint, Snapshot } from "../../../types";
-import type { paths } from "../../../generated/api";
+import type { Snapshot } from "../../../types";
+import type { components, paths } from "../../../generated/api";
 import "./complaint-book.css";
 import ErrorDescription from "../../ErrorDescription";
 import MessageDate from "../../conversation/transcript/MessageDate";
@@ -18,7 +18,8 @@ import {
 // Preserve confirmed replies while a cached snapshot catches up.
 type ComplaintDetailResponse =
   paths["/api/complaint"]["get"]["responses"][200]["content"]["application/json"];
-type ComplaintSummary = Snapshot["runtime"]["complaints"][number];
+type Complaint = components["schemas"]["SnapshotComplaintDto"];
+type ComplaintSummary = Complaint;
 
 const confirmedMessages = new Map<string, ComplaintDetailResponse>();
 // Keep unsent replies separate from immutable delivery attempts.
