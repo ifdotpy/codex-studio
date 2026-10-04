@@ -159,6 +159,30 @@ describe("OpenAPI transport facade", () => {
     expect(request.signal.aborted).toBe(false);
   });
 
+  it("does not apply the default read deadline to POST writes", async () => {
+    vi.useFakeTimers();
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    let settled = false;
+    const pending = post("/api/sync/drafts", { rows: [] }).then((value) => {
+      settled = true;
+      return value;
+    });
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(settled).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    resolveFetch?.(Response.json({ ok: true }));
+    await expect(pending).resolves.toEqual({ ok: true });
+  });
+
   it("keeps explicit timeouts and reports their distinct error type", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(
