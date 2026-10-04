@@ -119,6 +119,15 @@ class HistoricalInputWait(f.ContextWait):
         self.assert_preserved_new_input()
         self.assertEqual(repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])['status'], 'not_needed')
 
+    def test_saved_positive_receipt_does_not_read_large_native_history(self):
+        self.make_wait()
+        with patch('codex_native_input_projection.accepted_turns', return_value=self.native_turns):
+            result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['status'], 'resolved')
+        self.assertEqual(self.receipt(self.old_id)['status'], 'delivered')
+        self.assert_preserved_new_input()
+        self.assertEqual(self.server.calls, [])
+
     def test_dispatch_schedules_one_check_then_sends_only_new_input_once(self):
         self.make_wait()
         self.runtime.dispatch()
@@ -282,7 +291,8 @@ class HistoricalInputWait(f.ContextWait):
 
     def test_total_deadline_prevents_another_native_read(self):
         self.make_wait()
-        with patch.object(repair.time, 'monotonic', side_effect=[0, 1, 21]):
+        with patch('codex_native_input_projection.accepted_turns', return_value=[]), \
+                patch.object(repair.time, 'monotonic', side_effect=[0, 1, 21]):
             result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
         self.assertEqual(result['status'], 'waiting')
         self.assertEqual([method for method, _ in self.server.calls], ['thread/read'])

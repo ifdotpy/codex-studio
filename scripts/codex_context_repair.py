@@ -222,7 +222,12 @@ def recover_unconfirmed_inputs(rt, agent_id):
         identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
         server = rt.servers.get(identity[2])
         connection_id = rt.connection_ids.get(identity[2])
+        batches, native_supervisor = [], None
         if historical_wait:
+            from codex_historical_input_receipts import capture_batches
+            from codex_connection_recovery import supervisor_identity
+            batches = capture_batches(db, a, list(events))
+            native_supervisor = supervisor_identity(server)
             for row in events:
                 meta = json.loads(row['metadata']) if row['metadata'] else {}
                 native = meta.get('native') or {}
@@ -238,36 +243,47 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
     try:
         deadline = time.monotonic() + TASK_CHECK_SECONDS if historical_wait else None
-        def read(method, params):
-            remaining = deadline - time.monotonic() if deadline is not None else 10
-            if remaining <= 0:
-                raise TimeoutError('Native input history check timed out')
-            return server.call(method, params, timeout=min(10, remaining))
-        thread = read('thread/read', {'threadId': identity[1], 'includeTurns': False}).get('thread')
-        if not isinstance(thread, dict) or thread.get('id') != identity[1]:
-            raise ValueError('Native thread identity did not match')
-        state = (thread.get('status') or {}).get('type')
-        turns, cursor, seen = [], None, set()
-        for _ in range(16 if historical_wait else 100):
-            params = {'threadId': identity[1], 'limit': 100,
-                      'sortDirection': 'desc' if historical_wait else 'asc', 'itemsView': 'full'}
-            if cursor:
-                params['cursor'] = cursor
-            page = read('thread/turns/list', params)
-            data = page.get('data')
-            if not isinstance(data, list) or any(not isinstance(turn, dict) for turn in data):
-                raise ValueError('Native input history has no verified turn list')
-            turns.extend(data)
-            if historical_wait and any(_accepted_input_turn(turn, ids[0]) for turn in turns):
-                break
-            cursor = page.get('nextCursor')
-            if not cursor:
-                break
-            if cursor in seen:
-                raise ValueError('Native history repeated its page cursor')
-            seen.add(cursor)
-        else:
-            raise ValueError('Native history has too many pages')
+        turns, state, batch_proofs = [], None, {}
+        if historical_wait:
+            from codex_native_input_projection import accepted_turns
+            from codex_historical_input_receipts import accepted_batches
+            projection_keys = list(dict.fromkeys(ids + [batch['primary'] for batch in batches]))
+            turns = accepted_turns(rt.accounts.home(identity[2]), identity[1], projection_keys)
+            batch_proofs = accepted_batches(native_supervisor, batches, turns)
+        if not historical_wait or not all(key in batch_proofs or
+                any(_accepted_input_turn(turn, key) for turn in turns) for key in ids):
+            def read(method, params):
+                remaining = deadline - time.monotonic() if deadline is not None else 10
+                if remaining <= 0:
+                    raise TimeoutError('Native input history check timed out')
+                return server.call(method, params, timeout=min(10, remaining))
+            thread = read('thread/read', {'threadId': identity[1], 'includeTurns': False}).get('thread')
+            if not isinstance(thread, dict) or thread.get('id') != identity[1]:
+                raise ValueError('Native thread identity did not match')
+            state = (thread.get('status') or {}).get('type')
+            turns, cursor, seen = [], None, set()
+            for _ in range(16 if historical_wait else 100):
+                params = {'threadId': identity[1], 'limit': 100,
+                          'sortDirection': 'desc' if historical_wait else 'asc', 'itemsView': 'full'}
+                if cursor:
+                    params['cursor'] = cursor
+                page = read('thread/turns/list', params)
+                data = page.get('data')
+                if not isinstance(data, list) or any(not isinstance(turn, dict) for turn in data):
+                    raise ValueError('Native input history has no verified turn list')
+                turns.extend(data)
+                if historical_wait and any(_accepted_input_turn(turn, ids[0]) for turn in turns):
+                    break
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise ValueError('Native history repeated its page cursor')
+                seen.add(cursor)
+            else:
+                raise ValueError('Native history has too many pages')
+            if historical_wait:
+                batch_proofs = accepted_batches(native_supervisor, batches, turns)
     except Exception as error:
         return {'status': 'waiting', 'reason': 'Native history read failed: ' + str(error),
                 'inputs': [{'id': row['id'], 'decision': 'waiting'} for row in events]}
@@ -303,6 +319,7 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 found[client_id] = turn_id
             elif not isinstance(message_id, str):
                 unidentified_input = True
+    found.update({key: turn_id for key, turn_id in batch_proofs.items() if key in ids})
     decisions = []
     for row in events:
         owners = [owner for owner in (current_attempt, marker_attempt_snapshot)
@@ -340,7 +357,9 @@ def recover_unconfirmed_inputs(rt, agent_id):
             return {'status': 'waiting', 'reason': 'The worker changed during native history recovery',
                     'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
         if historical_wait and (_historical_input_rows(db, current) != pending_rows
-                or rt.closed or current.get('deletedAt')):
+                or rt.closed or current.get('deletedAt')
+                or supervisor_identity(server) != native_supervisor
+                or capture_batches(db, current, list(events)) != batches):
             return {'status': 'waiting', 'reason': 'The newer input changed during native history recovery',
                     'inputs': [{'id': item['id'], 'decision': 'waiting'} for item in decisions]}
         for item in decisions:
