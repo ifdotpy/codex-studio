@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import { NetworkTimeoutError } from "../../api";
-import { onResume } from "../../sync/resume";
 import {
   watchResourceChanges,
   watchResourceConnection,
@@ -140,7 +139,6 @@ export default function AgentPanel({
       void read();
     };
     refresh.current = wake;
-    const stopResume = onResume(wake);
     const stopResourceChanges = watchResourceChanges(
       { kind: "panel", agentId },
       wake,
@@ -168,7 +166,6 @@ export default function AgentPanel({
     return () => {
       active = false;
       request?.controller.abort();
-      stopResume();
       stopResourceChanges();
       stopConnection();
       document.removeEventListener("visibilitychange", visibility);
