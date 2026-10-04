@@ -132,19 +132,10 @@ def create_app(context: ApiContext) -> FastAPI:
         return error_response(context, request, "The server could not validate its response", 500)
 
     @app.exception_handler(ValueError)
-    async def value_error(request: Request, error: ValueError) -> Response:
-        return error_response(context, request, str(error), 400)
-
     @app.exception_handler(RuntimeError)
-    async def runtime_error(request: Request, error: RuntimeError) -> Response:
-        return error_response(context, request, str(error), 400)
-
     @app.exception_handler(OSError)
-    async def operating_system_error(request: Request, error: OSError) -> Response:
-        return error_response(context, request, str(error), 400)
-
     @app.exception_handler(sqlite3.Error)
-    async def database_error(request: Request, error: sqlite3.Error) -> Response:
+    async def service_error(request: Request, error: Exception) -> Response:
         return error_response(context, request, str(error), 400)
 
     install_error_response_docs(app)

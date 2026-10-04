@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from codex_session_costs import SessionCostReader
     from codex_sync import SyncStore
     from codex_terminals import TerminalManager
-    from codex_runtime import Runtime
 
 
 class HeaderCollection(Protocol):
