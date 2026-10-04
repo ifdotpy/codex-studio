@@ -1,14 +1,12 @@
 import { ActionIcon, Button, TextInput, UnstyledButton } from "@mantine/core";
 import { ArrowUp, ChevronRight, Folder, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, errorText } from "../api";
+import { get, errorText } from "../api";
+import type { paths } from "../generated/api";
 import "./project-directory-picker.css";
 
-type Directory = {
-  path: string;
-  parent?: string;
-  directories: { name: string; path: string }[];
-};
+type Directory =
+  paths["/api/directories"]["get"]["responses"][200]["content"]["application/json"];
 
 export default function ProjectDirectoryPicker({
   initialPath,
@@ -31,9 +29,7 @@ export default function ProjectDirectoryPicker({
     let active = true;
     setLoading(true);
     setError("");
-    api<Directory>(
-      "/api/directories" + (path ? "?path=" + encodeURIComponent(path) : ""),
-    )
+    get("/api/directories", { query: path ? { path } : {} })
       .then((result) => {
         if (active) {
           setDirectory(result);

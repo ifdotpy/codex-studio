@@ -26,7 +26,8 @@ import {
   Mail,
   X,
 } from "lucide-react";
-import { api, errorText, save, saved } from "../api";
+import { post, errorText, save, saved } from "../api";
+import type { paths } from "../generated/api";
 import "./sidebar-projects.css";
 import { useSidebarOrder } from "./useSidebarOrder";
 import {
@@ -43,12 +44,20 @@ import {
   PeerTeamGroup,
   usePeerTeamMove,
 } from "./shell/messages/PeerTeams";
+
 import ChatStatus from "./agents/ChatStatus";
 import {
   hasCompletedResult,
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
+
+type OrganizationRequest =
+  paths["/api/organization"]["post"]["requestBody"]["content"]["application/json"];
+type WithoutOrganizationId<Request> = Request extends { id: string }
+  ? Omit<Request, "id">
+  : never;
+type OrganizationData = WithoutOrganizationId<OrganizationRequest>;
 type Props = {
   data: Snapshot;
   opened: string | null;
@@ -195,7 +204,7 @@ export default function Sidebar(p: Props) {
   const [overrides, setOverrides] = useState<
     Record<string, { pinned?: boolean; archived?: boolean }>
   >({});
-  const organize = async (id: string, data: Record<string, unknown>) => {
+  const organize = async (id: string, data: OrganizationData) => {
     if (organizationLock.current) return false;
     organizationLock.current = true;
     setOrganizing(id);
@@ -210,7 +219,7 @@ export default function Sidebar(p: Props) {
     if (hasOptimistic)
       setOverrides((old) => ({ ...old, [id]: { ...old[id], ...optimistic } }));
     try {
-      await api("/api/organization", { id, ...data });
+      await post("/api/organization", { id, ...data });
       if (hasOptimistic) void p.refresh?.();
       else await p.refresh?.();
       return true;
@@ -237,10 +246,9 @@ export default function Sidebar(p: Props) {
         const thread = p.data.threads.find((a) => a.id === id);
         if (
           !thread ||
-          Object.entries(values).every(
-            ([key, value]) =>
-              !!(thread as Record<string, unknown>)[key] === value,
-          )
+          ((values.pinned === undefined || thread.pinned === values.pinned) &&
+            (values.archived === undefined ||
+              thread.archived === values.archived))
         ) {
           delete next[id];
           changed = true;
@@ -902,7 +910,7 @@ export default function Sidebar(p: Props) {
                           onClick={async () => {
                             if (!requireProjectSupport()) return;
                             try {
-                              await api("/api/projects", {
+                              await post("/api/projects", {
                                 action: "remove_folder",
                                 path: group.path,
                                 folder_id: folder.id,
@@ -1162,7 +1170,7 @@ export default function Sidebar(p: Props) {
                           <Menu.Item
                             onClick={async () => {
                               try {
-                                await api("/api/projects", {
+                                await post("/api/projects", {
                                   action: "remove",
                                   path: group.path,
                                 });

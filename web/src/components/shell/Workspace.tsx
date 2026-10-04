@@ -30,7 +30,8 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText } from "../../api";
+import { get, post, errorText } from "../../api";
+import type { paths } from "../../generated/api";
 import type { Agent, Json, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
@@ -51,15 +52,32 @@ type Props = {
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };
+type PostPath = Extract<
+  {
+    [Path in keyof paths]: paths[Path] extends { post: unknown } ? Path : never;
+  }[keyof paths],
+  string
+>;
+type PostBody<Path extends PostPath> = paths[Path] extends {
+  post: {
+    requestBody: { content: { "application/json": infer Body } };
+  };
+}
+  ? Body
+  : never;
+type PostResult<Path extends PostPath> = Awaited<ReturnType<typeof post<Path>>>;
+type WorkspaceAction = <Path extends PostPath>(
+  path: Path,
+  body: PostBody<Path>,
+) => Promise<PostResult<Path>>;
 type Context = Props & {
   selected: Agent | undefined;
-  run: (path: string, body: Json) => Promise<any>;
+  run: WorkspaceAction;
   reload: () => void;
   revision: number;
   preview: (target: PreviewTarget) => void;
   navigate: (section: string, agent?: string, item?: string) => void;
   focusId: string;
-  resourceCache: Map<string, Json>;
 };
 const sections = [
   ["changes", "Changes", FileDiff],
@@ -85,8 +103,6 @@ const date = (value: number | string | undefined) =>
   value
     ? localDateTime(new Date(typeof value === "number" ? value * 1000 : value))
     : "";
-const endpoint = (name: string, agent?: Agent) =>
-  `/api/${name}${agent ? `?agent=${encodeURIComponent(agent.id)}` : ""}`;
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="workspace-empty">{children}</div>;
 }
@@ -129,7 +145,6 @@ function ownerName(data: Snapshot, id?: string) {
 }
 
 export function Workspace(props: Props) {
-  const resourceCache = useRef(new Map<string, Json>()).current;
   const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),
@@ -184,10 +199,13 @@ export function Workspace(props: Props) {
     return () => clearInterval(timer);
   }, [props.opened, reload]);
   const run = useCallback(
-    async (path: string, body: Json) => {
+    async <Path extends PostPath>(
+      path: Path,
+      body: PostBody<Path>,
+    ): Promise<PostResult<Path>> => {
       setPending((n) => n + 1);
       try {
-        const result = await api(path, body);
+        const result = await post(path, body);
         reload();
         await refreshRef.current();
         return result;
@@ -211,7 +229,6 @@ export function Workspace(props: Props) {
     revision,
     preview: setPreview,
     focusId,
-    resourceCache,
     navigate: (section, agent, item) => {
       setSection(section);
       if (agent) setAgentId(agent);
@@ -373,14 +390,18 @@ export function Workspace(props: Props) {
 export default Workspace;
 
 function Changes(c: Context) {
-  const state = useResource(
-      `${endpoint("changes", c.selected)}&scope=chat`,
-      c.revision,
-    ),
-    comments = useResource(
-      `${endpoint("workspace", c.selected)}${c.selected ? "&" : "?"}view=annotations`,
-      c.revision,
-    );
+  const state = useResource("/api/changes", c.revision, {
+      query: {
+        ...(c.selected ? { agent: c.selected.id } : {}),
+        scope: "chat",
+      },
+    }),
+    comments = useResource("/api/workspace", c.revision, {
+      query: {
+        ...(c.selected ? { agent: c.selected.id } : {}),
+        view: "annotations",
+      },
+    });
   const [path, setPath] = useState(""),
     [comment, setComment] = useState<Json | null>(null),
     [saving, setSaving] = useState(false);
@@ -583,10 +604,9 @@ function Find(c: Context) {
     [sourceError, setSourceError] = useState("");
   const [query, setQuery] = useState(""),
     [search, setSearch] = useState("");
-  const state = useResource(
-    search ? `/api/search?q=${encodeURIComponent(search)}` : null,
-    c.revision,
-  );
+  const state = useResource(search ? "/api/search" : null, c.revision, {
+    query: { q: search },
+  });
   return (
     <>
       <form
@@ -624,9 +644,9 @@ function Find(c: Context) {
             setSource({ ...result, loading: true });
             setSourceError("");
             try {
-              const record = await api(
-                `/api/search/item?id=${encodeURIComponent(result.id)}`,
-              );
+              const record = await get("/api/search/item", {
+                query: { id: result.id },
+              });
               if (request === sourceRequest.current)
                 setSource({ ...result, ...record, loading: false });
             } catch (e) {
@@ -702,7 +722,9 @@ function Find(c: Context) {
 }
 
 function Plan(c: Context) {
-  const state = useResource(endpoint("plan", c.selected), c.revision);
+  const state = useResource("/api/plan", c.revision, {
+    query: c.selected ? { agent: c.selected.id } : {},
+  });
   const native = state.data?.native;
   const steps: Json[] = Array.isArray(native?.plan) ? native.plan : [];
   const explanation =
@@ -744,7 +766,9 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
-  const state = useResource(endpoint("checkpoints", c.selected), c.revision),
+  const state = useResource("/api/checkpoints", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
     [label, setLabel] = useState(""),
     [preview, setPreview] = useState<Json | null>(null),
     [busy, setBusy] = useState(false);
@@ -867,7 +891,9 @@ function Checkpoints(c: Context) {
 }
 
 function Tools(c: Context) {
-  const state = useResource(endpoint("capabilities", c.selected), c.revision),
+  const state = useResource("/api/capabilities", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
     [query, setQuery] = useState("");
   return (
     <>
@@ -936,36 +962,49 @@ function Tools(c: Context) {
     </>
   );
 }
-function Inventory({ value, query }: { value: any; query: string }) {
+function Inventory({ value, query }: { value: unknown; query: string }) {
   if (!value || (Array.isArray(value) && !value.length))
     return <p className="workspace-muted">No entries returned by Codex.</p>;
-  const entries = Array.isArray(value)
+  const entries: unknown[] = Array.isArray(value)
     ? value
-    : value.data || value.servers || [value];
+    : isRecord(value)
+      ? Array.isArray(value.data)
+        ? value.data
+        : Array.isArray(value.servers)
+          ? value.servers
+          : [value]
+      : [value];
   return (
     <div className="workspace-tools">
       {entries
-        .filter((entry: any) =>
-          JSON.stringify(entry).toLowerCase().includes(query.toLowerCase()),
+        .filter((entry: unknown) =>
+          JSON.stringify(entry)?.toLowerCase().includes(query.toLowerCase()),
         )
-        .map((entry: any, index: number) => (
+        .map((entry: unknown, index: number) => (
           <details className="workspace-tool" key={index}>
             <summary>
               <SlidersHorizontal size={14} />
-              <strong>
-                {entry.name ||
-                  entry.cwd ||
-                  entry.serverName ||
-                  `Entry ${index + 1}`}
-              </strong>
+              <strong>{inventoryName(entry) || `Entry ${index + 1}`}</strong>
             </summary>
             <pre className="workspace-code">
-              {JSON.stringify(entry, null, 2)}
+              {JSON.stringify(entry, null, 2) ?? String(entry)}
             </pre>
           </details>
         ))}
     </div>
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function inventoryName(value: unknown): string | undefined {
+  if (!isRecord(value)) return;
+  for (const key of ["name", "cwd", "serverName"] as const) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate) return candidate;
+  }
 }
 
 function Profiles(c: Context) {
@@ -1213,7 +1252,9 @@ function Profiles(c: Context) {
 }
 
 function Rules(c: Context) {
-  const state = useResource(endpoint("rules", c.selected), c.revision),
+  const state = useResource("/api/rules", c.revision, {
+      query: c.selected ? { agent: c.selected.id } : {},
+    }),
     [draft, setDraft] = useFormDraft(
       `studio-rule-draft:${JSON.stringify([c.data.stateDir, c.selected?.id])}`,
       c.notify,

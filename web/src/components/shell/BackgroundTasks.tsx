@@ -28,12 +28,33 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, apiDownload, errorText } from "../../api";
+import { get, post, apiDownload, errorText } from "../../api";
+import type { paths } from "../../generated/api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, Json, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
+
+type PostPath = Extract<
+  {
+    [Path in keyof paths]: paths[Path] extends { post: unknown } ? Path : never;
+  }[keyof paths],
+  string
+>;
+type PostBody<Path extends PostPath> = paths[Path] extends {
+  post: {
+    requestBody: { content: { "application/json": infer Body } };
+  };
+}
+  ? Body
+  : never;
+type BackgroundAction = <Path extends PostPath>(
+  path: Path,
+  body: PostBody<Path>,
+) => Promise<boolean>;
+type TaskDetailResponse =
+  paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
 
 export { activeTask, backgroundTasks } from "../backgroundTaskModel";
 const labels: Record<string, string> = {
@@ -409,7 +430,7 @@ function TaskDetail({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
-  const [detail, setDetail] = useState<BackgroundTask | null>(null),
+  const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {
     if (!opened || summary.kind === "monitor") return;
@@ -417,9 +438,7 @@ function TaskDetail({
     let timer: ReturnType<typeof setTimeout>;
     const load = async () => {
       try {
-        const value = await api<BackgroundTask>(
-          "/api/task?id=" + encodeURIComponent(summary.id),
-        );
+        const value = await get("/api/task", { query: { id: summary.id } });
         if (!stopped) {
           setDetail(value);
           setLoadError("");
@@ -445,12 +464,21 @@ function TaskDetail({
     if (follow && output.current)
       output.current.scrollTop = output.current.scrollHeight;
   }, [task.tail, follow]);
-  const act = async (path: string, body: Json) => {
+  const act: BackgroundAction = async <Path extends PostPath>(
+    path: Path,
+    body: PostBody<Path>,
+  ) => {
     setPending(true);
     try {
-      const result = await api(path, body);
+      const result = await post(path, body);
       await refresh();
-      if (result?.error) throw new Error(displayError(result.error));
+      if (
+        result &&
+        typeof result === "object" &&
+        "error" in result &&
+        result.error
+      )
+        throw new Error(displayError(result.error));
       return true;
     } catch (error) {
       notify(errorText(error));
@@ -676,7 +704,7 @@ function ProcessInput({
 }: {
   task: BackgroundTask;
   pending: boolean;
-  act: (path: string, body: Json) => Promise<boolean>;
+  act: BackgroundAction;
 }) {
   const [input, setInput] = useState("");
   const [rows, setRows] = useState<string | number>(24);
@@ -812,9 +840,7 @@ async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
   try {
     let blob: Blob, name: string;
     if (task.kind === "monitor") {
-      const result = await apiDownload(
-        "/api/monitor/log?id=" + encodeURIComponent(task.id),
-      );
+      const result = await apiDownload("/api/monitor/log", { id: task.id });
       blob = result.blob;
       name = result.name;
       if (result.truncated)
