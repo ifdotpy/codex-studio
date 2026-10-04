@@ -9,18 +9,12 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { errorText, saved } from "../api";
+import { errorText, saved, type QueueItemDto } from "../api";
 import { writeLocalDraft } from "../sync/localDraft";
-import type { Attachment } from "./ComposerAttachments";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
 
-export type QueueItem = {
-  id: string;
-  text: string;
-  assets?: Attachment[];
-  [key: string]: any;
-};
+export type QueueItem = QueueItemDto;
 
 type Props = {
   items: QueueItem[];
