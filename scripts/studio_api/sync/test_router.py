@@ -7,6 +7,7 @@ import asyncio
 from contextlib import contextmanager
 import sqlite3
 import threading
+import tempfile
 import unittest
 from typing import cast
 
@@ -30,6 +31,7 @@ from studio_api.sync.resources.models import (
     TokenRateValue,
     TranscriptResource,
 )
+from codex_runtime import Runtime
 
 
 class StoreStub:
@@ -573,6 +575,82 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(context.runtime.transcript_reads, 2)
         self.assertNotIn("event: transcript", body)
         self.assertTrue(body.startswith("data: "))
+
+    def test_legacy_transcript_stream_receives_disconnect_status_change(self) -> None:
+        context = ContextStub()
+        context.canvas.root = tempfile.gettempdir() + "/studio-transcript-disconnect-test"
+        context.runtime.closed = False
+        context.runtime.transcript_close_after = 2
+        context.runtime.transcript_responses = [
+            {"items": [], "agent": {"id": "agent-a", "status": "running"}},
+            {"items": [], "agent": {"id": "agent-a", "status": "interrupted"}},
+        ]
+        agent = {
+            "id": "agent-a", "rootId": "agent-a", "status": "running", "autoWake": True,
+            "inFlight": True, "threadId": "thread-a", "turnId": "turn-a", "epoch": 1,
+        }
+        backend = Runtime.__new__(Runtime)
+        backend.lock = threading.RLock()
+        backend.connection_ids = {"default": "connection-a"}
+        backend.offline_accounts = {"default"}
+        backend.offline = False
+        backend.loaded = {"agent-a"}
+        backend.servers = {}
+        backend.preparations = {}
+        connection = sqlite3.connect(":memory:")
+        connection.executescript("""
+            CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, status TEXT, error TEXT);
+            CREATE TABLE runtime_tasks(record TEXT);
+            CREATE TABLE runtime_monitors(record TEXT);
+        """)
+
+        @contextmanager
+        def database():
+            yield connection
+
+        backend.db = database
+        backend.records = lambda _db, table=None: [agent] if table == "agents" else []
+        backend.retire_legacy_steer = lambda *_args: None
+        backend.capacity_restart = lambda *_args: None
+
+        def put_agent(_db: object, table: str, record: dict[str, object]) -> None:
+            self.assertEqual(table, "agents")
+            agent.update(record)
+            context.hub.publish(
+                ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
+            )
+
+        backend.put = put_agent
+        route = next(
+            route for route in create_router(cast(ApiContext, context)).routes
+            if getattr(route, "path", None) == "/api/transcript/stream"
+        )
+        scope: dict[str, object] = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/api/transcript/stream",
+            "raw_path": b"/api/transcript/stream", "query_string": b"id=agent-a",
+            "headers": [], "client": ("test", 1000), "server": ("test", 80),
+        }
+        request = ConnectedRequest(scope)
+
+        async def exercise() -> tuple[bytes, bytes]:
+            response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
+            first = cast(bytes, await response.body_iterator.__anext__())
+            backend.disconnected("default", "connection-a")
+            second = cast(bytes, await response.body_iterator.__anext__())
+            await response.body_iterator.aclose()
+            return first, second
+
+        try:
+            first, second = asyncio.run(exercise())
+            self.assertTrue(first.startswith(b"data: "))
+            self.assertNotIn(b"event: transcript", first)
+            self.assertTrue(second.startswith(b"data: "))
+            self.assertNotIn(b"event: transcript", second)
+            payload = json.loads(second.split(b"data: ", 1)[1].split(b"\n", 1)[0])
+            self.assertEqual(payload["agent"]["status"], "interrupted")
+        finally:
+            connection.close()
 
     def test_transcript_stream_emits_metadata_only_changes(self) -> None:
         context = ContextStub()

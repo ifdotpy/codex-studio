@@ -87,6 +87,23 @@ def workspace_agent_resource_changed(previous: dict[str, object] | None, current
         for field in WORKSPACE_AGENT_RESOURCE_FIELDS
     )
 
+
+TRANSCRIPT_AGENT_RESOURCE_FIELDS = (
+    # Fields returned in the transcript envelope or used to derive visible item state.
+    "id", "deletedAt", "status", "activity", "inFlight", "contextUsage",
+    "compactions", "compactionsObservedOnly", "autoWake", "turnId", "threadId",
+    "restoredCheckpoint",
+)
+
+
+def transcript_agent_resource_changed(
+    previous: dict[str, object] | None, current: dict[str, object]
+) -> bool:
+    return previous is None or any(
+        previous.get(field) != current.get(field)
+        for field in TRANSCRIPT_AGENT_RESOURCE_FIELDS
+    )
+
 def sqlite_busy(error):
     if not isinstance(error, sqlite3.OperationalError):
         return False
@@ -1764,16 +1781,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if db.execute(
             "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
         ).fetchone():
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_insert")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_update")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_delete")
             def stage_event_resource(agent_id):
                 if isinstance(agent_id, str) and agent_id:
                     self._stage_event_resources(db, agent_id)
 
+            def stage_transcript_resource(agent_id, event_kind):
+                if isinstance(agent_id, str) and agent_id and event_kind == "user":
+                    self._stage_transcript_resource(db, agent_id)
+
             db.create_function("studio_stage_event_resource", 1, stage_event_resource)
+            db.create_function("studio_stage_transcript_resource", 2, stage_transcript_resource)
             db.execute("""
                 CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_insert
                 AFTER INSERT ON main.runtime_events
                 BEGIN
                   SELECT studio_stage_event_resource(NEW.agent);
+                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
                 END;
             """)
             db.execute("""
@@ -1787,6 +1813,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 BEGIN
                   SELECT studio_stage_event_resource(OLD.agent);
                   SELECT studio_stage_event_resource(NEW.agent);
+                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
+                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
                 END;
             """)
             db.execute("""
@@ -1794,7 +1822,35 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 AFTER DELETE ON main.runtime_events
                 BEGIN
                   SELECT studio_stage_event_resource(OLD.agent);
+                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
                 END;
+            """)
+        if db.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_items'"
+        ).fetchone():
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_insert")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_update")
+            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_delete")
+            db.create_function(
+                "studio_stage_item_transcript",
+                1,
+                lambda agent_id: self._stage_transcript_resource(db, agent_id)
+                if isinstance(agent_id, str) and agent_id else None,
+            )
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_insert
+                AFTER INSERT ON main.runtime_items
+                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_update
+                AFTER UPDATE ON main.runtime_items WHEN OLD.record IS NOT NEW.record
+                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER studio_resource_item_delete
+                AFTER DELETE ON main.runtime_items
+                BEGIN SELECT studio_stage_item_transcript(OLD.agent); END;
             """)
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
@@ -1888,6 +1944,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._stage_resource_change(
                 db, ResourceRef(ReceiptsResource(kind="receipts", agentId=agent_id))
             )
+
+    def _stage_transcript_resource(self, db, agent_id: str) -> None:
+        from studio_api.sync.resources.models import ResourceRef, TranscriptResource
+
+        self._stage_resource_change(
+            db, ResourceRef(TranscriptResource(kind="transcript", agentId=agent_id))
+        )
 
     def _stage_team_task_resources(self, db, agent_id: str) -> None:
         row = db.execute(
@@ -2528,6 +2591,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
             if table == "agents":
                 agent_id = str(record["id"])
+                if transcript_agent_resource_changed(previous, record):
+                    self._stage_transcript_resource(db, agent_id)
                 if workspace_agent_resource_changed(previous, record):
                     self._stage_resource_change(
                         db, ResourceRef(WorkspaceResource(kind="workspace", agentId=agent_id))
@@ -2551,6 +2616,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if value
                 }:
                     self._stage_team_task_resources(db, owner)
+                    # Transcript items can project the durable task status as toolStatus.
+                    self._stage_transcript_resource(db, owner)
             elif table == "rooms":
                 self._stage_resource_change(
                     db, ResourceRef(RoomResource(kind="room", roomId=str(record["id"])))
@@ -2575,11 +2642,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local = self.__dict__.get("_callback_db")
             db = getattr(local, "resource_db", None) if local else None
         if db is not None and publish_resource:
-            from studio_api.sync.resources.models import ResourceRef, TranscriptResource
-
-            self._stage_resource_change(
-                db, ResourceRef(TranscriptResource(kind="transcript", agentId=str(key)))
-            )
+            self._stage_transcript_resource(db, str(key))
         with self.ui_condition:
             self.ui_revisions[key] = self.ui_revisions.get(key, 0) + 1
             self.ui_condition.notify_all()

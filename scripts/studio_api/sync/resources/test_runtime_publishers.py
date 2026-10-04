@@ -20,6 +20,7 @@ from codex_runtime import (
     AppServer,
     MAX_STAGED_RESOURCE_CHANGES,
     Runtime,
+    transcript_agent_resource_changed,
     TokenRateObservation,
     workspace_agent_resource_changed,
 )
@@ -42,6 +43,186 @@ from studio_api.sync.resources.models import (
 
 
 class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
+    def test_transcript_projection_changes_publish_but_maintenance_writes_stay_quiet(self) -> None:
+        before = {
+            "id": "agent-a", "status": "running", "activity": {"phase": "tool"},
+            "inFlight": True, "contextUsage": {"used": 10}, "autoWake": True,
+            "turnId": "turn-a", "threadId": "thread-a", "updated": 1,
+        }
+        self.assertTrue(transcript_agent_resource_changed(before, {**before, "status": "interrupted"}))
+        self.assertFalse(transcript_agent_resource_changed(before, {**before, "updated": 2, "tokensUsed": 9}))
+
+    async def test_agent_put_publishes_transcript_status_only_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
+            runtime.ui_revisions = {}
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            local = threading.local()
+            runtime._callback_db = local
+            connection = sqlite3.connect(":memory:")
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
+            prior = {
+                "id": "agent-a", "name": "Worker", "status": "running",
+                "activity": {"phase": "tool"}, "inFlight": True, "autoWake": True,
+                "threadId": "thread-a", "turnId": "turn-a", "rootId": "agent-a",
+            }
+            connection.execute("INSERT INTO runtime_agents VALUES (?,?)", ("agent-a", json.dumps(prior)))
+            runtime.agent_entity_view = lambda _db, record: record
+            runtime.chat_rooms = lambda *_args, **_kwargs: []
+            runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None
+            staged = {connection: {}}
+            overflowed = {connection: False}
+            local.after_commit_resources = staged
+            local.after_commit_resource_overflow = overflowed
+
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                with (
+                    patch("codex_sync_entities.put"),
+                    patch("codex_sync_entities.sync_task_agent_change"),
+                    patch("codex_sync_entities.sync_monitor_agent_change"),
+                    patch("codex_execution.needs_record", return_value=False),
+                ):
+                    runtime.put(connection, "agents", {**prior, "status": "interrupted"})
+                runtime._queue_staged_resource_changes(staged, overflowed, connection)
+                runtime._publish_committed_resource_changes()
+                event = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(event)
+
+                for terminal_status in ("failed", "paused"):
+                    current = json.loads(connection.execute(
+                        "SELECT record FROM runtime_agents WHERE id='agent-a'"
+                    ).fetchone()[0])
+                    staged[connection] = {}
+                    with patch("codex_sync_entities.put"):
+                        with patch("codex_execution.needs_record", return_value=False):
+                            runtime.put(connection, "agents", {**current, "status": terminal_status})
+                    runtime._queue_staged_resource_changes(staged, overflowed, connection)
+                    runtime._publish_committed_resource_changes()
+                    self.assertIsNotNone(await subscription.next_event(timeout=1), terminal_status)
+
+                staged[connection] = {}
+                current = json.loads(connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id='agent-a'"
+                ).fetchone()[0])
+                with (
+                    patch("codex_sync_entities.put"),
+                    patch("codex_execution.needs_record", return_value=False),
+                ):
+                    runtime.put(connection, "agents", {
+                        **current, "updated": 2, "tokensUsed": 99,
+                    })
+                runtime._queue_staged_resource_changes(staged, overflowed, connection)
+                runtime._publish_committed_resource_changes()
+                self.assertIsNone(await subscription.next_event(timeout=0.02))
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+                connection.close()
+
+    async def test_disconnect_without_stream_buffer_invalidates_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
+            runtime.ui_revisions = {}
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            runtime.connection_ids = {"default": "connection-a"}
+            runtime.offline_accounts = set()
+            runtime.offline = False
+            runtime.loaded = {"agent-a"}
+            runtime.servers = {}
+            runtime.preparations = {}
+            local = threading.local()
+            runtime._callback_db = local
+            connection = sqlite3.connect(":memory:")
+            connection.row_factory = sqlite3.Row
+            connection.executescript("""
+                CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT);
+                CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
+                    status TEXT, error TEXT, created REAL, epoch INTEGER, turn_id TEXT);
+                CREATE TABLE runtime_tasks(record TEXT);
+                CREATE TABLE runtime_monitors(record TEXT);
+            """)
+            agent = {
+                "id": "agent-a", "rootId": "agent-a", "status": "running",
+                "autoWake": True, "inFlight": True, "threadId": "thread-a", "turnId": "turn-a",
+                "epoch": 1, "accountKey": "default", "name": "Worker",
+            }
+            connection.execute("INSERT INTO runtime_agents VALUES (?,?)", ("agent-a", json.dumps(agent)))
+
+            @contextmanager
+            def database():
+                staged = {connection: {}}
+                overflow = {connection: False}
+                local.after_commit_resources = staged
+                local.after_commit_resource_overflow = overflow
+                try:
+                    yield connection
+                    connection.commit()
+                    runtime._queue_staged_resource_changes(staged, overflow, connection)
+                except BaseException:
+                    connection.rollback()
+                    raise
+
+            runtime.db = database
+            runtime.records = lambda _db, table=None: [agent] if table == "agents" else []
+            runtime.retire_legacy_steer = lambda *_args: None
+            runtime.capacity_restart = lambda *_args: None
+            runtime.mark_agent_records_changed = lambda *_args: None
+            runtime.agent_entity_view = lambda _db, record: record
+            runtime.chat_rooms = lambda *_args, **_kwargs: []
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            transcript = hub.subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                with (
+                    patch("codex_sync_entities.put"),
+                    patch("codex_sync_entities.sync_task_agent_change"),
+                    patch("codex_sync_entities.sync_monitor_agent_change"),
+                    patch("codex_execution.needs_record", return_value=False),
+                ):
+                    runtime.disconnected("default", "connection-a")
+                runtime._publish_committed_resource_changes()
+                event = await transcript.next_event(timeout=1)
+                self.assertIsNotNone(event)
+                self.assertEqual(
+                    event.resources,
+                    [ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))],
+                )
+                stored = json.loads(connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id='agent-a'"
+                ).fetchone()[0])
+                self.assertEqual(stored["status"], "interrupted")
+            finally:
+                transcript.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+                connection.close()
+
     def test_agent_telemetry_does_not_invalidate_workspace_projection(self) -> None:
         before = {
             "id": "agent-a", "status": "running", "tokensUsed": 10,
@@ -200,6 +381,10 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 [ResourceRef(TranscriptResource(kind="transcript", agentId="worker-b"))],
                 loop=asyncio.get_running_loop(),
             )
+            worker_transcript_subscription = hub.subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId="worker-a"))],
+                loop=asyncio.get_running_loop(),
+            )
             try:
                 with (
                     patch("codex_sync_entities.put"),
@@ -220,6 +405,8 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                         event.resources,
                         [ResourceRef(TasksResource(kind="tasks", agentId=agent_id))],
                     )
+                # The transcript endpoint derives linked toolStatus from task records.
+                self.assertIsNotNone(await worker_transcript_subscription.next_event(timeout=1))
                 with (
                     patch("codex_sync_entities.put"),
                     patch("codex_sync_entities.sync_task_agent_change"),
@@ -234,11 +421,12 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     event = await subscription.next_event(timeout=1)
                     self.assertIsNotNone(event)
                 self.assertIsNone(await subscriptions[2].next_event(timeout=0.01))
-                self.assertIsNone(await transcript_subscription.next_event(timeout=0.01))
+                self.assertIsNotNone(await transcript_subscription.next_event(timeout=1))
             finally:
                 for subscription in subscriptions:
                     subscription.close()
                 transcript_subscription.close()
+                worker_transcript_subscription.close()
                 unregister_resource_hub(state_dir, hub)
                 hub.close()
                 connection.close()
