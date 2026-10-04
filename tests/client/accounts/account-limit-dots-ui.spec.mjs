@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
 test("account limit dots ui", async ({ browser: runnerBrowser }) => {
+  // Four viewport and color scheme passes share one fixture backend.
+  test.setTimeout(180_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -33,7 +35,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
     );
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const now = Math.floor(Date.now() / 1000);
-    // Each account except "outside" serves a member of this chat team.
     const teamKeys = [
       "yellow",
       "red",
@@ -42,18 +43,32 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       "signedout",
       "no-weekly",
     ];
-    const teamAccount = (agent) => {
-      if (agent.id === lead.id) return "default";
-      if (agent.rootId !== lead.id) return agent.accountKey;
-      const workers = initial.threads.filter((item) => item.rootId === lead.id);
-      return teamKeys[
-        workers.findIndex((item) => item.id === agent.id) % teamKeys.length
-      ];
-    };
+    // Working subagents bring the team accounts. A finished subagent keeps
+    // "outside", an account this chat no longer uses.
+    const workers = initial.threads.filter(
+      (item) => item.rootId === lead.id && item.id !== lead.id,
+    );
     const withTeamAccounts = (agents) =>
       agents?.forEach((agent) => {
-        const key = teamAccount(agent);
-        if (key) agent.accountKey = key;
+        if (agent.id === lead.id) {
+          agent.accountKey = "default";
+          return;
+        }
+        const index = workers.findIndex((item) => item.id === agent.id);
+        if (index < 0) return;
+        if (index < teamKeys.length) {
+          Object.assign(agent, {
+            accountKey: teamKeys[index],
+            status: "running",
+            inFlight: true,
+          });
+        } else if (index === teamKeys.length) {
+          Object.assign(agent, {
+            accountKey: "outside",
+            status: "completed",
+            inFlight: false,
+          });
+        }
       });
     const accounts = [
       {
