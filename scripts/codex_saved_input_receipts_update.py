@@ -6,9 +6,10 @@ from pathlib import Path
 import sys
 from codex_source import signature, source_function
 
-HASHES = {'codex_context_repair': 'a64767cf79606a4e8f3ff543dda32aa6df3d0b234f290e0c1e6dee4d4b201f97', 'codex_native_input_projection': '845f65c087ddb50e66461dbc725ac1872d2d0f2553c1605a302ab060559a51e2', 'codex_historical_input_receipts': 'a9efd7b7c6c59bd3cc793e3a3b9089e4c1010f7d869ed587de009d5022e986e5'}
-BEFORE = '761236ec797e70c42714512333c43a9ae2daadd41ef2a1ff6d898fc610140840'
-AFTER = 'f0d29697c0fba3ac2dd6feef9f54971c25427dda3dee06199dbfc2cab81fbfca'
+HASHES = {'codex_context_repair': 'fe42cbfbe5df4059f23947f4b73a224d636cf28aaf572cc3a9d6f9b1bc4bd784', 'codex_native_input_projection': '845f65c087ddb50e66461dbc725ac1872d2d0f2553c1605a302ab060559a51e2', 'codex_historical_input_receipts': 'a9efd7b7c6c59bd3cc793e3a3b9089e4c1010f7d869ed587de009d5022e986e5'}
+BEFORE = {'761236ec797e70c42714512333c43a9ae2daadd41ef2a1ff6d898fc610140840',
+          'f0d29697c0fba3ac2dd6feef9f54971c25427dda3dee06199dbfc2cab81fbfca'}
+AFTER = '6418a8b0d2584623f4c8fd25ee6fa4321cc0be8dc300a0535caa10bd9a15e1be'
 DEPENDENCIES = {'_identity': '80fa0af556ae6361072cae6d76af1ed7deedcbda905380d3639ec84e370f2da4', '_unsubmitted': 'cc91cb6045b9e3351683147bee5be3307cd4d755f045402a9d1d99e7ea506749', '_held_restart_marker': '5a0f047e71f9cec27e95da3a3abd046e60afbd43b6b7a78c24122d1fa290ea9a', '_historical_input_wait': '74f6cc9c8e86caaf802a454605d95f475ac1565a5e9167b4df381b31abf8cae3', '_historical_input_rows': '44d7ec4f288bda864bb5f5fae1ba69214ee7afc6cf0c92bbfec8452834cb19ef', '_accepted_input_turn': '742145d694a26e9819f112dcac600d1e94f01e8f1aefe48b44258baf268c5fe8'}
 
 
@@ -46,7 +47,7 @@ def apply(runtime):
     with runtime.lock:
         current = context.recover_unconfirmed_inputs
         actual = signature(current)
-        if actual not in {BEFORE, AFTER}:
+        if actual not in BEFORE | {AFTER}:
             raise RuntimeError('The running input receipt function differs')
         for name, expected in DEPENDENCIES.items():
             if signature(getattr(context, name)) != expected:

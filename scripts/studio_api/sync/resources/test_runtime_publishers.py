@@ -39,6 +39,7 @@ from studio_api.sync.resources.models import (
     StateResource,
     TranscriptResource,
     TasksResource,
+    WorktreeDiskResource,
 )
 
 
@@ -128,6 +129,76 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime._queue_staged_resource_changes(staged, overflowed, connection)
                 runtime._publish_committed_resource_changes()
                 self.assertIsNone(await subscription.next_event(timeout=0.02))
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+                connection.close()
+
+    async def test_image_workspace_ready_and_collect_invalidate_disk_after_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
+            runtime.ui_revisions = {}
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            local = threading.local()
+            runtime._callback_db = local
+            connection = sqlite3.connect(":memory:")
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
+            prior = {
+                "id": "agent-a", "name": "Worker", "status": "running",
+                "activity": {"phase": "tool"}, "inFlight": True, "autoWake": True,
+                "threadId": "thread-a", "turnId": "turn-a", "rootId": "agent-a",
+                "imageWorkspace": True, "imageWorkspaceReady": False,
+                "imageWorkspacePhase": "read_only",
+            }
+            connection.execute("INSERT INTO runtime_agents VALUES (?,?)", ("agent-a", json.dumps(prior)))
+            runtime.agent_entity_view = lambda _db, record: record
+            runtime.chat_rooms = lambda *_args, **_kwargs: []
+            runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None
+            staged = {connection: {}}
+            overflowed = {connection: False}
+            local.after_commit_resources = staged
+            local.after_commit_resource_overflow = overflowed
+
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(WorktreeDiskResource(kind="worktree-disk", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                current = prior
+                for update, expect_event in (
+                    ({"imageWorkspaceReady": True, "imageWorkspacePhase": "ready"}, True),
+                    ({"imageWorkspaceReady": True, "imageWorkspacePhase": "ready"}, False),
+                    ({"updated": 2, "tokensUsed": 99}, False),
+                    ({"imageWorkspaceCollect": {"branch": "saved-worker", "commit": "abc"}}, True),
+                ):
+                    staged[connection] = {}
+                    with (
+                        patch("codex_sync_entities.put"),
+                        patch("codex_execution.needs_record", return_value=False),
+                    ):
+                        runtime.put(connection, "agents", {**current, **update})
+                    self.assertIsNone(await subscription.next_event(timeout=0.01))
+                    connection.commit()
+                    runtime._queue_staged_resource_changes(staged, overflowed, connection)
+                    runtime._publish_committed_resource_changes()
+                    event = await subscription.next_event(timeout=0.02)
+                    self.assertEqual(event is not None, expect_event, update)
+                    if event is not None:
+                        self.assertEqual(event.resources, [ResourceRef(
+                            WorktreeDiskResource(kind="worktree-disk", agentId="agent-a")
+                        )])
+                    current = {**current, **update}
             finally:
                 subscription.close()
                 unregister_resource_hub(state_dir, hub)

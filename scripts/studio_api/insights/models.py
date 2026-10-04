@@ -17,6 +17,8 @@ class AnalyticsScope(ContractStrEnum):
 
 class DiskMeasure(ContractStrEnum):
     PRIVATE_ON_APFS = "private on APFS"
+    PRIVATE_WORKSPACE_BYTES = "private workspace bytes"
+    PRIVATE_BASE_BYTES = "private base bytes"
     ALLOCATED_BLOCKS = "allocated blocks"
     MIXED_MEASURES = "mixed measures"
     UNMEASURED = "unmeasured"
@@ -579,6 +581,9 @@ class WorktreeDiskWorker(ContractModel):
 class WorktreeDiskResponse(ResponseModel):
     workers: dict[str, WorktreeDiskWorker]
     totalBytes: int
+    baseBytes: int
+    storageBytes: int
+    bases: dict[str, WorktreeDiskWorker]
     limitBytes: int
     warning: bool
     scanning: bool

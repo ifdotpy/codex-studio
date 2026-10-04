@@ -6,6 +6,7 @@ import { nativeErrorView } from "../../nativeErrors";
 import { shortModel } from "./ExecutionSettings";
 import {
   agentErrorLabel,
+  agentStopReason,
   nativeReleaseLabel,
   statusLabel,
   type Agent,
@@ -97,6 +98,7 @@ export default function WorkerCard({
   const overview = agent.overview;
   const errorView = nativeErrorView(agent.error);
   const error = agent.error ? agentErrorLabel(agent) : "";
+  const stopReason = agentStopReason(agent);
   const errorSummary =
     /worktree[\s\S]*add[\s\S]*(?:exit status|exit code|failed)/i.test(error)
       ? "Could not prepare the project folder."
@@ -165,7 +167,11 @@ export default function WorkerCard({
             </span>
             <WorkerDiskLabel agent={agent} disk={disk} />
             {Boolean(agent.error) && (
-              <span className="worker-error">{errorSummary}</span>
+              <span
+                className={stopReason ? "worker-stop-reason" : "worker-error"}
+              >
+                {stopReason || errorSummary}
+              </span>
             )}
           </span>
         </UnstyledButton>
@@ -194,8 +200,12 @@ export default function WorkerCard({
         )}
       </div>
       {Boolean(agent.error) && (
-        <details className="worker-error-details">
-          <summary>Error details</summary>
+        <details
+          className={
+            stopReason ? "worker-stop-details" : "worker-error-details"
+          }
+        >
+          <summary>{stopReason ? "Stop details" : "Error details"}</summary>
           <pre>{errorView.details || errorView.message}</pre>
         </details>
       )}

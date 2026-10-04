@@ -15,6 +15,28 @@ import unittest
 
 
 class TestStartupIsolation(unittest.TestCase):
+    def test_shared_fixture_replaces_inherited_workspace_store(self):
+        env = os.environ.copy()
+        env["CODEX_WORKSPACE_STORE"] = "/default/workspace/store"
+        env.pop("CODEX_AGENTS_TEST_WORKSPACE_STORE", None)
+        helper = Path(__file__).resolve().with_name("test_isolation.py")
+        code = (
+            "import json, os, runpy; runpy.run_path(" + repr(str(helper)) + "); "
+            "print(json.dumps(os.environ['CODEX_WORKSPACE_STORE']))"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", code],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        workspace_store = json.loads(proc.stdout)
+        self.assertNotEqual(workspace_store, "/default/workspace/store")
+        self.assertEqual(Path(workspace_store).parent, Path(tempfile.gettempdir()))
+        self.assertTrue(Path(workspace_store).name.startswith("studio-test-workspaces-"))
+
     def test_every_python_contract_imports_the_isolation_helper(self):
         tests = Path(__file__).resolve().parent
         missing = []

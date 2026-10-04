@@ -25,6 +25,58 @@ spec.loader.exec_module(f)
 
 
 class SessionCostScanContract(unittest.TestCase):
+    def test_claude_receipt_exclusion_keeps_account_and_thread_with_one_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            path = root / 'canvas.sqlite3'
+            profile = root / 'claude'
+            project = profile / 'projects' / 'sample'
+            project.mkdir(parents=True)
+            (project / 'thread.jsonl').write_text(json.dumps({
+                'type': 'assistant', 'timestamp': '2026-10-04T12:00:00Z',
+                'message': {'id': 'receipt', 'model': 'claude-opus-5-5', 'usage': {
+                    'input_tokens': 100, 'cache_read_input_tokens': 20,
+                    'cache_creation_input_tokens': 30, 'output_tokens': 10}}}) + '\n')
+            excluded = 0
+            with closing(sqlite3.connect(path)) as db, db:
+                db.executescript('''
+                  CREATE TABLE analytics_agents(id TEXT PRIMARY KEY,record TEXT);
+                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+                  CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,agent TEXT,root TEXT,thread TEXT,turn TEXT,at REAL,record TEXT);
+                  CREATE INDEX usage_root ON analytics_usage(root,seq);
+                ''')
+                agent = {'rootId': 'lead', 'accountKey': 'claude-account',
+                         'provider': 'claude', 'threadId': 'thread'}
+                db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps(agent),))
+                for index in range(1000):
+                    account = ('claude-account', 'other-account', None)[index % 3]
+                    thread = 'other-thread' if index % 5 == 0 else 'thread'
+                    response = 'other-response' if index % 7 == 0 else 'receipt'
+                    record = {'accountKey': account, 'model': 'gpt-6-luna',
+                              'responseId': response, 'delta': {'inputTokens': 1000,
+                                  'cachedInputTokens': 0, 'cacheWriteInputTokens': 0,
+                                  'outputTokens': 0}, 'unrelated': 'x' * 4096}
+                    excluded += account == 'claude-account' and thread == 'thread' and response == 'receipt'
+                    db.execute('INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?)',
+                               (index + 1, 'lead', 'lead', thread, str(index), index, json.dumps(record)))
+            reader = codex_session_costs.SessionCostReader(path, f.FixedPricing(), {
+                'claude-account': {'provider': 'claude', 'home': str(profile)}})
+            statements = []
+            connect = reader._connect
+            def traced():
+                db = connect()
+                db.set_trace_callback(statements.append)
+                return db
+            reader._connect = traced
+            result = reader._compute('lead', 'lead')
+            self.assertEqual(result['pricedSamples'], 1000 - excluded + 1)
+            self.assertAlmostEqual(result['totalUSD'], (1000 - excluded) * .0001 + .00028)
+            self.assertAlmostEqual(result['breakdown']['providers']['anthropic'], .00028)
+            self.assertAlmostEqual(result['breakdown']['providers']['openai'], (1000 - excluded) * .0001)
+            self.assertEqual(result['unknownModels'], [])
+            scans = [sql for sql in statements if 'FROM analytics_usage' in sql and 'record' in sql]
+            self.assertEqual(len(scans), 1, 'Claude receipt exclusion and projection must share the history read')
+
     def test_compact_history_preserves_legacy_group_rules(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'canvas.sqlite3'
@@ -71,7 +123,7 @@ class SessionCostScanContract(unittest.TestCase):
             self.assertEqual(result['unknownModels'],
                              ['Unknown model', 'claude-opus-5-5', 'gpt-6-luna', 'unknown-model'])
             scans = [sql for sql in statements if 'FROM analytics_usage' in sql and 'record' in sql]
-            self.assertLessEqual(len(scans), 2, 'JSON history is read only for log exclusion and the compact projection')
+            self.assertEqual(len(scans), 1, 'JSON history is read once for receipt exclusion and the compact projection')
             self.assertEqual(sum('CREATE TEMP TABLE session_cost_usage' in sql for sql in statements), 1)
             # Reuse a frozen baseline only when supplied for a paired source check.
             baseline = os.environ.get('STUDIO_COST_BASELINE')

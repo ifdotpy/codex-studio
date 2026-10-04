@@ -587,7 +587,10 @@ class SessionCostReader:
                    CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
               FROM analytics_usage
              WHERE root=? AND NOT EXISTS
-                   (SELECT 1 FROM session_cost_excluded x WHERE x.seq=analytics_usage.seq)
+                   (SELECT 1 FROM session_cost_claude_messages l
+                     WHERE l.account_key IS json_extract(analytics_usage.record,'$.accountKey')
+                       AND l.thread_id IS analytics_usage.thread
+                       AND l.response_id IS json_extract(analytics_usage.record,'$.responseId'))
         """, (root,))
         status = db.execute("SELECT MAX(model IS NULL),MAX(NOT has_response) FROM session_cost_usage").fetchone()
         missing_models, missing_responses = (bool(value) for value in status)
@@ -695,20 +698,6 @@ class SessionCostReader:
             db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
             db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
                            claude_messages.keys())
-            db.execute("CREATE TEMP TABLE session_cost_excluded (seq INTEGER PRIMARY KEY)")
-            try:
-                db.execute("""
-                  INSERT INTO session_cost_excluded
-                  SELECT u.seq FROM analytics_usage u
-                   WHERE u.root=? AND EXISTS (
-                     SELECT 1 FROM session_cost_claude_messages l
-                      WHERE l.account_key IS json_extract(u.record,'$.accountKey')
-                        AND l.thread_id IS u.thread
-                        AND l.response_id IS json_extract(u.record,'$.responseId'))
-                """, (root,))
-            except sqlite3.OperationalError as error:
-                if "no such table: analytics_usage" not in str(error):
-                    raise
             try:
                 groups = self._cost_usage_groups(db, root)
             except sqlite3.OperationalError as error:

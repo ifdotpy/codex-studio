@@ -337,6 +337,9 @@ class InsightsRouterTests(unittest.TestCase):
             snapshot=lambda ids: {
                 "workers": {key: {"state": "ready", "bytes": 3, "measure": "allocated blocks"} for key in ids},
                 "totalBytes": 3,
+                "baseBytes": 0,
+                "storageBytes": 3,
+                "bases": {},
                 "limitBytes": 100,
                 "warning": False,
                 "scanning": False,
@@ -349,6 +352,7 @@ class InsightsRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(set(response.json()["workers"]), {"worker-a", "worker-b"})
+        self.assertEqual(response.json()["storageBytes"], 3)
         get_scanner.assert_called_once_with(Path("/state"))
 
     def test_export_stream_preserves_legacy_attachment_headers_and_json(self) -> None:

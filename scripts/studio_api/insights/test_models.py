@@ -368,6 +368,15 @@ class InsightsModelTests(unittest.TestCase):
                     },
                 },
                 "totalBytes": 42,
+                "baseBytes": 11,
+                "storageBytes": 53,
+                "bases": {
+                    "/repo": {
+                        "state": "ready",
+                        "bytes": 11,
+                        "measure": "private base bytes",
+                    },
+                },
                 "limitBytes": 100,
                 "warning": False,
                 "scanning": False,
@@ -378,11 +387,17 @@ class InsightsModelTests(unittest.TestCase):
         self.assertEqual(result.workers["worker-a"].bytes, 42)
         self.assertEqual(result.workers["worker-a"].scannedAt, 5.0)
         self.assertEqual(result.workers["worker-b"].state.value, "unavailable")
+        self.assertEqual(result.baseBytes, 11)
+        self.assertEqual(result.storageBytes, 53)
+        self.assertEqual(result.bases["/repo"].bytes, 11)
         with self.assertRaises(ValidationError):
             WorktreeDiskResponse.model_validate(
                 {
                     "workers": {},
                     "totalBytes": 0,
+                    "baseBytes": 0,
+                    "storageBytes": 0,
+                    "bases": {},
                     "limitBytes": 0,
                     "warning": False,
                     "scanning": False,

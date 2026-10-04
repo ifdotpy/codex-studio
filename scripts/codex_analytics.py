@@ -504,11 +504,13 @@ class AnalyticsMixin:
         turn = p.get('turnId') or (p.get('turn') or {}).get('id') or a.get('turnId')
         meta.update(threadId=p.get('threadId') or a.get('threadId'), turnId=turn)
         if method == 'thread/tokenUsage/updated':
-            generation = db.execute("SELECT value FROM analytics_meta WHERE key='usageGeneration'").fetchone()
-            generation = int(generation[0]) + 1 if generation else 1
-            db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(generation),))
-            db.execute("INSERT INTO analytics_usage_roots(root,generation) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",
-                       (meta['rootId'],))
+            def advance_usage_generation():
+                # Cost history changes with saved usage, not duplicate notices.
+                generation = db.execute("SELECT value FROM analytics_meta WHERE key='usageGeneration'").fetchone()
+                generation = int(generation[0]) + 1 if generation else 1
+                db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(generation),))
+                db.execute("INSERT INTO analytics_usage_roots(root,generation) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",
+                           (meta['rootId'],))
             if turn:
                 turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
                 known = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
@@ -542,6 +544,7 @@ class AnalyticsMixin:
                 db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) '
                            'ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record',
                            (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record)))
+                advance_usage_generation()
                 return captured_tokens
             # Totals identify a request across native notices and rollout records.
             # The provider response id distinguishes real zero-token responses.
@@ -585,6 +588,7 @@ class AnalyticsMixin:
                                     counterDomain='response' if p.get('rawTokenUsageRecord') else 'nativeNotice',
                                     cumulativeDelta={k: None for k in TOKEN_FIELDS}, reset=None, baselineMissing=True)
                     db.execute('UPDATE analytics_usage SET at=?,record=? WHERE id=?', (at, json.dumps(existing), key))
+                    advance_usage_generation()
                 return captured_tokens
             counter_domain = 'response' if p.get('rawTokenUsageRecord') else 'nativeNotice'
             prior = db.execute("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND at<=? AND json_extract(record,'$.counterDomain')=? ORDER BY at DESC,seq DESC LIMIT 1", (a['id'], meta['threadId'], at, counter_domain)).fetchone()
@@ -600,8 +604,10 @@ class AnalyticsMixin:
                       'fingerprint': fingerprint, 'responseId': response_id,
                       'rawTokenUsageRecord': p.get('rawTokenUsageRecord'), 'turnUsage': p.get('turnUsage'),
                       'requestUsage': p.get('requestUsage')}
-            db.execute('INSERT OR IGNORE INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
-                       (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record)))
+            inserted = db.execute('INSERT OR IGNORE INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?)',
+                                  (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record))).rowcount
+            if inserted:
+                advance_usage_generation()
             return captured_tokens
         if turn and method in {'turn/started', 'turn/completed', 'item/agentMessage/delta', 'item/started', 'item/completed'}:
             key = ':'.join((a['id'], str(meta['threadId']), str(turn)))

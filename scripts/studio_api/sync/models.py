@@ -593,6 +593,12 @@ class AgentEntityDto(ContractModel):
     cwd: str | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None
+    imageWorkspace: bool | None = None
+    imageWorkspaceReady: bool | None = None
+    imageWorkspacePhase: str | None = None
+    imageWorkspaceError: str | None = None
+    imageWorkspaceRepo: str | None = None
+    imageWorkspaceBaseRepo: str | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None
@@ -678,6 +684,14 @@ class TurnRecoveryDto(ContractModel):
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
+    imageWorkspaceRelative: str | None = None
+    imageWorkspaceStartCommit: str | None = None
+    imageWorkspaceSnapshotCommit: str | None = None
+    imageWorkspaceMount: str | None = None
+    imageWorkspaceNoticeSent: str | None = None
+    imageWorkspaceNoticeText: str | None = None
+    imageWorkspaceNoticeError: str | None = None
+    imageWorkspaceCollect: dict[str, JsonValue] | None = None
     startOutcomeHold: StartOutcomeHoldDto | None = None
     turnRecovery: TurnRecoveryDto | None = None
 

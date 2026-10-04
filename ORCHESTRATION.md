@@ -509,18 +509,28 @@ maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
 `orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
-is the lead's folder. An implementer receives a separate Git worktree of the repository that
-contains `cwd`: `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
+is the lead's folder. On supported platforms, an implementer receives an image workspace
+for the repository that contains `cwd`. The lead's Multi agent switch starts the repository
+base build. Until the base is ready, a new implementer starts in `cwd` with read-only
+permissions, whatever the YOLO setting. Studio then creates the image workspace, switches
+the worker to its project path with write access, and sends one notice with the path and
+snapshot commit. If the platform does not support image workspaces, Studio uses a Git
+worktree at `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
 An agent can set `base_ref` to a branch, tag, or commit. Otherwise Studio uses the closest
 project's **Default worker base ref**, then the repository HEAD. Studio resolves and records
 the commit when it creates the worker. Retries use the same saved commit. The result and the
 worker's first input report the commit and its distance behind main when it is behind.
-Parent changes that are not committed are absent unless their commit is selected.
+With no selected base ref, the image workspace includes the parent's current uncommitted changes
+in its snapshot commit. Collect leaves that snapshot commit out of `codex-agent/<agent-id>`.
+An explicit `base_ref` or project default starts from that commit and does not include those edits.
 Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
+After each image workspace turn, Studio saves a checkpoint and collects the worker branch as
+`codex-agent/<agent-id>` in the user's repository. The lead merges it as usual. A collect
+conflict appears in the worker result with the raw branch reference.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
 The lead owns review and integration. The runtime never merges worker changes.
-The archive action can remove a clean worker worktree after it saves the HEAD.
+The archive action collects and removes an image workspace, or removes a safe Git worktree.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
@@ -870,20 +880,20 @@ Archive requires a reason. It hides a worker through the existing tombstone filt
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
 no operation can still run. A command with a completed turn and a missing process
-is marked lost; its outcome stays unknown. A clean, registered Studio worktree is
-removed after an archive ref saves its HEAD. Branch changes and detached HEAD are
-allowed. Dirty and nested worktrees stay with an exact reason. Restore recreates
-the saved HEAD and uses the saved branch when it still points to that commit.
-Otherwise restore uses detached HEAD. History and native threads remain.
+is marked lost; its outcome stays unknown. Studio collects and removes image
+workspaces after it saves the worker branch in the user's repository. A Git
+worktree is removed only when Studio can verify its registration and archive ref.
+Dirty and nested worktrees stay with an exact reason. Restore recreates the saved
+image workspace or Git worktree from its saved branch. History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
 `archive_finished` checks completed, failed, interrupted, and stopped paused
-descendants. It archives workers with safe worktrees or no worktree. The result reports
+descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
-The lead sees one reminder when three or more finished workers hold worktrees.
-`maintenance_report` lists worktrees of deleted or archived agents without
-removing them.
+The lead sees one reminder when three or more finished workers hold workspaces.
+`maintenance_report` lists old image workspaces, bases, and Git worktrees without
+removing them. Disk reports include workspace and base sizes.
 
 Agent tools accept a unique ID prefix of at least eight characters among agents
 visible to the caller. Ambiguous and unknown IDs return candidate full IDs.

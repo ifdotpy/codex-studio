@@ -362,17 +362,18 @@ class Child:
             # FULL synchronous commit is the acceptance point. Never write child
             # stdin before this commit succeeds.
             remote_id = native_id
-            if "method" in message and isinstance(native_id, int):
+            rpc_request = "method" in message and isinstance(native_id, int)
+            if rpc_request:
                 row = db.execute("SELECT rpc_sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                 remote_id = row[0] + 1
                 message = {**message, "id": remote_id}
                 body = json.dumps(message, separators=(",", ":"))
                 db.execute("UPDATE handles SET rpc_sequence=? WHERE id=?", (remote_id, self.handle))
-            if not isinstance(native_id, int):
+            else:
                 row = db.execute("SELECT generation FROM handles WHERE id=?", (self.handle,)).fetchone()
             db.execute("INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) "
                        "VALUES (?,?,?,?,?,?)",
-                       (self.handle, operation_id, digest, remote_id, time.time(), row[1] if isinstance(native_id, int) else row[0]))
+                       (self.handle, operation_id, digest, remote_id, time.time(), row[1] if rpc_request else row[0]))
             db.commit()
             self.process.stdin.write(body + "\n")
             self.process.stdin.flush()
@@ -1049,10 +1050,13 @@ class ProcessProxy:
         method = request.get("method", "reply")
         params = request.get("params", {})
         identity = operation_id or request.get("operationId") or self._operation_identity(method, params, request)
-        result = self.call("write", operationId=identity, nativeId=request.get("id"), message=request)
-        self.last_durable_ms = result["durableMs"]
-        if result.get("remoteId") is not None and isinstance(request.get("id"), int):
-            self.remote_to_local[result["remoteId"]] = request["id"]
+        # A native reply can enter the journal before the write receipt returns.
+        # Publish its local ID before next_event can classify that reply.
+        with self.event_lock:
+            result = self.call("write", operationId=identity, nativeId=request.get("id"), message=request)
+            self.last_durable_ms = result["durableMs"]
+            if "method" in request and result.get("remoteId") is not None and isinstance(request.get("id"), int):
+                self.remote_to_local[result["remoteId"]] = request["id"]
         return result
 
     def _operation_identity(self, method, params, request):

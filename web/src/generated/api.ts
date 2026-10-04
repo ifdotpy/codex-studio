@@ -2537,6 +2537,18 @@ export interface components {
       hasUnread?: boolean | null;
       /** Id */
       id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean | null;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: string | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?: string | null;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3853,6 +3865,18 @@ export interface components {
       hasUnread?: boolean | null;
       /** Id */
       id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean | null;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: string | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?: string | null;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -5096,6 +5120,8 @@ export interface components {
      */
     DiskMeasure:
       | "private on APFS"
+      | "private workspace bytes"
+      | "private base bytes"
       | "allocated blocks"
       | "mixed measures"
       | "unmeasured";
@@ -9308,6 +9334,36 @@ export interface components {
       hasUnread?: boolean | null;
       /** Id */
       id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean | null;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecollect */
+      imageWorkspaceCollect?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: string | null;
+      /** Imageworkspacemount */
+      imageWorkspaceMount?: string | null;
+      /** Imageworkspacenoticeerror */
+      imageWorkspaceNoticeError?: string | null;
+      /** Imageworkspacenoticesent */
+      imageWorkspaceNoticeSent?: string | null;
+      /** Imageworkspacenoticetext */
+      imageWorkspaceNoticeText?: string | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?: string | null;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerelative */
+      imageWorkspaceRelative?: string | null;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: string | null;
+      /** Imageworkspacesnapshotcommit */
+      imageWorkspaceSnapshotCommit?: string | null;
+      /** Imageworkspacestartcommit */
+      imageWorkspaceStartCommit?: string | null;
       /** Importedfrom */
       importedFrom?: string | null;
       /** Inflight */
@@ -12110,6 +12166,12 @@ export interface components {
     WorktreeDiskResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Basebytes */
+      baseBytes: number;
+      /** Bases */
+      bases: {
+        [key: string]: components["schemas"]["WorktreeDiskWorker"];
+      };
       /** Error */
       error: string | null;
       /** Limitbytes */
@@ -12117,6 +12179,8 @@ export interface components {
       measure: components["schemas"]["DiskMeasure"];
       /** Scanning */
       scanning: boolean;
+      /** Storagebytes */
+      storageBytes: number;
       /** Totalbytes */
       totalBytes: number;
       /** Warning */

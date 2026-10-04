@@ -371,6 +371,10 @@ class WorkMixin:
         if not re.fullmatch(r'[0-9a-fA-F]{7,64}', revision):
             return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
         try:
+            prefix = []
+            if owner.get('imageWorkspaceReady'):
+                from codex_workspace_images import exec_prefix
+                prefix = exec_prefix()
             cwd = Path(owner['cwd']).resolve()
             repo_path = cwd
             if not cwd.exists():
@@ -378,15 +382,15 @@ class WorkMixin:
                 if worktree_root is None:
                     raise ValueError('The saved worker path is outside its Studio worktree')
                 repo_path = worktree_root.parent.parent.parent
-            repo = subprocess.run(['git', '-C', str(repo_path), 'rev-parse', '--show-toplevel'],
+            repo = subprocess.run([*prefix, 'git', '-C', str(repo_path), 'rev-parse', '--show-toplevel'],
                                   check=True, capture_output=True, timeout=30).stdout.decode().strip()
-            submitted = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+            submitted = subprocess.run([*prefix, 'git', '-C', repo, 'rev-parse', '--verify',
                                         revision + '^{commit}'], check=True, capture_output=True,
                                        timeout=30).stdout.decode().strip()
-            main = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify',
+            main = subprocess.run([*prefix, 'git', '-C', repo, 'rev-parse', '--verify',
                                    'refs/heads/main^{commit}'], check=True, capture_output=True,
                                   timeout=30).stdout.decode().strip()
-            reached = subprocess.run(['git', '-C', repo, 'merge-base', '--is-ancestor', submitted, main],
+            reached = subprocess.run([*prefix, 'git', '-C', repo, 'merge-base', '--is-ancestor', submitted, main],
                                      capture_output=True, timeout=30)
         except (KeyError, OSError, subprocess.SubprocessError, UnicodeError):
             return {'status': 'kept', 'reason': 'The result commit or main branch cannot be checked'}

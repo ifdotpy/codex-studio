@@ -95,6 +95,8 @@ test("Worker Overview Ui", async ({
       message: "The usage limit was reached. Try again after the reset.",
       misalignment: null,
     };
+    const stopReason = "Stopped by agent Release lead";
+    let workerStopError = stopReason;
     let pending = true;
     let deferred = false;
     let transcriptRequests = 0;
@@ -150,6 +152,8 @@ test("Worker Overview Ui", async ({
                     : "completed";
         }
         if (agent.id === worker(7).id) agent.error = workerFailure;
+        if (agent.id === worker(24).id)
+          Object.assign(agent, { autoWake: false, error: workerStopError });
         if (agent.id === worker(0).id && deferred) agent.status = "approval";
         if (agent.id === worker(1).id)
           Object.assign(agent, {
@@ -217,6 +221,43 @@ test("Worker Overview Ui", async ({
       await card(7).locator(".worker-error").innerText(),
       workerFailure.message,
     );
+    assert.equal(await card(24).locator(".worker-error").count(), 0);
+    assert.equal(
+      await card(24).locator(".worker-stop-reason").innerText(),
+      stopReason,
+    );
+    assert.equal(
+      await card(24).locator(".worker-stop-details summary").innerText(),
+      "Stop details",
+    );
+    assert.notEqual(
+      await card(24)
+        .locator(".worker-stop-reason")
+        .evaluate((node) => getComputedStyle(node).color),
+      await card(7)
+        .locator(".worker-error")
+        .evaluate((node) => getComputedStyle(node).color),
+      "An explicit stop has a neutral color",
+    );
+    await card(24).locator(".worker-stop-details summary").click();
+    assert.equal(
+      await card(24).locator(".worker-stop-details pre").innerText(),
+      stopReason,
+    );
+    workerStopError = workerFailure;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.waitForFunction(
+      ({ id, message }) =>
+        document.querySelector(`[data-worker="${id}"] .worker-error`)
+          ?.textContent === message,
+      { id: worker(24).id, message: workerFailure.message },
+    );
+    assert.equal(await card(24).locator(".worker-stop-reason").count(), 0);
+    assert.equal(
+      await card(24).locator(".worker-error-details summary").innerText(),
+      "Error details",
+    );
+    workerStopError = stopReason;
     const errorDetails = card(7).locator(".worker-error-details");
     await errorDetails.locator("summary").click();
     assert.deepEqual(
