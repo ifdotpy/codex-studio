@@ -59,23 +59,30 @@ def _device_for_mount(mount):
     return None
 
 
-def _repo_markers(root):
+def _repo_markers(root, excludes=()):
     """Find .git roots, including submodules, without walking object stores."""
     root = Path(root).resolve()
+    excluded = {Path(value) for value in excludes}
     found = [root]
     for current, dirs, files in os.walk(root, followlinks=False):
         here = Path(current)
+        relative = here.relative_to(root)
+        if any(relative == item or item in relative.parents for item in excluded):
+            dirs[:] = []
+            continue
         if '.git' in dirs or '.git' in files:
             candidate = here
             if candidate != root:
                 found.append(candidate)
-        dirs[:] = [name for name in dirs if name != '.git' and not (here / name).is_symlink()]
+        dirs[:] = [name for name in dirs if name != '.git' and not (here / name).is_symlink()
+                   and not any((relative / name) == item or item in (relative / name).parents
+                               for item in excluded)]
     return list(dict.fromkeys(found))
 
 
-def _object_dirs(root):
+def _object_dirs(root, excludes=()):
     results = []
-    for candidate in _repo_markers(root):
+    for candidate in _repo_markers(root, excludes):
         probe = subprocess.run(['git', '-C', str(candidate), 'rev-parse', '--show-toplevel'],
                                capture_output=True, text=True, timeout=20)
         if probe.returncode:
@@ -116,7 +123,7 @@ def _copy_tar(source, dest, excludes):
 def _copy_tree_parallel(source, dest, excludes=()):
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
-    for root, objects in _object_dirs(source):
+    for root, objects in _object_dirs(source, excludes):
         try:
             relative = objects.relative_to(source)
         except ValueError:
@@ -294,7 +301,7 @@ class Backend:
             events, _newest = _read_events(repo_root, int(base_state['token']))
         except (OSError, RuntimeError, TimeoutError):
             return True
-        if len(events) >= 5000:
+        if len(events) >= 1000:
             return True
         changed_bytes = 0
         for value, _flags, _event_id in events:
@@ -437,13 +444,20 @@ class Backend:
                         dest.unlink(missing_ok=True)
                     continue
                 if source.is_dir() and not source.is_symlink():
+                    if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                        dest.unlink()
                     dest.mkdir(parents=True, exist_ok=True)
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     if source.is_symlink():
-                        dest.unlink(missing_ok=True)
+                        if dest.is_dir() and not dest.is_symlink():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink(missing_ok=True)
                         dest.symlink_to(os.readlink(source))
                     else:
+                        if dest.is_dir() and not dest.is_symlink():
+                            shutil.rmtree(dest)
                         try:
                             os.clonefile(source, dest)
                         except (AttributeError, OSError):
