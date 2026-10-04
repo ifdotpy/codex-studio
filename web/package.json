@@ -11,7 +11,7 @@
     "test:performance": "npm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=performance",
     "test:mutation": "stryker run stryker.config.mjs",
     "dev": "vite --force --host 127.0.0.1",
-    "build": "python3 ../scripts/generate-entity-types.py --check && tsc --noEmit && vite build",
+    "build": "npm --prefix .. run api:check && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test": "npm run test:unit && npm run test:browser",
     "format": "prettier --write src index.html vite.config.ts tsconfig.json \"../tests/client/**/*.spec.mjs\"",
