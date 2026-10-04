@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -248,6 +249,70 @@ class WorkspaceImagesMacTests(unittest.TestCase):
             state = images._read_json(images._agent_state_path(agent_id), {})
             raise AssertionError(f'workspace Git metadata missing after create: {state}')
         return result
+
+    def test_deleted_repository_during_base_build_removes_attached_version(self):
+        repo = self.root / 'deleted-during-build'
+        repo.mkdir()
+        self.git('init', cwd=repo)
+        self.git('config', 'user.name', 'Workspace Test', cwd=repo)
+        self.git('config', 'user.email', 'workspace-test@example.invalid', cwd=repo)
+        (repo / 'tracked.txt').write_text('base\n')
+        self.git('add', 'tracked.txt', cwd=repo)
+        self.git('commit', '-m', 'base', cwd=repo)
+
+        backend = images._get_backend()
+        original_copy = backend.copy_base_tree
+        copy_started = threading.Event()
+        continue_copy = threading.Event()
+        completed = threading.Event()
+        callback_results = []
+
+        def paused_copy(*args, **kwargs):
+            copy_started.set()
+            if not continue_copy.wait(60):
+                raise TimeoutError('test did not release the base copy')
+            return original_copy(*args, **kwargs)
+
+        backend.copy_base_tree = paused_copy
+        repo_key = images._repo_key(repo)
+        versions = self.store / 'bases' / repo_key / 'versions'
+        version_path = None
+        try:
+            images.start_base_build(
+                repo, lambda result: (callback_results.append(result), completed.set()))
+            self.assertTrue(copy_started.wait(30), 'base builder did not reach tree copy')
+            state_path = self.store / 'bases' / repo_key / 'base.json'
+            building = json.loads(state_path.read_text())
+            version_path = versions / building['version']
+            mount = version_path / 'mount'
+            self.assertTrue(mount.is_mount(), 'staging image was not attached before tree copy')
+
+            shutil.rmtree(repo)
+            continue_copy.set()
+            self.assertTrue(completed.wait(120), 'base builder did not report the missing source')
+
+            failed = json.loads(state_path.read_text())
+            self.assertEqual(failed['state'], 'failed')
+            self.assertEqual(callback_results[-1]['state'], 'failed')
+            self.assertFalse(version_path.exists())
+            self.assertFalse(mount.is_mount())
+            self.assertEqual(list(versions.iterdir()), [])
+            info = plistlib.loads(subprocess.run(
+                ['hdiutil', 'info', '-plist'], check=True, capture_output=True,
+                timeout=30).stdout)
+            attached_mounts = {
+                entity.get('mount-point')
+                for image in info.get('images', [])
+                for entity in image.get('system-entities', [])
+            }
+            self.assertNotIn(str(mount), attached_mounts)
+        finally:
+            continue_copy.set()
+            backend.copy_base_tree = original_copy
+            if not completed.wait(120):
+                self.fail('base builder did not stop after the test released it')
+            if version_path is not None and version_path.exists():
+                backend.remove_base_version(version_path)
 
     def test_real_image_workspace_lifecycle(self):
         self._build_base()

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in Runtime.lock metrics keep reentrancy and Condition behavior."""
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import os
 from pathlib import Path
 import sys

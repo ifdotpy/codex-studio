@@ -21,7 +21,9 @@ from codex_runtime import Runtime
 
 # Keep general protocol fixtures independent of host image support. Dedicated
 # image workspace contracts exercise the supported path with explicit mocks.
-Runtime.image_workspace_support = lambda _self, _repo: (False, "disabled in protocol fixture")
+Runtime.image_workspace_support = staticmethod(
+    lambda _repo: (False, "disabled in protocol fixture")
+)
 
 
 def eventually(predicate, timeout=8):
