@@ -241,6 +241,21 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertEqual(record['imageWorkspacePhase'], 'fallback')
         self.assertIn('workspace', record['imageWorkspaceError'].lower())
 
+    def test_partial_create_failure_removes_workspace_by_agent_id(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn()['id']
+        engine = types.ModuleType('codex_workspace_images')
+        engine.create_workspace = Mock(side_effect=RuntimeError('mount failed after reservation'))
+        engine.exec_prefix = Mock(return_value=[])
+        engine.remove_workspace = Mock(return_value={'state': 'removed'})
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            self.rt.image_base_completed(worker, {'state': 'ready'})
+        engine.remove_workspace.assert_called_once_with(worker, force=True)
+        record = self.rt.agent(worker)
+        self.assertTrue(record['worktree'])
+        self.assertIn('mount failed after reservation', record['imageWorkspaceError'])
+
     def test_callback_replay_after_switch_does_not_duplicate_workspace_or_notice(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})

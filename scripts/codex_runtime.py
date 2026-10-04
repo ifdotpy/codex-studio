@@ -3780,6 +3780,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def image_base_completed(self, agent_id, status):
         workspace = None
+        workspace_attempted = False
         try:
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
@@ -3806,6 +3807,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 relative = agent.get("imageWorkspaceRelative", ".")
                 start_commit = agent.get("imageWorkspaceStartCommit")
             from codex_workspace_images import create_workspace, exec_prefix
+            workspace_attempted = True
             workspace = create_workspace(repo, agent_id, start_commit=start_commit)
             cwd = Path(workspace["repoPath"]) / relative
             exists = subprocess.run([*exec_prefix(), "test", "-d", str(cwd)],
@@ -3835,7 +3837,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._send_image_workspace_notice(agent_id, notice_text,
                                               "image-workspace-ready:" + agent_id)
         except Exception as error:
-            if workspace is not None:
+            if workspace_attempted:
                 try:
                     from codex_workspace_images import remove_workspace
                     remove_workspace(agent_id, force=True)
