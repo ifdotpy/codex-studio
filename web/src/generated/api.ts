@@ -13862,7 +13862,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "text/plain": unknown;
+          "text/plain": string;
         };
       };
       /** @description Partial Content */
@@ -13871,7 +13871,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "text/plain": unknown;
+          "text/plain": string;
         };
       };
       /** @description Bad Request */
