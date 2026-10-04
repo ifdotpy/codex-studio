@@ -21,7 +21,6 @@ from studio_api.sync.models import (
     SyncIdentityResponse,
     SyncProtocolResponse,
     SyncDocument,
-    SyncPullQuery,
     SyncPullResponse,
     SyncPullResetResponse,
     SyncStreamQuery,
@@ -144,16 +143,25 @@ def create_router(context: ApiContext) -> APIRouter:
         response_model=SyncPullResponse | SyncPullResetResponse,
         responses=ERROR_RESPONSES,
     )
-    def pull(request: Request, _query: SyncPullQuery = Depends()) -> object:
+    def pull(
+        request: Request,
+        scope: str | None = None,
+        after: int | None = None,
+        limit: int | None = None,
+        fresh: str | None = None,
+        initialHigh: int | None = None,
+        reset: str | None = None,
+        priorityId: str | None = None,
+    ) -> object:
         scope = _first(request, "scope", "state") or "state"
         after = _query_int(request, "after", 0)
         limit = _query_int(request, "limit", SYNC_BATCH_LIMIT)
         initial_high = _query_int(request, "initialHigh", 0)
-        fresh = _first(request, "fresh") == "1"
-        reset = _first(request, "reset") == "1"
+        fresh_flag = _first(request, "fresh") == "1"
+        reset_flag = _first(request, "reset") == "1"
         priority_id = _first(request, "priorityId")
         store = _sync_store(context)
-        projection = store.pull(scope, after, limit, fresh, initial_high, reset, priority_id)
+        projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
         for document in projection.get("documents", []):
             if scope == "state:entities:v1" and not document.get("_deleted"):
                 from codex_sync_entities import validate_entity_payload

@@ -132,7 +132,7 @@ class ContextStub:
         return JSONResponse(content=selected, status_code=status)
 
 
-def make_client(context: ContextStub) -> TestClient:
+def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> TestClient:
     app = FastAPI()
     app.include_router(create_router(cast(ApiContext, context)))
 
@@ -140,7 +140,7 @@ def make_client(context: ContextStub) -> TestClient:
     async def validation_error(_request: Request, error: RequestValidationError) -> JSONResponse:
         return JSONResponse({"error": str(error)}, status_code=400)
 
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 class SyncRouterTests(unittest.TestCase):
@@ -209,6 +209,34 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+
+    def test_pull_keeps_query_parameter_openapi_schema(self) -> None:
+        app = FastAPI()
+        app.include_router(create_router(cast(ApiContext, ContextStub())))
+        parameters = app.openapi()["paths"]["/api/sync/pull"]["get"]["parameters"]
+        self.assertEqual(
+            [(parameter["name"], parameter["schema"]["anyOf"][0]["type"]) for parameter in parameters],
+            [
+                ("scope", "string"),
+                ("after", "integer"),
+                ("limit", "integer"),
+                ("fresh", "string"),
+                ("initialHigh", "integer"),
+                ("reset", "string"),
+                ("priorityId", "string"),
+            ],
+        )
+        self.assertTrue(all(parameter["in"] == "query" and not parameter["required"] for parameter in parameters))
+
+    def test_pull_keeps_invalid_integer_query_status(self) -> None:
+        response = make_client(ContextStub()).get("/api/sync/pull?after=invalid")
+        self.assertEqual(response.status_code, 400)
+
+    def test_pull_keeps_status_for_invalid_first_repeated_integer(self) -> None:
+        response = make_client(ContextStub(), raise_server_exceptions=False).get(
+            "/api/sync/pull?after=invalid&after=9"
+        )
+        self.assertEqual(response.status_code, 500)
 
     def test_entity_pull_reset_has_its_own_complete_response_variant(self) -> None:
         context = ContextStub()
