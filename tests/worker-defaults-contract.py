@@ -41,6 +41,10 @@ CATALOG = {
 
 
 class ControlledRuntime(f.Runtime):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.image_workspace_support = lambda _repo: (False, "disabled in protocol fixture")
+
     def schedule(self):
         while not self.closed:
             self.changed.wait(0.05)

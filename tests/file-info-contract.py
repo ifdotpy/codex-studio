@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 import threading
 import unittest
@@ -43,6 +44,22 @@ class FileInfo(unittest.TestCase):
         self.agent_update(actor,deletedAt=1)
         with self.assertRaises(ValueError):self.runtime.file_info(asset_id=asset['id'])
         with self.assertRaises(ValueError):self.runtime.file_info(actor['id'],str(file))
+
+    def test_image_workspace_preview_uses_exec_prefix_for_stat_and_read(self):
+        actor=self.lead();mount=self.root/'image'/'repo'/'project';mount.mkdir(parents=True)
+        file=mount/'preview.txt';file.write_bytes(b'image view')
+        log=self.root/'prefix.log';wrapper=self.root/'prefix.sh'
+        wrapper.write_text(f'#!/bin/sh\nprintf x >> {str(log)!r}\nshift\nexec "$@"\n')
+        wrapper.chmod(0o755)
+        self.agent_update(actor,imageWorkspaceReady=True,cwd=str(mount))
+        with patch('codex_workspace_images.exec_prefix',return_value=[str(wrapper),'--']):
+            info=self.runtime.file_info(actor['id'],'preview.txt')
+            content,mime,name=self.runtime.file_content(actor['id'],'preview.txt')
+            with self.assertRaisesRegex(ValueError,'preview limit'):
+                self.runtime.file_content(actor['id'],'preview.txt',limit=2)
+        self.assertEqual(info['size'],len(b'image view'))
+        self.assertEqual((content,name),(b'image view','preview.txt'))
+        self.assertEqual(log.read_text(),'xxx')
 
     def test_http_metadata_and_origin_boundary(self):
         from codex_canvas import Canvas,make_server

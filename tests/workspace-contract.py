@@ -123,6 +123,8 @@ class WorkspaceContract(unittest.TestCase):
         )
         self.environment.start()
         self.runtime = ControlledRuntime(self.state, WorkspaceServer)
+        # Platform-specific image behavior has dedicated runtime contracts.
+        self.runtime.image_workspace_support = lambda _repo: (False, "disabled in protocol fixture")
 
     def tearDown(self):
         self.runtime.close()

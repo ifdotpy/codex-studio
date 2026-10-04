@@ -119,6 +119,15 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
+        for field in (
+            "imageWorkspace",
+            "imageWorkspaceReady",
+            "imageWorkspacePhase",
+            "imageWorkspaceError",
+            "imageWorkspaceRepo",
+            "imageWorkspaceBaseRepo",
+        ):
+            self.assertIn(field, AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
         self.assertIn("id", COLLECTION_FIELDS["task"])
         source: dict[str, JsonValue] = {
@@ -128,6 +137,17 @@ class SyncEntityContractTests(unittest.TestCase):
         }
         agent = project("agent", source)
         self.assertEqual(agent, {"id": "a", "status": "running"})
+        image_agent = project("agent", {
+            "id": "image-worker",
+            "imageWorkspace": True,
+            "imageWorkspaceReady": True,
+            "imageWorkspacePhase": "ready",
+            "imageWorkspaceError": None,
+            "imageWorkspaceRepo": "/repo",
+            "imageWorkspaceBaseRepo": "/repo",
+        })
+        self.assertEqual(image_agent["imageWorkspace"], True)
+        self.assertEqual(image_agent["imageWorkspacePhase"], "ready")
 
     def test_agent_transfer_summary_matches_runtime_projection(self) -> None:
         runtime = TransferRuntimeFixture()

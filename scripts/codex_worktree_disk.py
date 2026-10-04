@@ -280,14 +280,53 @@ class WorktreeDiskScanner:
         with self.lock:
             sizes = {key: dict(row) for key, row in self.sizes.items()}
             scanning, error = self.scanning, self.error
+        images = {}
+        image_repos = set()
+        try:
+            db = sqlite3.connect(self.db_path.absolute().as_uri() + '?mode=ro', uri=True,
+                                 timeout=SQLITE_TIMEOUT)
+            try:
+                db.execute('PRAGMA query_only=ON')
+                for (record,) in db.execute('SELECT record FROM runtime_agents'):
+                    agent = json.loads(record)
+                    if agent and agent.get('imageWorkspaceRepo'):
+                        image_repos.add(agent['imageWorkspaceRepo'])
+                    if agent and agent.get('imageWorkspaceBaseRepo'):
+                        image_repos.add(agent['imageWorkspaceBaseRepo'])
+                    if agent and agent.get('imageWorkspaceReady') and not agent.get('deletedAt'):
+                        images[agent['id']] = agent.get('imageWorkspaceRepo')
+            finally:
+                db.close()
+            from codex_workspace_images import base_bytes, workspace_bytes
+            for agent_id, repo in images.items():
+                try:
+                    sizes[agent_id] = {'state': 'ready', 'bytes': workspace_bytes(agent_id),
+                                       'scannedAt': self.clock(), 'measure': 'private workspace bytes'}
+                except (OSError, RuntimeError, ValueError) as error:
+                    sizes[agent_id] = {'state': 'unavailable', 'error': str(error)[:160],
+                                       'measure': 'private workspace bytes'}
+            bases = {}
+            for repo in sorted(image_repos):
+                try:
+                    bases[repo] = {'state': 'ready', 'bytes': base_bytes(repo),
+                                   'scannedAt': self.clock(), 'measure': 'private base bytes'}
+                except (OSError, RuntimeError, ValueError) as error:
+                    bases[repo] = {'state': 'unavailable', 'error': str(error)[:160],
+                                   'measure': 'private base bytes'}
+        except (ImportError, OSError, sqlite3.Error, RuntimeError, ValueError) as image_error:
+            bases = {}
+            if images:
+                error = error or str(image_error)[:160]
         total = sum(row.get('bytes', 0) for row in sizes.values() if row['state'] == 'ready')
+        base_total = sum(row.get('bytes', 0) for row in bases.values() if row['state'] == 'ready')
         measures = {row.get('measure', 'allocated blocks') for row in sizes.values()
                     if row['state'] == 'ready'}
         measure = next(iter(measures)) if len(measures) == 1 else (
             'mixed measures' if measures else 'unmeasured')
         limit = disk_limit_bytes()
-        return {'workers': sizes, 'totalBytes': total, 'limitBytes': limit,
-                'warning': bool(limit and total >= limit), 'scanning': scanning, 'error': error,
+        return {'workers': sizes, 'totalBytes': total, 'baseBytes': base_total,
+                'storageBytes': total + base_total, 'bases': bases, 'limitBytes': limit,
+                'warning': bool(limit and total + base_total >= limit), 'scanning': scanning, 'error': error,
                 'measure': measure}
 
 
@@ -299,7 +338,7 @@ def scanner(state_root):
         return _scanners[key]
 
 
-def management_view(runtime, agents):
+def management_view(runtime, agents, *, db=None):
     """Add cached sizes and a scoped total to an authorized worker list."""
     disk = scanner(runtime.root).snapshot() if hasattr(runtime, 'root') else {
         'workers': {}, 'totalBytes': 0, 'limitBytes': disk_limit_bytes(),
@@ -309,6 +348,16 @@ def management_view(runtime, agents):
     workers = disk['workers']
     by_agent = {a['id']: workers.get(a['id'], {'state': 'unmeasured'})
                 for a in agents}
+    repos = {a.get('imageWorkspaceRepo') for a in agents
+             if a.get('imageWorkspaceReady') and a.get('imageWorkspaceRepo')}
+    for root_id in {a.get('rootId') for a in agents if a.get('rootId')}:
+        try:
+            lead = runtime.agent(root_id, db) if db is not None else runtime.agent(root_id)
+        except ValueError:
+            continue
+        if lead.get('imageWorkspaceBaseRepo'):
+            repos.add(lead['imageWorkspaceBaseRepo'])
+    bases = {repo: disk.get('bases', {}).get(repo, {'state': 'unmeasured'}) for repo in repos}
     known_rows = [row for row in by_agent.values() if row.get('state') == 'ready']
     known = [row['bytes'] for row in known_rows]
     measures = {row.get('measure', 'allocated blocks') for row in known_rows}
@@ -318,6 +367,8 @@ def management_view(runtime, agents):
         'totalBytes': sum(known), 'unmeasured': sum(row.get('state') != 'ready'
                                                    for row in by_agent.values()),
         'allWorkersBytes': disk['totalBytes'], 'limitBytes': disk['limitBytes'],
-        'warning': disk['warning'], 'scanning': disk['scanning'],
+        'baseBytes': sum(row.get('bytes', 0) for row in bases.values()
+                         if row.get('state') == 'ready'),
+        'bases': bases, 'warning': disk['warning'], 'scanning': disk['scanning'],
         'measure': measure,
     }

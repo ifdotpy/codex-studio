@@ -38,8 +38,14 @@ worker base setting, then repository HEAD. Studio resolves and saves the commit
 before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
-Worktrees start from the selected commit, so include or commit required inputs
-before delegation.
+On supported platforms, implementers use an image workspace. A base build starts
+when Multi agent mode turns on. Until the base is ready, new implementers work
+read-only in their selected folder. Studio then switches them to a writable
+image workspace and sends a notice. Other platforms use a Git worktree. Include
+or commit required inputs in the selected base commit. With no explicit or
+project base ref, the image workspace includes the user's current uncommitted
+changes in a snapshot commit. Collect leaves that snapshot commit out of the
+worker branch. A selected base ref starts from its commit and excludes those edits.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after
@@ -245,7 +251,7 @@ Existing read-only permissions still apply.
 Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
 recovery or archive. `recover` reconciles native turn state; it never replays input.
 Archive only after reviewing the result or assigning its remaining work elsewhere.
-`archive_finished` checks finished descendants and removes safe worktrees after archive.
+`archive_finished` checks finished descendants and removes safe workspaces after archive.
 `archive` requires `agent_id` and `reason`. It preserves history and dirty files, and
 refuses active commands, pending or uncertain requests, unfinished
 assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
