@@ -249,6 +249,7 @@ class ApiContext:
     ) -> Response:
         """Validate JSON output against the registered route model before sending."""
         sync_after = request.scope.get("studio_sync_entities_after")
+        weak_validator_data: bytes | None = None
         body_value: object
         if content_type.startswith(JSON_CONTENT_TYPE):
             body_value = self._dump_json(value)
@@ -277,10 +278,15 @@ class ApiContext:
                     response_model = ErrorResponse
                 adapter = ApiContext._response_adapter(response_model, id(response_model))
                 validated = adapter.validate_python(body_value)
-                body_value = adapter.dump_python(validated, mode="json", by_alias=True, exclude_unset=True)
-                if not isinstance(body_value, (dict, list, str, int, float, bool)) and body_value is not None:
-                    raise TypeError("Response contract must produce a JSON value")
-                data = json.dumps(body_value, ensure_ascii=False, separators=(",", ":")).encode()
+                data = adapter.dump_json(validated, by_alias=True, exclude_unset=True)
+                if weak_etag_fields:
+                    weak_body = adapter.dump_python(validated, mode="json", by_alias=True, exclude_unset=True)
+                    if isinstance(weak_body, dict):
+                        body_value = weak_body
+                        weak_value = {key: item for key, item in weak_body.items() if key not in weak_etag_fields}
+                        weak_validator_data = ApiContext._response_adapter(JsonValue, id(JsonValue)).dump_json(
+                            ApiContext._sort_json_keys(weak_value)
+                        )
             except Exception as error:
                 # The handler may already have performed a durable write. This is
                 # a server contract failure and deliberately carries no retry hint.
@@ -294,6 +300,7 @@ class ApiContext:
                 compressed = None
                 etag = False
                 weak_etag_fields = ()
+                weak_validator_data = None
         else:
             data = cast(bytes, body_value)
 
@@ -304,11 +311,8 @@ class ApiContext:
             if len(candidate) < len(data):
                 data, use_gzip = candidate, True
         validator_data = data
-        if weak_etag_fields and isinstance(body_value, dict):
-            validator_data = json.dumps(
-                {key: item for key, item in body_value.items() if key not in weak_etag_fields},
-                ensure_ascii=False, sort_keys=True,
-            ).encode()
+        if weak_validator_data is not None:
+            validator_data = weak_validator_data
         validator = None
         if etag:
             weak = "W/" if weak_etag_fields else ""
@@ -339,6 +343,15 @@ class ApiContext:
         if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
             return value
         raise TypeError("Unsupported JSON response value")
+
+    @staticmethod
+    def _sort_json_keys(value: object) -> object:
+        if isinstance(value, dict):
+            entries = cast(dict[str, object], value)
+            return {key: ApiContext._sort_json_keys(entries[key]) for key in sorted(entries)}
+        if isinstance(value, list):
+            return [ApiContext._sort_json_keys(item) for item in value]
+        return value
 
     @staticmethod
     @lru_cache(maxsize=256)

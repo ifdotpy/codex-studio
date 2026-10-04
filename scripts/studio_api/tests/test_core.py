@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import closing
 
 import gzip
+import hashlib
 import json
 import os
 import sqlite3
@@ -59,6 +60,17 @@ class NativeActionRequest(ContractModel):
 
 class NativeActionResponse(ResponseModel):
     ok: bool
+
+
+class NumericResponse(ResponseModel):
+    value: float
+    integer: int = 0
+
+
+class WeakTagResponse(ResponseModel):
+    name: str
+    at: float
+    metadata: dict[str, JsonValue] | None = None
 
 
 class UncheckedLegacyResponse(BaseModel):
@@ -156,6 +168,72 @@ class CoreResponseTests(unittest.TestCase):
         self.assertNotIn("content-security-policy", not_modified.headers)
         self.assertNotIn("referrer-policy", not_modified.headers)
         self.assertEqual(not_modified.headers["x-content-type-options"], "nosniff")
+
+    def test_direct_json_encoding_preserves_validated_shape_and_uses_json_float_spelling(self) -> None:
+        response = self.context.send(request_for(NumericResponse), {"value": 1e-5}, etag=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bytes(response.body), b'{"value":0.00001}')
+        self.assertEqual(response.headers["etag"], f'"{hashlib.sha256(response.body).hexdigest()}"')
+
+    def test_float_nan_and_infinity_encode_as_null_but_jsonvalue_stays_strict(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            response = self.context.send(request_for(NumericResponse), {"value": value})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(bytes(response.body), b'{"value":null}')
+
+        rejected = self.context.send(request_for(JsonValue), float("nan"))
+        self.assertEqual(rejected.status_code, 500)
+        self.assertEqual(json.loads(bytes(rejected.body)), {"error": "The server could not validate its response"})
+
+    def test_direct_json_encoding_accepts_integers_beyond_python_string_limit(self) -> None:
+        value = 10 ** 4_300
+        response = self.context.send(request_for(NumericResponse), {"value": 0.0, "integer": value})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"1" + b"0" * 4_300, bytes(response.body))
+
+    def test_weak_etag_still_ignores_configured_fields(self) -> None:
+        huge_integer = 10 ** 4_300
+        first = self.context.send(
+            request_for(WeakTagResponse),
+            {
+                "name": "runtime",
+                "at": 1e-5,
+                "metadata": {"z": {"second": 2, "first": 1}, "a": huge_integer, "long": "x" * 2_048},
+            },
+            etag=True,
+            weak_etag_fields=("at",),
+        )
+        second = self.context.send(
+            request_for(WeakTagResponse, accept_encoding="gzip"),
+            {
+                "name": "runtime",
+                "at": 2e-5,
+                "metadata": {"long": "x" * 2_048, "a": huge_integer, "z": {"first": 1, "second": 2}},
+            },
+            etag=True,
+            weak_etag_fields=("at",),
+        )
+        not_modified = self.context.send(
+            request_for(WeakTagResponse, accept_encoding="gzip", if_none_match=first.headers["etag"]),
+            {
+                "name": "runtime",
+                "at": 3e-5,
+                "metadata": {"z": {"first": 1, "second": 2}, "a": huge_integer, "long": "x" * 2_048},
+            },
+            etag=True,
+            weak_etag_fields=("at",),
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.headers["content-encoding"], "gzip")
+        self.assertEqual(not_modified.status_code, 304)
+        self.assertEqual(not_modified.body, b"")
+        self.assertEqual(first.headers["etag"], second.headers["etag"])
+        self.assertEqual(first.headers["etag"], not_modified.headers["etag"])
+        self.assertTrue(first.headers["etag"].startswith("W/\""))
 
     def test_typed_root_array_keeps_its_wire_shape(self) -> None:
         request = request_for(MessageHistory)
