@@ -790,7 +790,7 @@ function Checkpoints(c: Context) {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
     [label, setLabel] = useState(""),
-    [preview, setPreview] = useState<Json | null>(null),
+    [preview, setPreview] = useState<CheckpointPreview | null>(null),
     [busy, setBusy] = useState(false);
   return (
     <>
@@ -828,7 +828,7 @@ function Checkpoints(c: Context) {
           Save checkpoint
         </Button>
       </form>
-      {(state.data?.checkpoints || []).map((checkpoint: Json) => (
+      {(state.data?.checkpoints || []).map((checkpoint) => (
         <div className="workspace-row" key={checkpoint.id}>
           <div className="workspace-row-head">
             <strong>{checkpoint.label}</strong>
@@ -910,6 +910,11 @@ function Checkpoints(c: Context) {
   );
 }
 
+type CheckpointPreview = Omit<
+  PostResult<"/api/checkpoint/preview">,
+  "checkpoint"
+> & { checkpoint: string; label: string };
+
 function Tools(c: Context) {
   const state = useResource("/api/capabilities", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
@@ -970,7 +975,9 @@ function Tools(c: Context) {
           </div>
           <h3 className="workspace-section-title">Observed native tools</h3>
           <p className="workspace-muted">
-            {JSON.stringify(state.data.nativeInventory)}
+            {typeof state.data.nativeInventory === "string"
+              ? state.data.nativeInventory
+              : JSON.stringify(state.data.nativeInventory)}
           </p>
           <div className="workspace-actions">
             {observedNative
@@ -1331,8 +1338,8 @@ function Rules(c: Context) {
       c.notify,
     ),
     [busy, setBusy] = useState(false),
-    [remove, setRemove] = useState<Json | null>(null);
-  const act = async (rule: Json, action: string) => {
+    [remove, setRemove] = useState<RuleRecord | null>(null);
+  const act = async (rule: RuleRecord, action: RuleAction) => {
     setBusy(true);
     try {
       await c.run("/api/rules", { agent: c.selected!.id, id: rule.id, action });
@@ -1375,8 +1382,8 @@ function Rules(c: Context) {
         </Button>
       </div>
       {(state.data?.rules || [])
-        .filter((rule: Json) => rule.agent === c.selected?.id)
-        .map((rule: Json) => (
+        .filter((rule) => rule.agent === c.selected?.id)
+        .map((rule) => (
           <div className="workspace-row" key={rule.id}>
             <div className="workspace-row-head">
               <strong>{rule.name}</strong>
@@ -1472,7 +1479,7 @@ function Rules(c: Context) {
           </div>
         ))}
       {!(state.data?.rules || []).some(
-        (rule: Json) => rule.agent === c.selected?.id,
+        (rule) => rule.agent === c.selected?.id,
       ) &&
         state.data !== null && <Empty>No rules for this agent.</Empty>}
       <Modal
@@ -1674,3 +1681,6 @@ function Rules(c: Context) {
     </>
   );
 }
+
+type RuleRecord = GetResult<"/api/rules">["rules"][number];
+type RuleAction = PostBody<"/api/rules">["action"];
