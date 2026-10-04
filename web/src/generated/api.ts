@@ -2155,6 +2155,11 @@ export interface components {
       /** Stale */
       stale: boolean;
     };
+    /**
+     * AccountDiscoverRequest
+     * @description The legacy discover operation accepts an empty JSON object or no body.
+     */
+    AccountDiscoverRequest: Record<string, never>;
     /** AccountKeyRequest */
     AccountKeyRequest: {
       /** Account Key */
@@ -3716,7 +3721,7 @@ export interface components {
       /** Totaltokens */
       totalTokens?: number | null;
       /** Turns */
-      turns?: components["schemas"]["ClaudeTurn"][];
+      turns: components["schemas"]["ClaudeTurn"][];
       /** Version */
       version?: string | null;
     };
@@ -4071,6 +4076,7 @@ export interface components {
       pid: number;
       /** Protocol */
       protocol: number;
+      providerVersions: components["schemas"]["ProviderVersions"];
       /** Publicorigin */
       publicOrigin: string | null;
       /** Restartenvironment */
@@ -5585,7 +5591,7 @@ export interface components {
       kind?: components["schemas"]["RoomKind"] | null;
       lastMessage?: components["schemas"]["RoomLastMessage"] | null;
       /** Members */
-      members?: string[] | null;
+      members: string[];
       /** Name */
       name?: string | null;
       /** Peerteamid */
@@ -6179,6 +6185,66 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** ProviderVersion */
+    ProviderVersion: {
+      /** Accountkey */
+      accountKey: string;
+      /** At */
+      at: number | null;
+      /** Baseline */
+      baseline: string | null;
+      /** Configuredversion */
+      configuredVersion: string | null;
+      /** Error */
+      error: string | null;
+      /** Id */
+      id: string;
+      /** Installedversion */
+      installedVersion: string | null;
+      /** Message */
+      message: string | null;
+      /** Provider */
+      provider: string;
+      /** Runningversion */
+      runningVersion: string | null;
+      status: components["schemas"]["ProviderVersionState"];
+    };
+    /** ProviderVersions */
+    ProviderVersions: {
+      /** Checkedat */
+      checkedAt: number | null;
+      /** Providers */
+      providers: components["schemas"]["ProviderVersion"][];
+      /** Warnings */
+      warnings: components["schemas"]["ProviderVersionWarning"][];
+    };
+    /**
+     * ProviderVersionState
+     * @enum {string}
+     */
+    ProviderVersionState:
+      | "checking"
+      | "current"
+      | "outdated"
+      | "unknown"
+      | "error";
+    /** ProviderVersionWarning */
+    ProviderVersionWarning: {
+      /** Accountkey */
+      accountKey: string;
+      /** At */
+      at: number;
+      /** Baseline */
+      baseline: string;
+      /** Id */
+      id: string;
+      /** Message */
+      message: string;
+      /** Provider */
+      provider: string;
+      /** Version */
+      version: string;
+    };
     /** PullRequest */
     PullRequest: {
       /** Acks */
@@ -6312,6 +6378,62 @@ export interface components {
      * @enum {string}
      */
     RadioStatus: "idle" | "waiting" | "speaking" | "stopping" | "blocked";
+    /** RateLimitBucket */
+    RateLimitBucket: {
+      individualLimit?:
+        | components["schemas"]["RateLimitIndividualLimit"]
+        | null;
+      /** Limitid */
+      limitId?: string | null;
+      /** Limitname */
+      limitName?: string | null;
+      primary?: components["schemas"]["RateLimitWindow"] | null;
+      /** Ratelimitreachedtype */
+      rateLimitReachedType?: string | null;
+      secondary?: components["schemas"]["RateLimitWindow"] | null;
+      /** Spendcontrolreached */
+      spendControlReached?: boolean | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RateLimitIndividualLimit */
+    RateLimitIndividualLimit: {
+      /** Remainingpercent */
+      remainingPercent?: number | null;
+    };
+    /** RateLimitResetCredit */
+    RateLimitResetCredit: {
+      /** Expiresat */
+      expiresAt?: number | null;
+      /** Grantedat */
+      grantedAt?: number | null;
+      /** Id */
+      id: string;
+      /** Resettype */
+      resetType: string;
+      /** Status */
+      status: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RateLimitResetCredits */
+    RateLimitResetCredits: {
+      /** Availablecount */
+      availableCount?: number | null;
+      /** Credits */
+      credits?: components["schemas"]["RateLimitResetCredit"][];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RateLimitWindow */
+    RateLimitWindow: {
+      /** Resetsat */
+      resetsAt?: number | null;
+      /** Usedpercent */
+      usedPercent?: number | null;
+      /** Windowdurationmins */
+      windowDurationMins?: number | null;
+    };
     /** ReadStateBody */
     ReadStateBody: {
       /** Expected Revision */
@@ -9018,6 +9140,29 @@ export interface components {
       /** Error */
       error: string;
     };
+    /** UsageLimitsData */
+    UsageLimitsData: {
+      /** Accountid */
+      accountId?: string | null;
+      /** Ordinaryusageallowed */
+      ordinaryUsageAllowed?: boolean | null;
+      rateLimitResetCredits?:
+        | components["schemas"]["RateLimitResetCredits"]
+        | null;
+      rateLimits?: components["schemas"]["RateLimitBucket"] | null;
+      /** Ratelimitsbylimitid */
+      rateLimitsByLimitId?: {
+        [key: string]: components["schemas"]["RateLimitBucket"];
+      } | null;
+      /** Signedin */
+      signedIn?: boolean | null;
+      /** Source */
+      source?: string | null;
+      /** Status */
+      status?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** UsageLimitsResponse */
     UsageLimitsResponse: {
       /** Syncentities */
@@ -9028,7 +9173,7 @@ export interface components {
       at?: number | null;
       /** Checkedat */
       checkedAt?: number | null;
-      data?: components["schemas"]["JsonValue"] | null;
+      data?: components["schemas"]["UsageLimitsData"] | null;
       /** Error */
       error?: string | null;
       /** Readat */
@@ -10315,7 +10460,11 @@ export interface operations {
       path?: never;
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["AccountDiscoverRequest"];
+      };
+    };
     responses: {
       /** @description Successful Response */
       200: {
