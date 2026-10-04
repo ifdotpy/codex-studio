@@ -163,6 +163,30 @@ class ProjectReadResponse(ResponseModel):
     items: list[Project]
 
 
+class SharedRadioState(ContractModel):
+    direct: bool | None = None
+    teamId: str
+    revision: int
+    status: Literal["idle", "waiting", "blocked", "stopping", "speaking"]
+    speaker: str | None = None
+    next: list[str]
+    active: JsonValue | None = None
+    error: str | None = None
+    seen: dict[str, JsonValue]
+
+
+class PeerRoomResponse(ContractModel):
+    id: str
+    kind: Literal["private"]
+    members: list[str]
+    projectPath: str
+    customName: str
+    created: float
+    updated: float | None = None
+    userHidden: bool
+    radio: SharedRadioState
+
+
 class ProviderModel(ContractModel):
     """One extensible provider catalog entry; names remain provider-owned strings."""
 
@@ -212,21 +236,23 @@ class ResetRequest(ContractModel):
     request_id: RequestUUID
 
 
-class PeerTeamsResponse(ResponseModel):
-    room: JsonValue | None = None
-    id: str | None = None
-    path: str | None = None
-    name: str | None = None
-    peerTeams: list[PeerTeam] | None = None
-    peerTeamsRevision: int | None = None
-    updated: float | None = None
-    radio: JsonValue | None = None
-    members: list[str] | None = None
-    projectPath: str | None = None
-    parentId: str | None = None
-    rootId: str | None = None
-    movedAgents: list[str] | None = None
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+class PeerProjectResponse(Project, ResponseModel):
+    """Project record returned by peer team save/delete/move operations."""
+
+
+class PeerConversionResponse(ResponseModel):
+    id: str
+    parentId: str
+    rootId: str
+    movedAgents: list[str]
+    peerTeamsRevision: int
+
+
+class PeerRadioResponse(ResponseModel):
+    room: PeerRoomResponse
+
+
+PeerTeamsResponse = PeerProjectResponse | PeerConversionResponse | PeerRadioResponse
 
 
 class AccountKeyRequest(ContractModel):
@@ -428,15 +454,60 @@ class PeerTeamMoveRequest(ContractModel):
     request_id: str
 
 
-class PeerTeamRadioRequest(ContractModel):
-    radio_action: Literal["create", "open", "send", "pass", "stop"]
+class PeerTeamRadioOpenRequest(ContractModel):
+    action: Literal["radio"]
+    radio_action: Literal["open"]
     path: str
     team_id: str
     request_id: str
     expected_revision: int | None = None
-    target: str | None = None
-    rounds: int | None = None
-    text: str | None = None
+
+
+class PeerTeamRadioSendRequest(ContractModel):
+    action: Literal["radio"]
+    radio_action: Literal["send"]
+    path: str
+    team_id: str
+    request_id: str
+    expected_revision: int
+    text: str
+    target: str = "both"
+    rounds: Literal[1, 2] = 1
+
+
+class PeerTeamRadioPassRequest(ContractModel):
+    action: Literal["radio"]
+    radio_action: Literal["pass"]
+    path: str
+    team_id: str
+    request_id: str
+    expected_revision: int
+    target: str
+    rounds: Literal[1, 2] = 1
+
+
+class PeerTeamRadioStopRequest(ContractModel):
+    action: Literal["radio"]
+    radio_action: Literal["stop"]
+    path: str
+    team_id: str
+    request_id: str
+    expected_revision: int
+
+
+class SharedParticipantRequest(ContractModel):
+    account_key: str = Field(min_length=1, max_length=255)
+    model: str = Field(min_length=1, max_length=255)
+    effort: str | None = None
+
+
+class PeerTeamRadioCreateRequest(ContractModel):
+    action: Literal["radio"]
+    radio_action: Literal["create"]
+    path: str = Field(min_length=1, max_length=4096)
+    request_id: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=80)
+    participants: list[SharedParticipantRequest] = Field(min_length=2, max_length=2)
 
 
 class PeerTeamConvertRequest(ContractModel):
@@ -497,22 +568,23 @@ class ProjectWriteRequest(ContractModel):
     parent_id: str | None = None
 
 
-class PeerTeamRequest(ContractModel):
-    action: Literal["save", "delete", "move", "convert"] | None = None
-    radio_action: Literal["create", "open", "send", "pass", "stop"] | None = None
-    path: str | None = None
-    team_id: str | None = None
-    member: str | None = None
-    request_id: str | None = None
-    expected_revision: int | None = None
-    name: str | None = None
-    members: list[str] | None = None
-    target: str | None = None
-    rounds: int | None = None
-    text: str | None = None
-    account_key: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
+PeerTeamRadioRequestUnion = Annotated[
+    PeerTeamRadioOpenRequest
+    | PeerTeamRadioSendRequest
+    | PeerTeamRadioPassRequest
+    | PeerTeamRadioStopRequest
+    | PeerTeamRadioCreateRequest,
+    Field(discriminator="radio_action"),
+]
+
+
+PeerTeamRequest = (
+    PeerTeamSaveRequest
+    | PeerTeamDeleteRequest
+    | PeerTeamMoveRequest
+    | PeerTeamConvertRequest
+    | PeerTeamRadioRequestUnion
+)
 
 
 class ProjectAccountSetRequest(ProjectWriteRequest):

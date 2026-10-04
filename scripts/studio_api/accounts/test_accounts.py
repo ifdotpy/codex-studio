@@ -34,6 +34,9 @@ from .models import (
     ClaudeSessionResponse,
     ClaudeSessionStateResponse,
     ModelCatalogResponse,
+    PeerTeamRequest,
+    PeerTeamsResponse,
+    PeerRadioResponse,
     ProjectWriteRequest,
     ResetRequest,
     UsageLimitsResponse,
@@ -114,6 +117,97 @@ class AccountsModelTests(unittest.TestCase):
             {"name": "review", "description": "Review changes", "argumentHint": "<path>", "builtin": False, "aliases": []},
         ])
         self.assertEqual(command_list[0].name, "review")
+
+    def test_peer_team_radio_union_accepts_legacy_callers_and_types_room(self) -> None:
+        for body in (
+            {
+                "action": "radio", "radio_action": "create", "request_id": "radio-create",
+                "path": "/project", "name": "Shared chat", "participants": [
+                    {"account_key": "one", "model": "gpt-6-luna"},
+                    {"account_key": "two", "model": "claude-sonnet", "effort": "high"},
+                ],
+            },
+            {
+                "action": "radio", "radio_action": "open", "request_id": "radio-open",
+                "path": "/project", "team_id": "team-id",
+            },
+            {
+                "action": "radio", "radio_action": "send", "request_id": "radio-send",
+                "path": "/project", "team_id": "team-id", "expected_revision": 1, "text": "Hello",
+            },
+            {
+                "action": "radio", "radio_action": "pass", "request_id": "radio-pass",
+                "path": "/project", "team_id": "team-id", "expected_revision": 1, "target": "agent-2",
+            },
+            {
+                "action": "radio", "radio_action": "stop", "request_id": "radio-stop",
+                "path": "/project", "team_id": "team-id", "expected_revision": 1,
+            },
+        ):
+            TypeAdapter(PeerTeamRequest).validate_python(body)
+        with self.assertRaises(ValidationError):
+            TypeAdapter(PeerTeamRequest).validate_python({
+                "action": "radio", "radio_action": "create", "request_id": "radio-create",
+                "path": "/project", "name": "Shared chat",
+            })
+        room_response: PeerTeamsResponse = TypeAdapter(PeerTeamsResponse).validate_python({
+            "room": {
+                "id": "radio:team", "kind": "private", "members": ["one", "two"],
+                "projectPath": "/project", "customName": "Shared chat", "created": 1.0,
+                "updated": 2.0, "userHidden": False,
+                "radio": {
+                    "teamId": "team", "revision": 1, "status": "waiting", "speaker": "one",
+                    "next": ["two"], "active": None, "error": None, "seen": {},
+                },
+            },
+        })
+        self.assertIsInstance(room_response, PeerRadioResponse)
+        self.assertEqual(cast(PeerRadioResponse, room_response).room.radio.status, "waiting")
+        schema_app = FastAPI()
+        schema_app.include_router(create_router(ApiContext.for_schema()))
+        schema = schema_app.openapi()["paths"]["/api/peer-teams"]["post"]["requestBody"]
+        schema_text = json.dumps(schema)
+        self.assertIn('"propertyName": "radio_action"', schema_text)
+        self.assertIn("PeerTeamRadioCreateRequest", schema_text)
+
+    def test_peer_radio_open_response_matches_actual_producer(self) -> None:
+        fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
+        sys.path.insert(0, str(fixture_path.parent))
+        spec = importlib.util.spec_from_file_location("peer_radio_contract_fixture", fixture_path)
+        if spec is None or spec.loader is None:
+            self.fail("could not load isolated peer radio fixture")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        isolated = fixture.AccountContracts()
+        isolated.setUp()
+        try:
+            first, second = isolated.lead(), isolated.lead(isolated.other_key)
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", isolated.runtime)
+            app = FastAPI()
+            app.include_router(create_router(context))
+            team_id = str(uuid4())
+            with TestClient(app) as client:
+                saved_team = client.post("/api/peer-teams", json={
+                    "action": "save", "path": str(isolated.root), "team_id": team_id,
+                    "request_id": str(uuid4()), "expected_revision": 0, "name": "Peer team",
+                    "members": [first["id"], second["id"]],
+                })
+                self.assertEqual(saved_team.status_code, 200, saved_team.text)
+                opened = client.post("/api/peer-teams", json={
+                    "action": "radio", "radio_action": "open", "path": str(isolated.root),
+                    "team_id": team_id, "request_id": str(uuid4()),
+                })
+            self.assertEqual(opened.status_code, 200, opened.text)
+            radio_response: PeerTeamsResponse = TypeAdapter(PeerTeamsResponse).validate_python(opened.json())
+            self.assertIsInstance(radio_response, PeerRadioResponse)
+            room = cast(PeerRadioResponse, radio_response).room
+            self.assertEqual(room.members, sorted([first["id"], second["id"]]))
+            self.assertEqual(room.radio.teamId, team_id)
+            self.assertEqual(room.radio.status, "idle")
+            self.assertIsNotNone(room.updated)
+        finally:
+            isolated.tearDown()
 
 
 class _RuntimeFixture:
@@ -250,6 +344,17 @@ class AccountsRouterTests(unittest.TestCase):
             })
         self.assertEqual(response.status_code, 400)
         consume.assert_not_called()
+
+    def test_incomplete_radio_create_is_rejected_before_peer_service(self) -> None:
+        from codex_peer_teams import manage
+
+        with patch("codex_peer_teams.manage", wraps=manage) as peer_manage:
+            response = self.client.post("/api/peer-teams", json={
+                "action": "radio", "radio_action": "create", "request_id": str(uuid4()),
+                "path": str(self.root), "name": "Shared chat",
+            })
+        self.assertEqual(response.status_code, 400)
+        peer_manage.assert_not_called()
 
     def test_legacy_first_nonempty_account_and_singleton_cached_behavior(self) -> None:
         cached = self.client.get("/api/limits?account_key=&account_key=first&account_key=second&cached=1")
