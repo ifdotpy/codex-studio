@@ -563,13 +563,10 @@ class PeerTeamRadioCreateRequest(ContractModel):
 class PeerTeamConvertRequest(ContractModel):
     action: Literal["convert"]
     path: str
-    team_id: str
     member: str
+    target: str
     request_id: str
     expected_revision: int
-    account_key: str | None = None
-    model: str | None = None
-    reasoning_effort: str | None = None
 
 
 class ProjectRegisterRequest(ContractModel):

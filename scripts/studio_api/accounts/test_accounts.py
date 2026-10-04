@@ -34,6 +34,7 @@ from .models import (
     ClaudeSessionResponse,
     ClaudeSessionStateResponse,
     ModelCatalogResponse,
+    PeerTeamConvertRequest,
     PeerTeamRequest,
     PeerTeamsResponse,
     PeerRadioResponse,
@@ -150,6 +151,9 @@ class AccountsModelTests(unittest.TestCase):
         schemas = app.openapi()["components"]["schemas"]
         state = schemas["ClaudeSessionStateResponse"]
         self.assertIn("turns", state["required"])
+        conversion = schemas["PeerTeamConvertRequest"]
+        self.assertIn("target", conversion["required"])
+        self.assertNotIn("team_id", conversion["properties"])
         limits_data = schemas["UsageLimitsResponse"]["properties"]["data"]
         self.assertIn("UsageLimitsData", json.dumps(limits_data))
         self.assertIn("RateLimitBucket", json.dumps(schemas["UsageLimitsData"]))
@@ -206,6 +210,26 @@ class AccountsModelTests(unittest.TestCase):
         self.assertIn('"propertyName": "radio_action"', schema_text)
         self.assertIn("PeerTeamRadioCreateRequest", schema_text)
 
+    def test_peer_convert_request_preserves_source_and_destination_leads(self) -> None:
+        request = PeerTeamConvertRequest.model_validate({
+            "action": "convert", "path": "/project", "member": "source-lead",
+            "target": "destination-lead", "expected_revision": 4, "request_id": "convert-4",
+        })
+        self.assertEqual(request.member, "source-lead")
+        self.assertEqual(request.target, "destination-lead")
+        for unsupported in (
+            {"team_id": "peer-team"},
+            {"account_key": "account"},
+            {"model": "model-x"},
+            {"reasoning_effort": "high"},
+        ):
+            with self.subTest(unsupported=unsupported), self.assertRaises(ValidationError):
+                PeerTeamConvertRequest.model_validate({
+                    "action": "convert", "path": "/project", "member": "source-lead",
+                    "target": "destination-lead", "expected_revision": 4, "request_id": "convert-4",
+                    **unsupported,
+                })
+
     def test_peer_radio_open_response_matches_actual_producer(self) -> None:
         fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
         sys.path.insert(0, str(fixture_path.parent))
@@ -242,6 +266,53 @@ class AccountsModelTests(unittest.TestCase):
             self.assertEqual(room.radio.teamId, team_id)
             self.assertEqual(room.radio.status, "idle")
             self.assertIsNotNone(room.updated)
+        finally:
+            isolated.tearDown()
+
+    def test_peer_convert_route_matches_actual_producer_and_replays_receipt(self) -> None:
+        fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
+        sys.path.insert(0, str(fixture_path.parent))
+        spec = importlib.util.spec_from_file_location("peer_convert_contract_fixture", fixture_path)
+        if spec is None or spec.loader is None:
+            self.fail("could not load isolated peer conversion fixture")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        isolated = fixture.AccountContracts()
+        isolated.setUp()
+        try:
+            source = isolated.runtime.create({
+                "name": "Source", "prompt": "", "cwd": str(isolated.root), "account_key": "default",
+            }, draft=True)
+            teammate = isolated.runtime.create({
+                "name": "Teammate", "prompt": "", "cwd": str(isolated.root), "account_key": isolated.other_key,
+            }, draft=True)
+            destination = isolated.runtime.create({
+                "name": "Destination", "prompt": "", "cwd": str(isolated.root), "account_key": "default",
+            }, draft=True)
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", isolated.runtime)
+            app = FastAPI()
+            app.include_router(create_router(context))
+            team_id = str(uuid4())
+            body = {
+                "action": "convert", "path": str(isolated.root), "member": source["id"],
+                "target": destination["id"], "expected_revision": 1, "request_id": str(uuid4()),
+            }
+            with TestClient(app) as client:
+                saved = client.post("/api/peer-teams", json={
+                    "action": "save", "path": str(isolated.root), "team_id": team_id,
+                    "request_id": str(uuid4()), "expected_revision": 0, "name": "Peer team",
+                    "members": [source["id"], teammate["id"]],
+                })
+                self.assertEqual(saved.status_code, 200, saved.text)
+                converted = client.post("/api/peer-teams", json=body)
+                replay = client.post("/api/peer-teams", json=body)
+            self.assertEqual(converted.status_code, 200, converted.text)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual(converted.json()["id"], source["id"])
+            self.assertEqual(converted.json()["parentId"], destination["id"])
+            self.assertEqual(converted.json()["rootId"], destination["id"])
+            self.assertEqual(converted.json(), replay.json())
         finally:
             isolated.tearDown()
 
@@ -415,6 +486,18 @@ class AccountsRouterTests(unittest.TestCase):
             response = self.client.post("/api/peer-teams", json={
                 "action": "radio", "radio_action": "create", "request_id": str(uuid4()),
                 "path": str(self.root), "name": "Shared chat",
+            })
+        self.assertEqual(response.status_code, 400)
+        peer_manage.assert_not_called()
+
+    def test_peer_convert_invalid_contract_is_rejected_before_service(self) -> None:
+        from codex_peer_teams import manage
+
+        with patch("codex_peer_teams.manage", wraps=manage) as peer_manage:
+            response = self.client.post("/api/peer-teams", json={
+                "action": "convert", "path": str(self.root), "member": "source",
+                "team_id": "not-a-conversion-target", "expected_revision": 0,
+                "request_id": str(uuid4()),
             })
         self.assertEqual(response.status_code, 400)
         peer_manage.assert_not_called()
