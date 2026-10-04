@@ -6170,6 +6170,22 @@ export interface components {
       [key: string]: components["schemas"]["JsonValue"];
     };
     /**
+     * NativePlanPayload
+     * @description Known fields from native turn/plan/updated provider notifications.
+     */
+    NativePlanPayload: {
+      /** Explanation */
+      explanation?: string | null;
+      /** Plan */
+      plan?: components["schemas"]["JsonValue"][];
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /**
      * NativeProviderError
      * @description Known app-server error fields plus JSON-safe provider extensions.
      */
@@ -6672,6 +6688,8 @@ export interface components {
       name?: string | null;
       /** Projectpath */
       projectPath?: string | null;
+      /** Revision */
+      revision?: number | null;
     };
     /** PeerTeamMoveRequest */
     PeerTeamMoveRequest: {
@@ -6854,6 +6872,7 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Id */
       id: string;
+      native?: components["schemas"]["NativePlanPayload"] | null;
       /** Rootid */
       rootId: string;
       /** Steps */
@@ -7091,6 +7110,15 @@ export interface components {
       workerBaseRef?: string | null;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
+    };
+    /** ProjectPeerTeamDto */
+    ProjectPeerTeamDto: {
+      /** Id */
+      id: string;
+      /** Members */
+      members: string[];
+      /** Name */
+      name: string;
     };
     /** ProjectReadResponse */
     ProjectReadResponse: {
@@ -9350,8 +9378,12 @@ export interface components {
       organizationRevision?: number | null;
       /** Path */
       path?: string | null;
+      /** Peerteams */
+      peerTeams?: components["schemas"]["ProjectPeerTeamDto"][] | null;
       /** Peerteamsrevision */
       peerTeamsRevision?: number | null;
+      /** Updated */
+      updated?: number | null;
       /** Workerbaseref */
       workerBaseRef?: string | null;
       /** Workerbaserevision */
@@ -9944,12 +9976,19 @@ export interface components {
     SyncGenerationState: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Chatstate */
+      chatState?: boolean | null;
       generations: components["schemas"]["SyncGenerations"];
       /**
        * Protocol
        * @constant
        */
       protocol: 2;
+      /**
+       * Syncprotocol
+       * @constant
+       */
+      syncProtocol: 2;
       /** Transcriptrevisions */
       transcriptRevisions?: {
         [key: string]: number;
