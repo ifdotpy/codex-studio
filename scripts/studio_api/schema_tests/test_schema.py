@@ -113,6 +113,28 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "items: schema has no type or validation shape"):
             validate_contract_schemas(document)
 
+    def test_accepts_tuple_schema_with_typed_prefix_items(self) -> None:
+        document = sample_document(
+            {
+                "type": "array",
+                "prefixItems": [
+                    {"type": "string"},
+                    {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                    {"type": "integer"},
+                ],
+                "minItems": 3,
+                "maxItems": 3,
+            }
+        )
+        validate_contract_schemas(document)
+
+    def test_rejects_tuple_schema_with_untyped_prefix_item(self) -> None:
+        document = sample_document(
+            {"type": "array", "prefixItems": [{"type": "string"}, {}]}
+        )
+        with self.assertRaisesRegex(ValueError, r"prefixItems\[1\].*no type or validation shape"):
+            validate_contract_schemas(document)
+
     def test_rejects_untyped_one_of_branch(self) -> None:
         document = sample_document(
             {"oneOf": [{"type": "string"}, {}]}

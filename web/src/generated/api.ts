@@ -5475,6 +5475,133 @@ export interface components {
       | "running"
       | "waitingForSpace"
       | "error";
+    /** PeerConversionResponse */
+    PeerConversionResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Id */
+      id: string;
+      /** Movedagents */
+      movedAgents: string[];
+      /** Parentid */
+      parentId: string;
+      /** Peerteamsrevision */
+      peerTeamsRevision: number;
+      /** Rootid */
+      rootId: string;
+    };
+    /**
+     * PeerProjectResponse
+     * @description Project record returned by peer team save/delete/move operations.
+     */
+    PeerProjectResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Accountkeys */
+      accountKeys?: string[] | null;
+      /** Accountrevision */
+      accountRevision?: number | null;
+      /** Created */
+      created: number;
+      /** Folders */
+      folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Organizationrevision */
+      organizationRevision?: number | null;
+      /** Path */
+      path: string;
+      /** Peerteams */
+      peerTeams?: components["schemas"]["PeerTeam"][] | null;
+      /** Peerteamsrevision */
+      peerTeamsRevision?: number | null;
+      /** Updated */
+      updated?: number | null;
+      /** Workerbaseref */
+      workerBaseRef?: string | null;
+      /** Workerbaserevision */
+      workerBaseRevision?: number | null;
+    };
+    /** PeerRadioActive */
+    PeerRadioActive: {
+      /** Agentid */
+      agentId: string;
+      /** Epoch */
+      epoch: number;
+      /** Eventid */
+      eventId: string;
+      /** Identity */
+      identity: [string | null, number | null, number];
+      /** Interruptrequested */
+      interruptRequested?: boolean | null;
+      /** Questioncontinuationplanned */
+      questionContinuationPlanned?: boolean | null;
+      /** Threadid */
+      threadId: string | null;
+      /** Through */
+      through: number;
+      /** Turnid */
+      turnId?: string | null;
+    };
+    /** PeerRadioResponse */
+    PeerRadioResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      room: components["schemas"]["PeerRoomResponse"];
+    };
+    /** PeerRoomRadio */
+    PeerRoomRadio: {
+      active: components["schemas"]["PeerRadioActive"] | null;
+      /** Direct */
+      direct?: boolean | null;
+      /** Error */
+      error: string | null;
+      /** Next */
+      next: string[];
+      /** Revision */
+      revision: number;
+      /** Seen */
+      seen?: {
+        [key: string]: components["schemas"]["RoomRadioSeen"];
+      } | null;
+      /** Speaker */
+      speaker: string | null;
+      status: components["schemas"]["RadioStatus"];
+      /** Teamid */
+      teamId: string;
+    };
+    /** PeerRoomResponse */
+    PeerRoomResponse: {
+      /** Created */
+      created?: number | null;
+      /** Customname */
+      customName?: string | null;
+      /** Id */
+      id: string;
+      kind?: components["schemas"]["RoomKind"] | null;
+      lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      /** Members */
+      members?: string[] | null;
+      /** Name */
+      name?: string | null;
+      /** Peerteamid */
+      peerTeamId?: string | null;
+      /** Peerteamname */
+      peerTeamName?: string | null;
+      /** Projectpath */
+      projectPath?: string | null;
+      radio: components["schemas"]["PeerRoomRadio"];
+      /** Rootid */
+      rootId?: string | null;
+      /** Updated */
+      updated?: number | null;
+      /** Userhidden */
+      userHidden?: boolean | null;
+    };
     /**
      * PeerStatus
      * @enum {string}
@@ -5489,6 +5616,46 @@ export interface components {
       /** Name */
       name: string;
     };
+    /** PeerTeamConvertRequest */
+    PeerTeamConvertRequest: {
+      /** Account Key */
+      account_key?: string | null;
+      /**
+       * Action
+       * @constant
+       */
+      action: "convert";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Member */
+      member: string;
+      /** Model */
+      model?: string | null;
+      /** Path */
+      path: string;
+      /** Reasoning Effort */
+      reasoning_effort?: string | null;
+      /** Request Id */
+      request_id: string;
+      /** Team Id */
+      team_id: string;
+    };
+    /** PeerTeamDeleteRequest */
+    PeerTeamDeleteRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "delete";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Path */
+      path: string;
+      /** Request Id */
+      request_id: string;
+      /** Team Id */
+      team_id: string;
+    };
     /** PeerTeamEntityDto */
     PeerTeamEntityDto: {
       /** Id */
@@ -5500,67 +5667,169 @@ export interface components {
       /** Projectpath */
       projectPath?: string | null;
     };
-    /** PeerTeamRequest */
-    PeerTeamRequest: {
-      /** Account Key */
-      account_key?: string | null;
-      /** Action */
-      action?: ("save" | "delete" | "move" | "convert") | null;
+    /** PeerTeamMoveRequest */
+    PeerTeamMoveRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "move";
       /** Expected Revision */
-      expected_revision?: number | null;
+      expected_revision: number;
       /** Member */
-      member?: string | null;
-      /** Members */
-      members?: string[] | null;
-      /** Model */
-      model?: string | null;
-      /** Name */
-      name?: string | null;
+      member: string;
       /** Path */
-      path?: string | null;
-      /** Radio Action */
-      radio_action?: ("create" | "open" | "send" | "pass" | "stop") | null;
-      /** Reasoning Effort */
-      reasoning_effort?: string | null;
+      path: string;
       /** Request Id */
-      request_id?: string | null;
-      /** Rounds */
-      rounds?: number | null;
-      /** Target */
-      target?: string | null;
+      request_id: string;
       /** Team Id */
       team_id?: string | null;
-      /** Text */
-      text?: string | null;
     };
-    /** PeerTeamsResponse */
-    PeerTeamsResponse: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Id */
-      id?: string | null;
-      /** Members */
-      members?: string[] | null;
-      /** Movedagents */
-      movedAgents?: string[] | null;
+    /** PeerTeamRadioCreateRequest */
+    PeerTeamRadioCreateRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "radio";
       /** Name */
-      name?: string | null;
-      /** Parentid */
-      parentId?: string | null;
+      name: string;
+      /** Participants */
+      participants: components["schemas"]["SharedParticipantRequest"][];
       /** Path */
-      path?: string | null;
-      /** Peerteams */
-      peerTeams?: components["schemas"]["PeerTeam"][] | null;
-      /** Peerteamsrevision */
-      peerTeamsRevision?: number | null;
-      /** Projectpath */
-      projectPath?: string | null;
-      radio?: components["schemas"]["JsonValue"] | null;
-      room?: components["schemas"]["JsonValue"] | null;
-      /** Rootid */
-      rootId?: string | null;
-      /** Updated */
-      updated?: number | null;
+      path: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      radio_action: "create";
+      /** Request Id */
+      request_id: string;
+    };
+    /** PeerTeamRadioOpenRequest */
+    PeerTeamRadioOpenRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "radio";
+      /** Expected Revision */
+      expected_revision?: number | null;
+      /** Path */
+      path: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      radio_action: "open";
+      /** Request Id */
+      request_id: string;
+      /** Team Id */
+      team_id: string;
+    };
+    /** PeerTeamRadioPassRequest */
+    PeerTeamRadioPassRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "radio";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Path */
+      path: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      radio_action: "pass";
+      /** Request Id */
+      request_id: string;
+      /**
+       * Rounds
+       * @default 1
+       * @enum {integer}
+       */
+      rounds: 1 | 2;
+      /** Target */
+      target: string;
+      /** Team Id */
+      team_id: string;
+    };
+    /** PeerTeamRadioSendRequest */
+    PeerTeamRadioSendRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "radio";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Path */
+      path: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      radio_action: "send";
+      /** Request Id */
+      request_id: string;
+      /**
+       * Rounds
+       * @default 1
+       * @enum {integer}
+       */
+      rounds: 1 | 2;
+      /**
+       * Target
+       * @default both
+       */
+      target: string;
+      /** Team Id */
+      team_id: string;
+      /** Text */
+      text: string;
+    };
+    /** PeerTeamRadioStopRequest */
+    PeerTeamRadioStopRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "radio";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Path */
+      path: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      radio_action: "stop";
+      /** Request Id */
+      request_id: string;
+      /** Team Id */
+      team_id: string;
+    };
+    /** PeerTeamSaveRequest */
+    PeerTeamSaveRequest: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "save";
+      /** Expected Revision */
+      expected_revision: number;
+      /** Members */
+      members: string[];
+      /** Name */
+      name: string;
+      /** Path */
+      path: string;
+      /** Request Id */
+      request_id: string;
+      /** Team Id */
+      team_id?: string | null;
     };
     /** PlanBody */
     PlanBody: {
@@ -6347,6 +6616,10 @@ export interface components {
       next: string[];
       /** Revision */
       revision: number;
+      /** Seen */
+      seen?: {
+        [key: string]: components["schemas"]["RoomRadioSeen"];
+      } | null;
       /** Speaker */
       speaker: string | null;
       status: components["schemas"]["RadioStatus"];
@@ -6357,10 +6630,28 @@ export interface components {
     RoomRadioActive: {
       /** Agentid */
       agentId: string;
+      /** Epoch */
+      epoch: number;
       /** Eventid */
       eventId: string;
+      /** Identity */
+      identity: [string | null, number | null, number];
+      /** Threadid */
+      threadId: string | null;
+      /** Through */
+      through: number;
       /** Turnid */
       turnId?: string | null;
+    };
+    /**
+     * RoomRadioSeen
+     * @description Per-agent transcript cursor persisted by the shared-radio runtime.
+     */
+    RoomRadioSeen: {
+      /** Identity */
+      identity: [string | null, number | null, number];
+      /** Seq */
+      seq: number;
     };
     /**
      * RoomStatus
@@ -6939,6 +7230,15 @@ export interface components {
       action: "set_enabled";
       /** Enabled */
       enabled: boolean;
+    };
+    /** SharedParticipantRequest */
+    SharedParticipantRequest: {
+      /** Account Key */
+      account_key: string;
+      /** Effort */
+      effort?: string | null;
+      /** Model */
+      model: string;
     };
     /** SignedEnvelope */
     SignedEnvelope: {
@@ -14179,7 +14479,18 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["PeerTeamRequest"];
+        "application/json":
+          | components["schemas"]["PeerTeamSaveRequest"]
+          | components["schemas"]["PeerTeamDeleteRequest"]
+          | components["schemas"]["PeerTeamMoveRequest"]
+          | components["schemas"]["PeerTeamConvertRequest"]
+          | (
+              | components["schemas"]["PeerTeamRadioOpenRequest"]
+              | components["schemas"]["PeerTeamRadioSendRequest"]
+              | components["schemas"]["PeerTeamRadioPassRequest"]
+              | components["schemas"]["PeerTeamRadioStopRequest"]
+              | components["schemas"]["PeerTeamRadioCreateRequest"]
+            );
       };
     };
     responses: {
@@ -14189,7 +14500,10 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["PeerTeamsResponse"];
+          "application/json":
+            | components["schemas"]["PeerProjectResponse"]
+            | components["schemas"]["PeerConversionResponse"]
+            | components["schemas"]["PeerRadioResponse"];
         };
       };
       /** @description Invalid request or operation failed */

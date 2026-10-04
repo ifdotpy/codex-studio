@@ -34,6 +34,7 @@ SCHEMA_SHAPE_KEYS = frozenset(
         "not",
         "properties",
         "items",
+        "prefixItems",
         "additionalProperties",
     }
 )
@@ -191,7 +192,7 @@ def _schema_errors(
         additional = schema.get("additionalProperties")
         if not properties and additional is None:
             errors.append(f"{location}: object has no declared properties or additionalProperties schema")
-    if schema.get("type") == "array" and "items" not in schema:
+    if schema.get("type") == "array" and "items" not in schema and "prefixItems" not in schema:
         errors.append(f"{location}: array has no items schema")
 
     properties_value = schema.get("properties")
@@ -206,6 +207,21 @@ def _schema_errors(
     items = schema.get("items")
     if items is not None:
         errors.extend(_schema_errors(items, document, f"{location}.items", reference_stack))
+
+    prefix_items = schema.get("prefixItems")
+    if prefix_items is not None:
+        if not isinstance(prefix_items, list) or not prefix_items:
+            errors.append(f"{location}: prefixItems must contain at least one schema")
+        else:
+            for index, item_schema in enumerate(prefix_items):
+                errors.extend(
+                    _schema_errors(
+                        item_schema,
+                        document,
+                        f"{location}.prefixItems[{index}]",
+                        reference_stack,
+                    )
+                )
 
     additional = schema.get("additionalProperties")
     if isinstance(additional, dict):
