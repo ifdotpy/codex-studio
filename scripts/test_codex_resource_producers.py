@@ -189,6 +189,12 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
             published: list[str] = []
             published_lock = threading.Lock()
             original_publish = codex_session_costs._publish_session_cost
+            previous_cache = (
+                reader.clock(),
+                {"rootId": "lead", "totalUSD": 2.0},
+                {},
+            )
+            reader.cache["lead"] = previous_cache
 
             def compute(_agent_id: str, team_root: str, *, refresh: bool) -> dict[str, object]:
                 if not refresh:
@@ -196,13 +202,8 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 compute_started.set()
                 if not release_compute.wait(2):
                     raise TimeoutError("test did not release shared session-cost refresh")
-                with reader.lock:
-                    reader.cache[team_root] = (
-                        reader.clock(),
-                        {"rootId": team_root, "totalUSD": 2.0},
-                        {},
-                    )
-                return reader.cache[team_root][1]
+                self.assertEqual(team_root, "lead")
+                return previous_cache[1]
 
             def publish(state_dir: str | Path, agent_id: str) -> None:
                 original_publish(state_dir, agent_id)
@@ -238,6 +239,89 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 subscription.close()
                 unregister_resource_hub(root, hub)
 
+    async def test_distinct_session_roots_queue_and_complete_without_another_request(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loop = asyncio.get_running_loop()
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(root, hub)
+            subscription = hub.subscribe(
+                [
+                    ResourceRef(SessionCostResource(kind="session-cost", agentId="agent-a")),
+                    ResourceRef(SessionCostResource(kind="session-cost", agentId="agent-b")),
+                ],
+                loop=loop,
+            )
+            reader = SessionCostReader(root / "canvas.sqlite3", pricing=None, state_root=root)
+            first_started = threading.Event()
+            release_first = threading.Event()
+            second_started = threading.Event()
+            release_second = threading.Event()
+            both_published = threading.Event()
+            published: list[str] = []
+            published_lock = threading.Lock()
+            original_publish = codex_session_costs._publish_session_cost
+
+            def compute(agent_id: str, team_root: str, *, refresh: bool) -> dict[str, object]:
+                self.assertTrue(refresh)
+                if team_root == "root-a":
+                    first_started.set()
+                    if not release_first.wait(2):
+                        raise TimeoutError("test did not release first root refresh")
+                elif team_root == "root-b":
+                    second_started.set()
+                    if not release_second.wait(2):
+                        raise TimeoutError("test did not release queued root refresh")
+                else:
+                    raise AssertionError(f"unexpected root {team_root}")
+                result = {"rootId": team_root, "totalUSD": 1.0}
+                with reader.lock:
+                    reader.cache[team_root] = (reader.clock(), result, {})
+                return result
+
+            def publish(state_dir: str | Path, agent_id: str) -> None:
+                original_publish(state_dir, agent_id)
+                with published_lock:
+                    published.append(agent_id)
+                    if len(published) == 2:
+                        both_published.set()
+
+            try:
+                with patch.object(reader, "_compute_shared", side_effect=compute), patch.object(
+                    codex_session_costs, "_publish_session_cost", side_effect=publish
+                ):
+                    self.assertTrue(reader._start_refresh("agent-a", "root-a"))
+                    self.assertTrue(await asyncio.to_thread(first_started.wait, 1))
+                    self.assertTrue(reader._start_refresh("agent-b", "root-b"))
+                    self.assertEqual(reader.active_refresh_root, "root-a")
+                    self.assertEqual(list(reader.refresh_queue), ["root-b"])
+                    self.assertEqual(reader.refreshing, {"root-a", "root-b"})
+
+                    release_first.set()
+                    self.assertTrue(await asyncio.to_thread(second_started.wait, 1))
+                    self.assertEqual(reader.active_refresh_root, "root-b")
+                    self.assertEqual(list(reader.refresh_queue), [])
+                    release_second.set()
+                    self.assertTrue(await asyncio.to_thread(both_published.wait, 1))
+
+                received: set[str] = set()
+                while received != {"agent-a", "agent-b"}:
+                    event = await subscription.next_event(timeout=1)
+                    assert event is not None
+                    received.update(
+                        resource.root.agentId
+                        for resource in event.resources
+                        if resource.root.kind == "session-cost"
+                    )
+                self.assertEqual(set(published), {"agent-a", "agent-b"})
+                self.assertEqual(reader.refreshing, set())
+                self.assertEqual(reader.refresh_waiters, {})
+                self.assertEqual(reader.refresh_queue, {})
+            finally:
+                release_first.set()
+                release_second.set()
+                subscription.close()
+                unregister_resource_hub(root, hub)
 
 if __name__ == "__main__":
     unittest.main()

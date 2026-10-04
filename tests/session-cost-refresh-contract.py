@@ -266,7 +266,7 @@ class SessionCostRefreshContract(unittest.TestCase):
             for _ in range(8):
                 stale = self.reader.snapshot("lead")
                 self.assertEqual(stale["totalUSD"], initial["totalUSD"])
-                self.assertTrue(stale["refreshing"])
+                self.assertFalse(stale["refreshing"], "cooldown snapshots are settled when no worker runs")
             worker.assert_not_called()
             self.clock[0] += 10
             self.reader.snapshot("lead")
