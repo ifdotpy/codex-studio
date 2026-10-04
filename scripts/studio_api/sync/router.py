@@ -29,10 +29,12 @@ from studio_api.sync.models import (
     TranscriptStreamQuery,
 )
 from studio_api.sync.resources.models import (
+    DraftsResource,
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
     ResourceRef,
     ResourceTokenRatesEvent,
+    TranscriptResource,
 )
 
 if TYPE_CHECKING:
@@ -460,46 +462,76 @@ def create_router(context: ApiContext) -> APIRouter:
         if runtime is None:
             return cast(StreamingResponse, context.send(request, {"error": "Not found"}, status=404))
         agent_id = _first(request, "id", "") or ""
-        await run_in_threadpool(runtime.transcript, agent_id)
+        try:
+            subscription = context.resource_hub().subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId=agent_id))],
+                loop=asyncio.get_running_loop(),
+            )
+            initial_data = await run_in_threadpool(runtime.transcript, agent_id)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+            return cast(StreamingResponse, context.send(
+                request, {"error": str(error) or "Transcript stream is unavailable"}, status=503
+            ))
 
         async def transcript_events() -> AsyncIterator[bytes]:
-            revision: int | None = -1
             previous: dict[str, dict[str, object]] = {}
             version = 0
             previous_order: list[str] | None = None
             try:
+                data = dict(initial_data)
+                records = {item["id"]: item for item in data.pop("items")}
+                previous = records
+                previous_order = list(records)
+                version += 1
+                yield _event("transcript", {
+                    **data, "version": version, "replace": True,
+                    "items": [{"id": item_id, "replace": item} for item_id, item in records.items()],
+                    "order": previous_order,
+                })
                 while not await request.is_disconnected() and not runtime.closed:
-                    current, data = await run_in_threadpool(runtime.wait_transcript, agent_id, revision)
-                    if current is None:
-                        return
-                    if data is None:
+                    event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                    if event is None:
                         yield b": heartbeat\n\n"
-                    else:
-                        records = {item["id"]: item for item in data.pop("items")}
-                        order = list(records)
-                        changed: list[dict[str, object]] = []
-                        for item_id, item in records.items():
-                            old = previous.get(item_id)
-                            if old == item:
-                                continue
-                            old_text = old.get("text") if old else None
-                            new_text = item.get("text")
-                            old_rest = {key: value for key, value in old.items() if key != "text"} if old else {}
-                            new_rest = {key: value for key, value in item.items() if key != "text"}
-                            if (isinstance(old_text, str) and isinstance(new_text, str)
-                                    and new_text.startswith(old_text) and old_rest == new_rest):
-                                changed.append({"id": item_id, "append": new_text[len(old_text):]})
-                            else:
-                                changed.append({"id": item_id, "replace": item})
-                        version += 1
-                        payload = {**data, "version": version, "replace": revision == -1, "items": changed}
-                        if revision == -1 or order != previous_order:
-                            payload["order"] = order
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
-                        revision, previous, previous_order = current, records, order
-                    await asyncio.sleep(TRANSCRIPT_COALESCE_SECONDS)
+                        continue
+                    if isinstance(event, ResourceTokenRatesEvent):
+                        continue
+                    data = await run_in_threadpool(runtime.transcript, agent_id)
+                    records = {item["id"]: item for item in data.pop("items")}
+                    order = list(records)
+                    changed: list[dict[str, object]] = []
+                    for item_id, item in records.items():
+                        old = previous.get(item_id)
+                        if old == item:
+                            continue
+                        old_text = old.get("text") if old else None
+                        new_text = item.get("text")
+                        old_rest = {key: value for key, value in old.items() if key != "text"} if old else {}
+                        new_rest = {key: value for key, value in item.items() if key != "text"}
+                        if (isinstance(old_text, str) and isinstance(new_text, str)
+                                and new_text.startswith(old_text) and old_rest == new_rest):
+                            changed.append({"id": item_id, "append": new_text[len(old_text):]})
+                        else:
+                            changed.append({"id": item_id, "replace": item})
+                    removed = [item_id for item_id in previous if item_id not in records]
+                    if not changed and not removed and order == previous_order:
+                        previous = records
+                        continue
+                    version += 1
+                    payload = {
+                        **data,
+                        "version": version,
+                        "replace": False,
+                        "items": changed,
+                        **({"removed": removed} if removed else {}),
+                    }
+                    if order != previous_order:
+                        payload["order"] = order
+                    yield _event("transcript", payload)
+                    previous, previous_order = records, order
             except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
                 yield _event("unavailable", {"error": str(error)})
+            finally:
+                subscription.close()
 
         return _stream_response(transcript_events())
 
@@ -512,7 +544,13 @@ def create_router(context: ApiContext) -> APIRouter:
         if workspace != identity["workspaceId"]:
             return context.send(request, {"error": "The server workspace changed. Reload before sending."}, status=409)
         body_rows = body.model_dump(mode="json", by_alias=True, exclude_unset=True)["rows"]
-        return context.send(request, store.push_drafts(body_rows))
+        previous_sequence = store.draft_sequence()
+        result = store.push_drafts(body_rows)
+        if store.draft_sequence() != previous_sequence:
+            from studio_api.sync.resources.hub import publish_resources
+
+            publish_resources(context.canvas.root, ResourceRef(DraftsResource(kind="drafts")))
+        return context.send(request, result)
 
     from studio_api.sync.resources.relay.router import create_router as create_resource_notify_router
 

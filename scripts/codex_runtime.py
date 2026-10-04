@@ -9,11 +9,13 @@ import base64
 import copy
 import concurrent.futures
 from contextlib import contextmanager
+from collections.abc import Callable
 import fcntl
 import json
 import math
 import os
 from pathlib import Path
+from queue import Empty, SimpleQueue
 import re
 import sqlite3
 import subprocess
@@ -1288,6 +1290,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.monitor_threads = set()
         self.offline = False
         self.changed = threading.Event()
+        self._committed_resource_changes: SimpleQueue[list[object]] = SimpleQueue()
+        self._committed_resource_callbacks: SimpleQueue[Callable[[], None]] = SimpleQueue()
         self.closed = False
         self._fast_delivery_enabled = False
         self._wal_keeper = None
@@ -1716,6 +1720,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local.depth = 1
         pending = local.__dict__.setdefault("after_commit_dispatch", {})
         pending[db] = []
+        resource_changes = local.__dict__.setdefault("after_commit_resources", {})
+        resource_changes[db] = {}
+        resource_callbacks = local.__dict__.setdefault("after_commit_resource_callbacks", {})
+        resource_callbacks[db] = []
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
         original_commit, original_rollback = db.commit, db.rollback
@@ -1725,6 +1733,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         def commit_analytics():
             original_commit()
+            self._queue_staged_resource_changes(resource_changes, db)
+            self._queue_staged_resource_callbacks(resource_callbacks, db)
             captures = analytics.get(db, {})
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
             self.schedule_analytics_captures(captures.get("captures", []),
@@ -1733,16 +1743,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         def rollback_analytics():
             original_rollback()
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
+            resource_changes[db] = {}
+            resource_callbacks[db] = []
 
         db.commit = commit_analytics
         db.rollback = rollback_analytics
         previous_timeout = None
-        if busy_timeout is not None:
-            previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
-            db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
+        previous_resource_db = getattr(local, "resource_db", None)
         try:
+            local.resource_db = db
+            if busy_timeout is not None:
+                previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+                db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
             with sqlite_scope(db, "Runtime.db"):
                 yield db
+            self._queue_staged_resource_changes(resource_changes, db)
+            self._queue_staged_resource_callbacks(resource_callbacks, db)
+            resource_changes.pop(db, None)
+            resource_callbacks.pop(db, None)
             captures = analytics.pop(db)
             self.schedule_analytics_captures(captures["captures"], overflow=captures["overflow"])
             if getattr(local, "agent_cache_dirty", False):
@@ -1757,6 +1775,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except BaseException:
             pending.pop(db, None)
             analytics.pop(db, None)
+            resource_changes.pop(db, None)
+            resource_callbacks.pop(db, None)
             # An explicit commit inside the context can already have made work visible.
             self.changed.set()
             raise
@@ -1774,6 +1794,73 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 local.depth = 0
             else:
                 db.close()
+            local.resource_db = previous_resource_db
+
+    def _stage_resource_change(self, db, resource):
+        """Associate a typed invalidation with the transaction that made it visible."""
+        local = self.__dict__.get("_callback_db")
+        changes = getattr(local, "after_commit_resources", {}).get(db) if local else None
+        if changes is not None:
+            changes[resource.model_dump_json(by_alias=True)] = resource
+
+    def _queue_staged_resource_changes(self, staged, db):
+        changes = staged.get(db)
+        if not changes:
+            return
+        staged[db] = {}
+        self.__dict__.setdefault("_committed_resource_changes", SimpleQueue()).put(
+            list(changes.values())
+        )
+        # `schedule` drains this exact queue. Its ordinary timeout is not a
+        # resource scan and this wake avoids adding notification latency.
+        self.changed.set()
+
+    def _stage_resource_callback(self, db, callback: Callable[[], None]) -> None:
+        """Run volatile projections only after their durable source commits."""
+        local = self.__dict__.get("_callback_db")
+        callbacks = getattr(local, "after_commit_resource_callbacks", {}).get(db) if local else None
+        if callbacks is not None:
+            callbacks.append(callback)
+
+    def _queue_staged_resource_callbacks(self, staged, db):
+        callbacks = staged.get(db)
+        if not callbacks:
+            return
+        staged[db] = []
+        queue = self.__dict__.setdefault("_committed_resource_callbacks", SimpleQueue())
+        for callback in callbacks:
+            queue.put(callback)
+        # The existing runtime scheduler drains post-commit work; this adds no
+        # worker thread and cannot publish a rolled-back observation.
+        self.changed.set()
+
+    def _publish_committed_resource_changes(self):
+        # Mutations often enter db() while Runtime.lock is held. A cross-thread
+        # lock barrier ensures their transaction scope has left that critical
+        # section before the watcher/client fanout runs.
+        with self.lock:
+            pass
+        with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
+            pass
+        callback_queue = self.__dict__.setdefault("_committed_resource_callbacks", SimpleQueue())
+        while True:
+            try:
+                callback = callback_queue.get_nowait()
+            except Empty:
+                break
+            callback()
+        resources = {}
+        while True:
+            try:
+                batch = self._committed_resource_changes.get_nowait()
+            except Empty:
+                break
+            for resource in batch:
+                resources[resource.model_dump_json(by_alias=True)] = resource
+        if resources:
+            from studio_api.sync.resources.hub import publish_resources
+
+            publish_resources(self.root, *resources.values())
 
     def analytics_safe(self, db, operation, *args, **kwargs):
         """Keep analytics waits outside the main writer and its caller's lock."""
@@ -2243,10 +2330,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
-        previous = None
-        if table == "agents":
-            previous_row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (record["id"],)).fetchone()
-            previous = json.loads(previous_row[0]) if previous_row else None
+        previous_row = db.execute(f"SELECT record FROM runtime_{table} WHERE id=?", (record["id"],)).fetchone()
+        previous = json.loads(previous_row[0]) if previous_row else None
+        changed = previous != record
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
         if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
@@ -2295,10 +2381,42 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_entity_put(db, "room", room["id"], room)
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
-            self.touch_ui(record["id"])
+            self.touch_ui(record["id"], db)
         elif table == "work":
             # Work ownership and status retain deleted owners in the scheduler roster.
             self.__dict__.pop("_scheduler_agent_roster", None)
+        if changed:
+            from studio_api.sync.resources.models import (
+                PanelResource, QueueResource, ReceiptsResource, ResourceRef,
+                RoomResource, TaskResource, TasksResource, WorkspaceResource,
+            )
+
+            if table == "agents":
+                agent_id = str(record["id"])
+                for resource in (
+                    PanelResource(kind="panel", agentId=agent_id),
+                    QueueResource(kind="queue", agentId=agent_id),
+                    ReceiptsResource(kind="receipts", agentId=agent_id),
+                    TasksResource(kind="tasks", agentId=agent_id),
+                    WorkspaceResource(kind="workspace", agentId=agent_id),
+                ):
+                    self._stage_resource_change(db, ResourceRef(resource))
+            elif table == "tasks":
+                self._stage_resource_change(
+                    db, ResourceRef(TaskResource(kind="task", taskId=str(record["id"])))
+                )
+                if record.get("agent"):
+                    self._stage_resource_change(
+                        db, ResourceRef(TasksResource(kind="tasks", agentId=str(record["agent"])))
+                    )
+            elif table == "rooms":
+                self._stage_resource_change(
+                    db, ResourceRef(RoomResource(kind="room", roomId=str(record["id"])))
+                )
+            elif table == "work" and record.get("owner"):
+                self._stage_resource_change(
+                    db, ResourceRef(TasksResource(kind="tasks", agentId=str(record["owner"])))
+                )
 
     def invalidate_agent_records(self, _key=None):
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):
@@ -2310,7 +2428,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         local.agent_cache_dirty = True
         self.invalidate_agent_records(key)
 
-    def touch_ui(self, key):
+    def touch_ui(self, key, db=None):
+        if db is None:
+            local = self.__dict__.get("_callback_db")
+            db = getattr(local, "resource_db", None) if local else None
+        if db is not None:
+            from studio_api.sync.resources.models import ResourceRef, TranscriptResource
+
+            self._stage_resource_change(
+                db, ResourceRef(TranscriptResource(kind="transcript", agentId=str(key)))
+            )
         with self.ui_condition:
             self.ui_revisions[key] = self.ui_revisions.get(key, 0) + 1
             self.ui_condition.notify_all()
@@ -2765,9 +2892,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def disconnected(self, account_key="default", connection_id=None):
         from codex_connection_recovery import supervisor_identity
+        desktop_changed = False
         with self.lock, self.db() as db:
             if connection_id is not None and self.connection_ids.get(account_key) != connection_id:
                 return
+            desktop_changed = account_key not in self.offline_accounts
             self.offline_accounts.add(account_key)
             if account_key == "default":
                 self.offline = True
@@ -2832,6 +2961,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         voice = getattr(self, "_voice_store", None)
         if voice:
             voice.disconnected_native(account_key, connection_id)
+        if desktop_changed:
+            from studio_api.sync.resources.hub import publish_resources
+            from studio_api.sync.resources.models import DesktopResource, ResourceRef
+
+            publish_resources(
+                self.root, ResourceRef(DesktopResource(kind="desktop"))
+            )
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
         key = agent + ":" + key
@@ -2881,7 +3017,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if role == "assistant":
             from codex_radio import observe_item
             observe_item(self, db, agent, key, role, text, metadata)
-        self.touch_ui(agent)
+        self.touch_ui(agent, db)
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
@@ -2907,6 +3043,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a["status"] = "queued"
             self.put(db, "agents", a)
         if inserted.rowcount:
+            from studio_api.sync.resources.models import QueueResource, ReceiptsResource, ResourceRef
+
+            agent_id = str(a["id"])
+            self._stage_resource_change(db, ResourceRef(QueueResource(kind="queue", agentId=agent_id)))
+            self._stage_resource_change(db, ResourceRef(ReceiptsResource(kind="receipts", agentId=agent_id)))
             self.mark_event_timing(db, [key], "enqueuedAt")
             if kind != "rule":
                 self.rule_event(db, a, kind, text, key)
@@ -4261,6 +4402,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 break
             try:
+                self._publish_committed_resource_changes()
                 self.monitors_tick()
                 self.rules_tick()
                 self.capacity_tick()
@@ -5409,14 +5551,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 }
                 changed = self.store_rate_limits(account_key, value)
             self.usage_resume_limits_changed(account_key, value)
-            if changed:
-                from studio_api.sync.resources.hub import publish_resources
-                from studio_api.sync.resources.models import LimitsResource, ResourceRef
-
-                publish_resources(
-                    self.root,
-                    ResourceRef(LimitsResource(kind="limits", accountKey=account_key)),
-                )
             return
         if method == "command/exec/outputDelta":
             self.output(p, account_key, connection_id)
@@ -5871,7 +6005,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 restart.update(stage='finished', reconciledAt=time.time(),
                                outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
-                token_rates(self).observe(a, method, p, account_key, connection_id, token_rate_at)
+                observed_agent = copy.deepcopy(a)
+                observed_params = copy.deepcopy(p)
+                self._stage_resource_callback(
+                    db,
+                    lambda agent=observed_agent, params=observed_params: token_rates(self).observe(
+                        agent, method, params, account_key, connection_id, token_rate_at,
+                    ),
+                )
             self.put(db, "agents", a)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.
@@ -6546,6 +6687,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "rateLimits": self.rate_limits,
                     "rateLimitsByAccount": self.rate_limits_by_account.copy(),
                 })
+                from studio_api.sync.resources.models import LimitsResource, ResourceRef
+
+                self._stage_resource_change(
+                    db,
+                    ResourceRef(LimitsResource(kind="limits", accountKey=account_key)),
+                )
         return changed
 
     def limit_refresh_lock(self, account_key):

@@ -22,7 +22,12 @@ from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
 from studio_api.responses import install_error_response_docs
 from studio_api.sync.router import create_router
 from studio_api.sync.resources.hub import ResourceHub
-from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
+from studio_api.sync.resources.models import (
+    ResourceRef,
+    TokenRateSnapshot,
+    TokenRateValue,
+    TranscriptResource,
+)
 
 
 class StoreStub:
@@ -35,6 +40,8 @@ class StoreStub:
         self.runtime: RuntimeStub | None = None
         self.invalid_push_response = False
         self.reset_pull = False
+        self.drafts_revision = 0
+        self.draft_revision_increment = 1
 
     def identity(self) -> dict[str, object]:
         return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
@@ -60,8 +67,12 @@ class StoreStub:
             "state": 1, "transcripts": 1, "drafts": 1,
         }}
 
+    def draft_sequence(self) -> int:
+        return self.drafts_revision
+
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
         self.push_calls.append(rows)
+        self.drafts_revision += self.draft_revision_increment
         if self.invalid_push_response:
             return [{"id": "x", "payload": "{}", "seq": True, "_deleted": False}]
         return []
@@ -81,21 +92,18 @@ class RuntimeStub:
     closed = True
 
     def __init__(self) -> None:
-        self.transcript_responses: list[tuple[int | None, dict[str, object] | None]] = []
-        self.transcript_revisions: list[int | None] = []
+        self.transcript_responses: list[dict[str, object]] = []
+        self.transcript_reads = 0
+        self.hub: ResourceHub | None = None
 
     def transcript(self, _agent_id: str) -> dict[str, object]:
-        return {"items": [], "truncated": False}
-
-    def wait_transcript(
-        self, _agent_id: str, revision: int | None
-    ) -> tuple[int | None, dict[str, object] | None]:
-        self.transcript_revisions.append(revision)
-        if not self.transcript_responses:
-            self.closed = True
-            return None, None
-        response = self.transcript_responses.pop(0)
-        if not self.transcript_responses:
+        self.transcript_reads += 1
+        response = self.transcript_responses.pop(0) if self.transcript_responses else {
+            "items": [], "truncated": False,
+        }
+        if self.transcript_reads == 1 and self.hub is not None:
+            self.hub.publish(ResourceRef(TranscriptResource(kind="transcript", agentId=_agent_id)))
+        if self.transcript_reads >= 2:
             self.closed = True
         return response
 
@@ -126,6 +134,7 @@ class ContextStub:
                 teams={},
             ),
         )
+        self.runtime.hub = self.hub
 
     def sync(self) -> StoreStub:
         return self.store
@@ -346,6 +355,20 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.json(), [])
         self.assertEqual(len(context.store.push_calls), 1)
 
+    def test_noop_draft_write_does_not_publish_resource_change(self) -> None:
+        context = ContextStub()
+        context.store.draft_revision_increment = 0
+        payload = json.dumps({"id": "device:lead", "device": "device", "session": "lead", "text": "draft"})
+        response = make_client(context).post(
+            "/api/sync/drafts",
+            headers={"X-Canvas-Workspace": "workspace-a"},
+            json={"rows": [{"newDocumentState": {
+                "id": "device:lead", "payload": payload, "_deleted": False,
+            }}]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(context.hub._revision, 0)
+
     def test_wrong_workspace_blocks_draft_mutation(self) -> None:
         context = ContextStub()
         response = make_client(context).post(
@@ -493,10 +516,10 @@ class SyncRouterTests(unittest.TestCase):
         context = ContextStub()
         context.runtime.closed = False
         context.runtime.transcript_responses = [
-            (1, {"items": [{"id": "b", "text": "hello", "kind": "message"},
-                           {"id": "a", "text": "second", "kind": "message"}], "truncated": False}),
-            (2, {"items": [{"id": "a", "text": "second", "kind": "message"},
-                           {"id": "b", "text": "hello world", "kind": "message"}], "truncated": False}),
+            {"items": [{"id": "b", "text": "hello", "kind": "message"},
+                        {"id": "a", "text": "second", "kind": "message"}], "truncated": False},
+            {"items": [{"id": "a", "text": "second", "kind": "message"},
+                        {"id": "b", "text": "hello world", "kind": "message"}], "truncated": False},
         ]
         body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
         events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines() if line.startswith("data: ")]
@@ -505,7 +528,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(events[0]["order"], ["b", "a"])
         self.assertEqual(events[1]["order"], ["a", "b"])
         self.assertEqual(events[1]["items"], [{"id": "b", "append": " world"}])
-        self.assertEqual(context.runtime.transcript_revisions, [-1, 1])
+        self.assertEqual(context.runtime.transcript_reads, 2)
 
 
 if __name__ == "__main__":
