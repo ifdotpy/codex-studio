@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
+from studio_api.context import ApiContext
 from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
 from .router import create_router
 from .models import (
@@ -182,7 +183,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.store = cast(_AccountStore, AccountStore(self.root / "state"))  # type: ignore[no-untyped-call]
         self.runtime = _RuntimeFixture(self.store)
         self.app = FastAPI()
-        self.app.include_router(create_router(_ContextFixture(self.runtime)))
+        self.app.include_router(create_router(cast(ApiContext, _ContextFixture(self.runtime))))
 
         @self.app.exception_handler(RequestValidationError)
         def request_error(_request: object, _error: RequestValidationError) -> JSONResponse:
@@ -211,6 +212,17 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["accounts"][0]["accountId"], "account-default")
         self.assertNotIn("fixture-secret", response.text)
+
+    def test_account_route_uses_actual_api_context_response_validation(self) -> None:
+        context = ApiContext.for_schema()
+        setattr(context.canvas, "runtime", self.runtime)
+        app = FastAPI()
+        app.include_router(create_router(context))
+        with TestClient(app) as client:
+            response = client.get("/api/accounts")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["defaultAccountKey"], "default")
+        self.assertNotIn("_syncEntities", response.json())
 
     def test_delete_route_preserves_exact_durable_request_id(self) -> None:
         second = self.root / "second-profile"
@@ -290,7 +302,7 @@ class AccountsRouterTests(unittest.TestCase):
                 return {"data": [{"model": "worker/model"}]}
 
         worker_app = FastAPI()
-        worker_app.include_router(create_router(_ContextFixture(WorkerRuntime())))
+        worker_app.include_router(create_router(cast(ApiContext, _ContextFixture(WorkerRuntime()))))
         with TestClient(worker_app) as client:
             response = client.get("/api/models?account_key=first&workers=1")
         self.assertEqual(response.status_code, 200)
@@ -324,7 +336,9 @@ class AccountsRouterTests(unittest.TestCase):
             isolated.server.billing_id = "billing-default"
             app = FastAPI()
             runtime = isolated.runtime
-            app.include_router(create_router(_ContextFixture(runtime)))
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", runtime)
+            app.include_router(create_router(context))
             @app.exception_handler(RequestValidationError)
             def request_error(_request: object, _error: RequestValidationError) -> JSONResponse:
                 return JSONResponse(status_code=400, content=ErrorResponse(error="Invalid request").wire_dump())
@@ -357,7 +371,9 @@ class AccountsRouterTests(unittest.TestCase):
         isolated.setUp()
         try:
             app = FastAPI()
-            app.include_router(create_router(_ContextFixture(isolated.runtime)))
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", isolated.runtime)
+            app.include_router(create_router(context))
             project_path = isolated.root / "project"
             project_path.mkdir()
             with TestClient(app) as client:
