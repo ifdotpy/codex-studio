@@ -27,7 +27,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
   );
   let log = "",
     context,
-    page;
+    page,
+    server,
+    heartbeatTimer,
+    streamConnections = new Set();
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
@@ -112,15 +115,76 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     ]);
     const reads = [],
       streams = [],
-      entityStreams = [],
-      held = [];
-    const initializedResources = new Set();
+      entityPulls = [],
+      emittedEntityEvents = [],
+      streamQueries = [],
+      streamEvents = [],
+      held = [],
+      identities = [];
     let holdNetwork = false,
       holdWorkspaceB = false,
+      holdRecoveryB = false,
       staleB = false;
     let staleReplies = 0,
-      releaseA;
+      releaseA,
+      releaseRecoveryB,
+      recoveryReadStarted = false;
     let notificationRevision = 0;
+    const { createServer } = await import(
+      new URL(
+        "../../../web/node_modules/vite/dist/node/index.js",
+        import.meta.url,
+      )
+    );
+    server = await createServer({
+      configFile: false,
+      root: join(repo, "web"),
+      server: { host: "127.0.0.1", port: 0 },
+      plugins: [
+        {
+          name: "chat-prefetch-persistent-sync-stream",
+          configureServer(vite) {
+            vite.middlewares.use("/api/sync/stream", (request, response) => {
+              const url = new URL(request.url || "/", "http://localhost");
+              const resources = JSON.parse(
+                url.searchParams.get("resources") || "[]",
+              );
+              streamEvents.push({ at: Date.now(), kind: "open", resources });
+              response.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+              });
+              response.write(
+                `event: resources\ndata: ${JSON.stringify({
+                  protocol: 3,
+                  workspaceId,
+                  epoch: "prefetch-epoch",
+                  revision: notificationRevision,
+                  reason: "initial",
+                  resources,
+                })}\n\n`,
+              );
+              const connection = { response, resources, openedAt: Date.now() };
+              streamConnections.add(connection);
+              streamQueries.push({ at: Date.now(), resources });
+              response.on("close", () => streamConnections.delete(connection));
+            });
+          },
+        },
+      ],
+    });
+    await server.listen();
+    const streamOrigin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    heartbeatTimer = setInterval(() => {
+      const heartbeat = `event: heartbeat\ndata: ${JSON.stringify({
+        protocol: 3,
+        workspaceId,
+        epoch: "prefetch-epoch",
+        revision: notificationRevision,
+      })}\n\n`;
+      for (const { response } of streamConnections) response.write(heartbeat);
+    }, 5000);
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
       // This test controls HTTP replies. A worker can bypass Playwright routes
@@ -143,48 +207,21 @@ test("chat prefetch ui @performance", async ({ browser }) => {
 
     const handle = async (route) => {
       const url = new URL(route.request().url());
+      if (url.pathname === "/api/sync/stream") return route.fallback();
       if (holdNetwork) {
         held.push(route);
         return;
       }
-      if (url.pathname === "/api/sync/identity")
+      if (url.pathname === "/api/sync/identity") {
+        identities.push(workspaceId);
         return route.fulfill({
           json: { workspaceId, ...(legacySync ? {} : { chatState: true }) },
         });
+      }
       if (url.pathname === "/api/state") return route.fulfill({ json: state });
       if (url.pathname === "/api/transcript/stream") {
         streams.push(url.searchParams.get("id"));
         return route.fulfill({ status: 204, body: "" });
-      }
-      if (url.pathname === "/api/sync/stream") {
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
-        const newlySubscribed = resources.some((resource) => {
-          const key = JSON.stringify(resource);
-          if (initializedResources.has(key)) return false;
-          initializedResources.add(key);
-          return true;
-        });
-        if (newlySubscribed) {
-          notificationRevision++;
-          return route.fulfill({
-            status: 200,
-            contentType: "text/event-stream",
-            body: `event: resources\ndata: ${JSON.stringify({
-              protocol: 3,
-              workspaceId,
-              epoch: "prefetch-epoch",
-              revision: notificationRevision,
-              reason: "initial",
-              resources,
-            })}\n\n`,
-          });
-        }
-        if (resources.some((resource) => resource.kind === "state")) {
-          entityStreams.push(route);
-          return;
-        }
-        held.push(route);
-        return;
       }
       if (url.pathname === "/api/search")
         return route.fulfill({
@@ -238,16 +275,30 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       const after = Number(url.searchParams.get("after") || 0);
       if (scope === "state:entities:v1") {
         const limit = Number(url.searchParams.get("limit") || 100);
+        const requestedInitialHigh = Number(
+          url.searchParams.get("initialHigh") || 0,
+        );
+        const initialHigh = requestedInitialHigh || entityMaxSeq;
         const documents = [...entityDocuments.values()]
           .filter((document) => document.seq > after)
           .sort((left, right) => left.seq - right.seq)
           .slice(0, limit);
+        entityPulls.push({
+          at: Date.now(),
+          after,
+          ids: documents.map((document) => document.id),
+          renamedEntity: documents
+            .filter((document) => document.id === `entity:agent:${b.id}`)
+            .map((document) => JSON.parse(document.payload)?.value?.name),
+          maxSeq: entityMaxSeq,
+        });
         return route.fulfill({
           json: {
             workspaceId,
             documents,
             checkpoint: { seq: documents.at(-1)?.seq ?? after },
             maxSeq: entityMaxSeq,
+            initialHigh,
           },
         });
       }
@@ -278,6 +329,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         value = { seq: 300, data: payload(b, "B-obsolete") };
       }
       if (id) reads.push({ id, seq: value.seq, at: Date.now(), after });
+      if (holdRecoveryB && id === b.id) {
+        recoveryReadStarted = true;
+        await new Promise((resolve) => {
+          releaseRecoveryB = resolve;
+        });
+      }
       await route.fulfill({
         json: {
           workspaceId,
@@ -297,24 +354,49 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       });
     };
     await page.route("**/api/**", handle);
-    const emitResourceChange = async (resources, reason = "change") => {
-      await until(() => entityStreams.length > 0, "A resource stream is ready");
+    const queryHas = (query, ref) =>
+      query.some(
+        (item) =>
+          item.kind === ref.kind &&
+          (ref.agentId === undefined || item.agentId === ref.agentId),
+      );
+    const emitResourceChange = async (
+      resources,
+      reason = "change",
+      beforeNotify = () => {},
+      requiredQueryRefs = [{ kind: "state" }],
+    ) => {
+      await until(
+        () =>
+          [...streamConnections].some(({ resources: query }) =>
+            requiredQueryRefs.every((ref) => queryHas(query, ref)),
+          ),
+        `A resource stream subscribed to ${JSON.stringify(requiredQueryRefs)} is ready`,
+      );
+      beforeNotify();
       notificationRevision = Math.max(notificationRevision, entityMaxSeq) + 1;
-      for (const stream of entityStreams.splice(0))
-        await stream
-          .fulfill({
-            status: 200,
-            contentType: "text/event-stream",
-            body: `event: resources\ndata: ${JSON.stringify({
-              protocol: 3,
-              workspaceId,
-              epoch: "prefetch-epoch",
-              revision: notificationRevision,
-              reason,
-              resources,
-            })}\n\n`,
-          })
-          .catch(() => {});
+      const pending = [...streamConnections].filter(({ resources: query }) =>
+        requiredQueryRefs.every((ref) => queryHas(query, ref)),
+      );
+      emittedEntityEvents.push({
+        at: Date.now(),
+        revision: notificationRevision,
+        reason,
+        resources,
+        pending: pending.map(({ resources: query, openedAt }) => ({
+          query,
+          openedAt,
+        })),
+      });
+      const data = `event: resources\ndata: ${JSON.stringify({
+        protocol: 3,
+        workspaceId,
+        epoch: "prefetch-epoch",
+        revision: notificationRevision,
+        reason,
+        resources,
+      })}\n\n`;
+      for (const { response } of pending) response.write(data);
     };
     const invalidate = async (name) => {
       const response = await fetch(origin + "/api/rename", {
@@ -329,6 +411,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       currentBName = name;
       let after = entityMaxSeq;
       let maxSeq = entityMaxSeq;
+      const updatedDocuments = new Map();
       do {
         const result = await (
           await fetch(
@@ -336,19 +419,122 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           )
         ).json();
         for (const document of result.documents || [])
-          entityDocuments.set(document.id, document);
+          updatedDocuments.set(document.id, document);
         maxSeq = result.maxSeq || maxSeq;
         after = result.checkpoint?.seq || after;
       } while (after < maxSeq);
-      entityMaxSeq = maxSeq;
-      await emitResourceChange([
-        { kind: "state" },
-        { kind: "transcript", agentId: b.id },
-      ]);
+      const updatedAgent = updatedDocuments.get(`entity:agent:${b.id}`);
+      assert.equal(
+        JSON.parse(updatedAgent?.payload || "null")?.value?.name,
+        name,
+        "The state fixture must expose the renamed entity before notifying subscribers",
+      );
+      await emitResourceChange(
+        [{ kind: "state" }, { kind: "transcript", agentId: b.id }],
+        "change",
+        () => {
+          for (const [id, document] of updatedDocuments)
+            entityDocuments.set(id, document);
+          entityMaxSeq = maxSeq;
+        },
+        [{ kind: "state" }, { kind: "transcript", agentId: b.id }],
+      );
+      const eventAt = emittedEntityEvents.at(-1)?.at ?? Date.now();
+      await until(async () => {
+        const pulledRename = entityPulls.some(
+          (pull) => pull.at >= eventAt && pull.renamedEntity.includes(name),
+        );
+        const rowUpdated = (
+          await page.locator(`[data-chat="${b.id}"]:visible`).allTextContents()
+        ).some((text) => text.includes(name));
+        return pulledRename && rowUpdated;
+      }, "The state invalidation must update the renamed chat in the sidebar").catch(
+        async (error) => {
+          const diagnostic = await page.evaluate(
+            async ({ id, workspaceId }) => {
+              const request = indexedDB.open(
+                `rxdb-dexie-studio${workspaceId}--0--projections`,
+              );
+              const db = await new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+              });
+              const tx = db.transaction([...db.objectStoreNames], "readonly");
+              const stored = await Promise.all(
+                [...db.objectStoreNames].map(
+                  (store) =>
+                    new Promise((resolve) => {
+                      const query = tx.objectStore(store).getAll();
+                      query.onsuccess = () => resolve(query.result);
+                      query.onerror = () => resolve([]);
+                    }),
+                ),
+              );
+              db.close();
+              const rows = stored.flat();
+              const agent = rows.find((row) => row.id === `entity:agent:${id}`);
+              return {
+                workspaceId,
+                databaseNames: (await indexedDB.databases()).map(
+                  (database) => database.name,
+                ),
+                objectStores: [...db.objectStoreNames],
+                dbName: db.name,
+                firstStoredRowKeys: Object.keys(rows[0] || {}),
+                matchingStoredRows: rows
+                  .filter((row) => JSON.stringify(row).includes(id))
+                  .slice(0, 4),
+                objectStoreRowCounts: stored.map((rows, index) => ({
+                  store: [...db.objectStoreNames][index],
+                  count: rows.length,
+                })),
+                title: document.querySelector("#conversation-title")
+                  ?.textContent,
+                rows: [
+                  ...document.querySelectorAll(
+                    `[data-chat="${CSS.escape(id)}"]`,
+                  ),
+                ].map((row) => ({
+                  text: row.textContent,
+                  visible: row.getClientRects().length > 0,
+                })),
+                selected: document
+                  .querySelector(`[data-chat="${CSS.escape(id)}"]`)
+                  ?.getAttribute("aria-current"),
+                storedAgent: agent
+                  ? {
+                      seq: agent.seq,
+                      name: JSON.parse(agent.payload)?.value?.name,
+                    }
+                  : null,
+                ready: rows.find((row) => row.id === "state:entities:ready")
+                  ?.payload,
+                checkpoint: rows.find(
+                  (row) => row.id === "state:entities:checkpoint",
+                )?.seq,
+              };
+            },
+            { id: b.id, workspaceId },
+          );
+          throw new Error(
+            `${error.message}; state invalidation: ${JSON.stringify({
+              name,
+              updatedFixture: JSON.parse(updatedAgent?.payload || "null")?.value
+                ?.name,
+              entityPulls: entityPulls.slice(-8),
+              emittedEntityEvents: emittedEntityEvents.slice(-4),
+              streamQueries: streamQueries.slice(-5),
+              identities,
+              diagnostic,
+              errors,
+            })}`,
+          );
+        },
+      );
     };
     const selected = () => page.locator("#conversation-title").innerText();
     const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
-    await page.goto(origin);
+    await page.goto(streamOrigin);
     await until(() => !!releaseA, "The first foreground request must start");
     const selectedBeforeForegroundRelease = await selected();
     await page.waitForTimeout(1250);
@@ -381,15 +567,54 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       "Background B must not open a transcript SSE stream",
     );
 
+    await page.evaluate(async () => {
+      const { watchResourceChanges } = await import("/src/sync/client.ts");
+      window.stopUnrelatedWatch = watchResourceChanges(
+        { kind: "transcript", agentId: "unrelated-agent" },
+        () => {},
+      );
+    });
+    await until(
+      () =>
+        [...streamConnections].some(
+          ({ resources }) =>
+            queryHas(resources, { kind: "transcript", agentId: b.id }) &&
+            queryHas(resources, {
+              kind: "transcript",
+              agentId: "unrelated-agent",
+            }),
+        ),
+      "The persistent stream must include B and the unrelated test resource",
+    );
+    const readsBeforeBaselineSettle = reads.filter(
+      (read) => read.id === b.id,
+    ).length;
+    let quietCount = readsBeforeBaselineSettle;
+    let quietSince = Date.now();
+    while (Date.now() - quietSince < 800) {
+      await page.waitForTimeout(25);
+      const current = reads.filter((read) => read.id === b.id).length;
+      if (current !== quietCount) {
+        quietCount = current;
+        quietSince = Date.now();
+      }
+    }
+
     const beforeUnrelated = reads.filter((read) => read.id === b.id).length;
-    await emitResourceChange([
-      { kind: "transcript", agentId: "unrelated-agent" },
-    ]);
+    await emitResourceChange(
+      [{ kind: "transcript", agentId: "unrelated-agent" }],
+      "change",
+      undefined,
+      [
+        { kind: "transcript", agentId: b.id },
+        { kind: "transcript", agentId: "unrelated-agent" },
+      ],
+    );
     await page.waitForTimeout(150);
     assert.equal(
       reads.filter((read) => read.id === b.id).length,
       beforeUnrelated,
-      "A different agent transcript event does not refetch B",
+      `A different agent transcript event does not refetch B: ${JSON.stringify({ reads: reads.filter((read) => read.id === b.id), emittedEntityEvents: emittedEntityEvents.slice(-2), streamQueries: streamQueries.slice(-4) })}`,
     );
 
     // A real shared SSE invalidation announces a newer B while the reader stays in A.
@@ -433,6 +658,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       beforePause,
       "Hidden/offline prefetch stops history reads",
     );
+    for (const { response } of streamConnections) response.end();
+    await until(
+      () => streamConnections.size === 0,
+      "The explicit offline recovery setup closes the old SSE connection",
+    );
+    holdRecoveryB = true;
+    recoveryReadStarted = false;
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {
         configurable: true,
@@ -445,12 +677,8 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       });
       window.dispatchEvent(new Event("online"));
     });
-    await emitResourceChange(
-      [{ kind: "state" }, { kind: "transcript", agentId: b.id }],
-      "reconnect",
-    );
     await until(
-      () => reads.some((read) => read.id === b.id && read.seq === 302),
+      () => streamConnections.size > 0 && recoveryReadStarted,
       "A resumed transcript baseline must refetch the changed cached chat",
     );
     const readsAfterResume = reads.filter((read) => read.id === b.id).length;
@@ -459,11 +687,31 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         new PageTransitionEvent("pageshow", { persisted: true }),
       ),
     );
-    await page.waitForTimeout(750);
+    await page.waitForTimeout(100);
     assert.equal(
       reads.filter((read) => read.id === b.id).length,
       readsAfterResume,
-      "Resume keeps unchanged chat revisions instead of pulling every history again",
+      "Online and pageshow coalesce while the recovery transcript read is in flight",
+    );
+    values.set(b.id, { seq: 303, data: payload(b, "B-during-recovery") });
+    await emitResourceChange(
+      [{ kind: "transcript", agentId: b.id }],
+      "change",
+      () => {},
+      [{ kind: "transcript", agentId: b.id }],
+    );
+    releaseRecoveryB?.();
+    holdRecoveryB = false;
+    await until(
+      () => reads.some((read) => read.id === b.id && read.seq === 303),
+      "A newer transcript revision arriving during recovery gets one followup pull",
+    );
+    const settledResumeReads = reads.filter((read) => read.id === b.id).length;
+    await page.waitForTimeout(750);
+    assert.equal(
+      reads.filter((read) => read.id === b.id).length,
+      settledResumeReads,
+      `Resume coalesces unchanged callbacks and preserves one newer in-flight event: ${JSON.stringify({ reads: reads.filter((read) => read.id === b.id), readsAfterResume, streamEvents: streamEvents.slice(-8), emittedEntityEvents: emittedEntityEvents.slice(-4), streamQueries: streamQueries.slice(-8) })}`,
     );
     assert.equal(await selected(), a.name);
     await until(
@@ -498,7 +746,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           {
             databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
             documentId: `transcript:${b.id}`,
-            sequence: 302,
+            sequence: 303,
           },
         ),
       "RxDB must persist B's refreshed projection before network interruption",
@@ -519,7 +767,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       expectedScroll = null,
     ) => {
       await page.evaluate(
-        ({ title, tag, forbidden }) => {
+        ({ id, title, tag, forbidden }) => {
           window.switchFrames = [];
           const capture = (window.captureSwitch =
             (window.captureSwitch || 0) + 1);
@@ -527,8 +775,8 @@ test("chat prefetch ui @performance", async ({ browser }) => {
             if (window.captureSwitch !== capture) return;
             if (
               document
-                .querySelector("#conversation-title")
-                ?.textContent?.trim() === title.trim()
+                .querySelector(`[data-chat="${CSS.escape(id)}"]`)
+                ?.getAttribute("aria-current") === "true"
             ) {
               const ids = [
                 ...document.querySelectorAll("#messages [data-message]"),
@@ -539,6 +787,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 time: performance.now(),
                 fresh: ids.includes(`${tag}-39`),
                 wrong: ids.some((value) => value.startsWith(forbidden)),
+                title: document
+                  .querySelector("#conversation-title")
+                  ?.textContent?.trim(),
+                titleMatches:
+                  document
+                    .querySelector("#conversation-title")
+                    ?.textContent?.trim() === title.trim(),
                 count: ids.length,
                 scrollTop: document.querySelector("#messages")?.scrollTop,
               });
@@ -547,7 +802,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           };
           requestAnimationFrame(frame);
         },
-        { title, tag, forbidden },
+        { id, title, tag, forbidden },
       );
       const chatButton = page.locator(`[data-chat="${id}"]`);
       await chatButton.click({ trial: true });
@@ -571,7 +826,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         return window.switchFrames;
       });
       assert.ok(
-        frames.every((frame) => frame.fresh && !frame.wrong && frame.count > 0),
+        frames.every(
+          (frame) =>
+            frame.fresh &&
+            !frame.wrong &&
+            frame.titleMatches &&
+            frame.count > 0,
+        ),
         `Cached switch exposed an empty, old, or wrong-chat frame: ${JSON.stringify(frames)}`,
       );
       if (expectedScroll !== null)
@@ -583,7 +844,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         );
       return elapsed;
     };
-    const coldCached = await switchCached(b.id, currentBName, "B-resume", "A-");
+    const coldCached = await switchCached(
+      b.id,
+      currentBName,
+      "B-during-recovery",
+      "A-",
+    );
     assert.equal(await marker("B-first").count(), 0);
     await page.locator("#messages").evaluate((element) => {
       element.scrollTop = 1100;
@@ -606,7 +872,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           .evaluate((element) => element.scrollTop)) - savedA,
       ) < 2,
     );
-    const revisitB = await switchCached(b.id, currentBName, "B-resume", "A-");
+    const revisitB = await switchCached(
+      b.id,
+      currentBName,
+      "B-during-recovery",
+      "A-",
+    );
     assert.ok(
       Math.abs(
         (await page
@@ -634,7 +905,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       0,
       "A late lower-sequence RxDB reply cannot roll history back",
     );
-    assert.equal(await marker("B-resume").count(), 1);
+    assert.equal(await marker("B-during-recovery").count(), 1);
 
     // Both appended and focused history must survive a return before any HTTP reply.
     await page.locator(`[data-chat="${a.id}"]`).click();
@@ -654,7 +925,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         "The historical page has a measurable scroll position",
       );
       holdNetwork = true;
-      await switchCached(b.id, currentBName, "B-resume", "A-");
+      await switchCached(b.id, currentBName, "B-during-recovery", "A-");
       const elapsed = await switchCached(a.id, a.name, tag, "B-", saved);
       holdNetwork = false;
       for (const route of held.splice(0)) await handle(route).catch(() => {});
@@ -699,11 +970,35 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     values.set(b.id, { seq: 30, data: payload(b, "Workspace2-B") });
     holdWorkspaceB = true;
     await page.reload();
-    await marker("Workspace2-A").waitFor();
+    try {
+      await marker("Workspace2-A").waitFor();
+    } catch (error) {
+      const diagnostic = await page.evaluate(() => ({
+        title: document.querySelector("#conversation-title")?.textContent,
+        selectedRows: [
+          ...document.querySelectorAll("[data-chat][aria-current=true]"),
+        ].map((row) => row.getAttribute("data-chat")),
+        rows: [...document.querySelectorAll("[data-chat]")].map((row) => ({
+          id: row.getAttribute("data-chat"),
+          name: row.textContent.trim(),
+          selected: row.getAttribute("aria-current"),
+        })),
+        markerVisible: !!document
+          .querySelector('[data-message="Workspace2-A-39"]')
+          ?.getClientRects().length,
+        transcriptElements: document.querySelectorAll(
+          "#messages [data-message]",
+        ).length,
+        bodyText: document.body.innerText.slice(0, 500),
+      }));
+      throw new Error(
+        `${error.message}; workspace switch diagnostic: ${JSON.stringify({ diagnostic, identities, errors, reads: reads.slice(-12) })}`,
+      );
+    }
     await page.locator(`[data-chat="${b.id}"]`).click();
     await page.waitForTimeout(200);
     assert.equal(
-      await marker("B-resume").count(),
+      await marker("B-during-recovery").count(),
       0,
       "An old workspace cannot supply a same-ID chat",
     );
@@ -746,6 +1041,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     console.error("Evidence:", dir, log);
     throw error;
   } finally {
+    clearInterval(heartbeatTimer);
     await context?.close();
+    for (const { response } of streamConnections || []) response.end();
+    if (server) await server.close();
+    if (fixture.exitCode === null) fixture.kill();
   }
 });

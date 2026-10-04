@@ -5,6 +5,7 @@ import {
   watchResourceChanges,
   watchSyncInvalidations,
 } from "../sync/client";
+import type { ResourceVersion } from "../sync/resourceEvents";
 import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
 import { readProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
@@ -36,6 +37,8 @@ export function useChatPrefetch(
     const running = new Map<string, AbortController>();
     const failedHistory = new Set<string>();
     const pendingHistory = new Set<string>();
+    const pendingVersions = new Map<string, ResourceVersion>();
+    const runningVersions = new Map<string, ResourceVersion>();
     const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
     let foregroundId: string | null | undefined;
@@ -68,9 +71,19 @@ export function useChatPrefetch(
       if (transcriptStops.has(id)) return;
       const stop = watchResourceChanges(
         { kind: "transcript", agentId: id },
-        () => {
+        (version) => {
+          const runningVersion = runningVersions.get(id);
+          // Reconnect can echo the cached revision while its refresh is active.
+          // A newer revision still queues a followup pull below.
+          if (
+            version &&
+            runningVersion?.epoch === version.epoch &&
+            runningVersion?.revision === version.revision
+          )
+            return;
           failedHistory.delete(id);
           pendingHistory.add(id);
+          if (version) pendingVersions.set(id, version);
           schedule();
         },
       );
@@ -81,9 +94,11 @@ export function useChatPrefetch(
       stateDir: string,
       history: boolean,
       progress: boolean,
+      version?: ResourceVersion,
     ) => {
       const controller = new AbortController();
       running.set(id, controller);
+      if (history && version) runningVersions.set(id, version);
       active++;
       void (async () => {
         try {
@@ -105,6 +120,7 @@ export function useChatPrefetch(
             failedHistory.add(id);
         } finally {
           running.delete(id);
+          runningVersions.delete(id);
           active--;
           schedule();
         }
@@ -145,6 +161,7 @@ export function useChatPrefetch(
           stop();
           transcriptStops.delete(id);
           pendingHistory.delete(id);
+          pendingVersions.delete(id);
           failedHistory.delete(id);
           running.get(id)?.abort();
         }
@@ -164,7 +181,15 @@ export function useChatPrefetch(
         if (targets.has(agent.id)) watchTranscript(agent.id);
       for (const agent of candidates) {
         if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
-        run(agent.id, data.stateDir, true, pendingProgress.has(agent.id));
+        const version = pendingVersions.get(agent.id);
+        pendingVersions.delete(agent.id);
+        run(
+          agent.id,
+          data.stateDir,
+          true,
+          pendingProgress.has(agent.id),
+          version,
+        );
       }
       if (active >= TRANSCRIPT_PREFETCH_LIMIT) return;
       for (const agent of ranked) {
@@ -174,7 +199,10 @@ export function useChatPrefetch(
         run(agent.id, data.stateDir, false, true);
       }
       for (const id of pendingHistory)
-        if (!targets.has(id)) pendingHistory.delete(id);
+        if (!targets.has(id)) {
+          pendingHistory.delete(id);
+          pendingVersions.delete(id);
+        }
     };
     const request = (id: string) => {
       if (current.current.opened === id) return;

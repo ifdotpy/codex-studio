@@ -19,13 +19,14 @@ export type ResourceHeartbeatEvent =
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
-type Version = { epoch: string; revision: number };
+export type ResourceVersion = { epoch: string; revision: number };
+type Version = ResourceVersion;
 export type ResourceConnectionState =
   | "connecting"
   | "live"
   | "degraded"
   | "offline";
-type Listener = () => void;
+type Listener = (version?: ResourceVersion) => void;
 type TabSubscriptions = {
   kind: "subscriptions";
   workspaceId: string;
@@ -348,7 +349,10 @@ function scheduleFlush() {
       pendingReset = false;
       const subscribed = new Set(aggregateResources().map(resourceKey));
       for (const [key, listeners] of subscribers) {
-        if (subscribed.has(key)) for (const listener of listeners) listener();
+        if (subscribed.has(key)) {
+          const version = resourceValues.get(key);
+          for (const listener of listeners) listener(version);
+        }
       }
       pendingResources = new Set();
       return;
@@ -356,7 +360,7 @@ function scheduleFlush() {
     for (const key of pendingResources) {
       const version = resourceValues.get(key);
       if (!version) continue;
-      for (const listener of subscribers.get(key) || []) listener();
+      for (const listener of subscribers.get(key) || []) listener(version);
     }
     pendingResources = new Set();
   }, RESOURCE_FLUSH_MS);
@@ -881,7 +885,7 @@ function startCoordinator() {
 
 export function watchResourceChanges(
   resource: ResourceRef,
-  callback: () => void,
+  callback: (version?: ResourceVersion) => void,
 ): () => void {
   const key = resourceKey(resource);
   let listeners = subscribers.get(key);
@@ -889,7 +893,7 @@ export function watchResourceChanges(
   resourceRefs.set(key, resource);
   listeners.add(callback);
   const known = resourceValues.get(key);
-  if (known) callback();
+  if (known) callback(known);
   startCoordinator();
   // A first local listener may attach after another tab already added this
   // resource to the shared stream union. Ask the owner for its baseline even
