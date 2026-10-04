@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
-import { ApiError, api, errorText } from "../../api";
-import { type Json } from "../../types";
+import { ApiError, get, errorText, type GetResult } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
+
+type ModelCatalog = GetResult<"/api/models">;
+type ModelInfo = ModelCatalog["data"][number];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
 
-export function daybreakProgram(info?: Json): string | null {
+export function daybreakProgram(info?: ModelInfo): string | null {
   const programs = info?.availableAccessPrograms?.cyber;
   if (!Array.isArray(programs)) return null;
   if (programs.includes("daybreakBlue")) return "daybreakBlue";
@@ -14,7 +19,10 @@ export function daybreakProgram(info?: Json): string | null {
   return null;
 }
 
-export function supportsDaybreakMode(info: Json | undefined, enabled: boolean) {
+export function supportsDaybreakMode(
+  info: ModelInfo | undefined,
+  enabled: boolean,
+) {
   if (!info || isDaybreakAlias(info.model)) return false;
   if (enabled) return !!daybreakProgram(info);
   const programs = info.availableAccessPrograms?.cyber;
@@ -32,7 +40,7 @@ export function useWorkerModels(
   const catalogKey = `${accountKey}:${workers}`;
   const [result, setResult] = useState<{
     key: string;
-    models: Json[];
+    models: ModelInfo[];
     error: string;
     pending?: boolean;
   } | null>(null);
@@ -48,24 +56,20 @@ export function useWorkerModels(
     const load = async () => {
       let pending = false;
       try {
-        const data = await api(
-          "/api/models?account_key=" +
-            encodeURIComponent(accountKey) +
-            (workers ? "&workers=1" : ""),
-          undefined,
-          { signal: controller.signal },
-        );
+        const data = await get("/api/models", {
+          query: { account_key: accountKey, workers },
+          signal: controller.signal,
+        });
         if (!active) return;
         pending =
           data.catalogPending === true &&
-          Array.isArray(data.unavailableAccounts) &&
           data.unavailableAccounts.some(
-            (item: Json) =>
+            (item) =>
               item?.catalogPending === true &&
               typeof item.accountKey === "string" &&
               typeof item.error === "string",
           );
-        const models: Json[] = Array.isArray(data.data) ? data.data : [];
+        const models = data.data;
         setResult((previous) => ({
           key: catalogKey,
           models:
@@ -87,10 +91,8 @@ export function useWorkerModels(
         pending =
           error instanceof ApiError &&
           error.status === 400 &&
-          error.details !== null &&
-          typeof error.details === "object" &&
-          !Array.isArray(error.details) &&
-          (error.details as Json).catalogPending === true;
+          isRecord(error.details) &&
+          error.details.catalogPending === true;
         setResult((previous) => ({
           key: catalogKey,
           models: previous?.key === catalogKey ? previous.models : [],
@@ -113,7 +115,7 @@ export function useWorkerModels(
     models:
       current?.models
         .filter((model) => model.model && !model.hidden)
-        .map((model): Json => ({
+        .map((model): ModelInfo => ({
           ...model,
           displayName: model.displayName
             ? claudeModelLabel(model.displayName, model.description || "")

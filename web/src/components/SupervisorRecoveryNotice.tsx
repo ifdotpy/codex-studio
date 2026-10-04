@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { get } from "../api";
 import "./supervisor-recovery-notice.css";
 
 export default function SupervisorRecoveryNotice() {
@@ -11,11 +11,9 @@ export default function SupervisorRecoveryNotice() {
     const controller = new AbortController();
     const refresh = async () => {
       try {
-        const data = await api<{ supervisorNotice?: string | null }>(
-          "/api/desktop",
-          undefined,
-          { signal: controller.signal },
-        );
+        const data = await get("/api/desktop", {
+          signal: controller.signal,
+        });
         if (live) setNotice(data.supervisorNotice || null);
       } catch {
         // A transient status failure does not replace the current notice.

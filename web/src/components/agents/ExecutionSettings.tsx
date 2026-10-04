@@ -1,7 +1,14 @@
 import { Button, Popover, NativeSelect, Switch } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText, save, saved } from "../../api";
+import {
+  post,
+  ApiError,
+  errorText,
+  save,
+  saved,
+  type PostBody,
+} from "../../api";
 import { busy, type Agent, type Json } from "../../types";
 import {
   isDaybreakAlias,
@@ -13,6 +20,7 @@ import { ModelPicker, type ModelOption } from "../ModelPicker";
 import "./execution-settings.css";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
+type ConversationBody = PostBody<"/api/conversation">;
 const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
 const plural = (count: number, noun: string) =>
@@ -368,7 +376,7 @@ function ScopedExecutionSettings({
       value: reviewCurrent.effort,
       label: title(reviewCurrent.effort),
     });
-  const submit = async (request: Json, next: Json, notice = "") => {
+  const submit = async (request: ConversationBody, next: Json, notice = "") => {
     if (saveLock.current) return;
     saveLock.current = true;
     request = { ...request, expected_account_key: accountOf(agent) };
@@ -390,7 +398,7 @@ function ScopedExecutionSettings({
     let confirmed = false;
     try {
       // A lost response must not leave the control saving forever.
-      const canonical = await api<Agent>(
+      const canonical = await post(
         "/api/conversation",
         request,
         request.next_turn || teamDefaults ? { timeoutMs: 15000 } : {},
@@ -464,7 +472,7 @@ function ScopedExecutionSettings({
     setError("");
     setStatus({ kind: "saving", text: "" });
     try {
-      const op = await api<Json>(
+      const op = await post(
         "/api/agents/account-transfer",
         {
           id: agent.id,
@@ -562,7 +570,7 @@ function ScopedExecutionSettings({
     setSaving(true);
     setError("");
     try {
-      const op = await api<Json>("/api/agents/account-transfer", {
+      const op = await post("/api/agents/account-transfer", {
         action,
         request_id: shownTransfer.id,
       });
@@ -654,7 +662,7 @@ function ScopedExecutionSettings({
     setError("");
     setStatus({ kind: "saving", text: "" });
     try {
-      const canonical = await api<Agent>(
+      const canonical = await post(
         "/api/conversation",
         {
           id: agent.id,
@@ -700,7 +708,7 @@ function ScopedExecutionSettings({
     setError("");
     let confirmed = false;
     try {
-      const canonical = await api<Agent>("/api/conversation", {
+      const canonical = await post("/api/conversation", {
         id: agent.id,
         yolo_mode: enabled,
         expected_account_key: accountOf(agent),

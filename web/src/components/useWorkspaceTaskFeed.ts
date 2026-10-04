@@ -1,19 +1,12 @@
 import { useEffect, useState } from "react";
-import { api, type ApiReadMetadata } from "../api";
-import type { BackgroundTask } from "../types";
+import { get, type ApiReadMetadata, type GetResult } from "../api";
 
-type TaskFeed = {
-  tasks: BackgroundTask[];
-  cursor?: { updated: number; id: string };
-  reset?: boolean;
-  hasMore?: boolean;
-  hasMoreChanges?: boolean;
-};
+type TaskFeed = GetResult<"/api/workspace/tasks">;
 
 export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
   const [feed, setFeed] = useState<{
     leadId?: string;
-    tasks: BackgroundTask[];
+    tasks: TaskFeed["tasks"];
   }>({
     tasks: [],
   });
@@ -31,16 +24,18 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
       try {
         let more = true;
         while (alive && more) {
-          const query = new URLSearchParams({ agent: leadId });
-          if (cursor !== undefined) query.set("cursor", JSON.stringify(cursor));
+          const query = {
+            agent: leadId,
+            ...(cursor === undefined ? {} : { cursor: JSON.stringify(cursor) }),
+          };
           const metadata: ApiReadMetadata = {};
-          const result = await api<TaskFeed>(
-            `/api/workspace/tasks?${query.toString()}`,
-            undefined,
-            { etag, readMetadata: metadata },
-          );
+          const result = await get("/api/workspace/tasks", {
+            query,
+            etag,
+            readMetadata: metadata,
+          });
           etag = metadata.etag || etag;
-          if (metadata.notModified) break;
+          if (metadata.notModified || result === undefined) break;
           if (result.reset || cursor === undefined) tasks = new Map();
           for (const task of result.tasks || []) tasks.set(task.id, task);
           cursor = result.cursor;

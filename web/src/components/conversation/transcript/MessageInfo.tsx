@@ -1,26 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
-import { api } from "../../../api";
+import { get, type GetResult } from "../../../api";
 import { localDateTime } from "../../../local-time";
 import { peekSessionCost } from "../../../usage/sessionCostCache";
 import type { Message } from "../../../types";
 import type { UsageAccount } from "../../Usage";
 import "./message-info.css";
 
-type Metadata = {
-  at?: number | string;
-  model?: string;
-  effort?: string;
-  accountKey?: string;
-  accountLabel?: string;
-  provider?: string;
-  runId?: string;
-  attemptId?: string;
-  turnDurationMs?: number;
-  responseRate?: number;
-  tokens?: { outputTokens?: number; reasoningOutputTokens?: number };
-};
+type Metadata = GetResult<"/api/analytics">;
 
 export type MessageInfoProps = {
   message: Message;
@@ -63,14 +51,14 @@ export default function MessageInfo({
     setLoading(true);
     setFailed(false);
     setMetadata(null);
-    const query = new URLSearchParams({
+    const query = {
       agent: agentId,
       view: "message-info",
       item: itemId,
-    });
-    if (message.turnId) query.set("turn", message.turnId);
-    if (message.threadId) query.set("thread", message.threadId);
-    api<Metadata>(`/api/analytics?${query}`, undefined, { timeoutMs: 5000 })
+      ...(message.turnId ? { turn: message.turnId } : {}),
+      ...(message.threadId ? { thread: message.threadId } : {}),
+    };
+    get("/api/analytics", { query, timeoutMs: 5000 })
       .then((value) => {
         if (active) setMetadata(value);
       })

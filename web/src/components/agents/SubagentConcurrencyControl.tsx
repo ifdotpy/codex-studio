@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, errorText } from "../../api";
+import { post, ApiError, errorText, type PostBody } from "../../api";
 import type { Agent } from "../../types";
 import "./subagent-concurrency-control.css";
 
@@ -13,19 +13,7 @@ const UNSUPPORTED_HELP =
 const CONCURRENCY_SCHEMA_VERSION = 2;
 
 type Confirmed = { concurrency: number; revision: number };
-type LimitRequest = {
-  id: string;
-  subagent_concurrency: number;
-  expected_mode_revision: number;
-  request_id: string;
-};
-type LegacyModeRequest = {
-  id: string;
-  agent_mode: "multi" | "single";
-  expected_mode_revision: number;
-  request_id: string;
-};
-type PendingRequest = LimitRequest | LegacyModeRequest;
+type PendingRequest = PostBody<"/api/conversation">;
 type Stored = { confirmed?: Confirmed; pending?: PendingRequest };
 type Props = {
   lead: Agent;
@@ -57,9 +45,8 @@ const pendingTarget = (
   request: PendingRequest | undefined,
 ): number | undefined => {
   if (!request) return undefined;
-  if ("subagent_concurrency" in request)
-    return (request as LimitRequest).subagent_concurrency;
-  return (request as LegacyModeRequest).agent_mode === "single"
+  if ("subagent_concurrency" in request) return request.subagent_concurrency;
+  return request.agent_mode === "single"
     ? MIN_CONCURRENCY
     : DEFAULT_CONCURRENCY;
 };
@@ -224,7 +211,7 @@ function ScopedConcurrencyControl({
     // new requests persist the target and identity before touching the server.
     const request: PendingRequest = stored.pending ?? {
       id: lead.id,
-      subagent_concurrency: draft as number,
+      subagent_concurrency: draft,
       expected_mode_revision: confirmed.revision,
       request_id: crypto.randomUUID(),
     };
@@ -242,7 +229,7 @@ function ScopedConcurrencyControl({
     setSaving(true);
     setError("");
     try {
-      const result = await api<Agent>("/api/conversation", request, {
+      const result = await post("/api/conversation", request, {
         workspaceId,
         timeoutMs: 15000,
       });

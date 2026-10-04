@@ -15,9 +15,22 @@ import {
   ChevronRight,
   RefreshCw,
 } from "lucide-react";
-import { api, errorText } from "../api";
+import {
+  apiDownload,
+  get,
+  errorText,
+  type GetOptions,
+  type GetResult,
+} from "../api";
 import type { Agent, Json } from "../types";
 import "./Analytics.css";
+
+type AnalyticsResult = GetResult<"/api/analytics">;
+type AnalyticsQuery = NonNullable<GetOptions<"/api/analytics">["query"]>;
+type AnalyticsScope = NonNullable<AnalyticsQuery["scope"]>;
+const analyticsScopes: readonly AnalyticsScope[] = ["agent", "team", "all"];
+const isAnalyticsScope = (value: string): value is AnalyticsScope =>
+  analyticsScopes.some((scope) => scope === value);
 
 const finite = (n: unknown): n is number =>
   typeof n === "number" && Number.isFinite(n);
@@ -379,12 +392,12 @@ export default function Analytics({
   agent: Agent;
   onClose: () => void;
 }) {
-  const [scope, setScope] = useState("agent");
+  const [scope, setScope] = useState<AnalyticsScope>("agent");
   const [period, setPeriod] = useState("all");
   const [tool, setTool] = useState("");
   const [offset, setOffset] = useState(0);
   const [refresh, setRefresh] = useState(0);
-  const [dataRecord, setData] = useState<Json | null>(null);
+  const [dataRecord, setData] = useState<AnalyticsResult | null>(null);
   const [loadedQuery, setLoadedQuery] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
@@ -399,18 +412,18 @@ export default function Analytics({
     () => Math.floor(Date.now() / 1000),
     [agent.id, scope, period, refresh],
   );
-  const query = useMemo(() => {
-    const q = new URLSearchParams({
+  const query = useMemo(
+    () => ({
       agent: agent.id,
       scope,
-      limit: "30",
-      offset: String(offset),
-      to: String(snapshotAt),
-    });
-    if (period !== "all") q.set("from", String(snapshotAt - Number(period)));
-    if (tool) q.set("tool", tool);
-    return q.toString();
-  }, [agent.id, scope, period, tool, offset, snapshotAt]);
+      limit: 30,
+      offset,
+      to: snapshotAt,
+      ...(period !== "all" ? { from: snapshotAt - Number(period) } : {}),
+      ...(tool ? { tool } : {}),
+    }),
+    [agent.id, scope, period, tool, offset, snapshotAt],
+  );
   const viewKey = JSON.stringify([agent.id, scope, period, tool, offset]);
   const data = loadedQuery === viewKey ? dataRecord : null;
   useEffect(() => {
@@ -421,17 +434,16 @@ export default function Analytics({
     setLoadingDetails((previous) => ({ ...previous, [detail]: true }));
     setError("");
     try {
-      const q = new URLSearchParams(query);
-      q.set("view", "detail");
-      q.set("detail", detail);
-      q.set("limit", "100");
-      q.set(
-        "offset",
-        String(
-          (data[detail]?.length || 0) + (olderDetails[detail]?.length || 0),
-        ),
-      );
-      const page = await api<Json>(`/api/analytics?${q}`);
+      const page = await get("/api/analytics", {
+        query: {
+          ...query,
+          view: "detail",
+          detail,
+          limit: 100,
+          offset:
+            (data[detail]?.length || 0) + (olderDetails[detail]?.length || 0),
+        },
+      });
       setOlderDetails((previous) => ({
         ...previous,
         [detail]: [...(previous[detail] || []), ...(page[detail] || [])],
@@ -447,7 +459,7 @@ export default function Analytics({
     setBusy(true);
     setError("");
     if (loadedQuery !== viewKey) setSelected(null);
-    api<Json>(`/api/analytics?${query}`)
+    get("/api/analytics", { query })
       .then((result) => {
         if (!active) return;
         setData(result);
@@ -478,12 +490,22 @@ export default function Analytics({
     change();
     setOffset(0);
   };
-  const download = () => {
+  const download = async () => {
     setError("");
-    const a = document.createElement("a");
-    a.href = `/api/analytics?${query}&export=1`;
-    a.download = `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`;
-    a.click();
+    try {
+      const { blob } = await apiDownload("/api/analytics", {
+        ...query,
+        export: "1",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `codex-studio-analytics-${scope}-${new Date().toISOString().replaceAll(":", "-")}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (failure) {
+      setError(errorText(failure));
+    }
   };
   const s = data?.summary || {};
   const timeline: Json[] = data?.timeline || [];
@@ -510,7 +532,8 @@ export default function Analytics({
             value={scope}
             onChange={(e) =>
               filter(() => {
-                setScope(e.currentTarget.value);
+                if (isAnalyticsScope(e.currentTarget.value))
+                  setScope(e.currentTarget.value);
                 setTool("");
                 setKnownTools([]);
               })

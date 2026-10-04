@@ -7,8 +7,8 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { api, ApiError, errorText } from "../api";
-import type { Agent, Message, Snapshot } from "../types";
+import { get, post, errorText } from "../api";
+import type { Agent, Message } from "../types";
 
 export type ChatReadState = {
   threadId: string;
@@ -153,29 +153,10 @@ export function useChatReadState(
           },
         };
         const requestWorkspace = latest.current.workspaceId;
-        let canonical: Agent;
-        for (let retry = 0; ; retry++) {
-          try {
-            canonical = await api<Agent>("/api/organization", body, {
-              workspaceId: requestWorkspace,
-              timeoutMs: 15000,
-            });
-            break;
-          } catch (error) {
-            const transient =
-              error instanceof TypeError ||
-              (error instanceof ApiError &&
-                (error.status >= 500 || [408, 429].includes(error.status)));
-            if (!read || !transient || retry >= 2) throw error;
-            current.uncertain.add(proof.id);
-            await new Promise((resolve) =>
-              setTimeout(resolve, 1000 * (retry + 1)),
-            );
-            // Repeat the same revision. A newer Unread must win over this retry.
-            if (!valid()) return;
-            if (latest.current.opened !== proof.id) throw error;
-          }
-        }
+        const canonical = await post("/api/organization", body, {
+          workspaceId: requestWorkspace,
+          timeoutMs: 15000,
+        });
         if (!valid()) return;
         const state = storedState(canonical);
         if (
@@ -201,7 +182,9 @@ export function useChatReadState(
           // Reconcile a lost success before a queued Unread can use local state.
           // The app's normal refresh can update only credentials during sync.
           try {
-            const snapshot = await api<Snapshot>("/api/state?view=chat");
+            const snapshot = await get("/api/state", {
+              query: { view: "chat" },
+            });
             if (!valid()) return;
             const canonical = snapshot.threads.find(
               (value) => value.id === proof.id,

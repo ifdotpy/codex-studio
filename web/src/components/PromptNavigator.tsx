@@ -1,7 +1,7 @@
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { syncApi, errorText, save, saved } from "../api";
+import { syncGet, errorText, save, saved } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
 
@@ -49,8 +49,9 @@ export default function PromptNavigator({
     let active = true;
     setSearch({ query: searchQuery, results: [], loading: true, error: "" });
     const timer = setTimeout(() => {
-      const params = new URLSearchParams({ id: agentId, q: searchQuery });
-      void syncApi(`/api/transcript/search?${params}`)
+      void syncGet("/api/transcript/search", {
+        query: { id: agentId, q: searchQuery },
+      })
         .then((result) => {
           if (active)
             setSearch({

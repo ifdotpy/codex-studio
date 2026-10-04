@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { api, errorText } from "../api";
+import { post, errorText } from "../api";
 import type { Agent } from "../types";
 import { nativeThreadError } from "../nativeErrors";
 
@@ -42,13 +42,6 @@ export function matchingConnectionCheck(agent: Agent) {
     : null;
 }
 
-type RecoveryResult = {
-  status: "reconciled" | "unconfirmed" | "superseded";
-  outcome?: "completed" | "failed" | "interrupted";
-  error?: string;
-  checked?: boolean;
-};
-
 export default function ConnectionRecovery({
   agentId,
   refresh,
@@ -72,7 +65,7 @@ export default function ConnectionRecovery({
     setPending(true);
     setMessage("");
     try {
-      const result = await api<RecoveryResult>(
+      const result = await post(
         "/api/connection-recovery",
         { id: agentId },
         { timeoutMs: 100000 },

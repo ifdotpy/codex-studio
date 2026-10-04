@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { get } from "../api";
 import "./browser-access-notice.css";
-
-type BrowserStatus = { enabled: boolean; reason?: string | null };
 
 export default function BrowserAccessNotice({
   accountKey,
@@ -17,11 +15,10 @@ export default function BrowserAccessNotice({
     setStatus(null);
     if (!active) return;
     const controller = new AbortController();
-    void api<{ browser?: BrowserStatus }>(
-      `/api/desktop?account_key=${encodeURIComponent(accountKey)}`,
-      undefined,
-      { signal: controller.signal },
-    )
+    void get("/api/desktop", {
+      query: { account_key: accountKey },
+      signal: controller.signal,
+    })
       .then((data) => setStatus(data.browser || null))
       .catch(() => {});
     return () => controller.abort();
@@ -30,7 +27,8 @@ export default function BrowserAccessNotice({
   if (!active || !status || status.enabled) return null;
   return (
     <p className="browser-access-notice" role="status">
-      Browser access is off: {status.reason || "not available for this account."}
+      Browser access is off:{" "}
+      {status.reason || "not available for this account."}
     </p>
   );
 }
