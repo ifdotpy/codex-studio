@@ -180,10 +180,22 @@ def queued_active_wait_eligible(agent):
     scope = {field: agent.get(field) for field in ('id', 'accountKey', 'epoch', 'threadId')}
     events = attempt.get('events')
     repair_source = repair.get('source') or {}
+    disconnect = agent.get('disconnectRecovery') or {}
+    surviving_restart = (marker.get('stage') == 'finished' and marker.get('autoWake')
+        and disconnect.get('source') == 'restart' and disconnect.get('autoWake')
+        and all(disconnect.get(field) == agent.get(field)
+                for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
+        and repair.get('phase') == 'failed'
+        and str(repair.get('error', '')).startswith('Context repair requires a confirmed idle native thread; native status: ')
+        and repair_source.get('threadId') == agent.get('threadId'))
+    continued = (marker.get('stage') == 'continued' and marker.get('outcome') == 'active'
+        and recovery.get('source') == 'native_thread_read' and recovery.get('outcome') == 'active'
+        and recovery.get('automatic') is True and recovery.get('turnId') == agent.get('turnId'))
     same_repair = (repair.get('agent') == agent.get('id')
         and all(repair_source.get(field) == scope[field] for field in ('id', 'accountKey', 'epoch'))
         and ((repair.get('phase') == 'unchanged' and repair_source.get('threadId') == agent.get('threadId'))
-             or (repair.get('phase') == 'completed' and repair.get('newThreadId') == agent.get('threadId'))))
+             or (repair.get('phase') == 'completed' and repair.get('newThreadId') == agent.get('threadId'))
+             or surviving_restart))
     return bool(agent.get('status') == 'queued' and agent.get('autoWake') and not agent.get('inFlight')
         and agent.get('threadId') and agent.get('turnId')
         and agent.get('turnEpoch', agent['epoch']) == agent['epoch']
@@ -203,10 +215,9 @@ def queued_active_wait_eligible(agent):
         and isinstance(events, list) and 0 < len(events) <= 32
         and all(isinstance(event, str) and event for event in events)
         and len(events) == len(set(events)) and wait.get('events') == events
-        and marker.get('stage') == 'continued' and marker.get('outcome') == 'active' and marker.get('autoWake')
+        and (continued or surviving_restart) and marker.get('autoWake')
         and all(marker.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId', 'turnId'))
-        and recovery.get('source') == 'native_thread_read' and recovery.get('outcome') == 'active'
-        and recovery.get('automatic') is True and recovery.get('turnId') == agent['turnId'])
+        )
 
 
 def recover(runtime, key, *, automatic=False):
@@ -436,7 +447,8 @@ def recover_queued_active_wait(runtime, expected, connection, server):
                         agent['lastContextRepairWait'] = {**wait, 'status': 'superseded',
                             'reason': 'The exact native turn was confirmed', 'finishedAt': time.time()}
                         agent.update(status='running', inFlight=True, error=None)
-                        agent['connectionRecovery'] = {**agent['connectionRecovery'], 'at': time.time(),
+                        agent['connectionRecovery'] = {**(agent.get('connectionRecovery') or {}), 'at': time.time(),
+                            'turnId': expected['turnId'], 'outcome': 'active',
                             'supervisor': native_identity, 'queuedInputPreserved': True,
                             'attemptId': attempt['id'], 'eventIds': list(attempt['events'])}
                         runtime.loaded.add(agent['id'])
