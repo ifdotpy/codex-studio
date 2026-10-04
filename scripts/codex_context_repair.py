@@ -281,6 +281,9 @@ def recover_unconfirmed_inputs(rt, agent_id):
             continue
         message_id = turn.get('clientUserMessageId')
         outcome = turn.get('startOutcome')
+        turn_id = turn.get('id')
+        if historical_wait and (not isinstance(turn_id, str) or not turn_id):
+            turn_id = None
         if outcome in {'preparing', 'not_applied'}:
             identities = {message_id} if isinstance(message_id, str) else set()
             identities.update(item['clientId'] for item in turn.get('items') or []
@@ -290,21 +293,22 @@ def recover_unconfirmed_inputs(rt, agent_id):
             continue
         if isinstance(message_id, str):
             supported_identity = True
-            found[message_id] = turn.get('id')
+            found[message_id] = turn_id
         for item in turn.get('items') or []:
             if item.get('type') != 'userMessage':
                 continue
             client_id = item.get('clientId')
             if isinstance(client_id, str):
                 supported_identity = True
-                found[client_id] = turn.get('id')
+                found[client_id] = turn_id
             elif not isinstance(message_id, str):
                 unidentified_input = True
     decisions = []
     for row in events:
         owners = [owner for owner in (current_attempt, marker_attempt_snapshot)
                   if isinstance(owner, dict) and row['id'] in owner.get('events', [])]
-        known_unsent = bool(owners) and all(owner.get('submitted') is False for owner in owners)
+        known_unsent = (not historical_wait and bool(owners)
+                       and all(owner.get('submitted') is False for owner in owners))
         if row['id'] in found and found[row['id']]:
             decisions.append({'id': row['id'], 'decision': 'delivered', 'turnId': found[row['id']]})
         elif row['id'] in found or row['id'] in preparing:

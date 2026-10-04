@@ -196,6 +196,29 @@ class HistoricalInputWait(f.ContextWait):
         self.assertEqual(self.receipt(self.old_id)['status'], 'uncertain')
         self.assert_preserved_new_input()
 
+    def test_invalid_native_turn_id_is_not_acceptance(self):
+        for turn_id in (37, '', None):
+            with self.subTest(turn_id=turn_id):
+                self.make_wait()
+                self.native_turns[0]['id'] = turn_id
+                result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+                self.assertEqual(result['status'], 'waiting')
+                self.assertEqual(self.receipt(self.old_id)['status'], 'uncertain')
+                self.assert_preserved_new_input()
+
+    def test_finished_restart_unsent_marker_does_not_prove_old_input_absence(self):
+        self.make_wait(native=False)
+        self.native_turns = [{'id':'other-turn', 'clientUserMessageId':'other-input'}]
+        agent = self.runtime.agent(self.a['id'])
+        self.agent_update(agent, restartRecovery={'stage':'finished', 'epoch':agent['epoch'],
+            'accountKey':'default', 'threadId':self.tid, 'autoWake':True,
+            'startAttempt':{'id':'old-unsent', 'epoch':agent['epoch'], 'accountKey':'default',
+                            'events':[self.old_id], 'submitted':False}})
+        result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
+        self.assertEqual(result['status'], 'waiting')
+        self.assertEqual(self.receipt(self.old_id)['status'], 'uncertain')
+        self.assert_preserved_new_input()
+
     def test_history_is_bounded_and_positive_proof_stops_pagination(self):
         self.make_wait()
         self.next_cursor = 'another-page'
