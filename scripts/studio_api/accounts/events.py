@@ -32,7 +32,7 @@ def publish_models_change(state_dir: str | Path) -> None:
 
 def _publish(state_dir: str | Path, *resources: ResourceRef) -> None:
     """Resolve the sync publisher only when a producer emits a change."""
-    from studio_api.sync.resources.hub import publish_resources  # type: ignore[import-not-found]
+    from studio_api.sync.resources.hub import publish_resources
 
     try:
         publish_resources(state_dir, *resources)

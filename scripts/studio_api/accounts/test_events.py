@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
-import sys
+import tempfile
 import threading
-import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 from studio_api.accounts.events import (
@@ -21,69 +21,200 @@ from studio_api.sync.resources.models import (
     AccountsResource,
     LimitsResource,
     ModelsResource,
+    ResourceRef,
+)
+from studio_api.sync.resources.hub import (
+    ResourceHub,
+    register_resource_hub,
+    unregister_resource_hub,
 )
 
 
-class ResourcePublicationTests(unittest.TestCase):
-    def test_helpers_publish_typed_resource_refs_to_hub(self) -> None:
-        calls: list[tuple[str | Path, tuple[object, ...]]] = []
-        hub = types.ModuleType("studio_api.sync.resources.hub")
-        hub.publish_resources = lambda state_dir, *resources: calls.append((state_dir, resources))  # type: ignore[attr-defined]
-        state_dir = Path("/isolated/state")
-        with patch.dict(sys.modules, {hub.__name__: hub}):
+class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_helpers_publish_typed_resources_to_registered_subscriber(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            hub = ResourceHub("accounts-workspace")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [
+                    ResourceRef(AccountsResource(kind="accounts")),
+                    ResourceRef(LimitsResource(kind="limits", accountKey="account-a")),
+                    ResourceRef(ModelsResource(kind="models")),
+                ],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                expected = [
+                    AccountsResource(kind="accounts"),
+                    LimitsResource(kind="limits", accountKey="account-a"),
+                    ModelsResource(kind="models"),
+                ]
+                for publish in (
+                    lambda: publish_account_change(state_dir),
+                    lambda: publish_limits_change(state_dir, "account-a"),
+                    lambda: publish_models_change(state_dir),
+                ):
+                    publish()
+                    event = await subscription.next_event(timeout=1)
+                    self.assertIsNotNone(event)
+                    assert event is not None
+                    self.assertEqual(event.reason, "change")
+                    self.assertEqual(
+                        [resource.root for resource in event.resources], [expected.pop(0)]
+                    )
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
+
+    async def test_producers_are_noop_when_no_hub_is_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
             publish_account_change(state_dir)
             publish_limits_change(state_dir, "account-a")
             publish_models_change(state_dir)
 
-        self.assertEqual([call[0] for call in calls], [state_dir] * 3)
-        self.assertEqual(
-            [getattr(call[1][0], "root") for call in calls],
-            [
-                AccountsResource(kind="accounts"),
-                LimitsResource(kind="limits", accountKey="account-a"),
-                ModelsResource(kind="models"),
-            ],
-        )
+    async def test_api_context_startup_registers_hub_before_producers(self) -> None:
+        from studio_api.context import ApiContext
 
-class CatalogPublicationTests(unittest.TestCase):
-    def setUp(self) -> None:
-        hub = types.ModuleType("studio_api.sync.resources.hub")
-        hub.publish_resources = lambda *_args: None  # type: ignore[attr-defined]
-        self.hub_patch = patch.dict(sys.modules, {hub.__name__: hub})
-        self.hub_patch.start()
+        class SyncIdentity:
+            def identity(self) -> dict[str, str]:
+                return {"workspaceId": "startup-workspace"}
 
-    def tearDown(self) -> None:
-        self.hub_patch.stop()
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            canvas = SimpleNamespace(root=state_dir, runtime=None)
+            context = ApiContext(cast(Any, canvas), remote=cast(Any, object()))
+            setattr(context, "_sync_store", SyncIdentity())
+            context.initialize()
+            hub = context.resource_hub()
+            subscription = hub.subscribe(
+                [ResourceRef(AccountsResource(kind="accounts"))], loop=asyncio.get_running_loop()
+            )
+            try:
+                publish_account_change(state_dir)
+                event = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(event)
+                assert event is not None
+                self.assertEqual(event.reason, "change")
+                self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+            finally:
+                subscription.close()
+                context.close()
 
-    def test_successful_async_catalog_commit_publishes_outside_cache_lock(self) -> None:
+
+class CatalogPublicationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_successful_async_catalog_commit_reaches_subscriber(self) -> None:
         from codex_catalog import CatalogPending, ModelCatalogCache
 
         native: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
         submitted: list[concurrent.futures.Future[dict[str, object]]] = []
 
         class Server:
-            def submit(self, _method: str, _params: dict[str, object]) -> concurrent.futures.Future[dict[str, object]]:
+            def submit(
+                self, _method: str, _params: dict[str, object]
+            ) -> concurrent.futures.Future[dict[str, object]]:
                 submitted.append(native)
                 return native
 
-        cache = ModelCatalogCache(wait_seconds=0)
-        published: list[bool] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            hub = ResourceHub("catalog-workspace")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(ModelsResource(kind="models"))], loop=asyncio.get_running_loop()
+            )
+            cache = ModelCatalogCache(wait_seconds=0)
+            published: list[bool] = []
 
-        def on_commit() -> None:
-            acquired = cache.lock.acquire(blocking=False)
-            published.append(acquired)
-            if acquired:
-                cache.lock.release()
+            def on_commit() -> None:
+                acquired = cache.lock.acquire(blocking=False)
+                published.append(acquired)
+                if acquired:
+                    cache.lock.release()
+                publish_models_change(state_dir)
 
-        with self.assertRaises(CatalogPending):
-            cache.read("account-a", Server(), "connection-a", lambda: True, on_commit=on_commit)
-        catalog: dict[str, object] = {"data": [{"model": "fixture/model"}]}
-        native.set_result(catalog)
+            try:
+                with self.assertRaises(CatalogPending):
+                    cache.read(
+                        "account-a", Server(), "connection-a", lambda: True,
+                        on_commit=on_commit,
+                    )
+                catalog: dict[str, object] = {"data": [{"model": "fixture/model"}]}
+                native.set_result(catalog)
 
-        self.assertEqual(len(submitted), 1)
-        self.assertEqual(published, [True])
-        self.assertEqual(cache.read("account-a", Server(), "connection-a", lambda: True),
-                         {"data": [{"model": "fixture/model"}]})
+                self.assertEqual(len(submitted), 1)
+                self.assertEqual(published, [True])
+                event = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(event)
+                assert event is not None
+                self.assertEqual(event.reason, "change")
+                self.assertEqual(event.resources, [ResourceRef(ModelsResource(kind="models"))])
+                self.assertEqual(
+                    cache.read("account-a", Server(), "connection-a", lambda: True), catalog
+                )
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
+
+    async def test_terminal_failure_and_user_retry_reach_registered_subscriber(self) -> None:
+        from codex_catalog import CatalogPending, CatalogUnavailable, ModelCatalogCache
+
+        first: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+        retried: concurrent.futures.Future[dict[str, object]] = concurrent.futures.Future()
+        submitted = 0
+
+        class Server:
+            def submit(
+                self, _method: str, _params: dict[str, object]
+            ) -> concurrent.futures.Future[dict[str, object]]:
+                nonlocal submitted
+                submitted += 1
+                return first if submitted == 1 else retried
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            hub = ResourceHub("catalog-retry-workspace")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(ModelsResource(kind="models"))], loop=asyncio.get_running_loop()
+            )
+            cache = ModelCatalogCache(wait_seconds=0)
+            publish = lambda: publish_models_change(state_dir)
+            server = Server()
+            try:
+                with self.assertRaises(CatalogPending):
+                    cache.read("account-a", server, "connection-a", lambda: True, on_commit=publish)
+                first.set_exception(RuntimeError("provider unavailable"))
+                failed = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(failed)
+                assert failed is not None
+                self.assertEqual(failed.resources, [ResourceRef(ModelsResource(kind="models"))])
+
+                for _ in range(2):
+                    with self.assertRaisesRegex(CatalogUnavailable, "provider unavailable"):
+                        cache.read(
+                            "account-a", server, "connection-a", lambda: True,
+                            on_commit=publish,
+                        )
+                self.assertEqual(submitted, 1)
+                self.assertIsNone(await subscription.next_event(timeout=0.01))
+
+                expected: dict[str, object] = {"data": [{"model": "fixture/recovered"}]}
+                retried.set_result(expected)
+                self.assertEqual(
+                    cache.read("account-a", server, "connection-a", lambda: True,
+                               retry=True, on_commit=publish),
+                    expected,
+                )
+                recovered = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(recovered)
+                assert recovered is not None
+                self.assertEqual(recovered.resources, [ResourceRef(ModelsResource(kind="models"))])
+                self.assertEqual(submitted, 2)
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
 
     def test_failed_async_catalog_is_cached_until_explicit_retry(self) -> None:
         from codex_catalog import CatalogPending, CatalogUnavailable, ModelCatalogCache
@@ -93,7 +224,9 @@ class CatalogPublicationTests(unittest.TestCase):
         submitted = 0
 
         class Server:
-            def submit(self, _method: str, _params: dict[str, object]) -> concurrent.futures.Future[dict[str, object]]:
+            def submit(
+                self, _method: str, _params: dict[str, object]
+            ) -> concurrent.futures.Future[dict[str, object]]:
                 nonlocal submitted
                 submitted += 1
                 return native if submitted == 1 else retry_native
@@ -145,7 +278,9 @@ class CatalogPublicationTests(unittest.TestCase):
         native.set_result(expected)
 
         class Server:
-            def submit(self, _method: str, _params: dict[str, object]) -> concurrent.futures.Future[dict[str, object]]:
+            def submit(
+                self, _method: str, _params: dict[str, object]
+            ) -> concurrent.futures.Future[dict[str, object]]:
                 return native
 
         cache = ModelCatalogCache()
@@ -181,12 +316,11 @@ class CatalogPublicationTests(unittest.TestCase):
         self.assertEqual(calls, [None])
 
 
-class ClaudeLoginEventTests(unittest.TestCase):
-    def test_new_verification_url_notifies_while_login_is_active(self) -> None:
+class ClaudeLoginEventTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_verification_url_reaches_subscriber_while_login_is_active(self) -> None:
         from codex_claude_login import LoginManager
 
         manager = LoginManager.__new__(LoginManager)
-        manager.runtime = SimpleNamespace(root=Path("/isolated/state"))
         manager.lock = threading.RLock()
         process = SimpleNamespace(poll=lambda: None)
         job = {
@@ -194,23 +328,48 @@ class ClaudeLoginEventTests(unittest.TestCase):
             "process": process,
         }
         observed: list[tuple[bool, Path | None]] = []
-
-        def published(state_dir: Path) -> None:
-            lock_available = manager.lock.acquire(blocking=False)
-            if lock_available:
-                manager.lock.release()
-            observed.append((lock_available, state_dir if process.poll() is None else None))
-
         url = "https://claude.com/cai/oauth/authorize?code=fixture"
-        with patch("codex_claude_login.publish_account_change", side_effect=published) as publish:
-            self.assertTrue(manager._publish_verification_url(job, url))
-            self.assertFalse(manager._publish_verification_url(job, url))
+        from studio_api.accounts.events import (
+            publish_account_change as publish_account_change_to_hub,
+        )
 
-        publish.assert_called_once()
-        self.assertEqual(observed, [(True, Path("/isolated/state"))])
-        receipt = cast(dict[str, object], job["receipt"])
-        self.assertEqual(receipt["status"], "pending")
-        self.assertEqual(receipt["verificationUrl"], url)
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            manager.runtime = SimpleNamespace(root=state_dir)
+            hub = ResourceHub("claude-login-workspace")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(AccountsResource(kind="accounts"))], loop=asyncio.get_running_loop()
+            )
+
+            def published(published_state_dir: Path) -> None:
+                lock_available = manager.lock.acquire(blocking=False)
+                if lock_available:
+                    manager.lock.release()
+                observed.append(
+                    (lock_available, published_state_dir if process.poll() is None else None)
+                )
+                publish_account_change_to_hub(published_state_dir)
+
+            try:
+                with patch(
+                    "codex_claude_login.publish_account_change", side_effect=published
+                ) as publish:
+                    self.assertTrue(manager._publish_verification_url(job, url))
+                    event = await subscription.next_event(timeout=1)
+                    self.assertIsNotNone(event)
+                    self.assertFalse(manager._publish_verification_url(job, url))
+
+                publish.assert_called_once()
+                self.assertEqual(observed, [(True, state_dir)])
+                assert event is not None
+                self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+                receipt = cast(dict[str, object], job["receipt"])
+                self.assertEqual(receipt["status"], "pending")
+                self.assertEqual(receipt["verificationUrl"], url)
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
 
 
 if __name__ == "__main__":

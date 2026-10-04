@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import base64
+import asyncio
 import importlib.util
 import json
 import os
@@ -11,7 +12,6 @@ from pathlib import Path
 import sys
 import shutil
 import tempfile
-import types
 from typing import Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
@@ -22,6 +22,15 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
+from studio_api.sync.resources.hub import (
+    ResourceHub,
+    register_resource_hub,
+    unregister_resource_hub,
+)
+from studio_api.sync.resources.models import AccountsResource, ResourceRef
+from studio_api.accounts.events import (
+    publish_account_change as publish_account_change_to_hub,
+)
 
 from studio_api.context import ApiContext
 from studio_api.models import ContractModel, ErrorResponse, JsonValue, ResponseModel
@@ -379,10 +388,6 @@ class _AccountStore(Protocol):
 
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
-        hub = types.ModuleType("studio_api.sync.resources.hub")
-        hub.publish_resources = lambda *_args: None  # type: ignore[attr-defined]
-        self.hub_patch = patch.dict(sys.modules, {hub.__name__: hub})
-        self.hub_patch.start()
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
         self.cache.mkdir(parents=True)
         self.tmp = tempfile.TemporaryDirectory(dir=self.cache)
@@ -415,7 +420,6 @@ class AccountsRouterTests(unittest.TestCase):
         self.claude.stop()
         self.path_home.stop()
         self.environment.stop()
-        self.hub_patch.stop()
         self.tmp.cleanup()
         shutil.rmtree(self.cache, ignore_errors=True)
 
@@ -434,21 +438,37 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertNotIn("fixture-secret", response.text)
 
     def test_accounts_get_does_not_publish_and_mutation_retries_are_deduplicated(self) -> None:
-        with patch("studio_api.accounts.router.publish_account_change") as publish:
+        state_dir = cast(Path, getattr(self.store, "root")).parent
+        hub = ResourceHub("account-route-workspace")
+        loop = asyncio.new_event_loop()
+        register_resource_hub(state_dir, hub)
+        subscription = hub.subscribe(
+            [ResourceRef(AccountsResource(kind="accounts"))], loop=loop
+        )
+        try:
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
             self.assertEqual(self.client.get("/api/accounts").status_code, 200)
-            publish.assert_not_called()
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
             second = self.root / "second-profile"
             second.mkdir()
             self._write_auth(second, "account-second")
             body = {"home": str(second)}
             response = self.client.post("/api/accounts/register", json=body)
             self.assertEqual(response.status_code, 200, response.text)
-            publish.assert_called_once_with(cast(Path, getattr(self.store, "root")).parent)
+            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.reason, "change")
+            self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
             repeated = self.client.post("/api/accounts/register", json=body)
             self.assertEqual(repeated.status_code, 200, repeated.text)
+            self.assertIsNone(loop.run_until_complete(subscription.next_event(timeout=0.01)))
+        finally:
+            subscription.close()
+            unregister_resource_hub(state_dir, hub)
+            loop.close()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(repeated.json(), response.json())
-        publish.assert_called_once()
 
     def test_async_native_login_completion_publishes_after_account_lock(self) -> None:
         import codex_accounts
@@ -465,19 +485,43 @@ class AccountsRouterTests(unittest.TestCase):
         }
         lock_was_available: list[bool] = []
         account_lock = getattr(self.store, "lock")
+        state_dir = cast(Path, getattr(self.store, "root")).parent
+        hub = ResourceHub("native-login-workspace")
+        loop = asyncio.new_event_loop()
+        register_resource_hub(state_dir, hub)
+        subscription = hub.subscribe(
+            [ResourceRef(AccountsResource(kind="accounts"))], loop=loop
+        )
 
         def published(state_dir: Path) -> None:
             lock_was_available.append(account_lock.acquire(blocking=False))
             if lock_was_available[-1]:
                 account_lock.release()
             self.assertEqual(state_dir, cast(Path, getattr(self.store, "root")).parent)
+            publish_account_change_to_hub(state_dir)
 
-        with patch.object(codex_accounts, "publish_account_change", side_effect=published) as publish:
-            getattr(self.store, "login_completed")("default", {"loginId": "native-login", "success": False})
-            getattr(self.store, "login_completed")("default", {"loginId": "native-login", "success": False})
+        try:
+            with patch.object(
+                codex_accounts, "publish_account_change", side_effect=published
+            ) as publish:
+                getattr(self.store, "login_completed")(
+                    "default", {"loginId": "native-login", "success": False}
+                )
+                getattr(self.store, "login_completed")(
+                    "default", {"loginId": "native-login", "success": False}
+                )
 
-        publish.assert_called_once()
-        self.assertEqual(lock_was_available, [True])
+            publish.assert_called_once()
+            self.assertEqual(lock_was_available, [True])
+            event = loop.run_until_complete(subscription.next_event(timeout=1))
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event.reason, "change")
+            self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+        finally:
+            subscription.close()
+            unregister_resource_hub(state_dir, hub)
+            loop.close()
 
     def test_account_route_uses_actual_api_context_response_validation(self) -> None:
         context = ApiContext.for_schema()
