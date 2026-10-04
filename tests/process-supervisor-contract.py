@@ -231,6 +231,22 @@ class ProcessSupervisorContract(unittest.TestCase):
                           executable=str(other), supervisor_handle='account:default')
         self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
 
+    def test_supervisor_rpc_reply_passes_a_blocked_notification(self):
+        entered, release = threading.Event(), threading.Event()
+        def notification(message):
+            if message.get('method') == 'command/exec/outputDelta':
+                entered.set()
+                release.wait(3)
+        server = AppServer(self.root, notification, lambda _: None, lambda: None,
+                           executable=str(self.binary), supervisor_handle='account:reply-lane')
+        self.servers.append(server)
+        try:
+            submitted = server.submit('command/exec', {'processId': 'reply-lane'})
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(server.wait(submitted, 1)['exitCode'], 0)
+        finally:
+            release.set()
+
     def test_exited_child_is_replaced_in_the_same_supervisor_generation(self):
         first = self.server()
         old_pid = int(self.pid_file.read_text())
