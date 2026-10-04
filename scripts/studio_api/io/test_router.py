@@ -296,13 +296,33 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(response.json(), {"processId": "watch-1"})
         self.assertEqual(self.runtime.calls[-1], ("monitor_input", ("watch-1", {"id": "watch-1", "text": "x", "closeStdin": True})))
 
+    def test_monitor_input_accepts_eof_only_and_resize_only_payloads(self) -> None:
+        eof = self.client.post("/api/monitor/input", json={"id": "watch-1", "closeStdin": True})
+        self.assertEqual(eof.status_code, 200)
+        self.assertEqual(self.runtime.calls[-1], ("monitor_input", ("watch-1", {"id": "watch-1", "closeStdin": True})))
+
+        resize = self.client.post("/api/monitor/input", json={"id": "watch-1", "rows": 40, "cols": 120})
+        self.assertEqual(resize.status_code, 200)
+        self.assertEqual(self.runtime.calls[-1], ("monitor_input", ("watch-1", {"id": "watch-1", "rows": 40, "cols": 120})))
+
+    def test_monitor_input_operation_fields_are_optional_and_nonnullable(self) -> None:
+        schema = self.app.openapi()["components"]["schemas"]["MonitorInput"]
+        self.assertEqual(schema["required"], ["id"])
+        properties = schema["properties"]
+        self.assertEqual(properties["text"]["default"], "")
+        self.assertEqual(properties["rows"]["default"], 24)
+        self.assertEqual(properties["cols"]["default"], 80)
+        self.assertEqual(properties["closeStdin"]["default"], False)
+        for field in ("text", "rows", "cols", "closeStdin"):
+            self.assertNotIn("anyOf", properties[field])
+
     def test_invalid_monitor_input_fails_before_runtime_call(self) -> None:
         response = self.client.post("/api/monitor/input", json={"id": "watch-1", "text": "x" * 32001})
         self.assertEqual(response.status_code, 400)
         self.assertFalse(self.runtime.calls)
 
     def test_null_monitor_input_fields_fail_before_runtime_call(self) -> None:
-        for field in ("text", "rows", "cols"):
+        for field in ("text", "rows", "cols", "closeStdin"):
             with self.subTest(field=field):
                 response = self.client.post("/api/monitor/input", json={"id": "watch-1", field: None})
                 self.assertEqual(response.status_code, 400)
