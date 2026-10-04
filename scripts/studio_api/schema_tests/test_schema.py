@@ -10,7 +10,7 @@ from studio_api.schema import (
     entity_schema_names,
     normalize_json_value_schema,
     remove_orphan_fastapi_validation_schemas,
-    require_json_value_schema,
+    JSON_VALUE_SCHEMA,
     validate_error_responses,
     validate_contract_schemas,
 )
@@ -278,12 +278,19 @@ class SchemaContractTests(unittest.TestCase):
         names = entity_schema_names(sample_document({"type": "string"}))
         self.assertEqual(names, ["AgentEntityDto", "TaskEntityDto"])
 
-    def test_shared_json_value_schema_is_required(self) -> None:
-        require_json_value_schema(sample_document({"type": "string"}))
+    def test_normalization_installs_required_recursive_json_value_schema(self) -> None:
+        document = sample_document({"type": "string"})
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        self.assertEqual(schemas["JsonValue"], JSON_VALUE_SCHEMA)
+
+    def test_json_value_normalization_requires_component(self) -> None:
         document = sample_document({"type": "string"})
         document["components"] = {"schemas": {}}
         with self.assertRaisesRegex(ValueError, "JsonValue"):
-            require_json_value_schema(document)
+            normalize_json_value_schema(document)
 
     def test_openapi_typescript_emits_paths_components_and_entity_aliases(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/AgentEntityDto"})

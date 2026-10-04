@@ -47,10 +47,7 @@ def openapi_document() -> dict[str, JsonValue]:
     from studio_api.context import ApiContext
 
     app = create_app(ApiContext.for_schema())
-    document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
-    remove_orphan_fastapi_validation_schemas(document)
-    normalize_json_value_schema(document)
-    return document
+    return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
 
 
 def _object(value: JsonValue) -> dict[str, JsonValue] | None:
@@ -466,11 +463,3 @@ def entity_schema_names(document: dict[str, JsonValue]) -> list[str]:
     if not names:
         raise ValueError("OpenAPI document has no *EntityDto component schemas")
     return names
-
-
-def require_json_value_schema(document: dict[str, JsonValue]) -> None:
-    components = _object(document.get("components"))
-    schemas = _object(components.get("schemas")) if components else None
-    schema = _object(schemas.get("JsonValue")) if schemas else None
-    if schema is None or schema.get("anyOf") != JSON_VALUE_SCHEMA["anyOf"]:
-        raise ValueError("OpenAPI document does not expose the recursive shared JsonValue schema")

@@ -17,7 +17,6 @@ from studio_api.schema import (
     normalize_json_value_schema,
     openapi_document,
     remove_orphan_fastapi_validation_schemas,
-    require_json_value_schema,
     validate_contract_schemas,
     validate_error_responses,
 )
@@ -62,7 +61,6 @@ def render(document: dict[str, JsonValue]) -> str:
     normalize_json_value_schema(document)
     validate_contract_schemas(document)
     validate_error_responses(document)
-    require_json_value_schema(document)
     entities = entity_schema_names(document)
     cache_root = Path(os.environ.get(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
     temp_root = cache_root / OPENAPI_TEMP_DIRECTORY
