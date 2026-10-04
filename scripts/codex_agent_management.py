@@ -117,7 +117,7 @@ def _missing_transferred_history(db, agent, rt=None):
 
 
 def _blockers(rt, db, a):
-    from codex_workspace import active_monitors, active_task_records
+    from codex_workspace import active_task_records
     key = a['id']
     result = []
     def add(kind, ids):
@@ -129,10 +129,14 @@ def _blockers(rt, db, a):
     if a.get('workspaceOperation'): add('workspace_operation', [key])
     preparation = rt.preparations.get(key)
     if preparation and not preparation['future'].done(): add('thread_preparation', [key])
-    add('descendants', [x['id'] for x in rt.records(db, 'agents') if x.get('parentId') == key and not x.get('deletedAt')])
+    children = (json.loads(row[0]) for row in db.execute(
+        "SELECT record FROM runtime_agents WHERE json_extract(record,'$.parentId')=? ORDER BY rowid", (key,)))
+    add('descendants', [x['id'] for x in children if not x.get('deletedAt')])
     add('input_delivery', [r[0] for r in db.execute(
         "SELECT id FROM runtime_events WHERE agent=? AND epoch=? AND status IN ('pending','reserved','dispatching','uncertain')", (key, a['epoch']))])
-    add('monitors', [x['id'] for x in active_monitors(db) if x.get('agent') == key and x.get('status') in {'starting','running','approval'}])
+    add('monitors', [row[0] for row in db.execute(
+        "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.agent')=? "
+        "AND json_extract(record,'$.status') IN ('starting','running','approval') ORDER BY rowid", (key,))])
     tasks = active_task_records(db, ('running','starting','pending','unknown'), agent=key)
     for task in tasks:
         if (not _finished(a) or task['status'] != 'running' or task.get('kind') != 'command'
@@ -148,8 +152,13 @@ def _blockers(rt, db, a):
         except (OSError, ValueError):
             pass
     add('background_tasks', [x['id'] for x in tasks if x['status'] in {'running','starting','pending','unknown'}])
-    add('questions', [x['id'] for x in rt.records(db, 'requests') if x.get('agent') == key and x.get('status') == 'pending'])
-    add('assigned_work', [x['id'] for x in rt.records(db, 'work') if x.get('owner') == key and x.get('status') not in {'accepted','cancelled'}])
+    add('questions', [row[0] for row in db.execute(
+        "SELECT id FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+        "AND json_extract(record,'$.status')='pending' ORDER BY rowid", (key,))])
+    add('assigned_work', [row[0] for row in db.execute(
+        "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+        "AND (json_extract(record,'$.status') IS NULL "
+        "OR json_extract(record,'$.status') NOT IN ('accepted','cancelled')) ORDER BY rowid", (key,))])
     rt.reconcile_tool_requests(db, key)
     add('tool_requests', [row[0] for row in db.execute(
         "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
@@ -714,6 +723,23 @@ def _restore_worktree(info):
     return None, None
 
 
+def _archive_record(rt, db, target, actor_id, reason, *, cleanup_pending):
+    if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
+        raise ValueError('Give an archive reason with 1 to 1000 characters')
+    unknown = [row[0] for row in db.execute(
+        "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
+        "AND json_extract(record,'$.outcome')='unknown' ORDER BY id", (target['id'],))]
+    at = time.time()
+    target.update(deletedAt=at, autoWake=False, status='paused', epoch=target['epoch'] + 1)
+    target['agentArchive'] = {'at': at, 'by': actor_id, 'reason': reason.strip(),
+                              'epoch': target['epoch'], 'cleanupPending': cleanup_pending,
+                              'unknownToolRequests': unknown}
+    rt.put(db, 'agents', target)
+    # Blockers already exclude unfinished assignments. Other workers' claims
+    # stay with the scheduler; archive must not postpone its global sweep.
+    return _brief(target)
+
+
 def manage_agent(rt, actor_id, args, epoch=None):
     action = args.get('action')
     if action not in {'inspect','list','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report',
@@ -752,6 +778,13 @@ def manage_agent(rt, actor_id, args, epoch=None):
             if not target.get('deletedAt'):
                 blockers = _blockers(rt, db, target)
                 if blockers: return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
+                if (not target.get('agentArchive') and not target.get('threadId')
+                        and not target.get('worktreeReady') and not target.get('worktreeCleanup')
+                        and not target.get('cleanedWorktree')):
+                    archived_agent = _archive_record(rt, db, target, actor_id, args.get('reason', ''),
+                                                     cleanup_pending=False)
+                    return {'status': 'archived', 'agent': archived_agent,
+                            'worktree': {'state': 'none', 'bytes': 0}}
                 observed = (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
                 connection = rt.connection_ids.get(observed[2])
                 server = rt.servers.get(observed[2])
@@ -859,18 +892,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
             blockers = _blockers(rt, db, target)
             if blockers:
                 return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
-            unknown = [row[0] for row in db.execute(
-                "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
-                "AND json_extract(record,'$.outcome')='unknown' ORDER BY id", (target['id'],))]
-            at = time.time()
-            target.update(deletedAt=at, autoWake=False, status='paused', epoch=target['epoch'] + 1)
-            target['agentArchive'] = {'at': at, 'by': actor_id, 'reason': reason.strip(),
-                                      'epoch': target['epoch'], 'cleanupPending': True,
-                                      'unknownToolRequests': unknown}
-            rt.put(db, 'agents', target)
-            if hasattr(rt, 'release_failed_work'):
-                rt.release_failed_work(db, rt.records(db, 'agents'), force=True)
-            archived_agent = _brief(target)
+            archived_agent = _archive_record(rt, db, target, actor_id, reason, cleanup_pending=True)
     if action == 'archive':
         cleanup = _cleanup_worktree(rt, actor_id, target['id'], epoch)
         with rt.lock, rt.db() as db:
