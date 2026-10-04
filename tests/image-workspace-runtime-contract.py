@@ -228,6 +228,14 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.rt.prepare(self.rt.agent(worker))
         engine.ensure_mounted.assert_called_once_with(worker)
 
+    def test_restart_prepare_rejoins_base_build_during_read_only_phase(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn()['id']
+        self.rt.start_image_base.reset_mock()
+        self.rt.prepare(self.rt.agent(worker))
+        self.rt.start_image_base.assert_called_once_with(str(self.repo), worker)
+
     def test_collect_conflict_is_saved_in_the_worker_result(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
