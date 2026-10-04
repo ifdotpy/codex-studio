@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -91,6 +92,28 @@ def interpreter_has_api(python: Path) -> bool:
     return True
 
 
+def _publish_environment(
+    staging: Path, environment_dir: Path, python: Path
+) -> Path:
+    """Publish a completed venv without replacing a concurrent winner."""
+    try:
+        staging.rename(environment_dir)
+    except OSError as error:
+        if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+            raise
+        if python.is_file() and interpreter_has_api(python):
+            shutil.rmtree(staging, ignore_errors=True)
+            return python
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(
+            f"The managed Python environment at {environment_dir} exists "
+            "but is unusable. After confirming no app process uses it, "
+            "remove that cache directory and rerun `python3 "
+            "scripts/install-cli.py`."
+        ) from error
+    return python
+
+
 def _candidate_python(value: str) -> Path | None:
     candidate = Path(value).expanduser()
     if not candidate.is_absolute():
@@ -178,11 +201,7 @@ def prepare_environment(
         )
         if not interpreter_has_api(environment_python):
             raise RuntimeError("The prepared Python environment failed validation.")
-        try:
-            staging.rename(environment_dir)
-        except FileExistsError:
-            if not (target.is_file() and interpreter_has_api(target)):
-                raise
+        return _publish_environment(staging, environment_dir, target)
     except (OSError, subprocess.SubprocessError, RuntimeError):
         shutil.rmtree(staging, ignore_errors=True)
         raise

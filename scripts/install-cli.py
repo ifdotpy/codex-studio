@@ -4,8 +4,8 @@
 import argparse
 import os
 from pathlib import Path
-import sys
 import subprocess
+import sys
 import uuid
 
 from codex_python import prepare_environment, resolve_python
