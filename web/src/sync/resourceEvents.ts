@@ -95,6 +95,7 @@ const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
 const RESOURCE_FLUSH_MS = 20;
+const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
 const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
@@ -230,10 +231,28 @@ function rememberResourceVersion(resource: ResourceRef, version: Version) {
   if (
     previous?.epoch === version.epoch &&
     previous.revision >= version.revision
-  )
+  ) {
+    if (previous.revision === version.revision) {
+      resourceValues.delete(key);
+      resourceValues.set(key, previous);
+    }
     return false;
+  }
   resourceValues.set(key, version);
   return true;
+}
+
+function pruneResourceVersions(active: Set<string>) {
+  let inactiveCount = [...resourceValues.keys()].filter(
+    (key) => !active.has(key),
+  ).length;
+  if (inactiveCount <= MAX_INACTIVE_RESOURCE_VERSIONS) return;
+  for (const key of resourceValues.keys()) {
+    if (inactiveCount <= MAX_INACTIVE_RESOURCE_VERSIONS) break;
+    if (active.has(key)) continue;
+    resourceValues.delete(key);
+    inactiveCount--;
+  }
 }
 
 function dispatchEvent(event: ResourceChangeEvent) {
@@ -264,6 +283,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
     if (active.has(resourceKey(resource))) dispatchResource(resource, version);
     else rememberResourceVersion(resource, version);
   }
+  pruneResourceVersions(active);
   const local = localResources().map(resourceKey);
   if (
     event.reason !== "change" &&

@@ -377,7 +377,8 @@ describe("shared resource event transport", () => {
     const transport = await import("./resourceEvents");
     const local = { kind: "state" } as const;
     const latePeerRef = { kind: "panel", agentId: "late-panel" } as const;
-    const stop = transport.watchResourceChanges(local, vi.fn());
+    const localChanges = vi.fn();
+    const stop = transport.watchResourceChanges(local, localChanges);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const ownerChannel = Channel.instances[0]!;
     Source.instances[0]!.emit("resources", {
@@ -389,6 +390,8 @@ describe("shared resource event transport", () => {
       resources: [local, latePeerRef],
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(localChanges).toHaveBeenCalledTimes(1);
 
     const sentBeforeLateSubscription = ownerChannel.messages.length;
     ownerChannel.onmessage?.({
@@ -414,6 +417,98 @@ describe("shared resource event transport", () => {
             ),
         ),
     ).toBe(true);
+    stop();
+  });
+
+  it("bounds inactive versions and reconciles an evicted late peer ref", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const local = { kind: "state" } as const;
+    const bulkRefs = Array.from({ length: 5_000 }, (_, index) => ({
+      kind: "panel" as const,
+      agentId: `inactive-${index}`,
+    }));
+    const evictedRef = bulkRefs[0]!;
+    const localChanges = vi.fn();
+    const stop = transport.watchResourceChanges(local, localChanges);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const ownerChannel = Channel.instances[0]!;
+    Source.instances[0]!.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 7,
+      reason: "initial",
+      resources: [local, ...bulkRefs],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const sentBeforeLateSubscription = ownerChannel.messages.length;
+    ownerChannel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "tab-follower",
+        resources: [evictedRef],
+        tokenRates: false,
+        reset: true,
+      },
+    } as MessageEvent);
+
+    expect(Source.instances).toHaveLength(2);
+    expect(
+      ownerChannel.messages
+        .slice(sentBeforeLateSubscription)
+        .some((message: any) => message.kind === "resource-event"),
+    ).toBe(false);
+
+    Source.instances[1]!.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 8,
+      reason: "initial",
+      resources: [local, evictedRef],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(
+      ownerChannel.messages
+        .slice(sentBeforeLateSubscription)
+        .some(
+          (message: any) =>
+            message.kind === "resource-event" &&
+            message.event.resources.some(
+              (resource: any) =>
+                resource.kind === "panel" &&
+                resource.agentId === evictedRef.agentId,
+            ),
+        ),
+    ).toBe(true);
+    expect(localChanges).toHaveBeenCalledTimes(2);
     stop();
   });
 });
