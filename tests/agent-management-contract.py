@@ -296,9 +296,27 @@ class RealWorktreeContract(Contract):
         self.git('commit', '-qm', 'raw agent commit')
         raw_head = self.git('rev-parse', 'HEAD')
         self.git('update-ref', 'refs/studio/agents/worker/raw', raw_head)
+        nested_repo = self.repo / 'sub'
+        nested_repo.mkdir()
+        self.git('init', '-q', str(nested_repo))
+        self.git('config', 'user.name', 'Fixture', cwd=nested_repo)
+        self.git('config', 'user.email', 'fixture@example.test', cwd=nested_repo)
+        (nested_repo / 'nested.txt').write_text('nested worker commit\n')
+        self.git('add', '.', cwd=nested_repo)
+        self.git('commit', '-qm', 'nested worker commit', cwd=nested_repo)
+        nested_head = self.git('rev-parse', 'HEAD', cwd=nested_repo)
+        self.git('update-ref', 'refs/studio/agents/worker/raw', nested_head, cwd=nested_repo)
+        self.git('add', 'sub')
+        self.git('commit', '-qm', 'add nested repository')
         engine.collect = Mock(return_value={
-            'state': 'conflict', 'conflict': 'raw-only.txt',
-            'rawRef': 'refs/studio/agents/worker/raw'})
+            'state': 'conflict', 'path': 'sub', 'conflict': 'nested.txt',
+            'rawRef': 'refs/studio/agents/worker/raw',
+            'repositories': [
+                {'path': '.', 'state': 'collected', 'branch': 'codex-agent/worker',
+                 'head': raw_head},
+                {'path': 'sub', 'state': 'conflict', 'branch': 'codex-agent/worker',
+                 'rawRef': 'refs/studio/agents/worker/raw'},
+            ]})
         engine.remove_workspace = Mock(return_value={'freedBytes': 4096})
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             archived = self.call('archive')
@@ -306,6 +324,7 @@ class RealWorktreeContract(Contract):
             with self.rt.db() as db:
                 saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
             self.assertEqual(saved['head'], raw_head)
+            self.assertEqual(saved['restoreHeads'], {'.': raw_head, 'sub': nested_head})
             restored_repo = Path(self.tmp.name) / 'restored' / 'repo'
             restored_repo.mkdir(parents=True)
             engine.create_workspace = Mock(return_value={
@@ -320,7 +339,7 @@ class RealWorktreeContract(Contract):
                 capture_output=True, timeout=30)
         self.assertEqual(restored['status'], 'restored')
         engine.create_workspace.assert_called_once_with(
-            str(self.repo), 'worker', start_commit=raw_head)
+            str(self.repo), 'worker', restore_heads={'.': raw_head, 'sub': nested_head})
 
     def test_clean_archive_keeps_ref_and_restore_recreates_checkout(self):
         path = self.repo / '.worktrees' / 'codex-agents' / 'worker'

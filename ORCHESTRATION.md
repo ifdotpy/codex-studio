@@ -520,7 +520,9 @@ An agent can set `base_ref` to a branch, tag, or commit. Otherwise Studio uses t
 project's **Default worker base ref**, then the repository HEAD. Studio resolves and records
 the commit when it creates the worker. Retries use the same saved commit. The result and the
 worker's first input report the commit and its distance behind main when it is behind.
-Parent changes that are not committed are absent unless their commit is selected.
+With no selected base ref, the image workspace includes the parent's current uncommitted changes
+in its snapshot commit. Collect leaves that snapshot commit out of `codex-agent/<agent-id>`.
+An explicit `base_ref` or project default starts from that commit and does not include those edits.
 Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
 After each image workspace turn, Studio saves a checkpoint and collects the worker branch as
 `codex-agent/<agent-id>` in the user's repository. The lead merges it as usual. A collect

@@ -3151,6 +3151,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "imageWorkspacePhase": "read_only" if data.get("_imageWorkspace") else None,
                 "imageWorkspaceRepo": data.get("_imageWorkspaceRepo"),
                 "imageWorkspaceRelative": data.get("_imageWorkspaceRelative"),
+                "imageWorkspaceStartCommit": data.get("_imageWorkspaceStartCommit"),
                 "imageWorkspaceError": data.get("_imageWorkspaceError"),
                 "worktreeWarning": (None if not (p and role == "implementer") or data.get("_worktree", True)
                                     else no_worktree_warning(cwd)),
@@ -3718,10 +3719,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def turn_permissions(self, a):
         if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
-            return {"approvalPolicy": "on-request", "sandboxPolicy": {"type": "readOnly"}}
-        if a.get("imageWorkspaceReady") and a.get("yoloMode") is None:
-            return {"approvalPolicy": "on-request", "sandboxPolicy": {
-                "type": "workspaceWrite", "writableRoots": [a["cwd"]], "networkAccess": False}}
+            return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
         if a.get("yoloMode") is False:
@@ -3781,6 +3779,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return git_toplevel(directory), directory, prefix
 
     def image_base_completed(self, agent_id, status):
+        workspace = None
         try:
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
@@ -3805,7 +3804,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                      "image-workspace-fallback:" + agent_id)
                     return
                 relative = agent.get("imageWorkspaceRelative", ".")
-                start_commit = agent.get("workerBaseCommit")
+                start_commit = agent.get("imageWorkspaceStartCommit")
             from codex_workspace_images import create_workspace, exec_prefix
             workspace = create_workspace(repo, agent_id, start_commit=start_commit)
             cwd = Path(workspace["repoPath"]) / relative
@@ -3836,6 +3835,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._send_image_workspace_notice(agent_id, notice_text,
                                               "image-workspace-ready:" + agent_id)
         except Exception as error:
+            if workspace is not None:
+                try:
+                    from codex_workspace_images import remove_workspace
+                    remove_workspace(agent_id, force=True)
+                except Exception as cleanup_error:
+                    error = RuntimeError(f"{error}; image workspace cleanup failed: {cleanup_error}")
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
@@ -3932,15 +3937,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("model"):
             params["model"] = a["model"]
         if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
-            # Claude reads its initial sandbox from thread/start. Keep the
-            # read-only phase even when the worker requested YOLO.
-            params.update(approvalPolicy="on-request", sandbox="read-only")
+            # Never wait for an approver during the read-only phase. Claude uses
+            # plan mode because never otherwise maps to bypass permissions.
+            params.update(approvalPolicy="never", sandbox="read-only")
+            if a.get("provider") == "claude":
+                params["claude"] = {**a.get("claudeOptions", {}), "permissionMode": "plan"}
         elif a.get("yoloMode") is True:
             params.update(approvalPolicy="never", sandbox="danger-full-access")
         elif a.get("yoloMode") is False:
             params.update(approvalPolicy="on-request", sandbox="read-only" if a["role"] == "reviewer" else "workspace-write")
-        elif a.get("imageWorkspaceReady"):
-            params.update(approvalPolicy="on-request", sandbox="workspace-write")
         elif a["role"] == "reviewer":
             params["sandbox"] = "read-only"
         if progress and a.get("yoloMode") is False and a["role"] != "reviewer":
@@ -3952,7 +3957,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "Use Bash for other commands. Studio voice is unavailable. "
                 "Do not tell the user that an MCP server or connector needs authentication "
                 "unless the user asks for work that needs it.\n")
-            params["claude"] = a.get("claudeOptions", {})
+            params["claude"] = {**a.get("claudeOptions", {}), **params.get("claude", {})}
         params["dynamicTools"] = self.tool_definitions(a)
         if a.get("portableHistory"):
             from codex_portable_history import history_context
@@ -6055,6 +6060,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             base = None
             use_image = False
             image_error = None
+            selected_base_ref = None
             if "base_ref" in spec and repo is None:
                 raise ValueError("base_ref requires an implementer in a Git repository")
             if repo is not None:
@@ -6065,19 +6071,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     except Exception as error:
                         use_image = False
                         image_error = "Image workspace base build failed: " + str(error)[:700]
-                base_ref = spec.get("base_ref")
-                if base_ref is None:
+                selected_base_ref = spec.get("base_ref")
+                if selected_base_ref is None:
                     with self.lock, self.db() as db:
-                        base_ref = self.project_worker_base(directory, db=db)
-                cache_key = (repo, base_ref)
+                        selected_base_ref = self.project_worker_base(directory, db=db)
+                cache_key = (repo, selected_base_ref)
                 if cache_key not in base_cache:
                     from codex_worker_base import resolve_worker_base
-                    base_cache[cache_key] = resolve_worker_base(repo, base_ref)
+                    base_cache[cache_key] = resolve_worker_base(repo, selected_base_ref)
                 base = base_cache[cache_key]
             resolved.append({**spec, "cwd": directory, "_worktree": repo is not None,
                              "_imageWorkspace": use_image,
                              "_imageWorkspaceRepo": repo if use_image else None,
                              "_imageWorkspaceRelative": (str(Path(directory).relative_to(repo)) or ".") if use_image else None,
+                             "_imageWorkspaceStartCommit": (base["baseCommit"]
+                                                            if use_image and selected_base_ref is not None
+                                                            else None),
                              "_imageWorkspaceError": image_error,
                              "_workerBase": base})
         specs = resolved
@@ -6108,10 +6117,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if active + sum(s["id"] not in existing for s in planned) > self.agent(current["rootId"], db)["maxAgents"]:
                 raise ValueError(f"This batch exceeds the active agent limit; {finished} finished agents. Use archive_finished to free stored records. No workers were created")
             children = [self.create({k: v for k, v in spec.items()
-                                     if k not in {"task_id", "base_ref", "_workerBase"}} | {
+                                     if k not in {"task_id", "base_ref", "_workerBase",
+                                                  "_imageWorkspaceStartCommit"}} | {
                                          "_imageWorkspace": spec.get("_imageWorkspace", False),
                                          "_imageWorkspaceRepo": spec.get("_imageWorkspaceRepo"),
                                          "_imageWorkspaceRelative": spec.get("_imageWorkspaceRelative"),
+                                         "_imageWorkspaceStartCommit": spec.get("_imageWorkspaceStartCommit"),
                                          "_imageWorkspaceError": spec.get("_imageWorkspaceError"),
                                          "_workerBaseRef": spec["_workerBase"]["baseRef"] if spec.get("_workerBase") else None,
                                          "_workerBaseCommit": spec["_workerBase"]["baseCommit"] if spec.get("_workerBase") else None,

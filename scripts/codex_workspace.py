@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -509,9 +510,14 @@ class WorkspaceMixin:
             self.checked_actor_in_own_db(agent_id)
             file = self.workspace_path(agent_id, path)
             mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
-        if not file.is_file():
-            raise ValueError("This file does not exist")
-        return {"path": str(file), "name": file.name, "mime": mime, "size": file.stat().st_size}
+        a = self.agent(agent_id) if agent_id and not asset_id else None
+        if a and a.get("imageWorkspaceReady"):
+            size = self._image_file_size(file)
+        else:
+            if not file.is_file():
+                raise ValueError("This file does not exist")
+            size = file.stat().st_size
+        return {"path": str(file), "name": file.name, "mime": mime, "size": size}
 
     def file_content(
         self, agent_id=None, path=None, asset_id=None, limit=20 * 1024 * 1024
@@ -524,11 +530,42 @@ class WorkspaceMixin:
             self.checked_actor_in_own_db(agent_id)
             file = self.workspace_path(agent_id, path)
             mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
-        if not file.is_file():
+        a = self.agent(agent_id) if agent_id and not asset_id else None
+        if a and a.get("imageWorkspaceReady"):
+            content = self._read_image_file(file, limit)
+        else:
+            if not file.is_file():
+                raise ValueError("This file does not exist")
+            if file.stat().st_size > limit:
+                raise ValueError("This file exceeds the 20 MiB preview limit")
+            content = file.read_bytes()
+        return content, mime, file.name
+
+    @staticmethod
+    def _image_file_size(file):
+        from codex_workspace_images import exec_prefix
+        script = "import os,sys; p=sys.argv[1]; assert os.path.isfile(p); print(os.stat(p).st_size)"
+        result = subprocess.run([*exec_prefix(), sys.executable, "-c", script, str(file)],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode:
             raise ValueError("This file does not exist")
-        if file.stat().st_size > limit:
+        return int(result.stdout.strip())
+
+    @staticmethod
+    def _read_image_file(file, limit):
+        from codex_workspace_images import exec_prefix
+        script = ("import os,sys; p=sys.argv[1]; assert os.path.isfile(p); n=os.stat(p).st_size; "
+                  "n > int(sys.argv[2]) and sys.exit(23); "
+                  "sys.stdout.buffer.write(open(p,'rb').read(int(sys.argv[2])+1))")
+        result = subprocess.run([*exec_prefix(), sys.executable, "-c", script, str(file), str(limit)],
+                                capture_output=True, timeout=30)
+        if result.returncode == 23:
             raise ValueError("This file exceeds the 20 MiB preview limit")
-        return file.read_bytes(), mime, file.name
+        if result.returncode:
+            raise ValueError("This file does not exist")
+        if len(result.stdout) > limit:
+            raise ValueError("This file exceeds the 20 MiB preview limit")
+        return result.stdout
 
     def git(self, a, args, env=None, input=None):
         prefix = []

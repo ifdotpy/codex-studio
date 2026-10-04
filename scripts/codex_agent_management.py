@@ -72,18 +72,31 @@ def _cleanup_image_workspace(rt, agent_id):
         if dirty.stdout.strip():
             raise RuntimeError('Image workspace has uncommitted or untracked changes; '
                                'commit them before archiving')
-        raw_ref = collected.get('rawRef')
-        if not raw_ref and (collected.get('conflict') or collected.get('conflicts')):
-            raw_ref = 'refs/studio/agents/' + agent_id + '/raw'
-        ref = raw_ref or 'refs/heads/codex-agent/' + agent_id
-        result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify', ref],
-                                capture_output=True, timeout=30)
-        if result.returncode:
-            fallback_ref = ('refs/heads/codex-agent/' + agent_id if raw_ref
-                            else 'refs/studio/agents/' + agent_id + '/raw')
-            result = subprocess.run(['git', '-C', repo, 'rev-parse', '--verify', fallback_ref],
-                                    check=True, capture_output=True, timeout=30)
-        head = result.stdout.decode().strip()
+        restore_heads = {}
+        conflict_path = collected.get('path')
+        for row in collected.get('repositories', []):
+            repository_path = row.get('path', '.')
+            repository = Path(repo) / repository_path
+            raw_ref = row.get('rawRef')
+            if not raw_ref and (row.get('state') == 'conflict' or repository_path == conflict_path):
+                raw_ref = collected.get('rawRef') or ('refs/studio/agents/' + agent_id + '/raw')
+            head = row.get('head') or row.get('commit')
+            if not head:
+                ref = raw_ref or row.get('branch') or 'refs/heads/codex-agent/' + agent_id
+                result = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', ref],
+                                        capture_output=True, timeout=30)
+                if result.returncode:
+                    fallback_ref = ('refs/heads/codex-agent/' + agent_id if raw_ref
+                                    else 'refs/studio/agents/' + agent_id + '/raw')
+                    result = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', fallback_ref],
+                                            check=True, capture_output=True, timeout=30)
+                head = result.stdout.decode().strip()
+            restore_heads[repository_path] = head
+        if not restore_heads:
+            raise RuntimeError('Collect returned no repository heads to restore')
+        head = restore_heads.get('.', collected.get('commit'))
+        if not head:
+            raise RuntimeError('Collect returned no root repository head to restore')
         removed = remove_workspace(agent_id)
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
@@ -91,7 +104,8 @@ def _cleanup_image_workspace(rt, agent_id):
                            imageWorkspacePhase='archived', imageWorkspaceCollect=collected,
                            cleanedImageWorkspace={'repo': repo, 'relative': relative,
                                                   'branch': 'codex-agent/' + agent_id,
-                                                  'head': head, 'bytes': removed.get('freedBytes', before),
+                                                  'head': head, 'restoreHeads': restore_heads,
+                                                  'bytes': removed.get('freedBytes', before),
                                                   'collect': collected})
             current['imageWorkspace'] = True
             rt.put(db, 'agents', current)
@@ -1004,7 +1018,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
             from codex_workspace_images import create_workspace, exec_prefix
             try:
                 workspace = create_workspace(restore_image['repo'], target['id'],
-                                             start_commit=restore_image['head'])
+                                             restore_heads=restore_image.get('restoreHeads') or
+                                             {'.': restore_image['head']})
             except Exception as error:
                 return {'status': 'blocked', 'reason': 'Image workspace restore failed: ' + str(error)[:500]}
             relative = restore_image.get('relative', '.')

@@ -42,7 +42,10 @@ On supported platforms, implementers use an image workspace. A base build starts
 when Multi agent mode turns on. Until the base is ready, new implementers work
 read-only in their selected folder. Studio then switches them to a writable
 image workspace and sends a notice. Other platforms use a Git worktree. Include
-or commit required inputs in the selected base commit.
+or commit required inputs in the selected base commit. With no explicit or
+project base ref, the image workspace includes the user's current uncommitted
+changes in a snapshot commit. Collect leaves that snapshot commit out of the
+worker branch. A selected base ref starts from its commit and excludes those edits.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after

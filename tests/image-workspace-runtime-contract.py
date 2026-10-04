@@ -40,9 +40,10 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.rt.close()
         self.temp.cleanup()
 
-    def spawn(self, name='Worker'):
+    def spawn(self, name='Worker', **options):
         return self.rt.spawn_agents(self.rt.agent(self.lead['id']), {'agents': [{
-            'name': name, 'prompt': 'Edit one file', 'cwd': str(self.repo / 'project')} ]},
+            'name': name, 'prompt': 'Edit one file', 'cwd': str(self.repo / 'project'),
+            **options} ]},
             'image-spawn-' + name)['agents'][0]
 
     def test_multi_switch_starts_the_supported_repository_base(self):
@@ -63,7 +64,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertTrue(record['imageWorkspace'])
         self.assertEqual(record['imageWorkspacePhase'], 'read_only')
         self.assertEqual(record['cwd'], str(self.repo / 'project'))
-        self.assertEqual(self.rt.turn_permissions(record)['sandboxPolicy'], {'type': 'readOnly'})
+        self.assertEqual(self.rt.turn_permissions(record), {
+            'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'readOnly'}})
         with self.rt.db() as db:
             text = db.execute('SELECT text FROM runtime_events WHERE id=?',
                               (worker + ':initial',)).fetchone()[0]
@@ -75,7 +77,17 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         worker = self.rt.agent(self.spawn()['id'])
         worker.update(provider='claude', yoloMode=True)
         params = self.rt.new_thread_params(worker)
-        self.assertEqual(params['approvalPolicy'], 'on-request')
+        self.assertEqual(params['approvalPolicy'], 'never')
+        self.assertEqual(params['sandbox'], 'read-only')
+        self.assertEqual(params['claude']['permissionMode'], 'plan')
+
+    def test_codex_initial_thread_uses_read_only_without_approval_wait(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.rt.agent(self.spawn()['id'])
+        worker.update(yoloMode=True)
+        params = self.rt.new_thread_params(worker)
+        self.assertEqual(params['approvalPolicy'], 'never')
         self.assertEqual(params['sandbox'], 'read-only')
 
     def test_codex_protocol_switches_from_read_only_to_the_image_path(self):
@@ -125,16 +137,35 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.assertEqual(notice_turn['sandboxPolicy']['type'], 'workspaceWrite')
             self.assertIn(str(project), notice_turn['input'][0]['text'])
 
-    def test_ready_inherited_permissions_allow_writes_only_in_the_mount(self):
+    def test_ready_image_workspace_keeps_existing_worktree_permissions(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
         worker = self.rt.agent(self.spawn()['id'])
         worker.update(cwd=str(self.root / 'mount'), imageWorkspaceReady=True,
                       imageWorkspacePhase='ready', yoloMode=None)
-        policy = self.rt.turn_permissions(worker)
-        self.assertEqual(policy['approvalPolicy'], 'on-request')
-        self.assertEqual(policy['sandboxPolicy']['type'], 'workspaceWrite')
-        self.assertEqual(policy['sandboxPolicy']['writableRoots'], [worker['cwd']])
+        expected = {**worker, 'imageWorkspace': False, 'imageWorkspaceReady': False}
+        self.assertEqual(self.rt.turn_permissions(worker), self.rt.turn_permissions(expected))
+        self.assertEqual(self.rt.turn_permissions(worker), {})
+        params = self.rt.new_thread_params(worker)
+        self.assertNotIn('approvalPolicy', params)
+        self.assertNotIn('sandbox', params)
+
+    def test_only_explicit_or_project_default_base_pins_image_start_commit(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        user_head = subprocess.check_output(
+            ['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], text=True).strip()
+        default = self.rt.agent(self.spawn('implicit-head')['id'])
+        explicit = self.rt.agent(self.spawn('explicit-head', base_ref='HEAD')['id'])
+        self.rt.projects({'action': 'set_worker_base', 'path': str(self.repo),
+                          'base_ref': 'HEAD', 'expected_revision': 0})
+        project_default = self.rt.agent(self.spawn('project-default')['id'])
+        self.assertEqual(default['workerBaseCommit'], user_head)
+        self.assertIsNone(default['imageWorkspaceStartCommit'])
+        self.assertEqual(explicit['imageWorkspaceStartCommit'], user_head)
+        self.assertEqual(project_default['imageWorkspaceStartCommit'], user_head)
+        self.assertEqual(explicit['workerBaseRef'], 'HEAD')
+        self.assertEqual(project_default['workerBaseRef'], 'HEAD')
 
     def test_linux_provider_process_falls_back_when_namespaces_are_unavailable(self):
         from codex_runtime import provider_process_command
@@ -189,6 +220,26 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         notice.assert_called_once()
         self.assertIn(str(project), notice.call_args.args[1])
         self.assertIn('snap', notice.call_args.args[1])
+        engine.create_workspace.assert_called_once_with(
+            str(self.repo), worker, start_commit=None)
+
+    def test_failed_mount_path_check_removes_created_workspace(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn()['id']
+        engine = types.ModuleType('codex_workspace_images')
+        engine.create_workspace = Mock(return_value={
+            'mount': str(self.root / 'mount'), 'repoPath': str(self.root / 'mount/repo'),
+            'branch': 'codex-agent/' + worker, 'snapshotCommit': None})
+        engine.exec_prefix = Mock(return_value=[])
+        engine.remove_workspace = Mock()
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
+                patch('codex_runtime.subprocess.run', return_value=types.SimpleNamespace(returncode=1)):
+            self.rt.image_base_completed(worker, {'state': 'ready'})
+        engine.remove_workspace.assert_called_once_with(worker, force=True)
+        record = self.rt.agent(worker)
+        self.assertEqual(record['imageWorkspacePhase'], 'fallback')
+        self.assertIn('workspace', record['imageWorkspaceError'].lower())
 
     def test_callback_replay_after_switch_does_not_duplicate_workspace_or_notice(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
@@ -309,7 +360,10 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.repo), 'branch',
                         'codex-agent/' + worker], check=True)
         engine = types.ModuleType('codex_workspace_images')
-        engine.collect = Mock(return_value={'branch': 'codex-agent/' + worker})
+        head = subprocess.check_output(['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], text=True).strip()
+        engine.collect = Mock(return_value={
+            'state': 'collected', 'branch': 'codex-agent/' + worker,
+            'repositories': [{'path': '.', 'branch': 'codex-agent/' + worker, 'head': head}]})
         engine.remove_workspace = Mock(return_value={'freedBytes': 123, 'state': 'removed'})
         engine.workspace_bytes = Mock(return_value=123)
         engine.ensure_mounted = Mock(return_value={'mount': str(image_mount), 'repoPath': str(image_repo)})
@@ -335,6 +389,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         record = self.rt.agent(worker)
         self.assertTrue(record['imageWorkspaceReady'])
         self.assertEqual(record['branch'], 'codex-agent/' + worker)
+        engine.create_workspace.assert_called_once_with(
+            str(self.repo), worker, restore_heads={'.': head})
 
     def test_maintenance_and_disk_reports_include_workspace_and_base_bytes(self):
         from codex_agent_management import worktree_maintenance_report
