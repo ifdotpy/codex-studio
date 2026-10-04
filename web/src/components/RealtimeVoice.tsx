@@ -291,7 +291,7 @@ function NativeVoice({
       const offer = await connection.createOffer();
       await connection.setLocalDescription(offer);
       if (current.closed) return;
-      const sdp = connection.localDescription?.sdp;
+      const sdp = offer.sdp;
       if (!sdp) throw new Error("Voice offer has no session description.");
       current.submitted = true;
       const result = await post(
