@@ -87,13 +87,19 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         (source / "tracked.txt").write_text("base\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(source), "commit", "-qm", "base"], check=True)
+        legacy = source / ".worktrees" / "full-checkout"
+        legacy.mkdir(parents=True)
+        (legacy / ".git").write_text("gitdir: ../../.git/worktrees/full-checkout\n", encoding="utf-8")
+        (legacy / "large-checkout-data").write_text("must not copy", encoding="utf-8")
+        excludes = (".worktrees",)
 
         storage = self.store / "fixture"
         staging = self.backend.open_base_staging(source, "repo-key", "v1")
-        self.backend.copy_base_tree(source, staging["root"])
+        self.backend.copy_base_tree(source, staging["root"], excludes=excludes)
         sealed = self.backend.seal_base(staging)
         image = Path(sealed["image"])
         self.assertFalse((image / "repo" / ".git" / "objects").exists())
+        self.assertFalse((image / "repo" / ".worktrees").exists())
         layer_a = self.backend.clone_workspace(image, storage / "agents" / "a")
         layer_b = self.backend.clone_workspace(image, storage / "agents" / "b")
         mount_a, mount_b = storage / "mnt" / "a", storage / "mnt" / "b"
@@ -101,6 +107,10 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         self.backend.mount_workspace(layer_b, mount_b, base_image=image)
         self.backend.mount_workspace(layer_a, mount_a, base_image=image)
         repo_a, repo_b = mount_a / "repo", mount_b / "repo"
+        absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e",
+                                                               str(repo_a / ".worktrees" / "full-checkout")],
+                                check=False, capture_output=True)
+        self.assertEqual(absent.returncode, 0)
         self.run_in_namespace("python3", "-c",
                               "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
                               "p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2])",
@@ -108,6 +118,10 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
                               str(source / ".git" / "objects") + "\n")
         self.run_in_namespace("python3", "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('a')",
                               str(repo_a / "agent-only"))
+        self.run_in_namespace("python3", "-c",
+                              "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                              "p.parent.mkdir(parents=True,exist_ok=True); p.write_text('keep')",
+                              str(repo_a / ".worktrees" / "agent-local" / "marker"))
         absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e", str(repo_b / "agent-only")],
                                 check=False, capture_output=True)
         self.assertEqual(absent.returncode, 0)
@@ -115,9 +129,12 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         (source / "fresh-user-edit").write_text("fresh", encoding="utf-8")
         (source / "tracked.txt").unlink()
         (source / ".git" / "objects" / "not-a-git-object").write_text("skip", encoding="utf-8")
-        self.backend.sync_delta(source, repo_a, None)
+        self.backend.sync_delta(source, repo_a, None, excludes=excludes)
         self.assertEqual(self.run_in_namespace("cat", str(repo_a / "fresh-user-edit")).stdout, "fresh")
-        for path in (repo_a / "tracked.txt", repo_a / ".git" / "objects" / "not-a-git-object"):
+        self.assertEqual(self.run_in_namespace("cat", str(repo_a / ".worktrees" / "agent-local" / "marker")).stdout,
+                         "keep")
+        for path in (repo_a / "tracked.txt", repo_a / ".git" / "objects" / "not-a-git-object",
+                     repo_a / ".worktrees" / "full-checkout"):
             absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e", str(path)],
                                     check=False, capture_output=True)
             self.assertEqual(absent.returncode, 0)

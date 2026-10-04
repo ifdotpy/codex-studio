@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Iterable
 
 
 _GIT_OBJECTS_MARKER = "HEAD"
@@ -41,19 +41,43 @@ def _run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[
     return result
 
 
-def _git_object_stores(root: Path) -> list[Path]:
+def _relative_excludes(root: Path, excludes: Iterable[str | Path]) -> set[Path]:
+    root = Path(root).resolve()
+    result: set[Path] = set()
+    for excluded in excludes:
+        path = Path(excluded)
+        if not path.is_absolute():
+            path = root / path
+        try:
+            result.add(Path(os.path.abspath(path)).relative_to(root))
+        except ValueError:
+            continue
+    return result
+
+
+def _is_excluded(path: Path, excludes: set[Path]) -> bool:
+    return path in excludes or any(parent in excludes for parent in path.parents)
+
+
+def _git_object_stores(root: Path, excludes: set[Path] | None = None) -> list[Path]:
     """Return object stores that belong to a Git directory or bare repository."""
+    excludes = excludes or set()
     stores: list[Path] = []
     for current, dirs, _files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
         for name in list(dirs):
-            if name == "objects" and (current_path / _GIT_OBJECTS_MARKER).is_file():
-                stores.append(current_path / name)
+            store = current_path / name
+            relative = store.relative_to(root)
+            if _is_excluded(relative, excludes):
+                dirs.remove(name)
+            elif name == "objects" and (current_path / _GIT_OBJECTS_MARKER).is_file():
+                stores.append(store)
                 dirs.remove(name)
     return stores
 
 
-def _copy_without_object_stores(source: Path, destination: Path) -> None:
+def _copy_without_object_stores(source: Path, destination: Path,
+                                excludes: Iterable[str | Path] = ()) -> None:
     """Copy tree in large reflink-capable chunks, skipping Git object stores."""
     source = source.resolve()
     if destination.exists():
@@ -62,10 +86,11 @@ def _copy_without_object_stores(source: Path, destination: Path) -> None:
         else:
             destination.unlink()
     destination.mkdir(parents=True, exist_ok=True)
-    stores = {path.relative_to(source) for path in _git_object_stores(source)}
+    excluded = _relative_excludes(source, excludes)
+    stores = {path.relative_to(source) for path in _git_object_stores(source, excluded)}
     blocked = set(stores)
-    for store in stores:
-        blocked.update(store.parents)
+    for root in stores | excluded:
+        blocked.update(root.parents)
     blocked.discard(Path("."))
 
     def copy_dir(src: Path, dst: Path, relative: Path) -> None:
@@ -73,7 +98,7 @@ def _copy_without_object_stores(source: Path, destination: Path) -> None:
         for entry in os.scandir(src):
             rel = relative / entry.name
             src_entry = Path(entry.path)
-            if rel in stores:
+            if rel in stores or _is_excluded(rel, excluded):
                 continue
             if entry.is_dir(follow_symlinks=False) and rel in blocked:
                 copy_dir(src_entry, dst / entry.name, rel)
@@ -170,8 +195,9 @@ class Backend:
         (staging_path / "tmp").mkdir(exist_ok=True)
         return {"root": repo, "token": None, "versionPath": staging_path}
 
-    def copy_base_tree(self, repo_root: Path, destination: Path) -> None:
-        _copy_without_object_stores(Path(repo_root), Path(destination))
+    def copy_base_tree(self, repo_root: Path, destination: Path, *,
+                       excludes: tuple[str, ...]) -> None:
+        _copy_without_object_stores(Path(repo_root), Path(destination), excludes)
 
     def seal_base(self, staging: dict[str, Any]) -> dict[str, Any]:
         staging_path = Path(staging["versionPath"]).resolve()
@@ -211,12 +237,17 @@ class Backend:
                                                         "overlay", str(mount), options])
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
-    def sync_delta(self, repo_root: Path, target_repo: Path, token: object) -> object:
+    def sync_delta(self, repo_root: Path, target_repo: Path, token: object, *,
+                   excludes: tuple[str, ...]) -> object:
         del token
         repo_root, target_repo = Path(repo_root).resolve(), Path(target_repo).resolve()
         pid = self._ensure_namespace()
         args = self._nsenter(pid) + ["rsync", "-a", "--delete"]
-        for store in _git_object_stores(repo_root):
+        excluded = _relative_excludes(repo_root, excludes)
+        for path in sorted(excluded, key=lambda item: item.as_posix()):
+            relative = "" if path == Path(".") else path.as_posix()
+            args.append(f"--exclude=/{relative}/***")
+        for store in _git_object_stores(repo_root, excluded):
             relative = store.relative_to(repo_root).as_posix()
             args.append(f"--exclude=/{relative}/***")
         args.extend([str(repo_root) + "/", str(target_repo) + "/"])
