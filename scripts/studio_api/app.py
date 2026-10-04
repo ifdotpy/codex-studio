@@ -11,7 +11,7 @@ from starlette.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from studio_api.core_models import SessionResponse
-from studio_api.middleware import RequestBoundary
+from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.responses import error_response, install_error_response_docs
 
@@ -31,6 +31,9 @@ def create_app(context: ApiContext) -> FastAPI:
     app = FastAPI(title="Codex Studio API", version="1")
     app.state.api_context = context
     app.add_middleware(RequestBoundary, context=context)
+    # Trace wraps authorization and routing, matching the old handler's
+    # begin-before-dispatch and finish-after-response coverage.
+    app.add_middleware(HttpTraceMiddleware)
 
     @app.get("/api/session", response_model=SessionResponse, tags=["core"])
     def session(request: Request) -> object:

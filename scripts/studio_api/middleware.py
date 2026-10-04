@@ -41,6 +41,62 @@ class HeaderView:
         return list(self._values.get(name.lower(), default or []))
 
 
+class HttpTraceMiddleware:
+    """Keep the legacy slow-read journal around the actual ASGI request."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        trace_id: object = None
+        status: int | None = None
+        outcome = "complete"
+        try:
+            import codex_http_traces
+
+            target = str(scope.get("path", ""))
+            query = scope.get("query_string", b"")
+            if query:
+                target += "?" + query.decode("latin-1")
+            trace_id = codex_http_traces.begin(str(scope.get("method", "GET")), target)  # type: ignore[no-untyped-call]
+        except Exception as error:
+            try:
+                import codex_http_traces
+
+                codex_http_traces.report_failure(error)  # type: ignore[no-untyped-call]
+            except Exception:
+                pass
+
+        async def traced_send(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = int(message["status"])
+            await send(message)
+
+        try:
+            await self.app(scope, receive, traced_send)
+        except BaseException:
+            outcome = "error"
+            raise
+        finally:
+            try:
+                import codex_http_traces
+
+                codex_http_traces.finish(trace_id, status, outcome)  # type: ignore[no-untyped-call]
+            except Exception as error:
+                try:
+                    import codex_http_traces
+
+                    codex_http_traces.report_failure(error)  # type: ignore[no-untyped-call]
+                    codex_http_traces.discard(trace_id)  # type: ignore[no-untyped-call]
+                except Exception:
+                    pass
+
+
 def _error_response(status: int, error: str) -> tuple[Message, Message]:
     body = json.dumps({"error": error}, ensure_ascii=False, separators=(",", ":")).encode()
     start: Message = {

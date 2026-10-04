@@ -22,7 +22,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from studio_api.context import ApiContext
-from studio_api.middleware import RequestBoundary
+from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
@@ -191,6 +191,43 @@ class CoreResponseTests(unittest.TestCase):
             _run_maintenance(context)
         self.assertEqual(maintenance_calls, [context.canvas.runtime])
         self.assertEqual(prune_calls, [context.canvas.root])
+
+    def test_http_trace_covers_response_without_recording_request_contents(self) -> None:
+        trace_events: list[tuple[object, ...]] = []
+        traces = ModuleType("codex_http_traces")
+
+        def begin(method: str, target: str) -> str:
+            trace_events.append(("begin", method, target))
+            return "trace-1"
+
+        def finish(trace_id: object, status: object, outcome: str) -> None:
+            trace_events.append(("finish", trace_id, status, outcome))
+
+        traces.begin = begin  # type: ignore[attr-defined]
+        traces.finish = finish  # type: ignore[attr-defined]
+        traces.report_failure = lambda _error: None  # type: ignore[attr-defined]
+        traces.discard = lambda _trace_id: None  # type: ignore[attr-defined]
+        sent: list[dict[str, object]] = []
+
+        async def endpoint(_scope: object, _receive: object, send: object) -> None:
+            await send({"type": "http.response.start", "status": 200})  # type: ignore[operator]
+            await send({"type": "http.response.body", "body": b"ok"})  # type: ignore[operator]
+
+        async def receive() -> dict[str, object]:
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, object]) -> None:
+            sent.append(message)
+
+        scope = {
+            "type": "http", "method": "GET", "path": "/api/sync/pull",
+            "query_string": b"scope=state%3Aentities%3Av1&token=secret",
+        }
+        with patch.dict(sys.modules, {"codex_http_traces": traces}):
+            asyncio.run(HttpTraceMiddleware(endpoint)(scope, receive, send))  # type: ignore[arg-type]
+        self.assertEqual(trace_events[0], ("begin", "GET", "/api/sync/pull?scope=state%3Aentities%3Av1&token=secret"))
+        self.assertEqual(trace_events[1], ("finish", "trace-1", 200, "complete"))
+        self.assertEqual(len(sent), 2)
 
     def test_response_model_union_validates_both_declared_shapes(self) -> None:
         for value in (
