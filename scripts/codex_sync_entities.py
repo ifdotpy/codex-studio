@@ -52,13 +52,37 @@ COLLECTION_FIELDS = {
     for name, model in _DTO_MODELS.items()
     if name != "agent"
 }
+_STRING_LIMITS = {
+    "overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
+    "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000,
+}
+_AGENT_FIELD_ALLOWLISTS = {
+    "activity": ("phase", "at", "tools"),
+    "nativeStatus": ("phase", "error", "message", "turnId", "at"),
+    "nativeSafetyBuffering": (
+        "turnId", "threadId", "accountKey", "connectionId", "at",
+        "dismissed", "responseStarted", "showBufferingUi", "fasterModel",
+    ),
+    "nativeSafetyRetry": (
+        "id", "stage", "model", "turnId", "created", "updated",
+        "epoch", "accountKey", "error", "newThreadId", "acceptedTurnId",
+        "requestId", "rpcMethod",
+    ),
+    "nativeTurnError": ("turnId", "error"),
+    "nativeThreadBlock": ("threadId", "error"),
+    "connectionCheck": (
+        "epoch", "accountKey", "threadId", "turnId", "at", "previousError",
+        "nativeState", "restartTurnStatus", "readError",
+    ),
+    "readState": ("threadId", "turnId", "read", "revision"),
+    "startAttempt": ("prepareError", "responseError", "retiredEvents"),
+}
+_AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))
 
 
 def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValue:
     if isinstance(value, str):
-        limits = {"overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
-                  "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000}
-        maximum = limits.get(key, 12000)
+        maximum = _STRING_LIMITS.get(key, 12000)
         return value[:maximum]
     if isinstance(value, list):
         return [_bounded(item, list_limit=list_limit) for item in value[:list_limit]]
@@ -76,29 +100,17 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
     if model is None:
         return None
     fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
-    result = {key: _bounded(value, key) for key, value in record.items() if key in fields}
+    result = {
+        key: _bounded(value, key)
+        for key, value in record.items()
+        if key in fields and not (
+            collection == "agent"
+            and key in _AGENT_REPROJECT_FIELDS
+            and isinstance(value, dict)
+        )
+    }
     if collection == "agent":
-        for field, allowed in {
-            "activity": ("phase", "at", "tools"),
-            "nativeStatus": ("phase", "error", "message", "turnId", "at"),
-            "nativeSafetyBuffering": (
-                "turnId", "threadId", "accountKey", "connectionId", "at",
-                "dismissed", "responseStarted", "showBufferingUi", "fasterModel",
-            ),
-            "nativeSafetyRetry": (
-                "id", "stage", "model", "turnId", "created", "updated",
-                "epoch", "accountKey", "error", "newThreadId", "acceptedTurnId",
-                "requestId", "rpcMethod",
-            ),
-            "nativeTurnError": ("turnId", "error"),
-            "nativeThreadBlock": ("threadId", "error"),
-            "connectionCheck": (
-                "epoch", "accountKey", "threadId", "turnId", "at", "previousError",
-                "nativeState", "restartTurnStatus", "readError",
-            ),
-            "readState": ("threadId", "turnId", "read", "revision"),
-            "startAttempt": ("prepareError", "responseError", "retiredEvents"),
-        }.items():
+        for field, allowed in _AGENT_FIELD_ALLOWLISTS.items():
             value = record.get(field)
             if isinstance(value, dict):
                 result[field] = {key: _bounded(value[key], "error") for key in allowed if key in value}
