@@ -22,6 +22,10 @@ _FSEVENT_LOCK = threading.Lock()
 _FSEVENT_API = None
 
 
+class _FSEventsHistoryLost(RuntimeError):
+    pass
+
+
 class _AttrList(ctypes.Structure):
     _fields_ = [('bitmapcount', ctypes.c_uint16), ('reserved', ctypes.c_uint16),
                 ('commonattr', ctypes.c_uint32), ('volattr', ctypes.c_uint32),
@@ -59,49 +63,6 @@ def _device_for_mount(mount):
     return None
 
 
-def _repo_markers(root, excludes=()):
-    """Find .git roots, including submodules, without walking object stores."""
-    root = Path(root).resolve()
-    excluded = {Path(value) for value in excludes}
-    found = [root]
-    for current, dirs, files in os.walk(root, followlinks=False):
-        here = Path(current)
-        relative = here.relative_to(root)
-        if any(relative == item or item in relative.parents for item in excluded):
-            dirs[:] = []
-            continue
-        if '.git' in dirs or '.git' in files:
-            candidate = here
-            if candidate != root:
-                found.append(candidate)
-        dirs[:] = [name for name in dirs if name != '.git' and not (here / name).is_symlink()
-                   and not any((relative / name) == item or item in (relative / name).parents
-                               for item in excluded)]
-    return list(dict.fromkeys(found))
-
-
-def _object_dirs(root, excludes=()):
-    results = []
-    for candidate in _repo_markers(root, excludes):
-        probe = subprocess.run(['git', '-C', str(candidate), 'rev-parse', '--show-toplevel'],
-                               capture_output=True, text=True, timeout=20)
-        if probe.returncode:
-            continue
-        top = Path(probe.stdout.strip()).resolve()
-        if top != candidate.resolve():
-            continue
-        object_dir = subprocess.check_output(
-            ['git', '-C', str(top), 'rev-parse', '--path-format=absolute', '--git-path', 'objects'],
-            text=True, timeout=20).strip()
-        results.append((top, Path(object_dir).resolve()))
-    return results
-
-
-def _is_object_store(path):
-    path = Path(path)
-    return path.name == 'objects' and (path.parent / 'HEAD').exists()
-
-
 def _copy_tar(source, dest, excludes):
     """Copy one tree shard through system tar, omitting repository objects."""
     source, dest = Path(source), Path(dest)
@@ -123,13 +84,6 @@ def _copy_tar(source, dest, excludes):
 def _copy_tree_parallel(source, dest, excludes=()):
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
-    for root, objects in _object_dirs(source, excludes):
-        try:
-            relative = objects.relative_to(source)
-        except ValueError:
-            continue
-        if _is_object_store(objects):
-            exclusions.append(str(relative))
     top = sorted(source.iterdir(), key=lambda p: p.name)
     shards = [[] for _ in range(min(16, max(1, len(top))))]
     for index, entry in enumerate(top):
@@ -246,7 +200,7 @@ def _read_events(root, since):
         core.FSEventStreamSetDispatchQueue(stream, dispatch.dispatch_get_global_queue(0, 0))
         if not core.FSEventStreamStart(stream):
             raise OSError('FSEventStreamStart failed')
-        if not done.wait(3):
+        if not done.wait(120):
             raise TimeoutError('FSEvents did not complete event history')
         if error:
             raise error[0]
@@ -255,6 +209,8 @@ def _read_events(root, since):
         core.FSEventStreamInvalidate(stream)
         core.FSEventStreamRelease(stream)
     latest = max([int(since), *(item[2] for item in collected)])
+    if any(flags & (0x2 | 0x4 | 0x8) for _path, flags, _event_id in collected):
+        raise _FSEventsHistoryLost('FSEvents dropped or wrapped event history')
     return collected, latest
 
 
@@ -271,6 +227,52 @@ def _rsync_folder(source, target, excludes=()):
     result = _run([*args, str(source) + '/', str(target) + '/'], timeout=1800, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
+
+
+def _same_delta_entry(source, target):
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError:
+        return not target.exists() and not target.is_symlink()
+    try:
+        target_info = target.lstat()
+    except FileNotFoundError:
+        return False
+    if source.is_symlink():
+        return target.is_symlink() and os.readlink(source) == os.readlink(target)
+    if not source.is_dir():
+        return (not target.is_dir() and not target.is_symlink()
+                and source_info.st_size == target_info.st_size
+                and source_info.st_mtime_ns == target_info.st_mtime_ns)
+    return target.is_dir() and not target.is_symlink()
+
+
+def _copy_delta_entry(source, target):
+    if not source.exists() and not source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        return
+    if source.is_dir() and not source.is_symlink():
+        if target.is_symlink() or (target.exists() and not target.is_dir()):
+            target.unlink()
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        target.symlink_to(os.readlink(source))
+        return
+    if target.is_dir() and not target.is_symlink():
+        shutil.rmtree(target)
+    try:
+        os.clonefile(source, target)
+    except (AttributeError, OSError):
+        shutil.copy2(source, target)
 
 
 class Backend:
@@ -387,39 +389,33 @@ class Backend:
         return {'mount': str(mount)}
 
     def sync_delta(self, repo_root, target_repo, token, *, excludes=()):
-        current = token
+        current = token.get('token') if isinstance(token, dict) else token
         excluded = {Path(value) for value in excludes}
-        for _pass in range(12):
-            try:
-                events, newest = _read_events(repo_root, int(current or 0))
-            except (OSError, RuntimeError, TimeoutError):
-                root, target = Path(repo_root), Path(target_repo)
-                _rsync_folder(root, target, excludes)
-                return current_event_id(root)
-            if not events:
-                return newest
-            root = Path(repo_root).resolve()
-            target = Path(target_repo)
-            full_scan = []
+        root = Path(repo_root).resolve()
+        target = Path(target_repo)
+        changed_paths = set()
+        scan_paths = set()
+
+        def apply(events):
+            did_copy = False
+            scans = []
             paths = set()
             for value, flags, _event_id in events:
-                # MustScanSubDirs is 0x1. RootChanged/UserDropped/KernelDropped also force scan.
-                if flags & (0x1 | 0x20 | 0x40 | 0x80):
-                    full_scan.append(Path(value))
-                    continue
                 path = Path(value)
                 if path.is_absolute():
                     try:
                         path = path.relative_to(root)
                     except ValueError:
                         continue
-                paths.add(path)
-            for folder in full_scan:
-                if folder.is_absolute():
-                    try:
-                        folder = folder.relative_to(root)
-                    except ValueError:
-                        folder = Path('.')
+                if flags & 0x1:
+                    scans.append(path)
+                    scan_paths.add(path.as_posix() or '.')
+                    changed_paths.add(path.as_posix() or '.')
+                else:
+                    paths.add(path)
+            for folder in scans:
+                if any(folder == item or item in folder.parents for item in excluded):
+                    continue
                 nested_excludes = []
                 for item in excluded:
                     try:
@@ -427,45 +423,68 @@ class Backend:
                     except ValueError:
                         continue
                 _rsync_folder(root / folder, target / folder, nested_excludes)
-            for rel in sorted(paths, key=lambda p: (len(p.parts), str(p))):
+                did_copy = True
+            for rel in sorted(paths, key=lambda path: (len(path.parts), str(path))):
                 if any(rel == item or item in rel.parents for item in excluded):
                     continue
-                source = root / rel
-                dest = target / rel
-                if any(part == 'objects' and (root.joinpath(*rel.parts[:idx]) / 'HEAD').exists()
-                       for idx, part in enumerate(rel.parts)):
+                if '.git' in rel.parts:
+                    git_index = rel.parts.index('.git')
+                    if 'objects' in rel.parts[git_index + 1:]:
+                        continue
+                source, dest = root / rel, target / rel
+                if (not source.is_dir() or source.is_symlink() or '.git' in rel.parts
+                        or not source.exists()):
+                    changed_paths.add(rel.as_posix() or '.')
+                if _same_delta_entry(source, dest):
                     continue
-                try:
-                    info = source.lstat()
-                except FileNotFoundError:
-                    if dest.is_dir() and not dest.is_symlink():
-                        shutil.rmtree(dest)
-                    else:
-                        dest.unlink(missing_ok=True)
-                    continue
-                if source.is_dir() and not source.is_symlink():
-                    if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
-                        dest.unlink()
-                    dest.mkdir(parents=True, exist_ok=True)
-                else:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if source.is_symlink():
-                        if dest.is_dir() and not dest.is_symlink():
-                            shutil.rmtree(dest)
-                        else:
-                            dest.unlink(missing_ok=True)
-                        dest.symlink_to(os.readlink(source))
-                    else:
-                        if dest.is_dir() and not dest.is_symlink():
-                            shutil.rmtree(dest)
-                        try:
-                            os.clonefile(source, dest)
-                        except (AttributeError, OSError):
-                            shutil.copy2(source, dest)
+                _copy_delta_entry(source, dest)
+                did_copy = True
+            return did_copy
+
+        for _pass in range(12):
+            try:
+                events, newest = _read_events(repo_root, int(current or 0))
+            except _FSEventsHistoryLost:
+                _rsync_folder(root, target, excludes)
+                return {'token': current_event_id(root), 'changedPaths': ['.'],
+                        'scanPaths': ['.'], 'historyLost': True, 'refreshBase': True}
+            if not events:
+                return {'token': newest, 'changedPaths': sorted(changed_paths),
+                        'scanPaths': sorted(scan_paths), 'historyLost': False}
+            # A MustScanSubDirs event on the watched root is the only non-loss
+            # case that needs a full-tree sync. A nested event scans that folder.
+            root_scan = any((flags & 0x1) and Path(value).resolve() == root
+                            for value, flags, _event_id in events)
+            if root_scan:
+                _rsync_folder(root, target, excludes)
+                return {'token': newest, 'changedPaths': sorted(changed_paths | {'.'}),
+                        'scanPaths': sorted(scan_paths | {'.'}), 'historyLost': False,
+                        'refreshBase': True}
+            did_copy = apply(events)
             current = newest
-        # A sustained writer or lost history must not silently report a partial sync.
-        _rsync_folder(Path(repo_root), Path(target_repo), excludes)
-        return current
+            if not did_copy:
+                return {'token': current, 'changedPaths': sorted(changed_paths),
+                        'scanPaths': sorted(scan_paths), 'historyLost': False}
+
+        # One final delta pass bounds work during sustained writes.
+        try:
+            events, newest = _read_events(repo_root, int(current or 0))
+        except _FSEventsHistoryLost:
+            _rsync_folder(root, target, excludes)
+            return {'token': current_event_id(root), 'changedPaths': ['.'],
+                    'scanPaths': ['.'], 'historyLost': True, 'refreshBase': True}
+        if events:
+            root_scan = any((flags & 0x1) and Path(value).resolve() == root
+                            for value, flags, _event_id in events)
+            if root_scan:
+                _rsync_folder(root, target, excludes)
+                scan_paths.add('.')
+                changed_paths.add('.')
+            else:
+                apply(events)
+            current = newest
+        return {'token': current, 'changedPaths': sorted(changed_paths),
+                'scanPaths': sorted(scan_paths), 'historyLost': False}
 
     def unmount_workspace(self, mount, *, force=False):
         mount = Path(mount)

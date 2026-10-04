@@ -56,8 +56,11 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.temp.cleanup()
 
     def git(self, *args, cwd=None, check=True):
-        return subprocess.run(['git', '-C', str(cwd or self.repo), *args],
-                              check=check, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['git', '-C', str(cwd or self.repo), *args],
+                                check=False, capture_output=True, text=True, timeout=60)
+        if check and result.returncode:
+            raise AssertionError(f'git {args} failed in {cwd or self.repo}: {result.stderr}')
+        return result
 
     def _make_repo(self):
         self.subsource = self.root / 'subsource'
@@ -84,15 +87,62 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.git('commit', '-m', 'add submodule')
 
     def _build_base(self):
+        backend = images._get_backend()
         done = threading.Event()
         result = []
+        steps = {'open': 0.0, 'copy': 0.0, 'seal': 0.0, 'repoSetup': 0.0,
+                 'protectionRefs': 0.0}
+        saved_methods = {}
+        for method, key in (('open_base_staging', 'open'), ('copy_base_tree', 'copy'),
+                            ('seal_base', 'seal')):
+            original = getattr(backend, method)
+            saved_methods[method] = original
+
+            def timed_backend(*args, _original=original, _key=key, **kwargs):
+                tick = time.monotonic()
+                try:
+                    return _original(*args, **kwargs)
+                finally:
+                    steps[_key] += time.monotonic() - tick
+
+            setattr(backend, method, timed_backend)
+        original_prepare = images._prepare_repo
+
+        def timed_prepare(*args, **kwargs):
+            tick = time.monotonic()
+            try:
+                return original_prepare(*args, **kwargs)
+            finally:
+                steps['repoSetup'] += time.monotonic() - tick
+
+        images._prepare_repo = timed_prepare
+        original_git = images._git
+
+        def timed_git(repo, *args, **kwargs):
+            tick = time.monotonic()
+            try:
+                return original_git(repo, *args, **kwargs)
+            finally:
+                if len(args) > 1 and args[0] == 'update-ref' and str(args[1]).startswith('refs/studio/base/'):
+                    steps['protectionRefs'] += time.monotonic() - tick
+
+        images._git = timed_git
         started = time.monotonic()
-        state = images.start_base_build(self.repo, lambda value: (result.append(value), done.set()))
-        self.assertIn(state['state'], ('building', 'ready'))
-        self.assertTrue(done.wait(90), 'base build did not finish')
-        self.timings['base'] = time.monotonic() - started
+        try:
+            state = images.start_base_build(self.repo, lambda value: (result.append(value), done.set()))
+            self.assertIn(state['state'], ('building', 'ready'))
+            self.assertTrue(done.wait(180), 'base build did not finish')
+            self.timings['base'] = time.monotonic() - started
+        finally:
+            images._git = original_git
+            images._prepare_repo = original_prepare
+            for method, original in saved_methods.items():
+                setattr(backend, method, original)
         self.assertEqual(result[-1]['state'], 'ready', result[-1])
+        steps['other'] = max(0.0, self.timings['base'] - sum(steps.values()))
+        self.timings['baseSteps'] = steps
         self.base = json.loads(next((self.store / 'bases').glob('*/base.json')).read_text())
+        self.assertIn('.git/modules/sub/objects', self.base['excludes'])
 
     def _fresh_user_changes(self):
         (self.repo / 'tracked.txt').write_text('new user commit\n')
@@ -110,15 +160,60 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.user_sub_head = self.git('rev-parse', 'HEAD', cwd=self.repo / 'sub').stdout.strip()
         self.user_status = self.git('status', '--porcelain').stdout
 
-    def _create(self, agent_id):
+    def _create(self, agent_id, *, start_commit=None):
         self.agent_ids.append(agent_id)
         started = time.monotonic()
-        result = images.create_workspace(self.repo, agent_id)
-        self.timings.setdefault('create', []).append(time.monotonic() - started)
+        backend = images._get_backend()
+        steps = {'clone': 0.0, 'attach': 0.0, 'delta': 0.0, 'snapshotCommit': 0.0}
+        saved_backend_methods = {}
+        for method, key in (('clone_workspace', 'clone'), ('mount_workspace', 'attach'),
+                            ('sync_delta', 'delta')):
+            original = getattr(backend, method)
+            saved_backend_methods[method] = original
+
+            def timed_backend(*args, _original=original, _key=key, **kwargs):
+                tick = time.monotonic()
+                try:
+                    return _original(*args, **kwargs)
+                finally:
+                    steps[_key] += time.monotonic() - tick
+
+            setattr(backend, method, timed_backend)
+        original_git = images._git
+
+        def timed_git(repo, *args, **kwargs):
+            tick = time.monotonic()
+            try:
+                return original_git(repo, *args, **kwargs)
+            finally:
+                if 'commit' in args and 'studio snapshot' in args:
+                    steps['snapshotCommit'] += time.monotonic() - tick
+
+        images._git = timed_git
+        try:
+            result = images.create_workspace(self.repo, agent_id, start_commit=start_commit)
+        finally:
+            images._git = original_git
+            for method, original in saved_backend_methods.items():
+                setattr(backend, method, original)
+        elapsed = time.monotonic() - started
+        self.timings.setdefault('create', []).append(elapsed)
+        steps['repoSetup'] = max(0.0, elapsed - sum(steps.values()))
+        self.timings.setdefault('createSteps', []).append(steps)
+        if not (pathlib.Path(result['repoPath']) / '.git').exists():
+            state = images._read_json(images._agent_state_path(agent_id), {})
+            raise AssertionError(f'workspace Git metadata missing after create: {state}')
         return result
 
     def test_real_image_workspace_lifecycle(self):
         self._build_base()
+        self.git('branch', 'user-after-base')
+        clean = self._create('agent-clean')
+        self.assertIsNone(clean['snapshotCommit'])
+        clean_repo = pathlib.Path(clean['repoPath'])
+        self.assertEqual(self.git('show-ref', '--verify', '--quiet', 'refs/heads/user-after-base',
+                                  cwd=clean_repo).returncode, 0)
+        images.remove_workspace('agent-clean', force=True)
         old_version = images.base_status(self.repo)['version']
         large_file = self.repo / 'refresh-large.bin'
         large_file.write_bytes(b'R' * (20 * 1024 * 1024))
@@ -127,7 +222,7 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.assertEqual(images.start_base_build(self.repo,
                                                 lambda _value: callback_called.set())['state'], 'ready')
         self.assertTrue(callback_called.wait(1), 'ready base callback was not immediate')
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + 180
         while time.monotonic() < deadline and images.base_status(self.repo)['version'] == old_version:
             time.sleep(.1)
         self.assertNotEqual(images.base_status(self.repo)['version'], old_version,
@@ -135,12 +230,20 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.timings['refresh'] = time.monotonic() - refresh_started
         self.git('add', 'refresh-large.bin')
         self.git('commit', '-m', 'large file after base refresh')
+        refreshed_head = self.git('rev-parse', 'HEAD').stdout.strip()
+        clean_after_refresh = self._create('agent-clean-after-refresh')
+        self.assertIsNone(clean_after_refresh['snapshotCommit'])
+        clean_after_repo = pathlib.Path(clean_after_refresh['repoPath'])
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=clean_after_repo).stdout.strip(), refreshed_head)
+        self.assertEqual(self.git('status', '--porcelain', cwd=clean_after_repo).stdout, '')
+        images.remove_workspace('agent-clean-after-refresh', force=True)
+        custom_start = self._create('agent-custom-start', start_commit=self.base['head'])
+        self.assertEqual(custom_start['startCommit'], self.base['head'])
+        images.remove_workspace('agent-custom-start', force=True)
         excluded = subprocess.run(['tmutil', 'isexcluded', str(self.store)],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(excluded.returncode, 0, excluded.stderr)
         self.assertIn('Excluded', excluded.stdout)
-        self.assertIsNone(self._create('agent-clean')['snapshotCommit'])
-        images.remove_workspace('agent-clean', force=True)
         self._fresh_user_changes()
         self.git('config', 'core.checkStat', 'default')
         self.git('config', 'core.trustctime', 'true')
@@ -173,6 +276,11 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.git('-c', 'user.name=Agent A', '-c', 'user.email=agent-a@example.invalid',
                  'commit', '-m', 'agent submodule pointer', cwd=repo_a)
 
+        (self.repo / 'user-after-agent-start.txt').write_text('later user commit\n')
+        self.git('add', 'user-after-agent-start.txt')
+        self.git('commit', '-m', 'user commit after agent start')
+        user_head_after_agent_start = self.git('rev-parse', 'HEAD').stdout.strip()
+
         # Base protection refs must keep alternated objects alive through prune-now.
         self.git('gc', '--prune=now')
         self.git('gc', '--prune=now', cwd=self.repo / 'sub')
@@ -197,10 +305,13 @@ class WorkspaceImagesMacTests(unittest.TestCase):
                                      check=False).returncode, 0)
         self.assertEqual(self.git('show', result_branch + ':delete-me.txt', cwd=self.repo).stdout,
                          'base\n')
-        self.assertEqual(self.git('rev-parse', 'HEAD').stdout.strip(), self.user_head)
+        self.assertEqual(self.git('rev-parse', 'HEAD').stdout.strip(), user_head_after_agent_start)
         self.assertEqual(self.git('rev-parse', 'HEAD', cwd=self.repo / 'sub').stdout.strip(),
                          self.user_sub_head)
         self.assertEqual(self.git('status', '--porcelain').stdout, self.user_status)
+        self.assertEqual(self.git('rev-parse', result_branch + '^').stdout.strip(), root_commits[-2])
+        self.assertNotEqual(self.git('show', result_branch + ':user-after-agent-start.txt',
+                                     check=False).returncode, 0)
 
         # A user edit to .git/config must not disable the image's fast Git settings.
         remount = pathlib.Path(start_b['mount'])
@@ -209,12 +320,14 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self.assertEqual(ensured['repoPath'], str(repo_b))
         self.assertEqual(self.git('config', 'core.checkStat', cwd=repo_b).stdout.strip(), 'minimal')
         self.assertEqual(self.git('config', 'core.trustctime', cwd=repo_b).stdout.strip(), 'false')
-        self.git('status', '--porcelain', cwd=repo_b)
 
-        # A same-file user commit after the agent starts must conflict without moving the branch.
+        status_started = time.monotonic()
+        self.git('status', '--porcelain', cwd=repo_b)
+        self.assertLess(time.monotonic() - status_started, 5.0,
+                        'agent git status is slow after source config changes')
+
+        # A file in the user snapshot must conflict when the agent changes it.
         (self.repo / 'conflict.txt').write_text('conflict base\n')
-        self.git('add', 'conflict.txt')
-        self.git('commit', '-m', 'add conflict file')
         conflict = self._create('agent-conflict')
         conflict_repo = pathlib.Path(conflict['repoPath'])
         (conflict_repo / 'conflict.txt').write_text('agent version\n')
@@ -224,12 +337,15 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         (self.repo / 'conflict.txt').write_text('user version\n')
         self.git('add', 'conflict.txt')
         self.git('commit', '-m', 'user conflict')
+        conflict_user_head = self.git('rev-parse', 'HEAD').stdout.strip()
         conflict_result = images.collect('agent-conflict')
         self.assertEqual(conflict_result['state'], 'conflict', conflict_result)
         self.assertTrue(self.git('show-ref', '--verify', '--quiet',
                                  'refs/studio/agents/agent-conflict/raw', check=False).returncode == 0)
         self.assertNotEqual(self.git('show-ref', '--verify', '--quiet',
                                      'refs/heads/codex-agent/agent-conflict', check=False).returncode, 0)
+        self.assertEqual(self.git('rev-parse', 'HEAD').stdout.strip(), conflict_user_head)
+        self.assertEqual((self.repo / 'conflict.txt').read_text(), 'user version\n')
 
         # A process with its cwd in the mount is stopped before image removal.
         holder = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
@@ -242,9 +358,61 @@ class WorkspaceImagesMacTests(unittest.TestCase):
         self._crash_retry()
         print('workspace timings seconds:', json.dumps({
             'base': round(self.timings['base'], 3),
+            'baseSteps': {key: round(value, 3) for key, value in self.timings['baseSteps'].items()},
             'refresh': round(self.timings['refresh'], 3),
             'create': [round(value, 3) for value in self.timings['create']],
+            'createSteps': [{key: round(value, 3) for key, value in row.items()}
+                            for row in self.timings['createSteps']],
         }))
+
+    def test_linked_worktree_git_metadata_is_private(self):
+        seed = self.root / 'linked-seed'
+        linked = self.root / 'linked-repo'
+        seed.mkdir()
+        subprocess.run(['git', '-C', str(seed), 'init'], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(seed), 'config', 'user.name', 'Workspace Test'], check=True)
+        subprocess.run(['git', '-C', str(seed), 'config', 'user.email', 'workspace-test@example.invalid'], check=True)
+        (seed / 'base.txt').write_text('base\n')
+        subprocess.run(['git', '-C', str(seed), 'add', '-A'], check=True)
+        subprocess.run(['git', '-C', str(seed), 'commit', '-m', 'linked base'], check=True,
+                       capture_output=True)
+        subprocess.run(['git', '-C', str(seed), 'worktree', 'add', '-b', 'linked-branch',
+                        str(linked)], check=True, capture_output=True)
+        self.assertTrue((linked / '.git').is_file())
+        old_head = subprocess.check_output(['git', '-C', str(linked), 'rev-parse', 'HEAD'], text=True).strip()
+        index_path = pathlib.Path(subprocess.check_output(
+            ['git', '-C', str(linked), 'rev-parse', '--path-format=absolute', '--git-path', 'index'],
+            text=True).strip())
+        old_index = index_path.read_bytes()
+        common_ref_before = subprocess.check_output(
+            ['git', '-C', str(linked), 'for-each-ref', '--format=%(refname) %(objectname)'], text=True)
+        agent_id = 'linked-worktree-agent'
+        self.agent_ids.append(agent_id)
+        completed = threading.Event()
+        outcome = []
+        images.start_base_build(linked, lambda result: (outcome.append(result), completed.set()))
+        self.assertTrue(completed.wait(120), 'linked-worktree base build timed out')
+        self.assertEqual(outcome[-1]['state'], 'ready', outcome[-1])
+        workspace = images.create_workspace(linked, agent_id)
+        agent_repo = pathlib.Path(workspace['repoPath'])
+        self.assertTrue((agent_repo / '.git').is_dir())
+        self.assertFalse((agent_repo / '.git' / 'commondir').exists())
+        self.assertFalse((agent_repo / '.git' / 'gitdir').exists())
+        (agent_repo / 'agent.txt').write_text('private\n')
+        self.git('add', '-A', cwd=agent_repo)
+        self.git('-c', 'user.name=Agent', '-c', 'user.email=agent@example.invalid',
+                 'commit', '-m', 'agent commit', cwd=agent_repo)
+        self.git('checkout', '-b', 'agent-local-branch', cwd=agent_repo)
+        self.assertEqual(subprocess.check_output(['git', '-C', str(linked), 'rev-parse', 'HEAD'],
+                                                text=True).strip(), old_head)
+        index_after = pathlib.Path(subprocess.check_output(
+            ['git', '-C', str(linked), 'rev-parse', '--path-format=absolute', '--git-path', 'index'],
+            text=True).strip()).read_bytes()
+        self.assertEqual(index_after, old_index)
+        common_ref_after = subprocess.check_output(
+            ['git', '-C', str(linked), 'for-each-ref', '--format=%(refname) %(objectname)'], text=True)
+        self.assertEqual([line for line in common_ref_after.splitlines() if not line.startswith('refs/studio/')],
+                         [line for line in common_ref_before.splitlines() if not line.startswith('refs/studio/')])
 
     def _crash_retry(self):
         agent_id = 'agent-crash'

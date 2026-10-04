@@ -40,14 +40,25 @@ The common module owns Git setup, snapshots, protection refs, and collection. A 
 before sealing. Staging has `root`, `versionPath`, and `token`. The sealed result has `image`,
 `versionPath`, and `token`. `excludes` contains paths relative to the repository root, including
 `.worktrees` and the workspace store when it is inside the repository. Backend copies skip Git object
-stores. Common reapplies alternates and Git settings after each delta.
+stores and base-copy `.git` metadata. Delta sync can copy updated Git config and index files. Common
+builds a private standalone `.git` directory for each repository.
+This also converts linked worktree and submodule `.git` files, so agent HEAD, index, and refs never
+point into the user's Git metadata. Common refreshes each private Git config and reapplies alternates,
+`core.checkStat=minimal`, and `core.trustctime=false` after each delta.
+
+`sync_delta` returns `token`, repo-root-relative `changedPaths`, and `historyLost`. It may also
+return `scanPaths` for folders that need a rescan, and `refreshBase` when history loss or a root
+rescan requires a new base. The common module records nested repository paths and dirty paths during
+the base build. A workspace start checks only those paths and delta paths. Collection uses the
+repository list in `agent.json`; it does not walk the tree.
 
 ## Store
 
 Default `~/.local/state/codex-agents/workspaces`, override `CODEX_WORKSPACE_STORE`.
 macOS: `tmutil addexclusion` on the store.
 
-- `bases/<repo-key>/` : base versions and `base.json` (repo root, version, git HEAD per repo,
+- `bases/<repo-key>/` : base versions and `base.json` (repo root, version, nested repositories,
+  dirty paths, object store exclusions, git HEAD per repo,
   delta token: FSEvents event id on macOS).
 - `agents/<agent-id>/` : agent layer (`workspace.asif` on macOS, `u/` and `w/` on Linux) and
   `agent.json` (repo root, base version, snapshot commit, start commit, state).
@@ -67,13 +78,16 @@ or repo key, so a retry after a crash or a lost response adopts or completes the
   failed), or at once when the base is already ready or failed. No polling.
 - `create_workspace(repo_root, agent_id, *, start_commit=None) -> dict` with `mount`,
   `repoPath` (`<mount>/repo`), `branch` (`codex-agent/<id>`), `startCommit`, `snapshotCommit`
-  (None when the user tree was clean). Steps: clone or overlay, mount, fresh user edits,
-  `checkout -b`, snapshot commit. With `start_commit` different from the user's HEAD, the tree
+  (None when the user tree was clean). The default start commit is the user's current HEAD.
+  It syncs the user's current refs into private Git metadata, updates only paths committed since
+  the base in the private index, then applies fresh edits.
+  Steps: clone or overlay, mount, fresh user edits, reset or create the agent branch, snapshot commit.
+  With `start_commit` different from the user's HEAD, the tree
   is reset to that commit instead (ignored build output stays).
 - `ensure_mounted(agent_id) -> dict` : mount again after a restart or reboot.
 - `collect(agent_id) -> dict` : fetch the agent branch into the user repository (nested
-  repositories first) as `refs/studio/agents/<id>/raw`, then replay the commits after the
-  snapshot onto the start commit with `git merge-tree` and `git commit-tree`. The result goes to
+  repositories first) as `refs/studio/agents/<id>/raw`, then replay the agent commits onto the
+  start commit (the snapshot's parent, or `startCommit` when there is no snapshot) with `git merge-tree` and `git commit-tree`. The result goes to
   `refs/heads/codex-agent/<id>` in the user repository, so the lead merges the same branch name as
   today. On a conflict the branch is not moved, and the result reports the conflict and the raw ref.
   The user's working tree and HEAD never change.
