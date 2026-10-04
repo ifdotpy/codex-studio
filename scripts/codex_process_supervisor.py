@@ -85,7 +85,6 @@ class Journal:
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
-            db.execute(f"PRAGMA max_page_count={max(1, HANDLE_LIMIT // 4096)}")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS handles(
                     id TEXT PRIMARY KEY, signature TEXT NOT NULL, pid INTEGER NOT NULL,
@@ -145,7 +144,6 @@ class Journal:
         try:
             db.execute("PRAGMA synchronous=FULL")
             db.execute("PRAGMA wal_autocheckpoint=100")
-            db.execute(f"PRAGMA max_page_count={max(1, HANDLE_LIMIT // 4096)}")
             with db:
                 yield db
         finally:
@@ -492,7 +490,8 @@ class Supervisor:
                         "stdoutReaderError": child.stdout_error if child else None,
                         "persistenceErrors": dict(child.persistence_errors) if child else {}})
             return {"protocol": PROTOCOL, "stateDir": str(self.root), "handles": handles,
-                    "journalLimitBytes": HANDLE_LIMIT, "durability": "sqlite-full-sync-per-request",
+                    "journalLimitBytes": HANDLE_LIMIT, "outputLimitBytesPerHandle": HANDLE_LIMIT,
+                    "durability": "sqlite-full-sync-per-request",
                     "recovery": self.recovery}
         if request.get("action") == "finishFallback":
             if self.recovery.get("blocked"):

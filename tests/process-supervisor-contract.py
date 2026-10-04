@@ -352,6 +352,23 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.assertFalse(process_supervisor._retryable_storage_error(sqlite3.OperationalError('syntax error')))
 
 
+class JournalRetentionContract(unittest.TestCase):
+    def test_operation_receipts_can_exceed_one_handles_output_limit(self):
+        with tempfile.TemporaryDirectory(prefix='studio-receipt-retention-') as directory:
+            journal = process_supervisor.Journal(directory)
+            with patch.object(process_supervisor, 'HANDLE_LIMIT', 64 * 1024):
+                with journal.db() as db:
+                    db.executemany('INSERT INTO operations(handle,operation_id,digest,native_id,accepted,generation) '
+                                   'VALUES (?,?,?,?,?,?)',
+                                   [('account:fixture', str(i), 'a' * 64, i, 1.0, 1) for i in range(1024)])
+                with journal.db() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM operations').fetchone()[0], 1024)
+                    pages = db.execute('PRAGMA page_count').fetchone()[0]
+                    page_size = db.execute('PRAGMA page_size').fetchone()[0]
+                    self.assertGreater(pages * page_size, process_supervisor.HANDLE_LIMIT)
+                    self.assertEqual(journal.outstanding_bytes(db, 'account:fixture'), 0)
+
+
 class ProcessSupervisorContract(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='o6-',dir='/tmp')
