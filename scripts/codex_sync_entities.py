@@ -1,9 +1,28 @@
-"""Small renderer DTOs and bounded, per-entity sync versions."""
+"""Typed renderer DTO projections and bounded per-entity sync versions."""
 import hashlib
 import json
 import sqlite3
+from typing import cast
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
+from studio_api.sync.models import (
+    AgentEntityDto,
+    ChatEntityDto,
+    ComplaintEntityDto,
+    EdgeEntityDto,
+    EventEntityDto,
+    MonitorEntityDto,
+    PeerTeamEntityDto,
+    ProjectEntityDto,
+    RequestEntityDto,
+    RoomEntityDto,
+    RuleEntityDto,
+    TaskEntityDto,
+    WorkEntityDto,
+    WorkspaceEntityDto,
+    SyncEntityPayload,
+)
+from studio_api.models import JsonValue
 
 ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
@@ -11,38 +30,31 @@ ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 
 
-AGENT_FIELDS = frozenset("""
-    id name status source kind parentId rootId threadId orchestratorId orchestratorName
-    isLead role sharedRoomId model provider effort fastMode concurrency accountKey cwd worktree created updated
-    turnId turnStatus inFlight compactions tokensUsed contextUsage error tail canSend
-    launcherAlive empty yoloMode agentMode agentModeRevision agentModeSupported subagentConcurrencyVersion
-    workerDefaults reviewDefaults parkedEvent pendingSettings pendingSettingsAccountKey queuedSettings quickCreate nativeThreadBlock
-    daybreakEnabled accountTransfer
-    overview nativeRelease activity nativeStatus startAttempt provider panelVersion panelDataVersion unreadCount lastReadAt deletedAt
-    autoWake voiceState nativeError retryAt hasUnread hasQuestion hasApproval
-    statusDetail lastAnswer lastCompletedTurn nextTurnSettingsSupported readStateSupported
-    pinned archived projectFolder projectFolderRevision
-""".split())
-
+_DTO_MODELS = {
+    "agent": AgentEntityDto,
+    "room": RoomEntityDto,
+    "task": TaskEntityDto,
+    "monitor": MonitorEntityDto,
+    "complaint": ComplaintEntityDto,
+    "request": RequestEntityDto,
+    "rule": RuleEntityDto,
+    "project": ProjectEntityDto,
+    "peerTeam": PeerTeamEntityDto,
+    "chat": ChatEntityDto,
+    "edge": EdgeEntityDto,
+    "event": EventEntityDto,
+    "work": WorkEntityDto,
+    "workspace": WorkspaceEntityDto,
+}
+AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
 COLLECTION_FIELDS = {
-    "room": frozenset("id name kind members rootId updated userHidden projectPath radio peerTeamId peerTeamName lastMessage".split()),
-    # This is the shared task DTO field set used by workspace snapshots and sync.
-    "task": frozenset("id turnId agent kind status created finished name command query cwd processId durationMs timeout_ms interactive stdinClosed stdinCloseRequested stdinError cancelRequested exitCode bytes log outputTruncated".split()),
-    "monitor": frozenset("id agent status created finished name command cwd processId durationMs timeout_ms interactive stdinClosed stdinCloseRequested stdinError cancelRequested exitCode tail error bytes log outputTruncated ruleId".split()),
-    "complaint": frozenset("id leadId author authorName leadName title status needsResponse created readAt leadStopped leadDeleted recipient version".split()),
-    "request": frozenset("id method agent status created createdAt at updated updatedAt deferred error result params title".split()),
-    "rule": frozenset("id agent name enabled description".split()),
-    "project": frozenset("id path name created accountKey accountRevision accountKeys organizationRevision peerTeamsRevision folders".split()),
-    "peerTeam": frozenset("id name projectPath members".split()),
-    "chat": frozenset("id name members kind messageCount tail lastMessageAt".split()),
-    "edge": frozenset("id source target kind".split()),
-    "event": frozenset("id agent kind status created error".split()),
-    "work": frozenset("id rootId agent status title".split()),
-    "workspace": frozenset("connected rateLimits rateLimitsByAccount nativeNotices projectOrganizationVersion peerTeamsVersion tasksHistoryLimit stateDir".split()),
+    name: frozenset(model.model_fields)
+    for name, model in _DTO_MODELS.items()
+    if name != "agent"
 }
 
 
-def _bounded(value, key=""):
+def _bounded(value: JsonValue, key: str = "") -> JsonValue:
     if isinstance(value, str):
         limits = {"overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
                   "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000}
@@ -55,13 +67,14 @@ def _bounded(value, key=""):
     return value
 
 
-def project(collection, record):
+def project(collection: str, record: JsonValue) -> JsonValue | None:
     """Return only renderer-owned fields; never expose a raw runtime record."""
     if not isinstance(record, dict):
         return None
-    fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS.get(collection)
-    if fields is None:
+    model = _DTO_MODELS.get(collection)
+    if model is None:
         return None
+    fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
     result = {key: _bounded(value, key) for key, value in record.items() if key in fields}
     if collection == "agent":
         for field, allowed in {
@@ -94,10 +107,18 @@ def project(collection, record):
                 for key, value in overview.items()
                 if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId"}
             }
-    return result
+    return cast(JsonValue, model.model_validate(result).model_dump(mode="json", exclude_unset=True))
 
 
-def encoded(collection, key, value, deleted=False):
+def validate_entity_payload(payload: str) -> SyncEntityPayload:
+    """Validate a canonical sync entity JSON envelope without changing its bytes."""
+    envelope = SyncEntityPayload.model_validate_json(payload)
+    model = _DTO_MODELS[envelope.collection.value]
+    model.model_validate(envelope.value)
+    return envelope
+
+
+def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:
     payload = json.dumps({"collection": collection, "id": key, "value": value},
                          sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return payload, hashlib.sha256(payload.encode("utf-8")).hexdigest(), bool(deleted)
