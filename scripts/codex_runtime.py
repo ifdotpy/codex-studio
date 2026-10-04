@@ -477,8 +477,28 @@ class AppServer:
             if self.closed or getattr(self, "transport_error", None) or self.proc.poll() is not None:
                 raise RuntimeError("Codex app-server is offline")
             if self.supervisor_mode:
+                clock = None
+                reply = value.get("result")
+                if ("method" not in value and "error" not in value and isinstance(reply, dict)
+                        and set(reply) == {"currentTimeAt"} and type(reply["currentTimeAt"]) is int
+                        and type(value.get("id")) in {int, str}):
+                    key = (type(value["id"]), value["id"])
+                    with self.lock:
+                        sequences = self.__dict__.get("_clock_reply_sequences", {}).get(key)
+                        if sequences:
+                            clock = (key, sequences[0])
                 result = self.proc.send_write(value, operation_id=operation_id)
                 self.transcript_capture.record("out", value)
+                if clock is not None:
+                    key, sequence = clock
+                    self.proc.ack(sequence)
+                    with self.lock:
+                        ledger = self.__dict__.get("_clock_reply_sequences", {})
+                        sequences = ledger.get(key, [])
+                        if sequence in sequences:
+                            sequences.remove(sequence)
+                            if not sequences:
+                                ledger.pop(key, None)
                 return result
             text = json.dumps(value) + "\n"
             try:
@@ -608,9 +628,37 @@ class AppServer:
 
     def enqueue_clock(self, message):
         import queue
+        key = None
+        sequence = message.get("_studioSupervisorSequence")
+        if self.supervisor_mode and sequence is not None:
+            if type(message.get("id")) not in {int, str} or type(sequence) is not int or sequence < 1:
+                error = RuntimeError("Codex clock request identity is invalid; connection closed; outcome unknown")
+                self.fail_transport(error)
+                raise error
+            key = (type(message["id"]), message["id"])
+            with self.lock:
+                ledger = self.__dict__.setdefault("_clock_reply_sequences", {})
+                sequences = ledger.get(key, [])
+                if sequence in sequences:
+                    return
+                saturated = sum(len(saved) for saved in ledger.values()) >= self.CLOCK_QUEUE_LIMIT + 1
+                if not saturated:
+                    ledger.setdefault(key, []).append(sequence)
+            if saturated:
+                error = RuntimeError("Codex clock receipt ledger saturated; connection closed; outcome unknown")
+                self.fail_transport(error)
+                raise error
         try:
             self.clock_replies.put_nowait(message)
         except queue.Full:
+            if key is not None:
+                with self.lock:
+                    ledger = self.__dict__.get("_clock_reply_sequences", {})
+                    sequences = ledger.get(key, [])
+                    if sequence in sequences:
+                        sequences.remove(sequence)
+                    if not sequences:
+                        ledger.pop(key, None)
             error = RuntimeError(f"Codex clock reply queue saturated; rejected id {json.dumps(message['id'])}; connection closed; outcome unknown")
             self.fail_transport(error)
             raise error
@@ -935,6 +983,10 @@ class AppServer:
 
     def enqueue(self, callback, message):
         import queue
+        if (self.supervisor_mode and callback == self.request and isinstance(message, dict)
+                and "id" in message and message.get("method") == "currentTime/read"):
+            self.enqueue_clock(message)
+            return
         if (not self.supervisor_mode and callback == self.request and isinstance(message, dict) and "id" in message
                 and message.get("method") == "item/tool/call"):
             # Tool calls must not wait behind a long notification backlog.
