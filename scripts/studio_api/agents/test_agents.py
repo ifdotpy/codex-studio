@@ -1,8 +1,12 @@
 """Unit coverage for the agent API's boundary models."""
 
 import unittest
+from typing import Callable, cast
 
 from pydantic import TypeAdapter, ValidationError
+from codex_runtime import Runtime
+from studio_api.models import JsonValue
+from studio_api.sync.models import CapacityRetrySettingsDto
 
 from .models import (
     AccountTransferRequest,
@@ -185,8 +189,33 @@ class AgentRequestModelTests(unittest.TestCase):
             '"cause":"usage_limit","failedAt":10.0,"dueAt":20.0,'
             '"taskClaims":["task-1"]}'
         )
+        assert response.status is not None
         self.assertEqual(response.status.value, "scheduled")
         self.assertEqual(response.taskClaims, ["task-1"])
+
+    def test_capacity_settings_match_the_runtime_producer(self) -> None:
+        source: dict[str, JsonValue] = {
+            "model": "open-catalog-model",
+            "effort": "high",
+            "nativeEffort": "high",
+            "fastMode": False,
+            "yoloMode": True,
+            "profileInstructions": "Use the project test suite.",
+            "role": "implementer",
+            "daybreakEnabled": False,
+            "cyberAccessProgram": "enabled",
+        }
+        producer = cast(
+            Callable[[dict[str, JsonValue]], dict[str, JsonValue]],
+            Runtime.preparation_settings,
+        )
+
+        settings = CapacityRetrySettingsDto.model_validate(producer(source))
+
+        self.assertTrue(settings.yoloMode)
+        self.assertEqual(settings.profileInstructions, "Use the project test suite.")
+        assert settings.role is not None
+        self.assertEqual(settings.role.value, "implementer")
 
     def test_unknown_fields_fail_before_handler_side_effects(self) -> None:
         with self.assertRaises(ValidationError):

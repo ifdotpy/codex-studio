@@ -7,7 +7,15 @@ from uuid import UUID
 from pydantic import Field, field_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
-from studio_api.sync.models import AgentEntityDto
+from studio_api.sync.models import (
+    AgentEntityDto,
+    CapacityRetryDto,
+    CapacityRetrySettingsDto,
+    CapacityRetryStatus,
+    UsageResumeCause,
+    UsageResumeDto,
+    UsageResumeStatus,
+)
 
 
 class AgentResponse(AgentEntityDto, ResponseModel):
@@ -72,25 +80,6 @@ class RecoveryOutcome(ContractStrEnum):
     INTERRUPTED = "interrupted"
 
 
-class RetryStatus(ContractStrEnum):
-    SCHEDULED = "scheduled"
-    STARTING = "starting"
-    UNKNOWN = "unknown"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    FINISHED = "finished"
-    EXHAUSTED = "exhausted"
-
-
-class CapacityRetryCause(ContractStrEnum):
-    SERVER_OVERLOADED = "serverOverloaded"
-    INTERNAL_SERVER_ERROR = "internalServerError"
-    HTTP_CONNECTION_FAILED = "httpConnectionFailed"
-    RESPONSE_STREAM_CONNECTION_FAILED = "responseStreamConnectionFailed"
-    RESPONSE_STREAM_DISCONNECTED = "responseStreamDisconnected"
-    RESPONSE_TOO_MANY_FAILED_ATTEMPTS = "responseTooManyFailedAttempts"
-
-
 class NativeCommandEventStatus(ContractStrEnum):
     PENDING = "pending"
     RESERVED = "reserved"
@@ -101,18 +90,6 @@ class NativeCommandEventStatus(ContractStrEnum):
     CANCELLED = "cancelled"
     EXPIRED = "expired"
     STORED_ONLY = "stored_only"
-
-
-class UsageResumeStatus(ContractStrEnum):
-    SCHEDULED = "scheduled"
-    STARTED = "started"
-    CANCELLED = "cancelled"
-
-
-class UsageResumeCause(ContractStrEnum):
-    USAGE_LIMIT = "usage_limit"
-    RATE_LIMIT = "rate_limit"
-    AUTH = "auth"
 
 
 class TransferStatus(ContractStrEnum):
@@ -450,7 +427,9 @@ class UsageResumeRequest(ContractModel):
     enabled: bool
 
 
-class UsageResumeResponse(ResponseModel):
+class UsageResumeResponse(UsageResumeDto, ResponseModel):
+    """Usage resume endpoint DTO using the canonical sync receipt fields."""
+
     id: str
     status: UsageResumeStatus
     accountKey: str
@@ -459,18 +438,6 @@ class UsageResumeResponse(ResponseModel):
     turnId: str
     cause: UsageResumeCause
     failedAt: float
-    authAttempt: int | None = None
-    authRefreshMarker: str | None = None
-    dueAt: float | None = None
-    plannedAt: float | None = None
-    resetAt: float | None = None
-    proofAt: float | None = None
-    startedAt: float | None = None
-    lastCheckedAt: float | None = None
-    waitingForAuth: bool | None = None
-    taskClaims: list[str] | None = None
-    reason: str | None = None
-    updatedAt: float | None = None
 
 
 class RenameRequest(ContractModel):
@@ -493,26 +460,11 @@ class DeletedResponse(ResponseModel):
     deleted: list[str]
 
 
-class RetryResponse(ResponseModel):
+class RetryResponse(CapacityRetryDto, ResponseModel):
+    """Capacity retry endpoint DTO using the canonical sync receipt fields."""
+
     id: str
-    threadId: str | None = None
-    turnId: str | None = None
-    accountKey: str | None = None
-    epoch: int | None = None
-    cause: CapacityRetryCause | None = None
-    status: RetryStatus
-    dueAt: float | None = None
-    acceptedTurnId: str | None = None
-    claimedAt: float | None = None
-    attempt: int | None = None
-    maxAttempts: int | None = None
-    cwd: str | None = None
-    settings: PreparationSettings | None = None
-    updatedAt: float | None = None
-    waits: int | None = None
-    taskClaims: list[str] | None = None
-    reason: str | None = None
-    retry_id: str | None = None
+    status: CapacityRetryStatus
 
 
 class RecoveryResponse(ResponseModel):

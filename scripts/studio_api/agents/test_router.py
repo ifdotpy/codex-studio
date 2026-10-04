@@ -125,12 +125,15 @@ class _RuntimeFixture:
             "maxAttempts": 4,
             "cwd": "/workspace",
             "settings": {
-                "provider": "codex",
                 "model": "open-catalog-model",
                 "effort": "high",
                 "nativeEffort": "high",
                 "fastMode": False,
+                "yoloMode": False,
+                "profileInstructions": "Use the project test suite.",
+                "role": "implementer",
                 "daybreakEnabled": False,
+                "cyberAccessProgram": "enabled",
             },
             "updatedAt": 1.5,
             "waits": 0,
@@ -259,6 +262,8 @@ def test_capacity_retry_response_matches_saved_runtime_record() -> None:
     assert payload["status"] == "scheduled"
     assert payload["cause"] == "serverOverloaded"
     assert payload["dueAt"] == 2.0
+    assert payload["settings"]["yoloMode"] is False
+    assert payload["settings"]["role"] == "implementer"
     assert payload["taskClaims"] == ["claim-1"]
     assert runtime.calls == [("capacity_retry", ("agent", "retry", "retry"))]
 
@@ -403,6 +408,29 @@ def test_agent_routes_register_response_dto_with_sync_envelope() -> None:
     assert "_syncEntities" in schema["components"]["schemas"][response_name]["properties"]
 
 
+def test_retry_routes_publish_closed_producer_backed_response_models() -> None:
+    app, _runtime, _context = _app()
+    schema = app.openapi()
+
+    capacity_response = schema["paths"]["/api/capacity-retry"]["post"]["responses"]["200"]
+    capacity_ref = capacity_response["content"]["application/json"]["schema"]["$ref"]
+    assert capacity_ref == "#/components/schemas/RetryResponse"
+    capacity_model = schema["components"]["schemas"]["RetryResponse"]
+    assert capacity_model["properties"]["cause"]["anyOf"][0]["$ref"].endswith(
+        "/CapacityRetryCause"
+    )
+    assert capacity_model["properties"]["status"]["$ref"].endswith(
+        "/CapacityRetryStatus"
+    )
+
+    usage_schema = schema["paths"]["/api/usage-resume"]["post"]["responses"]["200"]
+    usage_body = usage_schema["content"]["application/json"]["schema"]
+    assert usage_body["anyOf"][0]["$ref"] == "#/components/schemas/UsageResumeResponse"
+    usage_model = schema["components"]["schemas"]["UsageResumeResponse"]
+    assert usage_model["properties"]["cause"]["$ref"].endswith("/UsageResumeCause")
+    assert usage_model["properties"]["status"]["$ref"].endswith("/UsageResumeStatus")
+
+
 def test_transfer_openapi_keeps_action_body_scope_optional() -> None:
     app, _runtime, _context = _app()
     schema = app.openapi()
@@ -456,6 +484,9 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_agent_route_schema_includes_sync_envelope(self) -> None:
         test_agent_routes_register_response_dto_with_sync_envelope()
+
+    def test_retry_route_schema_uses_closed_response_types(self) -> None:
+        test_retry_routes_publish_closed_producer_backed_response_models()
 
     def test_transfer_action_request_schema_does_not_require_scope(self) -> None:
         test_transfer_openapi_keeps_action_body_scope_optional()
