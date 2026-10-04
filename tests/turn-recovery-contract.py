@@ -260,6 +260,29 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
         self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
 
+    def test_old_unknown_start_waits_for_supervisor_ack(self):
+        self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.supervisor_mode = True
+        class Journal:
+            def __init__(self):
+                self.acknowledged = 2
+                self.actions = []
+            def call(self, action):
+                self.actions.append(action)
+                return {'sequence': 3, 'acknowledged': self.acknowledged, 'backpressure': False}
+        journal = Journal()
+        self.server.proc = journal
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['created'] = time.time() - 700
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
+        journal.acknowledged = 3
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'held')
+        self.assertEqual(journal.actions, ['status', 'status'])
+
     def test_start_pace_counts_only_recent_unresolved_codex_starts(self):
         now = time.time()
         attempts = [{'accountKey': 'same', 'provider': 'codex', 'autoWake': True,
