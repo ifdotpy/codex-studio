@@ -82,6 +82,13 @@ base build for the lead's repository if no current base exists.
    ([ORCHESTRATION.md](../../ORCHESTRATION.md)). The new working folder and sandbox apply from the
    next turn, so the notice must tell the agent to continue its work there.
 
+**User decision (2026-10-04): the whole user temporary folder is writable for agents.** The Seatbelt
+profile allows writes to the folder from `getconf DARWIN_USER_TEMP_DIR` (resolved under
+`/private/var`). Apple build tools write there and ignore `TMPDIR`. The folder is shared by all agents
+and other apps of the user, so an agent can delete temporary files of others, but not the user's code
+or data. Open: the global SwiftPM setting `IDEPackageSupportDisableManifestSandbox`, which Xcode
+projects with Swift packages also need under Seatbelt.
+
 The process sandbox (requirement 2) is a separate and required part. The image isolates the
 workspace, not the process. See "Limits and risks".
 
