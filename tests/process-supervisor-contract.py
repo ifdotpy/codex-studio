@@ -933,6 +933,20 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_backend_diagnostics_do_not_change_native_launch(self):
+        first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1',
+                                    'CODEX_AGENTS_PROVIDER_CAPTURE': '1'}):
+            second = self.server()
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        second.close()
+        # A child launched while a diagnostic was set reattaches after it is removed.
+        self.assertEqual(self.server().call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+
     def test_reattach_still_rejects_changed_credentials_options_and_command(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
