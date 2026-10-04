@@ -71,6 +71,16 @@ class WorkRouterTests(unittest.TestCase):
         parameters = {row["name"] for row in client.get("/openapi.json").json()["paths"]["/api/agent-chat"]["get"]["parameters"]}
         self.assertTrue({"room", "before", "after", "limit"} <= parameters)
 
+    def test_chat_query_skips_blank_duplicate_values_like_parse_qs(self) -> None:
+        context = FakeContext()
+        context.runtime.chat_read = Mock(return_value={
+            "room": {}, "messages": [], "nextBefore": None, "nextAfter": None,
+        })
+        response = make_client(context).get("/api/agent-chat?room=feed&before=&before=11&limit=&limit=5")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        context.runtime.chat_read.assert_called_once_with("feed", before=11, after=None, limit=5)
+
     def test_invalid_first_duplicate_query_is_rejected_before_runtime_call(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock()
