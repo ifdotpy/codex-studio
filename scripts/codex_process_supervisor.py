@@ -815,9 +815,10 @@ def process_launch_environment(pid):
 
 
 def native_launch_environment(root, handle, command, env, cwd):
-    """Backend ownership is transport metadata, not a native launch setting."""
+    """Exclude backend ownership and diagnostics from native launch settings."""
     clean = dict(env)
-    clean.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS'):
+        clean.pop(key, None)
     path = Path(root) / 'supervisor.sqlite3'
     db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True)
     try:
@@ -845,7 +846,8 @@ def native_launch_environment(root, handle, command, env, cwd):
         # A macOS Python launcher can add this marker after a script's exec.
         original.pop('__PYVENV_LAUNCHER__', None)
     comparable = dict(original)
-    comparable.pop('CODEX_AGENTS_BACKEND_ID', None)
+    for key in ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS'):
+        comparable.pop(key, None)
     # Reattachment keeps the child's accepted launch, including its PATH and
     # locale. A backend launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,

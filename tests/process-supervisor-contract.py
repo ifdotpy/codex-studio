@@ -948,6 +948,40 @@ class ProcessSupervisorContract(unittest.TestCase):
                     [str(self.binary), 'different-command'], dict(os.environ), None)
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
 
+    def test_backend_lock_metrics_do_not_change_native_launch_or_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        self.assertFalse('CODEX_RUNTIME_LOCK_METRICS' in
+                         process_supervisor.process_launch_environment(native_pid))
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_child_lock_metrics_preserve_exact_launch_on_reattach(self):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}), \
+                patch.object(process_supervisor, 'native_launch_environment',
+                             side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        first.close()
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.assertEqual(process_supervisor.process_launch_environment(native_pid)
+                         ['CODEX_RUNTIME_LOCK_METRICS'], '1')
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
     def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):
