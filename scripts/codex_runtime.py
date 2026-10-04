@@ -7560,11 +7560,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def recover_monitor_receipts(self, db, *, wake=False, keys=None):
         """Restore terminal history without replaying commands or old work."""
+        # Rule checks have separate receipts. Skip them before fetching agent payloads.
         query = """SELECT m.id, m.record, a.record FROM runtime_monitors m
             JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
             LEFT JOIN runtime_events e ON e.id='monitor:' || m.id
             WHERE e.id IS NULL AND json_extract(m.record,'$.status')
-                IN ('completed','failed','cancelled','lost')"""
+                IN ('completed','failed','cancelled','lost')
+            AND CASE json_type(m.record,'$.ruleId')
+                WHEN 'text' THEN json_extract(m.record,'$.ruleId')=''
+                WHEN 'array' THEN json_array_length(m.record,'$.ruleId')=0
+                WHEN 'object' THEN NOT EXISTS (
+                    SELECT 1 FROM json_each(m.record,'$.ruleId'))
+                ELSE coalesce(json_extract(m.record,'$.ruleId'),0)=0
+            END"""
         params = ()
         if keys is not None:
             if not keys:
