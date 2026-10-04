@@ -162,6 +162,68 @@ describe("shared resource event transport", () => {
     vi.useRealTimers();
   });
 
+  it("treats valid busy-stream events as liveness and reconnects after silence", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const resource = { kind: "costs" } as const;
+    const onChange = vi.fn();
+    const states: string[] = [];
+    const stopChanges = transport.watchResourceChanges(resource, onChange);
+    const stopStatus = transport.watchResourceConnection((state) =>
+      states.push(state),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const first = Source.instances[0]!;
+
+    for (let revision = 1; revision <= 6; revision++) {
+      first.emit("resources", {
+        protocol: 3,
+        workspaceId,
+        epoch: "epoch-one",
+        revision,
+        reason: revision === 1 ? "initial" : "change",
+        resources: [resource],
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(Source.instances).toHaveLength(1);
+    expect(states).not.toContain("degraded");
+    expect(onChange).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(46_000);
+    expect(Source.instances).toHaveLength(2);
+    expect(states).toContain("degraded");
+    const replacement = Source.instances[1]!;
+    replacement.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 7,
+      reason: "reconnect",
+      resources: [resource],
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    expect(states.at(-1)).toBe("live");
+    stopChanges();
+    stopStatus();
+    vi.useRealTimers();
+  });
+
   it("delivers resource and token-rate events that share a hub revision", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {

@@ -121,6 +121,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       delayedA = false,
       rawA,
       releaseA;
+    let notificationRevision = 0;
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
       // This test controls HTTP replies. A worker can bypass Playwright routes
@@ -156,19 +157,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         streams.push(url.searchParams.get("id"));
         return route.fulfill({ status: 204, body: "" });
       }
-      if (
-        url.pathname === "/api/sync/stream" &&
-        url.searchParams.get("scope") === "state:entities:v1"
-      ) {
-        entityStreams.push(route);
-        return;
-      }
-      if (
-        url.pathname === "/api/sync/stream" &&
-        url.searchParams.get("scope")?.startsWith("transcript:")
-      ) {
-        // Keep the initial transcript blocked through both its pull and push paths.
-        // The real shared workspace stream still carries compact revision hints.
+      if (url.pathname === "/api/sync/stream") {
+        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        if (resources.some((resource) => resource.kind === "state")) {
+          entityStreams.push(route);
+          return;
+        }
         held.push(route);
         return;
       }
@@ -289,6 +283,25 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       });
     };
     await page.route("**/api/**", handle);
+    const emitResourceChange = async (resources) => {
+      await until(() => entityStreams.length > 0, "A resource stream is ready");
+      notificationRevision = Math.max(notificationRevision, entityMaxSeq) + 1;
+      for (const stream of entityStreams.splice(0))
+        await stream
+          .fulfill({
+            status: 200,
+            contentType: "text/event-stream",
+            body: `event: resources\ndata: ${JSON.stringify({
+              protocol: 3,
+              workspaceId,
+              epoch: "prefetch-epoch",
+              revision: notificationRevision,
+              reason: "change",
+              resources,
+            })}\n\n`,
+          })
+          .catch(() => {});
+    };
     const invalidate = async (name) => {
       const response = await fetch(origin + "/api/rename", {
         method: "POST",
@@ -314,14 +327,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         after = result.checkpoint?.seq || after;
       } while (after < maxSeq);
       entityMaxSeq = maxSeq;
-      for (const stream of entityStreams.splice(0))
-        await stream
-          .fulfill({
-            status: 200,
-            contentType: "text/event-stream",
-            body: `data: ${entityMaxSeq}\n\n`,
-          })
-          .catch(() => {});
+      await emitResourceChange([
+        { kind: "state" },
+        { kind: "transcript", agentId: b.id },
+      ]);
     };
     const selected = () => page.locator("#conversation-title").innerText();
     const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
@@ -356,6 +365,17 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       streams.includes(b.id),
       false,
       "Background B must not open a transcript SSE stream",
+    );
+
+    const beforeUnrelated = reads.filter((read) => read.id === b.id).length;
+    await emitResourceChange([
+      { kind: "transcript", agentId: "unrelated-agent" },
+    ]);
+    await page.waitForTimeout(150);
+    assert.equal(
+      reads.filter((read) => read.id === b.id).length,
+      beforeUnrelated,
+      "A different agent transcript event does not refetch B",
     );
 
     // A real shared SSE invalidation announces a newer B while the reader stays in A.

@@ -231,6 +231,8 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (lastRevision !== undefined && event.revision < lastRevision) return;
   const isDuplicate = event.revision === lastRevision;
   if (!isDuplicate) lastRevision = event.revision;
+  if (!source) return;
+  refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
     if (!active.has(resourceKey(resource))) continue;
@@ -257,6 +259,7 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
     return;
   }
   if (fromPeer && (owner || independent)) return;
+  if (!fromPeer) refreshHeartbeatTimeout();
   if (lastTokenEpoch !== value.epoch) {
     lastTokenEpoch = value.epoch;
     lastTokenRevision = undefined;
@@ -336,10 +339,14 @@ function acceptHeartbeat(value: unknown, fromPeer = false) {
   }
   if (fromPeer) return;
   lastHeartbeatRevision = value.revision;
-  clearTimeout(heartbeatTimeout);
-  heartbeatTimeout = setTimeout(() => reconnectNow(), HEARTBEAT_TIMEOUT_MS);
+  refreshHeartbeatTimeout();
   setStatus("live");
   if (owner) broadcast({ kind: "leader-heartbeat" });
+}
+
+function refreshHeartbeatTimeout() {
+  clearTimeout(heartbeatTimeout);
+  heartbeatTimeout = setTimeout(() => reconnectNow(), HEARTBEAT_TIMEOUT_MS);
 }
 
 function receiveChannelMessage(value: unknown) {
