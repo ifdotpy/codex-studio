@@ -205,8 +205,11 @@ type SyncEnvelope = {
   _syncEntities?: components["schemas"]["SyncEntity"][] | null;
 };
 
-function syncDocuments(value: SyncEnvelope, workspaceId: string | undefined) {
-  if (!value._syncEntities?.length || typeof window === "undefined") return;
+function syncDocuments(
+  value: SyncEnvelope | null | undefined,
+  workspaceId: string | undefined,
+) {
+  if (!value?._syncEntities?.length || typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent("codex-sync-entities", {
       detail: {
