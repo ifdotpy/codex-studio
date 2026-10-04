@@ -16351,6 +16351,7 @@ export interface operations {
     parameters: {
       query?: {
         account_key?: string;
+        retry?: "1" | null;
         workers?: string | null;
       };
       header?: never;
