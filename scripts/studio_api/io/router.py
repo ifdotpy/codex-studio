@@ -200,7 +200,15 @@ def create_router(context: ApiContext) -> APIRouter:
             result = manager.output(key, offset)
         return io_context.send(request, result)
 
-    @router.get("/api/monitor/log", responses={200: {"content": {"text/plain": {}}}, 206: {"content": {"text/plain": {}}}, 400: {"model": ErrorResponse}})
+    @router.get(
+        "/api/monitor/log",
+        response_class=Response,
+        responses={
+            200: {"content": {"text/plain": {}}},
+            206: {"content": {"text/plain": {}}},
+            400: {"model": ErrorResponse},
+        },
+    )
     def monitor_log(request: Request, query: Annotated[MonitorLogQuery, Query()]) -> Response:
         monitor_id = _first_query(request, "id")
         if monitor_id is None:
