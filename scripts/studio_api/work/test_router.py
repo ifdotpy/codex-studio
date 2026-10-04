@@ -6,8 +6,9 @@ import unittest
 import sqlite3
 import threading
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 
 from fastapi import FastAPI
@@ -17,8 +18,12 @@ from pydantic import BaseModel, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from studio_api.context import ApiContext, RemoteAccessContract
 from studio_api.models import JsonValue
 from studio_api.work.router import create_router
+
+if TYPE_CHECKING:
+    from codex_canvas import Canvas
 
 
 class FakeContext:
@@ -43,7 +48,7 @@ class FakeContext:
 
 def make_client(context: FakeContext) -> TestClient:
     app = FastAPI()
-    app.include_router(create_router(context))
+    app.include_router(create_router(cast(ApiContext, context)))
 
     @app.exception_handler(RequestValidationError)
     def invalid_request(_: Request, __: RequestValidationError) -> JSONResponse:
@@ -53,6 +58,18 @@ def make_client(context: FakeContext) -> TestClient:
     def invalid_operation(_: Request, __: ValueError) -> JSONResponse:
         return JSONResponse({"error": "Invalid request"}, status_code=400)
 
+    return TestClient(app)
+
+
+def make_real_sender_client(runtime: SimpleNamespace, canvas: SimpleNamespace | None = None) -> TestClient:
+    services = canvas or SimpleNamespace(root=Path("."), runtime=runtime)
+    services.runtime = runtime
+    context = ApiContext(
+        cast("Canvas", services), token="test-token",
+        remote=cast(RemoteAccessContract, object()), schema_only=True,
+    )
+    app = FastAPI()
+    app.include_router(create_router(context))
     return TestClient(app)
 
 
@@ -156,6 +173,22 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.work_action.assert_called_once_with(
             "agent-1", {"agent": "agent-1", "action": "list"}, None,
         )
+
+    def test_real_context_sender_validates_work_union_and_root_array(self) -> None:
+        runtime = SimpleNamespace(work_action=Mock(return_value={"items": [], "tasks": []}))
+        canvas = SimpleNamespace(
+            root=Path("."), runtime=runtime,
+            messages=Mock(return_value=[]),
+        )
+        client = make_real_sender_client(runtime, canvas)
+
+        work = client.post("/api/work", json={"agent": "agent-1", "action": "list"})
+        messages = client.get("/api/messages?room=chat-1")
+
+        self.assertEqual(work.status_code, 200, work.text)
+        self.assertEqual(work.json(), {"items": [], "tasks": []})
+        self.assertEqual(messages.status_code, 200, messages.text)
+        self.assertEqual(messages.json(), [])
 
     def test_profile_and_rule_editor_payload_fields_are_preserved(self) -> None:
         context = FakeContext()
