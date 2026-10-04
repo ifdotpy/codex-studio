@@ -14,6 +14,7 @@ from .models import (
     NativeActionRequest,
     NativeActionResponse,
     NativeCommandRequest,
+    RecoveryResponse,
     StopRequest,
     TransferResponse,
     UsageResumeResponse,
@@ -79,8 +80,7 @@ class AgentRequestModelTests(unittest.TestCase):
             '{"id":"receipt","leadId":"lead","targetAccountKey":"acct",'
             '"status":"pending","scope":"team","created":10.0,"members":'
             '{"worker":{"phase":"lazy","sourceAccountKey":"default",'
-            '"lazy":true,"targetSettings":{"provider":"codex","model":"open-model",'
-            '"effort":"high","fastMode":false}}}}'
+            '"lazy":true}}}'
         )
         safety = NativeActionResponse.model_validate_json(
             '{"id":"a:turn","stage":"waiting","turnId":"turn-1"}'
@@ -131,16 +131,29 @@ class AgentRequestModelTests(unittest.TestCase):
         transfer = TransferResponse.model_validate_json(
             '{"id":"receipt","leadId":"lead","targetAccountKey":"acct",'
             '"status":"pending","scope":"team","created":10.0,"members":'
-            '{"worker":{"phase":"reading","source":{"epoch":2,"accountKey":"source",'
-            '"threadId":"thread","cwd":"/workspace"},"settings":{"provider":"codex",'
-            '"model":"open-model","effort":"high","fastMode":false,"workerDefaults":'
-            '{"model":"open-model","effort":"high","fastMode":false,"accountKey":"acct"}}}}}'
+            '{"worker":{"phase":"reading","sourceAccountKey":"source",'
+            '"sourceThreadId":"thread","provider":"codex"}}}'
         )
 
         assert transfer.members is not None
-        assert transfer.members["worker"].source is not None
         self.assertEqual(transfer.members["worker"].phase.value, "reading")
-        self.assertEqual(transfer.members["worker"].source.accountKey, "source")
+        self.assertEqual(transfer.members["worker"].sourceAccountKey, "source")
+
+    def test_recovery_response_matches_tool_delivery_producer(self) -> None:
+        response = RecoveryResponse.model_validate_json(
+            '{"status":"tool_response_delivered","requests":["request-1","request-2"]}'
+        )
+
+        self.assertEqual(response.status.value, "tool_response_delivered")
+        self.assertEqual(response.requests, ["request-1", "request-2"])
+
+    def test_recovery_response_matches_input_restore_producer(self) -> None:
+        response = RecoveryResponse.model_validate_json(
+            '{"status":"input_restored","attemptId":"attempt-1"}'
+        )
+
+        self.assertEqual(response.status.value, "input_restored")
+        self.assertEqual(response.attemptId, "attempt-1")
 
     def test_usage_resume_keeps_receipt_contract(self) -> None:
         response = UsageResumeResponse.model_validate_json(

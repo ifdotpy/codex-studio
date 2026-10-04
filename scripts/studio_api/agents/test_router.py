@@ -1,24 +1,27 @@
 """FastAPI-level tests for agent route dispatch and generated query contracts."""
 
-from typing import cast
-
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
-from pydantic import TypeAdapter
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
+from types import SimpleNamespace
+from unittest.mock import patch
+import unittest
 
 from studio_api.context import ApiContext
-from studio_api.models import ErrorResponse, ResponseModel
+from studio_api.models import ErrorResponse
 from .router import create_router
 
 
 class _RuntimeFixture:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.invalid_stop_response = False
 
     def stop(self, agent_id: str, descendants: bool) -> dict[str, list[str]]:
         self.calls.append(("stop", (agent_id, descendants)))
+        if self.invalid_stop_response:
+            return {"stopped": [agent_id], "private": ["must not leak"]}
         return {"stopped": [agent_id]}
 
     def native_action(self, *args: object) -> dict[str, object]:
@@ -67,46 +70,33 @@ class _RuntimeFixture:
         }
 
 
-class _ContextFixture:
-    def __init__(self, runtime: _RuntimeFixture) -> None:
-        self.runtime = runtime
-
-    def send(
-        self,
-        request: Request,
-        value: object,
-        status: int = 200,
-        **_options: object,
-    ) -> Response:
-        route = request.scope.get("route")
-        model = getattr(route, "response_model", None)
-        if status < 400 and model is not None:
-            validated = TypeAdapter(model).validate_python(value)
-            if isinstance(validated, ResponseModel):
-                value = validated.model_dump(mode="json", by_alias=True, exclude_unset=True)
-            else:
-                value = validated
-        return JSONResponse(value, status_code=status)
-
-
-def _app() -> tuple[FastAPI, _RuntimeFixture]:
+def _app() -> tuple[FastAPI, _RuntimeFixture, ApiContext]:
     runtime = _RuntimeFixture()
-    context = cast(ApiContext, _ContextFixture(runtime))
+    context = ApiContext.for_schema()
+    setattr(context.canvas, "runtime", runtime)
     app = FastAPI()
     app.include_router(create_router(context))
 
     @app.exception_handler(RequestValidationError)
-    async def legacy_validation_error(_request: Request, _error: RequestValidationError) -> JSONResponse:
-        return JSONResponse(
-            ErrorResponse(error="Invalid request").model_dump(mode="json", exclude_unset=True),
-            status_code=400,
+    async def legacy_validation_error(request: Request, _error: RequestValidationError) -> Response:
+        return context.send(
+            request,
+            ErrorResponse(
+                error="Invalid request",
+                outcome=(
+                    "not_applied"
+                    if request.method == "POST" and request.url.path == "/api/action"
+                    else None
+                ),
+            ),
+            status=400,
         )
 
-    return app, runtime
+    return app, runtime, context
 
 
 def test_durable_action_rejection_happens_before_runtime_call() -> None:
-    app, runtime = _app()
+    app, runtime, _context = _app()
     response = TestClient(app).post("/api/action", json={"id": "agent", "action": "review"})
 
     assert response.status_code == 400
@@ -115,7 +105,7 @@ def test_durable_action_rejection_happens_before_runtime_call() -> None:
 
 
 def test_stop_preserves_explicit_false_descendant_flag() -> None:
-    app, runtime = _app()
+    app, runtime, _context = _app()
     response = TestClient(app).post("/api/stop", json={"id": "agent", "descendants": False})
 
     assert response.status_code == 200
@@ -124,7 +114,7 @@ def test_stop_preserves_explicit_false_descendant_flag() -> None:
 
 
 def test_capabilities_query_is_in_openapi_and_uses_legacy_first_value() -> None:
-    app, runtime = _app()
+    app, runtime, _context = _app()
     parameters = app.openapi()["paths"]["/api/capabilities"]["get"]["parameters"]
     response = TestClient(app).get("/api/capabilities?agent=first&agent=second")
 
@@ -134,7 +124,7 @@ def test_capabilities_query_is_in_openapi_and_uses_legacy_first_value() -> None:
 
 
 def test_invalid_native_command_enum_returns_400_before_side_effect() -> None:
-    app, runtime = _app()
+    app, runtime, _context = _app()
     response = TestClient(app).post("/api/native-command", json={"id": "agent", "action": "restart"})
 
     assert response.status_code == 400
@@ -142,7 +132,7 @@ def test_invalid_native_command_enum_returns_400_before_side_effect() -> None:
 
 
 def test_usage_resume_returns_the_receipt_shape_not_an_agent_projection() -> None:
-    app, runtime = _app()
+    app, runtime, _context = _app()
     response = TestClient(app).post(
         "/api/usage-resume",
         json={"id": "agent", "resume_id": "resume", "enabled": True},
@@ -152,3 +142,121 @@ def test_usage_resume_returns_the_receipt_shape_not_an_agent_projection() -> Non
     assert response.json()["id"] == "resume"
     assert response.json()["status"] == "scheduled"
     assert runtime.calls == [("usage_resume", ("agent", "resume", True))]
+
+
+def test_context_sender_rejects_invalid_service_response_without_retry_hint() -> None:
+    app, runtime, _context = _app()
+    runtime.invalid_stop_response = True
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/stop", json={"id": "agent"}
+    )
+
+    assert response.status_code == 500
+    assert "outcome" not in response.json()
+
+
+def test_transfer_response_preserves_receipt_identity_and_filters_internal_state() -> None:
+    operation = {
+        "id": "durable-operation-id",
+        "leadId": "lead",
+        "targetAccountKey": "destination",
+        "status": "pending",
+        "created": 10.0,
+        "updated": 11.0,
+        "scope": "team",
+        "members": {
+            "worker": {
+                "phase": "blocked",
+                "name": "worker name",
+                "provider": "codex",
+                "error": "Native history needs attention",
+                "lazy": True,
+                "archiveInvalidated": False,
+                "nativeParams": {"privateNativeMarker": "secret"},
+                "targetConnection": "private-connection",
+                "archiveSourceThread": {"privateThreadMarker": "secret"},
+                "portableHistory": {"archivePath": "/private/archive.json"},
+                "sourceHistoryMissing": {"privateMissingMarker": "secret"},
+                "emptyThreadRecovery": {"privateRecoveryMarker": "secret"},
+                "sourceClaudeOptions": {"privateOptionMarker": "secret"},
+                "result": {"thread": {"id": "private-thread"}},
+                "source": {"cwd": "/private/workspace"},
+            }
+        },
+        "requests": {
+            "durable-operation-id": {
+                "leadId": "lead",
+                "targetAccountKey": "destination",
+                "scope": "team",
+            }
+        },
+        "portableHistory": {"privateOperationMarker": "secret"},
+    }
+
+    class FakeTransferStore:
+        def request(
+            self,
+            _key: str | None,
+            _account_key: str | None,
+            _request_id: str,
+            _scope: str,
+        ) -> dict[str, object]:
+            return operation
+
+        def action(self, _request_id: str, _action: str) -> dict[str, object]:
+            return operation
+
+    api_module = SimpleNamespace(
+        transfer_store=lambda _runtime: FakeTransferStore(),
+    )
+    app, _runtime, _context = _app()
+    with patch.dict("sys.modules", {"codex_account_transfer": api_module}):
+        response = TestClient(app).post(
+            "/api/agents/account-transfer",
+            json={"id": "lead", "account_key": "destination", "request_id": "durable-operation-id"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "durable-operation-id"
+    assert payload["canRetry"] is True
+    assert payload["blocked"] == [
+        {"id": "worker", "name": "worker name", "provider": "codex", "reason": "Native history needs attention"}
+    ]
+    serialized = response.text
+    for private_marker in (
+        "privateNativeMarker",
+        "private-connection",
+        "privateThreadMarker",
+        "/private/archive.json",
+        "privateMissingMarker",
+        "privateRecoveryMarker",
+        "privateOptionMarker",
+        "private-thread",
+        "/private/workspace",
+        "privateOperationMarker",
+    ):
+        assert private_marker not in serialized
+
+
+class AgentRouterTests(unittest.TestCase):
+    def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
+        test_durable_action_rejection_happens_before_runtime_call()
+
+    def test_stop_preserves_explicit_false_descendant_flag(self) -> None:
+        test_stop_preserves_explicit_false_descendant_flag()
+
+    def test_capabilities_query_is_in_openapi_and_uses_legacy_first_value(self) -> None:
+        test_capabilities_query_is_in_openapi_and_uses_legacy_first_value()
+
+    def test_invalid_native_command_enum_returns_400_before_side_effect(self) -> None:
+        test_invalid_native_command_enum_returns_400_before_side_effect()
+
+    def test_usage_resume_returns_receipt_shape(self) -> None:
+        test_usage_resume_returns_the_receipt_shape_not_an_agent_projection()
+
+    def test_context_sender_rejects_invalid_response_without_retry_hint(self) -> None:
+        test_context_sender_rejects_invalid_service_response_without_retry_hint()
+
+    def test_transfer_projection_preserves_identity_and_filters_internal_state(self) -> None:
+        test_transfer_response_preserves_receipt_identity_and_filters_internal_state()

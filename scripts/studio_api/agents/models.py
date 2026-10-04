@@ -56,6 +56,7 @@ class RecoveryStatus(ContractStrEnum):
     ADOPTED = "adopted"
     INPUT_RESTORED = "input_restored"
     RECONCILED = "reconciled"
+    TOOL_RESPONSE_DELIVERED = "tool_response_delivered"
     SUPERSEDED = "superseded"
     UNCONFIRMED = "unconfirmed"
 
@@ -182,18 +183,8 @@ class PreparationSettings(ResponseModel):
     portableHistory: JsonValue | None = None
 
 
-class TransferSourceIdentity(ResponseModel):
-    id: str | None = None
-    epoch: int | None = None
-    accountKey: str | None = None
-    threadId: str | None = None
-    cwd: str | None = None
-
-
 class TransferMemberResponse(ResponseModel):
     phase: TransferMemberPhase
-    source: TransferSourceIdentity | None = None
-    threadId: str | None = None
     sourceAccountKey: str | None = None
     sourceThreadId: str | None = None
     targetThreadId: str | None = None
@@ -206,26 +197,13 @@ class TransferMemberResponse(ResponseModel):
     interruptReason: str | None = None
     interruptOutcome: TransferInterruptOutcome | None = None
     continueAfterTransfer: bool | None = None
-    interruptTurnId: str | None = None
-    interruptSubmittedAt: float | None = None
-    interruptConfirmedAt: float | None = None
-    submittedAt: float | None = None
-    nativeMethod: str | None = None
-    nativeParams: JsonValue | None = None
-    targetConnection: str | None = None
-    archiveInvalidated: bool | None = None
-    archiveSourceThread: JsonValue | None = None
-    portableHistory: JsonValue | None = None
-    sourceHistoryMissing: JsonValue | None = None
-    emptyThreadRecovery: JsonValue | None = None
-    pendingSettings: PreparationSettings | None = None
-    sourcePendingSettings: PreparationSettings | None = None
-    pendingSettingsAccountKey: str | None = None
-    sourceClaudeOptions: JsonValue | None = None
-    settings: PreparationSettings | None = None
-    targetSettings: PreparationSettings | None = None
-    result: JsonValue | None = None
-    nextCheck: float | None = None
+
+
+class TransferMemberNotice(ResponseModel):
+    id: str
+    name: str | None = None
+    provider: str | None = None
+    reason: str | None = None
 
 
 class TransferRequestReceipt(ResponseModel):
@@ -524,6 +502,7 @@ class RecoveryResponse(ResponseModel):
     status: RecoveryStatus
     outcome: RecoveryOutcome | None = None
     turnId: str | None = None
+    attemptId: str | None = None
     queuedInputPreserved: bool | None = None
     requests: list[str] | None = None
     error: str | None = None
@@ -584,6 +563,19 @@ class TransferResponse(ResponseModel):
     finishHistory: bool | None = None
     members: dict[str, TransferMemberResponse]
     requests: dict[str, TransferRequestReceipt] | None = None
+    total: int | None = None
+    completed: int | None = None
+    moved: int | None = None
+    nativeHistoryPending: int | None = None
+    movingNow: int | None = None
+    canFinishHistory: bool | None = None
+    interrupted: list[TransferMemberNotice] | None = None
+    leftOnSource: list[TransferMemberNotice] | None = None
+    blocked: list[TransferMemberNotice] | None = None
+    waitingCount: int | None = None
+    waiting: str | None = None
+    needsAttention: bool | None = None
+    canRetry: bool | None = None
 
 
 class RenameResponse(ResponseModel):
