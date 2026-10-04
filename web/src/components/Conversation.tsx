@@ -102,6 +102,11 @@ import ComposerAttachments, {
 } from "./ComposerAttachments";
 import "./chat-controls.css";
 import { copyText } from "../clipboard/clipboard";
+
+function isJsonObject(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // Message controls keep stable identities while their actions read the latest
 // committed draft and chat. These callbacks run from events, never during render.
 function useMessageAction<T extends (...args: any[]) => any>(action: T): T {
@@ -231,6 +236,12 @@ export default function Conversation(p: {
   onPhase: (id: string | null, label: string) => void;
 }) {
   reportPromptComposerRender("conversation");
+  const limitsData = isJsonObject(p.limits?.data) ? p.limits.data : undefined;
+  const rateLimits = isJsonObject(limitsData?.rateLimits)
+    ? limitsData.rateLimits
+    : undefined;
+  const planType =
+    typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const shortViewport = useMediaQuery(
     "(max-width: 760px) and (max-height: 750px)",
@@ -737,8 +748,9 @@ export default function Conversation(p: {
     const shown: typeof queued = [];
     const held: typeof queued = [];
     for (const entry of queued) {
-      const { requestedDelivery, delivery } = entry as Json;
-      const mode = requestedDelivery || delivery;
+      const mode =
+        entry.requestedDelivery ||
+        ("delivery" in entry ? entry.delivery : undefined);
       (mode === "after_turn" ? shown : held).push(entry);
     }
     return { queue: shown, sending: held };
@@ -889,7 +901,12 @@ export default function Conversation(p: {
           throw new Error(
             "The full original message is unavailable. Copy the visible text into a new message instead.",
           );
-        original = { ...message, ...full };
+        original = {
+          ...message,
+          ...full,
+          role: full.role || message.role,
+          text: typeof full.text === "string" ? full.text : message.text,
+        };
       }
       if (activeId.current === chat && attempt === editAttempt.current)
         setBranchDraft({
@@ -923,7 +940,7 @@ export default function Conversation(p: {
           id: branchRequests.current[key],
           ...(draft?.before ? { before: true } : {}),
         });
-        const branchId = response.agent?.id || response.id;
+        const branchId = response.id;
         if (!branchId)
           throw new Error("The server did not return the new chat identity.");
         if (draft) {
@@ -941,10 +958,11 @@ export default function Conversation(p: {
             prefix ? `${prefix}\n\n${reviewedText}` : reviewedText,
             branchId,
           );
-          if (draft.before && response.draft?.assets?.length)
+          const branchAssets = response.draft?.assets;
+          if (draft.before && branchAssets?.length)
             setAttachments((current) => ({
               ...current,
-              [branchId]: response.draft.assets,
+              [branchId]: branchAssets,
             }));
         }
         await p.refresh();
@@ -985,13 +1003,14 @@ export default function Conversation(p: {
   const team = p.data.threads.filter(
     (a) => a.rootId === (agent?.rootId || p.room?.rootId),
   );
-  const requests = p.data.runtime.requests.filter(
+  const runtime = p.data.runtime;
+  const requests = (runtime?.requests || []).filter(
     (r) =>
       !r.agent ||
       r.agent === p.id ||
       (!mobileClient && team.some((a) => a.id === r.agent)),
   );
-  const first = p.room?.members[0] || items.find((m) => m.sender)?.sender;
+  const first = p.room?.members?.[0] || items.find((m) => m.sender)?.sender;
   const canSend = !threadBlock && (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
@@ -1219,7 +1238,7 @@ export default function Conversation(p: {
         />
       )}
       {m.deliveryError &&
-        ["failed", "uncertain", "queued"].includes(m.deliveryStatus) && (
+        ["failed", "uncertain", "queued"].includes(m.deliveryStatus || "") && (
           <div className="message-delivery-error">
             <p>{m.deliveryError}</p>
             {m.deliveryStatus === "failed" && (
@@ -1312,17 +1331,13 @@ export default function Conversation(p: {
         key={`${p.data.stateDir}:${p.id}`}
         items={transcriptItems}
         agent={managed && !p.room ? agent : undefined}
-        currentTurn={agent?.turnId}
+        currentTurn={agent?.turnId || undefined}
         enabled={managed && !p.room}
         storageKey={`studio-turns:${p.data.stateDir}:${p.id}`}
         renderMessage={(item) =>
           item.nativeNotice ? (
             isNonBlockingWarning(item) ? null : (
-              <NativeNotice
-                key={item.id}
-                item={item}
-                planType={p.limits?.data?.rateLimits?.planType}
-              />
+              <NativeNotice key={item.id} item={item} planType={planType} />
             )
           ) : (
             renderMessage(item)
@@ -1340,7 +1355,7 @@ export default function Conversation(p: {
       p.id,
       p.data.stateDir,
       p.data.threads,
-      p.limits?.data?.rateLimits?.planType,
+      planType,
       p.outgoing,
       p.notify,
       highlighted,
@@ -1423,7 +1438,7 @@ export default function Conversation(p: {
         <NativeError
           agent={agent}
           refresh={p.refresh}
-          planType={p.limits?.data?.rateLimits?.planType}
+          planType={planType}
           limits={p.limits}
           openLimits={() => {
             setLimitsOpen(true);
@@ -1440,7 +1455,7 @@ export default function Conversation(p: {
           <ConversationWarnings
             key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
             scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            notices={p.data.runtime.nativeNotices}
+            notices={(runtime?.nativeNotices || []).filter(isJsonObject)}
             accountKey={agent.accountKey || "default"}
             messages={items}
           />,
@@ -1625,7 +1640,7 @@ export default function Conversation(p: {
           <Requests
             showDates={!!p.room}
             scope={p.data.stateDir}
-            allRequests={p.data.runtime.requests}
+            allRequests={runtime?.requests || []}
             requests={requests}
             agents={p.data.threads}
             refresh={p.refresh}
@@ -1961,7 +1976,7 @@ export default function Conversation(p: {
                           aria-label="Stop agent"
                           title={
                             ["running", "starting", "approval"].includes(
-                              agent.status,
+                              agent.status || "",
                             )
                               ? "Stop agent"
                               : "No active turn to stop"
@@ -1969,7 +1984,7 @@ export default function Conversation(p: {
                           disabled={
                             stopping ||
                             !["running", "starting", "approval"].includes(
-                              agent.status,
+                              agent.status || "",
                             )
                           }
                           aria-busy={stopping}

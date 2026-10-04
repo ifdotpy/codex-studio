@@ -5,7 +5,8 @@ import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { post as apiPost, errorText, saved } from "../../api";
 import { writeLocalDraft } from "../../sync/localDraft";
-import type { Json, Agent } from "../../types";
+import type { components } from "../../generated/api";
+import type { Json, JsonValue, Agent } from "../../types";
 import "./request-questions.css";
 import { nativeThreadError } from "../../nativeErrors";
 import AnswerFields, {
@@ -17,33 +18,105 @@ import AnswerFields, {
 
 type Props = {
   showDates?: boolean;
-  requests: Json[];
-  allRequests: Json[];
+  requests: components["schemas"]["RequestEntityDto"][];
+  allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
   agents: Agent[];
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 };
 
-function requestQuestions(request: Json): AnswerQuestion[] {
-  return (request.params?.questions ||
-    Object.entries(request.params?.requestedSchema?.properties || {}).map(
-      ([id, p]) => ({
+type JsonObject = Record<string, JsonValue>;
+type RequestDto = components["schemas"]["RequestEntityDto"];
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function objectValue(value: unknown): JsonObject {
+  return isJsonObject(value) ? value : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  )
+    return true;
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return typeof value === "object" && Object.values(value).every(isJsonValue);
+}
+
+function parseJson(text: string): JsonValue {
+  const value: unknown = JSON.parse(text);
+  if (!isJsonValue(value)) throw new Error("Enter a valid JSON value.");
+  return value;
+}
+
+function jsonOptions(value: unknown): AnswerQuestion["options"] {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((entry) => {
+    if (typeof entry === "string") return [{ label: entry }];
+    if (!isJsonObject(entry)) return [];
+    const label = stringValue(entry.label);
+    if (!label) return [];
+    const description = stringValue(entry.description);
+    return [{ label, ...(description ? { description } : {}) }];
+  });
+}
+
+function requestQuestions(request: RequestDto): AnswerQuestion[] {
+  const params = objectValue(request.params);
+  if (Array.isArray(params.questions)) {
+    return params.questions.flatMap((entry, index) => {
+      if (!isJsonObject(entry)) return [];
+      const id = stringValue(entry.id) || `question-${index + 1}`;
+      return [
+        {
+          id,
+          question:
+            stringValue(entry.question) || stringValue(entry.title) || id,
+          options: jsonOptions(entry.options),
+          multiSelect: entry.multiSelect === true,
+          isSecret: entry.isSecret === true,
+        },
+      ];
+    });
+  }
+
+  const schema = objectValue(params.requestedSchema);
+  const properties = objectValue(schema.properties);
+  return Object.entries(properties).flatMap(([id, value]) => {
+    if (!isJsonObject(value)) return [];
+    const items = objectValue(value.items);
+    const optionValues = stringValues(
+      value.type === "array" ? items.enum : value.enum,
+    );
+    return [
+      {
         id,
-        question: (p as Json).title || id,
-        options: ((p as Json).type === "array"
-          ? (p as Json).items?.enum
-          : (p as Json).enum
-        )?.map((label: string) => ({ label })),
-        multiSelect:
-          (p as Json).type === "array" &&
-          Array.isArray((p as Json).items?.enum),
+        question: stringValue(value.title) || id,
+        options: optionValues.map((label) => ({ label })),
+        multiSelect: value.type === "array" && optionValues.length > 0,
         isSecret:
-          (p as Json).isSecret ||
-          (p as Json).writeOnly ||
-          (p as Json).format === "password",
-      }),
-    )) as AnswerQuestion[];
+          value.isSecret === true ||
+          value.writeOnly === true ||
+          value.format === "password",
+      },
+    ];
+  });
 }
 
 // Secret answers remain in memory. Other answers survive a reload.
@@ -65,7 +138,7 @@ function commandText(command: unknown): string {
   return JSON.stringify(command, null, 2);
 }
 
-const answerKey = (scope: string, request: Json) =>
+const answerKey = (scope: string, request: RequestDto) =>
   JSON.stringify([
     scope,
     request.agent,
@@ -91,7 +164,7 @@ function AnswerForm({
   draftKey,
 }: {
   draftKey: string;
-  request: Json;
+  request: RequestDto;
   sending: boolean;
   post: (body: Json) => Promise<void>;
   close: () => void;
@@ -103,9 +176,14 @@ function AnswerForm({
       saved(`studio-answer-draft:${draftKey}`, {}),
   );
   const questions = requestQuestions(request);
-  const elicitation = request.method === "mcpServer/elicitation/request";
-  const required = new Set<string>(
-    elicitation ? request.params?.requestedSchema?.required || [] : [],
+  const method = request.method || "";
+  const params = objectValue(request.params);
+  const schema = objectValue(params.requestedSchema);
+  const properties = objectValue(schema.properties);
+  const elicitation = method === "mcpServer/elicitation/request";
+  const required = new Set(stringValues(elicitation ? schema.required : []));
+  const missingRequired = [...required].some(
+    (id) => !questions.some((question) => question.id === id),
   );
   const setValue = (id: string, value: AnswerValue) => {
     const next = { ...values, [id]: value };
@@ -121,6 +199,7 @@ function AnswerForm({
     if (error) notify(error);
   };
   const ready =
+    !missingRequired &&
     (elicitation || questions.length > 0) &&
     questions
       .filter((q) => !elicitation || required.has(q.id))
@@ -133,9 +212,7 @@ function AnswerForm({
     try {
       let body: Json;
       if (
-        ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(
-          request.method,
-        )
+        ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(method)
       ) {
         body = {
           answers: Object.fromEntries(
@@ -147,14 +224,15 @@ function AnswerForm({
         };
       } else {
         const content: Json = {};
-        for (const [key, p] of Object.entries(
-          request.params.requestedSchema.properties,
-        )) {
-          const type = (p as Json).type,
-            v = answerList(
-              questions.find((q) => q.id === key)!,
-              values[key],
-            );
+        for (const [key, value] of Object.entries(properties)) {
+          const schemaProperty = objectValue(value);
+          const type = stringValue(schemaProperty.type) || "string";
+          const propertyItems = objectValue(schemaProperty.items);
+          const enumValues = stringValues(propertyItems.enum);
+          const question = questions.find((entry) => entry.id === key);
+          if (!question)
+            throw new Error("The requested answer fields changed.");
+          const v = answerList(question, values[key]);
           if (!required.has(key) && !v.some((answer) => answer.trim()))
             continue;
           content[key] =
@@ -162,10 +240,10 @@ function AnswerForm({
               ? v[0] === "true"
               : ["integer", "number"].includes(type)
                 ? Number(v[0])
-                : type === "array" && Array.isArray((p as Json).items?.enum)
+                : type === "array" && enumValues.length > 0
                   ? v
                   : ["object", "array"].includes(type)
-                    ? JSON.parse(v[0])
+                    ? parseJson(v[0])
                     : v[0];
         }
         body = { decision: "accept", content };
@@ -225,10 +303,13 @@ function RequestCard({
   refresh,
   notify,
   scope,
-}: Omit<Props, "requests" | "allRequests"> & { request: Json }) {
+}: Omit<Props, "requests" | "allRequests"> & { request: RequestDto }) {
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
-  const requestThread = r.params?.threadId;
+  const params = objectValue(r.params);
+  const preview = objectValue(params.preview);
+  const method = r.method || "";
+  const requestThread = stringValue(params.threadId);
   const blocked =
     !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [open, setOpen] = useState(false),
@@ -292,24 +373,27 @@ function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
-  const p = r.params || {},
-    asynchronous = r.method === "agent/asyncQuestion",
-    stdinApproval =
-      r.method === "item/commandExecution/requestApproval" &&
-      p.kind === "writeStdin",
-    question =
-      ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(
-        r.method,
-      ) ||
-      (r.method === "mcpServer/elicitation/request" && p.mode === "form"),
-    approval =
-      [
-        "monitor/approve",
-        "item/commandExecution/requestApproval",
-        "item/fileChange/requestApproval",
-        "item/permissions/requestApproval",
-      ].includes(r.method) ||
-      (r.method === "mcpServer/elicitation/request" && p.mode === "url");
+  const asynchronous = method === "agent/asyncQuestion";
+  const stdinApproval =
+    method === "item/commandExecution/requestApproval" &&
+    params.kind === "writeStdin";
+  const question =
+    ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(method) ||
+    (method === "mcpServer/elicitation/request" && params.mode === "form");
+  const approval =
+    [
+      "monitor/approve",
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval",
+    ].includes(method) ||
+    (method === "mcpServer/elicitation/request" && params.mode === "url");
+  const reason = stringValue(params.reason);
+  const message = stringValue(params.message);
+  const command = params.command ?? preview.command;
+  const cwd = stringValue(params.cwd);
+  const permissions = params.permissions ?? preview.changes;
+  const url = stringValue(params.url);
   const questions = question ? requestQuestions(r) : [];
   const Icon = approval ? ShieldQuestion : MessageCircleQuestion;
   return (
@@ -342,41 +426,37 @@ function RequestCard({
           </div>
           {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
           {(!open || blocked || !question) &&
-            (questions[0]?.question || p.reason || p.message || !approval) && (
+            (questions[0]?.question || reason || message || !approval) && (
               <p className="request-prompt">
                 {questions[0]?.question || (
                   <ErrorDescription
-                    value={p.reason || p.message || "The agent needs a reply."}
+                    value={reason || message || "The agent needs a reply."}
                     role="status"
                   />
                 )}
               </p>
             )}
           {questions[0]?.question &&
-            (p.reason || p.message) &&
-            (p.reason || p.message) !== questions[0].question && (
+            (reason || message) &&
+            (reason || message) !== questions[0].question && (
               <p>
-                <ErrorDescription value={p.reason || p.message} role="status" />
+                <ErrorDescription value={reason || message} role="status" />
               </p>
             )}
           {!open && questions.length > 1 && <p>{questions.length} questions</p>}
-          {!stdinApproval && (p.command || r.preview?.command) && (
-            <pre className="request-command">
-              {commandText(p.command || r.preview.command)}
-            </pre>
+          {!stdinApproval && command !== undefined && (
+            <pre className="request-command">{commandText(command)}</pre>
           )}
-          {p.cwd && (
-            <p className="request-cwd" title={p.cwd}>
-              in {p.cwd}
+          {cwd && (
+            <p className="request-cwd" title={cwd}>
+              in {cwd}
             </p>
           )}
-          {(p.permissions || r.preview?.changes) && (
-            <pre>
-              {JSON.stringify(p.permissions || r.preview.changes, null, 2)}
-            </pre>
+          {permissions !== undefined && (
+            <pre>{JSON.stringify(permissions, null, 2)}</pre>
           )}
-          {p.url && /^https?:\/\//.test(p.url) && (
-            <a href={p.url} target="_blank" rel="noreferrer">
+          {url && /^https?:\/\//.test(url) && (
+            <a href={url} target="_blank" rel="noreferrer">
               Open request
             </a>
           )}
@@ -436,7 +516,7 @@ function RequestCard({
               </Button>
             </>
           ) : (
-            <p>Unsupported client request: {r.method}</p>
+            <p>Unsupported client request: {method}</p>
           )}
         </div>
       </div>
