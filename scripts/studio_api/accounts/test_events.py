@@ -9,7 +9,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from unittest.mock import patch
 
 from studio_api.accounts.events import (
@@ -28,6 +28,37 @@ from studio_api.sync.resources.hub import (
     register_resource_hub,
     unregister_resource_hub,
 )
+
+
+class _TimedLock(Protocol):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+def _available_to_other_thread(lock: _TimedLock) -> bool:
+    acquired_by_other: list[bool] = []
+    finished = threading.Event()
+
+    def probe() -> None:
+        acquired = False
+        try:
+            acquired = lock.acquire(timeout=0.1)
+            acquired_by_other.append(acquired)
+        finally:
+            try:
+                if acquired:
+                    lock.release()
+            finally:
+                finished.set()
+
+    probe_thread = threading.Thread(target=probe, daemon=True)
+    probe_thread.start()
+    if not finished.wait(timeout=0.5):
+        probe_thread.join(timeout=0.1)
+        return False
+    probe_thread.join(timeout=0.1)
+    return not probe_thread.is_alive() and acquired_by_other == [True]
 
 
 class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
@@ -101,6 +132,63 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 subscription.close()
                 context.close()
+
+    async def test_runtime_usage_refresh_publishes_only_changes_after_cache_lock(self) -> None:
+        from codex_runtime import Runtime
+        from studio_api.sync.resources.hub import publish_resources as publish_to_hub
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            hub = ResourceHub("limits-workspace")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(LimitsResource(kind="limits", accountKey="account-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            cache_lock = threading.RLock()
+            changed_values = iter((True, False))
+            publications_under_lock: list[bool] = []
+
+            def store_rate_limits(_account_key: str, _value: dict[str, object]) -> bool:
+                return next(changed_values)
+
+            runtime = SimpleNamespace(
+                root=state_dir,
+                connection_current=lambda _account_key, _connection_id: True,
+                rate_limits_for=lambda _account_key: {"data": {}, "at": 0},
+                store_rate_limits=store_rate_limits,
+                usage_resume_limits_changed=lambda _account_key, _value: None,
+                _rate_cache_lock=cache_lock,
+            )
+            bucket = {"limitId": "codex", "primary": {"usedPercent": 27}}
+            message = {
+                "method": "account/rateLimits/updated",
+                "params": {"rateLimits": bucket, "rateLimitsByLimitId": {"codex": bucket}},
+            }
+
+            def publish_checked(root: str | Path, *resources: ResourceRef) -> None:
+                publications_under_lock.append(_available_to_other_thread(cast(_TimedLock, cache_lock)))
+                publish_to_hub(root, *resources)
+
+            try:
+                with patch(
+                    "studio_api.sync.resources.hub.publish_resources", side_effect=publish_checked
+                ):
+                    Runtime.notification(runtime, message, "account-a", "connection-a")
+                    event = await subscription.next_event(timeout=1)
+                    self.assertIsNotNone(event)
+                    assert event is not None
+                    self.assertEqual(
+                        event.resources,
+                        [ResourceRef(LimitsResource(kind="limits", accountKey="account-a"))],
+                    )
+                    Runtime.notification(runtime, message, "account-a", "connection-a")
+
+                self.assertIsNone(await subscription.next_event(timeout=0.01))
+                self.assertEqual(publications_under_lock, [True])
+            finally:
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
 
 
 class CatalogPublicationTests(unittest.IsolatedAsyncioTestCase):
@@ -343,9 +431,7 @@ class ClaudeLoginEventTests(unittest.IsolatedAsyncioTestCase):
             )
 
             def published(published_state_dir: Path) -> None:
-                lock_available = manager.lock.acquire(blocking=False)
-                if lock_available:
-                    manager.lock.release()
+                lock_available = _available_to_other_thread(cast(_TimedLock, manager.lock))
                 observed.append(
                     (lock_available, published_state_dir if process.poll() is None else None)
                 )

@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 import shutil
 import tempfile
+import threading
 from typing import Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
@@ -386,6 +387,37 @@ class _AccountStore(Protocol):
     def discover(self) -> dict[str, JsonValue]: ...
 
 
+class _TimedLock(Protocol):
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+def _available_to_other_thread(lock: _TimedLock) -> bool:
+    acquired_by_other: list[bool] = []
+    finished = threading.Event()
+
+    def probe() -> None:
+        acquired = False
+        try:
+            acquired = lock.acquire(timeout=0.1)
+            acquired_by_other.append(acquired)
+        finally:
+            try:
+                if acquired:
+                    lock.release()
+            finally:
+                finished.set()
+
+    probe_thread = threading.Thread(target=probe, daemon=True)
+    probe_thread.start()
+    if not finished.wait(timeout=0.5):
+        probe_thread.join(timeout=0.1)
+        return False
+    probe_thread.join(timeout=0.1)
+    return not probe_thread.is_alive() and acquired_by_other == [True]
+
+
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
@@ -494,9 +526,7 @@ class AccountsRouterTests(unittest.TestCase):
         )
 
         def published(state_dir: Path) -> None:
-            lock_was_available.append(account_lock.acquire(blocking=False))
-            if lock_was_available[-1]:
-                account_lock.release()
+            lock_was_available.append(_available_to_other_thread(cast(_TimedLock, account_lock)))
             self.assertEqual(state_dir, cast(Path, getattr(self.store, "root")).parent)
             publish_account_change_to_hub(state_dir)
 
