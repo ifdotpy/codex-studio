@@ -13,7 +13,7 @@ def _title_model(catalog, agent):
         raise ValueError("No title model is available for this account")
     provider = agent.get("provider")
     if provider == "claude":
-        preferred = next((row for row in available if row["model"] == "haiku"), None)
+        preferred = next((row for row in available if "haiku" in row["model"].lower()), None)
     else:
         preferred = next((row for row in available if "mini" in row["model"].lower()), None)
         if preferred is None:
