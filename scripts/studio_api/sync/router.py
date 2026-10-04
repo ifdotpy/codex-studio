@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, NotRequired, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.sse import format_sse_event
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from pydantic import TypeAdapter, ValidationError
@@ -115,8 +116,11 @@ def _resource_event(
     event: str,
     payload: ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent,
 ) -> bytes:
-    encoded = json.dumps(payload.model_dump(mode="json", by_alias=True), ensure_ascii=False, separators=(",", ":"))
-    return f"id: {payload.revision}\nevent: {event}\ndata: {encoded}\n\n".encode()
+    return format_sse_event(
+        event=event,
+        id=str(payload.revision),
+        data_str=payload.model_dump_json(by_alias=True),
+    )
 
 
 def _stream_response(content: AsyncIterator[bytes], protocol_v1: bool = False) -> StreamingResponse:
