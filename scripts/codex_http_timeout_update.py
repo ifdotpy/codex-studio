@@ -46,12 +46,53 @@ def target(module, path):
     return owner, current.__func__ if isinstance(current, staticmethod) else current
 
 
+def legacy_handlers(runtime: object) -> list[type[object]]:
+    handlers = []
+    for candidate in gc.get_objects():
+        if (not isinstance(candidate, type) or candidate.__module__ != "codex_canvas"
+                or candidate.__qualname__ != "make_server.<locals>.Handler"):
+            continue
+        current = vars(candidate).get("do_GET")
+        if current is None or "canvas" not in current.__code__.co_freevars:
+            continue
+        index = current.__code__.co_freevars.index("canvas")
+        if current.__closure__[index].cell_contents.runtime is runtime:
+            handlers.append(candidate)
+    return handlers
+
+
 def apply(runtime):
     scripts = Path(__file__).resolve().parent
     module = sys.modules.get("codex_runtime")
     if (module is None or not isinstance(runtime, module.Runtime)
             or Path(module.__file__).resolve().parent != scripts):
         raise RuntimeError("The running backend source identity differs")
+    handlers = legacy_handlers(runtime)
+    if not handlers:
+        raise RuntimeError(
+            "The running HTTP server has no compatible legacy handler; no source patch was applied"
+        )
+    # Reject unreviewed live code before considering on-disk sources. This is
+    # only a read-only preflight; exact source hashes below still gate every
+    # replacement and remain mandatory for an update.
+    for name, spec in SOURCES.items():
+        loaded = sys.modules.get(name) or importlib.import_module(name)
+        if Path(loaded.__file__).resolve() != (scripts / spec["source"]).resolve():
+            raise RuntimeError("The running module source identity differs: " + name)
+        for item in spec["functions"]:
+            _owner, current = target(loaded, item["path"])
+            if current is None or signature(current) not in {item["before"], item["after"]}:
+                raise RuntimeError(
+                    "The running function differs: " + ".".join(item["path"])
+                )
+    canvas = sys.modules.get("codex_canvas")
+    path = scripts / "codex_canvas.py"
+    if canvas is None or Path(canvas.__file__).resolve() != path.resolve():
+        raise RuntimeError("The running HTTP source identity differs")
+    for owner in handlers:
+        if signature(owner.do_GET) not in {HANDLER["before"], HANDLER["after"]}:
+            raise RuntimeError("The running HTTP function differs: do_GET")
+
     replacements = []
     for name, spec in SOURCES.items():
         path = scripts / spec["source"]
@@ -67,25 +108,10 @@ def apply(runtime):
                 raise RuntimeError("The reviewed function differs: " + ".".join(item["path"]))
             owner, current = target(loaded, item["path"])
             replacements.append((owner, item["path"][-1], current, desired, item))
-    canvas = sys.modules.get("codex_canvas")
-    path = scripts / "codex_canvas.py"
     raw = path.read_bytes()
     if (canvas is None or Path(canvas.__file__).resolve() != path.resolve()
             or hashlib.sha256(raw).hexdigest() != HANDLER["sha256"]):
         raise RuntimeError("The reviewed HTTP source differs")
-    handlers = []
-    for candidate in gc.get_objects():
-        if (not isinstance(candidate, type) or candidate.__module__ != "codex_canvas"
-                or candidate.__qualname__ != "make_server.<locals>.Handler"):
-            continue
-        current = vars(candidate).get("do_GET")
-        if current is None or "canvas" not in current.__code__.co_freevars:
-            continue
-        index = current.__code__.co_freevars.index("canvas")
-        if current.__closure__[index].cell_contents.runtime is runtime:
-            handlers.append(candidate)
-    if not handlers:
-        raise RuntimeError("The running HTTP handler was not found")
     for owner in handlers:
         current = owner.do_GET
         desired, _ = source_function(raw, ("make_server", "Handler", "do_GET"),

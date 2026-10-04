@@ -27,6 +27,7 @@ COMPONENT_ROOTS = (
     "scripts/native_notifications/tests",
     "scripts/transcript_storage/tests",
 )
+STUDIO_API_COMPONENT_ROOT = ROOT / "scripts" / "studio_api"
 LEGACY_SERVER_JS = {
     "tests/portable-smoke.mjs": "safe",
     "tests/state-contract-smoke.mjs": "safe",
@@ -95,6 +96,8 @@ NON_TESTS = {
     "tests/skill-catalog-live-update-contract.py":
         "parameterized helper; requires --patch and --baseline",
     "tests/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
+    "tests/sync-live-patch-http-contract.py":
+        "fixture harness requiring an injected legacy HTTP server and runtime",
     "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
     "scripts/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
@@ -193,6 +196,13 @@ def inventory():
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"
+    # FastAPI domain tests live beside their router/model component. Discover
+    # recursively so nested domains and the application verification package
+    # cannot silently fall out of the default component suite.
+    if STUDIO_API_COMPONENT_ROOT.is_dir():
+        for path in STUDIO_API_COMPONENT_ROOT.rglob("test_*.py"):
+            if path.is_file() and not path.is_symlink():
+                entries[path.relative_to(ROOT).as_posix()] = "component"
     return sorted(entries.items())
 
 

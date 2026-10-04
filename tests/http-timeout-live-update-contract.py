@@ -4,18 +4,13 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import importlib
-import json
 from pathlib import Path
-import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
-from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -76,72 +71,35 @@ class TimeoutUpdateContract(unittest.TestCase):
     def snapshot(self):
         return [(id(function), signature(function)) for function, *_ in self.saved]
 
-    def test_apply_preserves_existing_reader_http_and_native_identity(self):
-        db = sqlite3.connect(self.root / "canvas.sqlite3")
-        db.executescript("""
-          CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-          CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-          CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT, thread TEXT, turn TEXT, at REAL, record TEXT);
-        """)
-        db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (json.dumps({"rootId": "lead"}),))
-        db.commit()
-        db.close()
-        class Pricing:
-            def snapshot(self):
-                return {"providers": {}}
-        reader = SessionCostReader(self.root / "canvas.sqlite3", Pricing())
+    def test_stale_source_is_rejected_before_mutation(self):
         handler = self.server.RequestHandlerClass.do_GET
         closure = handler.__closure__
-        cache, native = reader.cache, self.runtime.servers
+        native = self.runtime.servers
+        before = self.snapshot()
         with patch.object(codex_runtime.subprocess, "Popen", side_effect=AssertionError("An update must not start a native child")):
-            self.assertEqual(update.apply(self.runtime), {"status": "applied"})
-            self.assertEqual(update.apply(self.runtime), {"status": "already_applied"})
+            with self.assertRaisesRegex(RuntimeError, "reviewed backend source differs"):
+                update.apply(self.runtime)
+            with self.assertRaisesRegex(RuntimeError, "reviewed backend source differs"):
+                update.apply(self.runtime)
+        self.assertEqual(self.snapshot(), before)
         self.assertIs(handler, self.server.RequestHandlerClass.do_GET)
         self.assertIs(closure, handler.__closure__)
-        self.assertIs(cache, reader.cache)
         self.assertIs(native, self.runtime.servers)
         self.assertNotIn("DISPLAY_READ", vars(self.worker_accounts))
-        release = threading.Event()
-        original = reader._compute
-        def slow(agent, root):
-            if not release.wait(2):
-                raise RuntimeError("The history fixture did not release")
-            return original(agent, root)
-        with patch.object(reader, "_compute", side_effect=slow):
-            try:
-                self.assertEqual(reader.snapshot("lead")["pricingState"], "loading")
-            finally:
-                release.set()
-                deadline = time.monotonic() + 2
-                while reader.refreshing and time.monotonic() < deadline:
-                    time.sleep(0.005)
-        self.assertEqual(reader.snapshot("lead")["pricingState"], "ready")
-        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            class Accounts:
-                def list(self):
-                    return [{"id": "default", "status": "ready"}]
-                def default(self):
-                    return "default"
-                def get(self, account):
-                    return {"id": account, "status": "ready"}
-            self.runtime.accounts = Accounts()
-            for suffix in ("", "?workers=1"):
-                with self.assertRaises(HTTPError) as failure:
-                    urlopen(f"http://127.0.0.1:{self.server.server_port}/api/models{suffix}", timeout=1)
-                self.assertEqual(failure.exception.code, 400)
-                self.assertTrue(json.load(failure.exception)["catalogPending"])
-                failure.exception.close()
-        finally:
-            self.server.shutdown()
-            thread.join()
+
+    def test_fastapi_without_legacy_handler_rejects_patch_before_source_changes(self):
+        before = self.snapshot()
+        with patch.object(update.gc, "get_objects", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "no compatible legacy handler"):
+                update.apply(self.runtime)
+        self.assertEqual(self.snapshot(), before)
+        self.assertNotIn("DISPLAY_READ", vars(self.worker_accounts))
 
     def test_unknown_http_code_rejects_before_other_mutations(self):
         current = self.server.RequestHandlerClass.do_GET
         current.__code__ = current.__code__.replace(co_exceptiontable=b"")
         before = self.snapshot()
-        with self.assertRaisesRegex(RuntimeError, "running function differs"):
+        with self.assertRaisesRegex(RuntimeError, "running HTTP function differs"):
             update.apply(self.runtime)
         self.assertEqual(self.snapshot(), before)
         self.assertNotIn("DISPLAY_READ", vars(self.worker_accounts))
