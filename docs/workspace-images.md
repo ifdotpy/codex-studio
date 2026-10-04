@@ -49,8 +49,9 @@ point into the user's Git metadata. Common refreshes each private Git config and
 `sync_delta` returns `token`, repo-root-relative `changedPaths`, and `historyLost`. It may also
 return `scanPaths` for folders that need a rescan, and `refreshBase` when history loss or a root
 rescan requires a new base. The common module records nested repository paths and dirty paths during
-the base build. A workspace start checks only those paths and delta paths. Collection uses the
-repository list in `agent.json`; it does not walk the tree.
+the base build. A workspace start copies each source index, then updates only changed paths. Delta
+sync includes Git metadata changes but excludes object stores. Collection uses the repository list
+in `agent.json`; it does not walk the tree.
 
 ## Store
 

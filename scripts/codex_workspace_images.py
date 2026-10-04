@@ -100,7 +100,7 @@ def _repo_key(root: Path) -> str:
     return hashlib.sha256(os.fsencode(root.resolve())).hexdigest()[:32]
 
 
-def _workspace_excludes(repo_root: Path, repositories=()) -> tuple[str, ...]:
+def _workspace_excludes(repo_root: Path, repositories=(), *, exclude_git_metadata=False) -> tuple[str, ...]:
     root = Path(repo_root).resolve()
     values = {'.worktrees'}
     try:
@@ -111,7 +111,8 @@ def _workspace_excludes(repo_root: Path, repositories=()) -> tuple[str, ...]:
         values.add(store_relative.as_posix())
     for _relative_repo, repo in repositories:
         marker_path = Path(_relative_repo) / '.git'
-        values.add(marker_path.as_posix())
+        if exclude_git_metadata:
+            values.add(marker_path.as_posix())
         try:
             object_path = _object_dir(repo).relative_to(root)
         except (RuntimeError, ValueError):
@@ -327,6 +328,7 @@ def _build_base(root: Path, key: str, refresh_from=None):
                 source_repos = _git_repositories(root)
                 repository_paths = [str(rel) for rel, _repo in source_repos]
                 excludes = _workspace_excludes(root, source_repos)
+                base_excludes = _workspace_excludes(root, source_repos, exclude_git_metadata=True)
                 ref = 'refs/studio/base/' + base_id
                 # Pin the current heads before a long tree copy can overlap git gc.
                 # Materialize nested repository metadata before root status visits gitlinks.
@@ -352,7 +354,7 @@ def _build_base(root: Path, key: str, refresh_from=None):
                     token = delta.get('token', token) if isinstance(delta, dict) else delta
                     staging['token'] = token
                 else:
-                    backend.copy_base_tree(root, base_repo, excludes=excludes)
+                    backend.copy_base_tree(root, base_repo, excludes=base_excludes)
                 dirty_paths = {}
                 for rel, user_repo in sorted(source_repos, key=lambda pair: len(pair[0].parts), reverse=True):
                     base_repo_path = base_repo / rel
@@ -372,7 +374,7 @@ def _build_base(root: Path, key: str, refresh_from=None):
                     'head': _git(root, 'rev-parse', 'HEAD').strip() if _is_git_repo(root) else None,
                     'token': sealed.get('token', token), 'protectedRefs': protected,
                     'repositories': repository_paths, 'dirtyPaths': dirty_paths,
-                    'excludes': list(excludes),
+                    'excludes': list(excludes), 'baseExcludes': list(base_excludes),
                     'baseId': base_id, 'createdAt': time.time(),
                 }
                 _write_json(_base_state_path(key), result)
@@ -571,16 +573,67 @@ def _status_paths(output):
     return sorted(paths)
 
 
-def _stage_committed_changes(target: Path, old_head: str, new_head: str, *, view=False):
-    if old_head == new_head:
+def _copy_index(source: Path, target: Path, *, view=False):
+    source_index = _git(source, 'rev-parse', '--path-format=absolute', '--git-path', 'index').strip()
+    target_index = target / '.git' / 'index'
+    code = 'import shutil,sys; shutil.copy2(sys.argv[1],sys.argv[2])'
+    _command([sys.executable, '-c', code, source_index, str(target_index)],
+             view=view, check=True, timeout=60)
+
+
+def _tree_paths(repo: Path, commit: str, pathspecs, *, view=False):
+    if not pathspecs:
+        return set()
+    output = _git(repo, 'ls-tree', '-r', '-z', commit, '--', *pathspecs, view=view)
+    result = set()
+    for record in output.split('\0'):
+        if '\t' in record:
+            result.add(record.split('\t', 1)[1])
+    return result
+
+
+def _existing_paths(repo: Path, paths, *, view=False):
+    values = [Path(value).as_posix() for value in paths]
+    code = ('import json,pathlib,sys; root=pathlib.Path(sys.argv[1]); '
+            'paths=json.loads(sys.argv[2]); sys.stdout.write(chr(0).join(p for p in paths '
+            'if (root/p).exists() or (root/p).is_symlink()))')
+    output = _command([sys.executable, '-c', code, str(repo), json.dumps(values)],
+                      view=view, check=True, timeout=30).stdout.decode()
+    return [Path(value) for value in output.split('\0') if value]
+
+
+def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
+                            extra_paths, *, view=False):
+    changed = _git(target, 'diff', '--no-renames', '--name-only', '-z',
+                   source_head, target_head, view=view).split('\0')
+    paths = {Path(value) for value in changed if value}
+    paths.update(Path(value) for value in extra_paths)
+    paths = {path for path in paths if path != Path('.') and not path.is_absolute()
+             and '..' not in path.parts and '.git' not in path.parts
+             and '.worktrees' not in path.parts}
+    if not paths:
         return
-    output = _git(target, 'diff', '--no-renames', '--name-only', '-z',
-                  old_head, new_head, view=view)
-    paths = [value for value in output.split('\0') if value]
-    # Reset only committed paths. Keep source working-tree edits for the snapshot.
-    for offset in range(0, len(paths), 256):
-        pathspecs = [f':(literal){value}' for value in paths[offset:offset + 256]]
-        _git(target, 'reset', new_head, '--', *pathspecs, view=view)
+    ordered = sorted(paths, key=lambda path: path.as_posix())
+    pathspecs = [f':(literal){path.as_posix()}' for path in ordered]
+    target_paths = _tree_paths(target, target_head, pathspecs, view=view)
+    source_paths = _tree_paths(target, source_head, pathspecs, view=view)
+
+    def matches(candidate, entries):
+        value = candidate.as_posix().rstrip('/')
+        return any(entry == value or entry.startswith(value + '/') for entry in entries)
+
+    checkout = [spec for path, spec in zip(ordered, pathspecs) if matches(path, target_paths)]
+    tracked_remove = [spec for path, spec in zip(ordered, pathspecs)
+                      if not matches(path, target_paths) and matches(path, source_paths)]
+    staged_remove = [spec for path, spec in zip(ordered, pathspecs)
+                     if not matches(path, target_paths) and not matches(path, source_paths)]
+    if checkout:
+        _git(target, 'checkout', '--force', target_head, '--', *checkout, view=view)
+    if tracked_remove:
+        _git(target, 'rm', '-r', '-f', '--ignore-unmatch', '--', *tracked_remove, view=view)
+    if staged_remove:
+        _git(target, 'rm', '-r', '-f', '--cached', '--ignore-unmatch', '--',
+             *staged_remove, view=view)
 
 
 def _sync_refs(target: Path, source: Path, agent_id: str, *, view=False):
@@ -630,9 +683,6 @@ def _repo_state_list(root: Path, mount_repo: Path, known_paths, delta):
                 break
         if relative == Path('.'):
             candidates.add(Path('.'))
-    for value in delta.get('scanPaths', ()):
-        scan_root = Path(value)
-        candidates.update(_git_repository_paths_under(scan_root, root / scan_root))
     items = []
     for rel in sorted(candidates, key=lambda path: (len(path.parts), str(path))):
         if any(part in {'.worktrees', 'objects'} for part in rel.parts):
@@ -642,6 +692,7 @@ def _repo_state_list(root: Path, mount_repo: Path, known_paths, delta):
         if (source / '.git').exists():
             _prepare_repo(target, source, view=True)
         if _is_git_repo(target, view=True):
+            _copy_index(source, target, view=True)
             items.append({'path': str(rel), 'startCommit': _git(target, 'rev-parse', 'HEAD', view=True).strip(),
                           'snapshotCommit': None, 'branch': None})
     return items
@@ -776,13 +827,14 @@ def create_workspace(repo_root, agent_id, *, start_commit=None,
                 rel = Path(item['path'])
                 target = mount_repo / rel
                 source = root / rel
-                copied_head = item['startCommit']
                 restore_head = restore_heads.get(item['path']) if restore_heads is not None else None
-                start = (restore_head or
-                         (start_commit if rel == Path('.') and start_commit else
-                          _git(source, 'rev-parse', 'HEAD').strip()))
+                source_head = _git(source, 'rev-parse', 'HEAD').strip()
+                start = (restore_head or (start_commit if rel == Path('.') and start_commit else source_head))
                 item['startCommit'] = start
                 item['branch'] = 'codex-agent/' + agent_id
+                nested_repositories = [value['path'] for value in repos]
+                paths = _snapshot_paths(rel, base.get('dirtyPaths', {}).get(item['path'], []),
+                                        delta, nested_repositories)
                 verify = _command(['git', '-C', str(target), 'show-ref', '--verify', '--quiet',
                                    'refs/heads/' + item['branch']], view=True, timeout=30)
                 prior_snapshot = None
@@ -793,25 +845,19 @@ def create_workspace(repo_root, agent_id, *, start_commit=None,
                     if (not start_commit and message == 'studio snapshot' and len(parents) == 2
                             and parents[1] == start):
                         prior_snapshot = prior_tip
-                branch_tip = (prior_snapshot if prior_snapshot
-                              else start_commit if start_commit and rel == Path('.') else start)
+                branch_tip = prior_snapshot if prior_snapshot and not restore_mode else start
                 _sync_refs(target, source, agent_id, view=True)
+                _git(target, 'update-ref', 'refs/heads/' + item['branch'], branch_tip, view=True)
+                _git(target, 'symbolic-ref', 'HEAD', 'refs/heads/' + item['branch'], view=True)
+                if start != source_head:
+                    _checkout_changed_paths(target, source_head, start, paths, view=True)
                 if restore_mode:
-                    _git(target, 'checkout', '-f', '-B', item['branch'], start, view=True)
                     item['snapshotCommit'] = None
                     continue
-                if start_commit and rel == Path('.'):
-                    _git(target, 'checkout', '-f', '-B', item['branch'], start_commit, view=True)
-                else:
-                    if not prior_snapshot:
-                        _stage_committed_changes(target, copied_head, start, view=True)
-                    _git(target, 'update-ref', 'refs/heads/' + item['branch'], branch_tip, view=True)
-                    _git(target, 'symbolic-ref', 'HEAD', 'refs/heads/' + item['branch'], view=True)
+                if start_commit and rel == Path('.') and start != source_head:
+                    paths = _existing_paths(target, paths, view=True)
                 if prior_snapshot:
                     item['snapshotCommit'] = prior_snapshot
-                nested_repositories = [value['path'] for value in repos]
-                paths = _snapshot_paths(rel, base.get('dirtyPaths', {}).get(item['path'], []),
-                                        delta, nested_repositories)
                 if paths:
                     pathspecs = [f':(literal){path.as_posix()}' for path in paths]
                     _git(target, 'add', '-A', '--', *pathspecs, view=True)
