@@ -4,11 +4,13 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import importlib
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -86,6 +88,114 @@ class TimeoutUpdateContract(unittest.TestCase):
         self.assertIs(closure, handler.__closure__)
         self.assertIs(native, self.runtime.servers)
         self.assertNotIn("DISPLAY_READ", vars(self.worker_accounts))
+
+    def test_reviewed_fixture_reaches_http_validation_after_other_sources(self):
+        with tempfile.TemporaryDirectory(prefix="studio-reviewed-timeout-fixture-") as directory:
+            scripts = Path(directory)
+            runtime_path = scripts / "codex_runtime.py"
+            canvas_path = scripts / "codex_canvas.py"
+            probe_path = scripts / "codex_probe.py"
+            patch_path = scripts / "codex_http_timeout_update.py"
+            runtime_path.write_text("# fixture runtime\n", encoding="utf-8")
+            patch_path.write_text("# patch module path\n", encoding="utf-8")
+
+            canvas_source = """\
+def make_server(canvas):
+    class Handler:
+        def do_GET(self):
+            return canvas.value
+    return Handler
+"""
+            old_canvas_source = """\
+def make_server(canvas):
+    class Handler:
+        def do_GET(self):
+            return canvas.previous
+    return Handler
+"""
+            probe_source = """\
+class Probe:
+    def read(self):
+        return "reviewed"
+"""
+            old_probe_source = """\
+class Probe:
+    def read(self):
+        return "old"
+"""
+            canvas_path.write_text(canvas_source, encoding="utf-8")
+            probe_path.write_text(probe_source, encoding="utf-8")
+
+            runtime_module = ModuleType("codex_runtime")
+            runtime_module.__file__ = str(runtime_path)
+            runtime_module.Runtime = type("Runtime", (), {})
+            runtime = runtime_module.Runtime()
+            runtime.lock = threading.RLock()
+            runtime.changed = threading.Event()
+            runtime.root = scripts
+            runtime.closed = False
+
+            canvas_module = ModuleType("codex_canvas")
+            canvas_module.__file__ = str(canvas_path)
+            exec(compile(canvas_source, str(canvas_path), "exec"), vars(canvas_module))
+            canvas = SimpleNamespace(runtime=runtime, previous="old", value="reviewed")
+            handler = canvas_module.make_server(canvas)
+            current_http = handler.do_GET
+            old_http, _ = source_function(
+                old_canvas_source.encode(), ("make_server", "Handler", "do_GET"),
+                vars(canvas_module), closure=current_http.__closure__,
+            )
+            current_http.__code__ = old_http.__code__
+
+            probe_module = ModuleType("codex_probe")
+            probe_module.__file__ = str(probe_path)
+            exec(compile(probe_source, str(probe_path), "exec"), vars(probe_module))
+            old_probe, _ = source_function(
+                old_probe_source.encode(), ("Probe", "read"), vars(probe_module),
+            )
+            current_probe = probe_module.Probe.read
+            current_probe.__code__ = old_probe.__code__
+            desired_probe, _ = source_function(
+                probe_path.read_bytes(), ("Probe", "read"), vars(probe_module),
+            )
+            desired_http, _ = source_function(
+                canvas_path.read_bytes(), ("make_server", "Handler", "do_GET"),
+                vars(canvas_module), closure=current_http.__closure__,
+            )
+
+            sources = {
+                "codex_probe": {
+                    "source": probe_path.name,
+                    "sha256": hashlib.sha256(probe_path.read_bytes()).hexdigest(),
+                    "functions": [{
+                        "path": ("Probe", "read"),
+                        "before": signature(old_probe),
+                        "after": signature(desired_probe),
+                        "static": False,
+                    }],
+                },
+            }
+            handler_spec = {
+                "sha256": hashlib.sha256(canvas_path.read_bytes()).hexdigest(),
+                "before": signature(old_http),
+                "after": signature(desired_http),
+            }
+            with (
+                patch.dict(sys.modules, {
+                    "codex_runtime": runtime_module,
+                    "codex_canvas": canvas_module,
+                    "codex_probe": probe_module,
+                }),
+                patch.object(update, "__file__", str(patch_path)),
+                patch.object(update, "SOURCES", sources),
+                patch.object(update, "HANDLER", handler_spec),
+            ):
+                result = update.apply(runtime)
+
+            self.assertEqual(result, {"status": "applied"})
+            self.assertEqual(probe_module.Probe().read(), "reviewed")
+            self.assertEqual(handler().do_GET(), "reviewed")
+            self.assertTrue(runtime.changed.is_set())
 
     def test_fastapi_without_legacy_handler_rejects_patch_before_source_changes(self):
         before = self.snapshot()

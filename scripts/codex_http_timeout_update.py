@@ -86,8 +86,8 @@ def apply(runtime):
                     "The running function differs: " + ".".join(item["path"])
                 )
     canvas = sys.modules.get("codex_canvas")
-    path = scripts / "codex_canvas.py"
-    if canvas is None or Path(canvas.__file__).resolve() != path.resolve():
+    canvas_path = scripts / "codex_canvas.py"
+    if canvas is None or Path(canvas.__file__).resolve() != canvas_path.resolve():
         raise RuntimeError("The running HTTP source identity differs")
     for owner in handlers:
         if signature(owner.do_GET) not in {HANDLER["before"], HANDLER["after"]}:
@@ -108,14 +108,14 @@ def apply(runtime):
                 raise RuntimeError("The reviewed function differs: " + ".".join(item["path"]))
             owner, current = target(loaded, item["path"])
             replacements.append((owner, item["path"][-1], current, desired, item))
-    raw = path.read_bytes()
-    if (canvas is None or Path(canvas.__file__).resolve() != path.resolve()
-            or hashlib.sha256(raw).hexdigest() != HANDLER["sha256"]):
+    canvas_raw = canvas_path.read_bytes()
+    if (canvas is None or Path(canvas.__file__).resolve() != canvas_path.resolve()
+            or hashlib.sha256(canvas_raw).hexdigest() != HANDLER["sha256"]):
         raise RuntimeError("The reviewed HTTP source differs")
     for owner in handlers:
         current = owner.do_GET
-        desired, _ = source_function(raw, ("make_server", "Handler", "do_GET"),
-                                     vars(canvas), str(path), closure=current.__closure__)
+        desired, _ = source_function(canvas_raw, ("make_server", "Handler", "do_GET"),
+                                     vars(canvas), str(canvas_path), closure=current.__closure__)
         if (signature(desired) != HANDLER["after"]
                 or desired.__code__.co_freevars != current.__code__.co_freevars):
             raise RuntimeError("The reviewed HTTP function differs")
