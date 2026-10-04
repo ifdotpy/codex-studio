@@ -32,6 +32,11 @@ class SourceInventoryContract(unittest.TestCase):
                 "studio_api/verification/test_routes.py",
                 "studio_api/schema_tests/__init__.py",
                 "studio_api/schema_tests/test_models.py",
+                "other/__init__.py",
+                "other/verification/__init__.py",
+                "other/verification/runtime.py",
+                "other/schema_tests/__init__.py",
+                "other/schema_tests/runtime.py",
             )
             for relative in sources:
                 write_source(scripts, relative)
@@ -41,9 +46,11 @@ class SourceInventoryContract(unittest.TestCase):
         self.assertIn("codex-canvas", names)
         self.assertIn("studio_api/domain/models.py", names)
         self.assertIn("studio_api/domain/router.py", names)
+        self.assertIn("other/verification/runtime.py", names)
+        self.assertIn("other/schema_tests/runtime.py", names)
         self.assertNotIn("studio_api/domain/test_router.py", names)
-        self.assertFalse(any("/verification/" in name for name in names))
-        self.assertFalse(any("/schema_tests/" in name for name in names))
+        self.assertFalse(any(name.startswith("studio_api/verification/") for name in names))
+        self.assertFalse(any(name.startswith("studio_api/schema_tests/") for name in names))
 
 
 if __name__ == "__main__":

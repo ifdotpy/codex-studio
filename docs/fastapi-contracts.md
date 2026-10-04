@@ -136,7 +136,8 @@ waves are idle, then start through the ordinary supported startup path using
 the same state directory. No second backend may open that occupied state.
 `codex_source_inventory.source_files` includes nested implementation packages
 in source identities and live-update input hashes, while excluding
-`test_*.py`, `verification/`, and `schema_tests/` test code.
+`test_*.py` and the API-only test packages `studio_api/verification/` and
+`studio_api/schema_tests/`.
 
 The existing HTTP timeout live patch inspects `RequestHandlerClass.do_GET`.
 It now requires a matching legacy handler associated with that runtime and

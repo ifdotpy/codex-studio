@@ -3,8 +3,11 @@ from pathlib import Path, PurePosixPath
 
 
 _EXCLUDED_DIRS = {
-    "tests", "benchmarks", "verification", "schema_tests",
-    "__pycache__", "vendor", "venv",
+    "tests", "benchmarks", "__pycache__", "vendor", "venv",
+}
+_EXCLUDED_TEST_PACKAGE_PATHS = {
+    "studio_api/verification",
+    "studio_api/schema_tests",
 }
 _NODE_CRYPTO_HELPER = "codex_federation_crypto.mjs"
 
@@ -44,6 +47,8 @@ def source_files(scripts: str | Path) -> tuple[tuple[str, Path], ...]:
         children = sorted(directory.iterdir(), key=lambda item: item.name)
         for child in children:
             if child.name in _EXCLUDED_DIRS:
+                continue
+            if _safe_relative(child, root) in _EXCLUDED_TEST_PACKAGE_PATHS:
                 continue
             if child.is_symlink():
                 if child.suffix == ".py" or child.name == _NODE_CRYPTO_HELPER or child.is_dir():
