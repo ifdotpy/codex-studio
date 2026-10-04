@@ -2196,6 +2196,19 @@ export interface components {
       /** Verificationurl */
       verificationUrl?: string | null;
     };
+    /**
+     * AccountRateLimitsDto
+     * @description Account-specific read envelope; provider rate-limit data stays JSON.
+     */
+    AccountRateLimitsDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** At */
+      at: number | null;
+      data?: components["schemas"]["RateLimitsDataDto"] | null;
+      /** Error */
+      error?: string | null;
+    };
     /** AccountSelectionRequest */
     AccountSelectionRequest: {
       /** Account Key */
@@ -2268,8 +2281,16 @@ export interface components {
     AgentMode: "multi" | "single";
     /** AgentNativeStatus */
     AgentNativeStatus: {
+      /** At */
+      at?: number | null;
       /** Error */
-      error?: string | null;
+      error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Message */
+      message?: string | null;
+      /** Phase */
+      phase?: ("safety" | "retrying" | "auth") | null;
+      /** Turnid */
+      turnId?: string | null;
     };
     /**
      * AgentNativeStatusValue
@@ -2313,11 +2334,11 @@ export interface components {
       /** Answererror */
       answerError?: string | null;
       /** Answerhistory */
-      answerHistory?: components["schemas"]["JsonValue"][] | null;
+      answerHistory?: components["schemas"]["AnswerHistoryEntry"][] | null;
       /** Createdat */
       createdAt?: number | null;
       /** Decision */
-      decision?: string | null;
+      decision?: ("answer" | "accept" | "decline" | "cancel") | null;
       /** Deferred */
       deferred?: boolean | null;
       /** Deferredat */
@@ -2326,15 +2347,29 @@ export interface components {
       deferredBy?: string | null;
       /** Id */
       id: string;
-      /** Method */
-      method: string;
+      /**
+       * Method
+       * @enum {string}
+       */
+      method:
+        | "agent/asyncQuestion"
+        | "item/tool/requestUserInput"
+        | "mcpServer/elicitation/request";
       /** Questions */
-      questions?: components["schemas"]["JsonValue"][];
+      questions?: components["schemas"]["QuestionEntry"][];
       /**
        * Status
        * @enum {string}
        */
-      status: "pending" | "answered" | "answering" | "uncertain" | "expired";
+      status:
+        | "pending"
+        | "blocked"
+        | "answered"
+        | "answering"
+        | "uncertain"
+        | "expired"
+        | "declined"
+        | "failed";
     };
     /**
      * AgentResponse
@@ -2362,7 +2397,8 @@ export interface components {
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
-      contextUsage?: components["schemas"]["JsonValue"] | null;
+      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       /** Created */
       created?: number | null;
       /** Cwd */
@@ -2375,7 +2411,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
-      error?: components["schemas"]["JsonValue"] | null;
+      /** Error */
+      error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -2406,13 +2443,20 @@ export interface components {
       name?: string | null;
       /** Nativeerror */
       nativeError?: string | null;
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: number | null;
       nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingDto"]
+        | null;
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
       /** Nativestatus */
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
         | null;
-      nativeThreadBlock?: components["schemas"]["JsonValue"] | null;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
       /** Nextturnsettingssupported */
       nextTurnSettingsSupported?: boolean | null;
       /** Orchestratorid */
@@ -2433,6 +2477,8 @@ export interface components {
       pendingSettingsAccountKey?: string | null;
       /** Pinned */
       pinned?: boolean | null;
+      /** Project */
+      project?: string | null;
       /** Projectfolder */
       projectFolder?: string | null;
       /** Projectfolderrevision */
@@ -2440,6 +2486,7 @@ export interface components {
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
       /** Retryat */
@@ -2513,11 +2560,107 @@ export interface components {
       | "parked"
       | "abandoned"
       | "capacity-retry";
+    /** AnalyticsAgentRecord */
+    AnalyticsAgentRecord: {
+      /** Accounthistory */
+      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Deletedat */
+      deletedAt?: number | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Id */
+      id: string;
+      /** Model */
+      model?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Parentid */
+      parentId?: string | null;
+      /** Provider */
+      provider?: string | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+    };
+    /** AnalyticsAgentTotal */
+    AnalyticsAgentTotal: {
+      /** Accounthistory */
+      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Compactions */
+      compactions: number;
+      /** Cwd */
+      cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Deletedat */
+      deletedAt?: number | null;
+      duration: components["schemas"]["AnalyticsDuration"];
+      /** Effort */
+      effort?: string | null;
+      /** Failedtoolcalls */
+      failedToolCalls: number;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Id */
+      id: string;
+      /** Model */
+      model?: string | null;
+      /** Modeltoolcalls */
+      modelToolCalls: number;
+      /** Name */
+      name?: string | null;
+      /** Parentid */
+      parentId?: string | null;
+      protocolDuration: components["schemas"]["AnalyticsDuration"];
+      /** Protocolfailedtoolcalls */
+      protocolFailedToolCalls: number;
+      /** Protocoltoolcalls */
+      protocolToolCalls: number;
+      /** Provider */
+      provider?: string | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+      tokens: components["schemas"]["AnalyticsTokens"];
+      /** Toolcalls */
+      toolCalls: number;
+      /** Usagesamples */
+      usageSamples: number;
+    };
+    /** AnalyticsCaptureErrorRecord */
+    AnalyticsCaptureErrorRecord: {
+      /** At */
+      at: number;
+      /** Code */
+      code?: string | null;
+      /** Error */
+      error: string;
+      /** Errortype */
+      errorType?: string | null;
+      /** Operation */
+      operation: string;
+    };
     /** AnalyticsCaptureErrors */
     AnalyticsCaptureErrors: {
       /** Count */
       count: number;
-      last: components["schemas"]["JsonValue"];
+      last: components["schemas"]["AnalyticsCaptureErrorRecord"] | null;
     };
     /** AnalyticsCaptureStatus */
     AnalyticsCaptureStatus: {
@@ -2553,7 +2696,7 @@ export interface components {
        */
       history: "live_and_stored_history";
       /** Historyerrors */
-      historyErrors: components["schemas"]["JsonValue"][];
+      historyErrors: components["schemas"]["AnalyticsHistoryRecord"][];
       /** Notes */
       notes: string[];
       /**
@@ -2609,6 +2752,22 @@ export interface components {
       | "retire"
       | "complete"
       | "error";
+    /** AnalyticsFilesystemRemap */
+    AnalyticsFilesystemRemap: {
+      /** At */
+      at: number;
+      /** Current */
+      current: number[];
+      /** Offset */
+      offset: number;
+      /** Previous */
+      previous: number[];
+      /**
+       * Proof
+       * @constant
+       */
+      proof: "samePathInodeHeaderAnchor";
+    };
     /** AnalyticsFilters */
     AnalyticsFilters: {
       /** Agent */
@@ -2630,6 +2789,80 @@ export interface components {
       /** Samples */
       samples: number;
       tokens: components["schemas"]["AnalyticsTokens"];
+    };
+    /** AnalyticsHistoryContext */
+    AnalyticsHistoryContext: {
+      /** Allowedsourcethreadids */
+      allowedSourceThreadIds?: string[] | null;
+      /** Effort */
+      effort?: string | null;
+      /** Model */
+      model?: string | null;
+      noticeAssociation?:
+        | components["schemas"]["AnalyticsUsageAssociation"]
+        | null;
+      pendingUsage?: components["schemas"]["AnalyticsPendingUsage"] | null;
+      /** Requestusageavailable */
+      requestUsageAvailable?: boolean | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Window */
+      window?: number | null;
+    };
+    /** AnalyticsHistoryRecord */
+    AnalyticsHistoryRecord: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Agent */
+      agent?: string | null;
+      /** Anchor */
+      anchor?: string | null;
+      /** Consecutivefailures */
+      consecutiveFailures?: number | null;
+      context?: components["schemas"]["AnalyticsHistoryContext"] | null;
+      /** Coverage */
+      coverage?: string | null;
+      /** Deletedat */
+      deletedAt?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Errorpersisted */
+      errorPersisted?: boolean | null;
+      /** Errorpersistenceerror */
+      errorPersistenceError?: string | null;
+      /** Filebytes */
+      fileBytes?: number | null;
+      /** Filesystemidentity */
+      filesystemIdentity?: number[] | null;
+      filesystemRemap?:
+        | components["schemas"]["AnalyticsFilesystemRemap"]
+        | null;
+      /** Filesystemremapcount */
+      filesystemRemapCount?: number | null;
+      /** Id */
+      id?: string | null;
+      /** Identity */
+      identity?: number[] | null;
+      /** Importedrecords */
+      importedRecords?: number | null;
+      /** Malformedlines */
+      malformedLines?: number | null;
+      /** Offset */
+      offset?: number | null;
+      /** Path */
+      path?: string | null;
+      /** Status */
+      status?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Updated */
+      updated?: number | null;
+      /** Validated */
+      validated?: boolean | null;
+      /** Wrongthreadrecord */
+      wrongThreadRecord?: number | null;
     };
     /** AnalyticsItemBreakdown */
     AnalyticsItemBreakdown: {
@@ -2660,6 +2893,104 @@ export interface components {
       chars: number | null;
       /** Count */
       count: number;
+      /** Type */
+      type: string;
+    };
+    /** AnalyticsItemRecord */
+    AnalyticsItemRecord: {
+      /** Accounthistory */
+      accountHistory: components["schemas"]["JsonValue"][];
+      /** Accountkey */
+      accountKey: string;
+      /** Agentid */
+      agentId: string;
+      /** Agentname */
+      agentName?: string | null;
+      /** At */
+      at: number;
+      /** Callid */
+      callId?: string | null;
+      /** Category */
+      category?: string | null;
+      /** Command */
+      command?: string | null;
+      compactionMetadata?: components["schemas"]["JsonValue"] | null;
+      /** Coverage */
+      coverage?: string | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Durationms */
+      durationMs?: number | null;
+      /** Durationsource */
+      durationSource?: string | null;
+      /** Effort */
+      effort?: string | null;
+      /** Error */
+      error?: string | null;
+      /** Exitcode */
+      exitCode?: number | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Finishedat */
+      finishedAt?: number | null;
+      /** Firstrecordedat */
+      firstRecordedAt?: number | null;
+      /** Firstsourceat */
+      firstSourceAt?: number | null;
+      /** Id */
+      id: string;
+      input?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      /** Istool */
+      isTool: boolean;
+      /** Itemid */
+      itemId?: string | null;
+      /** Model */
+      model?: string | null;
+      modelInput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      modelOutput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      /** Name */
+      name: string;
+      /** Namespace */
+      namespace?: string | null;
+      output?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      /**
+       * Payloadboundary
+       * @enum {string}
+       */
+      payloadBoundary: "model" | "protocol";
+      /** Payloadtruncated */
+      payloadTruncated?: boolean | null;
+      /** Processid */
+      processId?: string | number | null;
+      /** Provider */
+      provider?: string | null;
+      /** Recordedat */
+      recordedAt: number;
+      /** Role */
+      role?: string | null;
+      /** Rootid */
+      rootId: string;
+      /** Server */
+      server?: string | null;
+      /** Snapshotitemid */
+      snapshotItemId?: string | null;
+      /** Source */
+      source: string;
+      /** Startedat */
+      startedAt?: number | null;
+      /** Status */
+      status: string;
+      stream?: components["schemas"]["AnalyticsStreamMeasure"] | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Timestampsource */
+      timestampSource: string;
+      /** Turnid */
+      turnId?: string | null;
       /** Type */
       type: string;
     };
@@ -2698,6 +3029,8 @@ export interface components {
       id: string;
       /** Method */
       method: string;
+      /** Root */
+      root?: string | null;
     };
     /** AnalyticsOperationCounts */
     AnalyticsOperationCounts: {
@@ -2728,6 +3061,71 @@ export interface components {
       /** Total */
       total: number;
     };
+    /** AnalyticsPayloadImage */
+    AnalyticsPayloadImage: {
+      /** Bytes */
+      bytes: number | null;
+      /** Height */
+      height: number | null;
+      /** Width */
+      width: number | null;
+    };
+    /** AnalyticsPayloadMeasure */
+    AnalyticsPayloadMeasure: {
+      /** Bytes */
+      bytes: number;
+      /** Chars */
+      chars: number;
+      /**
+       * Format
+       * @enum {string}
+       */
+      format: "text" | "json";
+      /** Imagebytes */
+      imageBytes: number | null;
+      /** Imagecount */
+      imageCount: number;
+      /** Images */
+      images: components["schemas"]["AnalyticsPayloadImage"][];
+      /** Lines */
+      lines: number;
+    };
+    /** AnalyticsPendingUsage */
+    AnalyticsPendingUsage: {
+      /** Responseid */
+      responseId: string | null;
+      /** Turnid */
+      turnId: string | null;
+      usage: components["schemas"]["AnalyticsProviderTokens"];
+    };
+    /**
+     * AnalyticsProviderTokens
+     * @description Known token fields plus versioned keys from provider usage payloads.
+     */
+    AnalyticsProviderTokens: {
+      /** Cachedinputtokens */
+      cachedInputTokens?: number | null;
+      /** Cachewriteinputtokens */
+      cacheWriteInputTokens?: number | null;
+      /** Inputtokens */
+      inputTokens?: number | null;
+      /** Outputtokens */
+      outputTokens?: number | null;
+      /** Reasoningoutputtokens */
+      reasoningOutputTokens?: number | null;
+      /** Totaltokens */
+      totalTokens?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** AnalyticsRateLimitRecord */
+    AnalyticsRateLimitRecord: {
+      /** Accountkey */
+      accountKey: string;
+      /** At */
+      at: number;
+      data: components["schemas"]["JsonValue"];
+    };
     /** AnalyticsResponse */
     AnalyticsResponse: {
       /** Syncentities */
@@ -2741,21 +3139,23 @@ export interface components {
       /** Agentid */
       agentId?: string | null;
       /** Agents */
-      agents?: components["schemas"]["JsonValue"][] | null;
+      agents?: components["schemas"]["AnalyticsAgentRecord"][] | null;
       /** Agenttotals */
-      agentTotals?: components["schemas"]["JsonValue"][] | null;
+      agentTotals?: components["schemas"]["AnalyticsAgentTotal"][] | null;
       /** At */
       at?: number | null;
       /** Attemptid */
       attemptId?: string | null;
       /** Calls */
-      calls?: components["schemas"]["JsonValue"][] | null;
+      calls?: components["schemas"]["AnalyticsItemRecord"][] | null;
       /** Chartbuckets */
-      chartBuckets?: components["schemas"]["JsonValue"][] | null;
+      chartBuckets?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Compactions */
-      compactions?: components["schemas"]["JsonValue"][] | null;
+      compactions?: components["schemas"]["AnalyticsItemRecord"][] | null;
       /** Compactionsnapshots */
-      compactionSnapshots?: components["schemas"]["JsonValue"][] | null;
+      compactionSnapshots?:
+        | components["schemas"]["AnalyticsItemRecord"][]
+        | null;
       coverage?: components["schemas"]["AnalyticsCoverage"] | null;
       detailPagination?: components["schemas"]["AnalyticsPage"] | null;
       /** Effort */
@@ -2764,13 +3164,13 @@ export interface components {
       /** Generatedat */
       generatedAt?: number | null;
       /** History */
-      history?: components["schemas"]["JsonValue"][] | null;
+      history?: components["schemas"]["AnalyticsHistoryRecord"][] | null;
       /** Id */
       id?: string | null;
       /** Itembreakdown */
       itemBreakdown?: components["schemas"]["AnalyticsItemBreakdown"][] | null;
       /** Itemrecords */
-      itemRecords?: components["schemas"]["JsonValue"][] | null;
+      itemRecords?: components["schemas"]["AnalyticsItemRecord"][] | null;
       /** Itemrecordstotal */
       itemRecordsTotal?: number | null;
       /** Items */
@@ -2786,20 +3186,20 @@ export interface components {
       /** Provider */
       provider?: string | null;
       /** Provisionalusage */
-      provisionalUsage?: components["schemas"]["JsonValue"][] | null;
+      provisionalUsage?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Ratelimits */
-      rateLimits?: components["schemas"]["JsonValue"][] | null;
-      responseRate?: components["schemas"]["JsonValue"] | null;
+      rateLimits?: components["schemas"]["AnalyticsRateLimitRecord"][] | null;
+      responseRate?: components["schemas"]["AnalyticsResponseRate"] | null;
       /** Runid */
       runId?: string | null;
       summary?: components["schemas"]["AnalyticsSummary"] | null;
       /** Threadid */
       threadId?: string | null;
       /** Timeline */
-      timeline?: components["schemas"]["JsonValue"][] | null;
+      timeline?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Timelinetotal */
       timelineTotal?: number | null;
-      tokens?: components["schemas"]["JsonValue"] | null;
+      tokens?: components["schemas"]["AnalyticsProviderTokens"] | null;
       /** Tools */
       tools?: components["schemas"]["AnalyticsTool"][] | null;
       /** Turndurationms */
@@ -2807,15 +3207,35 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
       /** Turns */
-      turns?: components["schemas"]["JsonValue"][] | null;
+      turns?: components["schemas"]["AnalyticsTurnRecord"][] | null;
       /** Version */
       version?: 1 | null;
+    };
+    /** AnalyticsResponseRate */
+    AnalyticsResponseRate: {
+      /** Durationseconds */
+      durationSeconds: number;
+      /** Outputtokens */
+      outputTokens: number;
+      /** Rate */
+      rate: number;
     };
     /**
      * AnalyticsScope
      * @enum {string}
      */
     AnalyticsScope: "agent" | "team" | "all";
+    /** AnalyticsStreamMeasure */
+    AnalyticsStreamMeasure: {
+      /** Bytes */
+      bytes: number;
+      /** Chars */
+      chars: number;
+      /** Deltas */
+      deltas: number;
+      /** Lines */
+      lines: number;
+    };
     /** AnalyticsSummary */
     AnalyticsSummary: {
       /** Agents */
@@ -2927,6 +3347,135 @@ export interface components {
       /** Type */
       type: string;
     };
+    /** AnalyticsTurnRecord */
+    AnalyticsTurnRecord: {
+      /** Accounthistory */
+      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Agentid */
+      agentId: string;
+      /** Agentname */
+      agentName?: string | null;
+      /** At */
+      at?: number | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Durationms */
+      durationMs?: number | null;
+      /** Effort */
+      effort?: string | null;
+      error?: components["schemas"]["JsonValue"] | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Finishedat */
+      finishedAt?: number | null;
+      /** Firstoutputat */
+      firstOutputAt?: number | null;
+      /** Firstoutputdelayms */
+      firstOutputDelayMs?: number | null;
+      /** Id */
+      id?: string | null;
+      /** Model */
+      model?: string | null;
+      /** Nativedurationms */
+      nativeDurationMs?: number | null;
+      /** Nativetimetofirsttokenms */
+      nativeTimeToFirstTokenMs?: number | null;
+      /** Provider */
+      provider?: string | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Source */
+      source?: string | null;
+      /** Startedat */
+      startedAt?: number | null;
+      /** Status */
+      status: string;
+      /** Terminalsource */
+      terminalSource?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+    };
+    /** AnalyticsUsageAssociation */
+    AnalyticsUsageAssociation: {
+      last: components["schemas"]["AnalyticsProviderTokens"];
+      /** Responseid */
+      responseId: string | null;
+      total: components["schemas"]["AnalyticsProviderTokens"];
+      /** Turnid */
+      turnId: string | null;
+    };
+    /** AnalyticsUsageRecord */
+    AnalyticsUsageRecord: {
+      /** Accounthistory */
+      accountHistory: components["schemas"]["JsonValue"][];
+      /** Accountkey */
+      accountKey: string;
+      /** Agentid */
+      agentId: string;
+      /** Agentname */
+      agentName?: string | null;
+      /** At */
+      at: number;
+      /** Baselinemissing */
+      baselineMissing: boolean;
+      /**
+       * Counterdomain
+       * @enum {string}
+       */
+      counterDomain: "response" | "nativeNotice";
+      cumulativeDelta: components["schemas"]["AnalyticsProviderTokens"];
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      delta: components["schemas"]["AnalyticsProviderTokens"];
+      /** Effort */
+      effort?: string | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Fingerprint */
+      fingerprint?: string | null;
+      /** Id */
+      id: string;
+      /** Inputtokensareuncached */
+      inputTokensAreUncached?: boolean | null;
+      last: components["schemas"]["AnalyticsProviderTokens"];
+      /** Model */
+      model?: string | null;
+      /** Modelcontextwindow */
+      modelContextWindow: number | null;
+      /** Provider */
+      provider?: string | null;
+      raw?: components["schemas"]["JsonValue"] | null;
+      rawTokenUsageRecord?: components["schemas"]["JsonValue"] | null;
+      /** Recordedat */
+      recordedAt: number;
+      requestUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      /** Reset */
+      reset: boolean | null;
+      /** Responseid */
+      responseId?: string | null;
+      /** Rootid */
+      rootId: string;
+      /** Source */
+      source: string;
+      /** Threadid */
+      threadId?: string | null;
+      /** Timestampsource */
+      timestampSource: string;
+      total: components["schemas"]["AnalyticsProviderTokens"];
+      /** Turnid */
+      turnId?: string | null;
+      turnUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      /** Usagesource */
+      usageSource?: string | null;
+    };
     /** AnnotationBody */
     AnnotationBody: {
       /** Agent */
@@ -2937,6 +3486,46 @@ export interface components {
       line: number;
       /** Path */
       path: string;
+      /** Text */
+      text: string;
+      /** Turnid */
+      turnId?: string | null;
+    };
+    /** AnnotationReceipt */
+    AnnotationReceipt: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Agent */
+      agent: string;
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /** Line */
+      line: number;
+      /** Path */
+      path: string;
+      /** Rootid */
+      rootId: string;
+      /** Text */
+      text: string;
+      /** Turnid */
+      turnId?: string | null;
+    };
+    /** AnnotationRecord */
+    AnnotationRecord: {
+      /** Agent */
+      agent: string;
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /** Line */
+      line: number;
+      /** Path */
+      path: string;
+      /** Rootid */
+      rootId: string;
       /** Text */
       text: string;
       /** Turnid */
@@ -2958,6 +3547,16 @@ export interface components {
       id: string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** AnswerHistoryEntry */
+    AnswerHistoryEntry: {
+      answer: components["schemas"]["JsonValue"];
+      /** Id */
+      id: string;
+      /** Issecret */
+      isSecret: boolean;
+      /** Question */
+      question: string;
     };
     /** AnswerResult */
     AnswerResult: {
@@ -3114,7 +3713,8 @@ export interface components {
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
-      contextUsage?: components["schemas"]["JsonValue"] | null;
+      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       /** Created */
       created?: number | null;
       /** Cwd */
@@ -3128,7 +3728,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
-      error?: components["schemas"]["JsonValue"] | null;
+      /** Error */
+      error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -3159,13 +3760,20 @@ export interface components {
       name?: string | null;
       /** Nativeerror */
       nativeError?: string | null;
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: number | null;
       nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingDto"]
+        | null;
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
       /** Nativestatus */
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
         | null;
-      nativeThreadBlock?: components["schemas"]["JsonValue"] | null;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
       /** Nextturnsettingssupported */
       nextTurnSettingsSupported?: boolean | null;
       /** Orchestratorid */
@@ -3186,6 +3794,8 @@ export interface components {
       pendingSettingsAccountKey?: string | null;
       /** Pinned */
       pinned?: boolean | null;
+      /** Project */
+      project?: string | null;
       /** Projectfolder */
       projectFolder?: string | null;
       /** Projectfolderrevision */
@@ -3193,6 +3803,7 @@ export interface components {
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
       /** Retryat */
@@ -3286,6 +3897,44 @@ export interface components {
       | "responseStreamConnectionFailed"
       | "responseStreamDisconnected"
       | "responseTooManyFailedAttempts";
+    /** CapacityRetryDto */
+    CapacityRetryDto: {
+      /** Acceptedturnid */
+      acceptedTurnId?: string | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Attempt */
+      attempt?: number | null;
+      cause?: components["schemas"]["CapacityRetryCause"] | null;
+      /** Claimedat */
+      claimedAt?: number | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Dueat */
+      dueAt?: number | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Id */
+      id?: string | null;
+      /** Maxattempts */
+      maxAttempts?: number | null;
+      /** Reason */
+      reason?: string | null;
+      /** Retryat */
+      retryAt?: number | null;
+      settings?: components["schemas"]["CapacityRetrySettingsDto"] | null;
+      status?: components["schemas"]["CapacityRetryStatus"] | null;
+      /** Taskclaims */
+      taskClaims?: string[] | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Updatedat */
+      updatedAt?: number | null;
+      /** Waits */
+      waits?: number | null;
+    };
     /** CapacityRetryRequest */
     CapacityRetryRequest: {
       action: components["schemas"]["RetryAction"];
@@ -3294,6 +3943,47 @@ export interface components {
       /** Retry Id */
       retry_id: string;
     };
+    /**
+     * CapacityRetrySettingsDto
+     * @description Settings captured by Runtime.preparation_settings for a retry receipt.
+     */
+    CapacityRetrySettingsDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Model */
+      model?: string | null;
+      /** Nativeeffort */
+      nativeEffort?: string | null;
+      /** Profileinstructions */
+      profileInstructions?: string | null;
+      role?:
+        | components["schemas"]["studio_api__sync__models__AgentRole"]
+        | null;
+      /** Updatedat */
+      updatedAt?: number | null;
+      /** Yolomode */
+      yoloMode?: boolean | null;
+    };
+    /**
+     * CapacityRetryStatus
+     * @enum {string}
+     */
+    CapacityRetryStatus:
+      | "scheduled"
+      | "starting"
+      | "finished"
+      | "cancelled"
+      | "unknown"
+      | "exhausted"
+      | "failed";
     /** ChangesFile */
     ChangesFile: {
       /** Path */
@@ -3342,17 +4032,38 @@ export interface components {
       /** Id */
       id: string;
     };
+    /** ChatMessage */
+    ChatMessage: {
+      /** Created */
+      created: number;
+      /** Deliveries */
+      deliveries: {
+        [key: string]: string;
+      };
+      /** Id */
+      id: string;
+      /** Room */
+      room: string;
+      /** Sender */
+      sender: string;
+      /** Sendername */
+      senderName: string;
+      /** Seq */
+      seq: number;
+      /** Text */
+      text: string;
+    };
     /** ChatRead */
     ChatRead: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Messages */
-      messages: components["schemas"]["JsonValue"][];
+      messages: components["schemas"]["ChatMessage"][];
       /** Nextafter */
       nextAfter?: number | null;
       /** Nextbefore */
       nextBefore?: number | null;
-      room: components["schemas"]["JsonValue"];
+      room: components["schemas"]["SnapshotRoomDto"];
     };
     /** ChatReceipt */
     ChatReceipt: {
@@ -3820,6 +4531,44 @@ export interface components {
       /** Version */
       version?: number | null;
     };
+    /** ComplaintDetailResponse */
+    ComplaintDetailResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Author */
+      author?: string | null;
+      /** Authorname */
+      authorName?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Id */
+      id: string;
+      /** Leaddeleted */
+      leadDeleted?: boolean | null;
+      /** Leadid */
+      leadId?: string | null;
+      /** Leadname */
+      leadName?: string | null;
+      /** Leadstopped */
+      leadStopped?: boolean | null;
+      /** Needsresponse */
+      needsResponse?: boolean | null;
+      /** Readat */
+      readAt?: number | null;
+      /** Recipient */
+      recipient?: ("user" | "lead") | null;
+      /** Responses */
+      responses: components["schemas"]["ComplaintResponseDto"][];
+      status?: components["schemas"]["ComplaintStatus"] | null;
+      /** Text */
+      text: string;
+      /** Title */
+      title?: string | null;
+      /** Updated */
+      updated?: number | null;
+      /** Version */
+      version: number;
+    };
     /** ComplaintResponseDto */
     ComplaintResponseDto: {
       /** At */
@@ -3886,6 +4635,27 @@ export interface components {
       /** Target */
       target: string;
     };
+    /** ConnectionCheckDto */
+    ConnectionCheckDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** At */
+      at: number;
+      /** Epoch */
+      epoch?: number | null;
+      /** Nativestate */
+      nativeState?: string | null;
+      /** Previouserror */
+      previousError?: string | null;
+      /** Readerror */
+      readError?: string | null;
+      /** Restartturnstatus */
+      restartTurnStatus?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+    };
     /** ContextRepairResponse */
     ContextRepairResponse: {
       /** Syncentities */
@@ -3893,6 +4663,30 @@ export interface components {
       /** Id */
       id: string;
       repair?: components["schemas"]["JsonValue"] | null;
+    };
+    /** ContextRepairWaitDto */
+    ContextRepairWaitDto: {
+      /** Action */
+      action?: string | null;
+      /** At */
+      at?: number | null;
+      /** Error */
+      error: string;
+      /** Readonly */
+      readOnly?: boolean | null;
+      /** Scope */
+      scope: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ContextUsageDto */
+    ContextUsageDto: {
+      /** At */
+      at?: number | null;
+      /** Tokens */
+      tokens: number | null;
+      /** Window */
+      window: number | null;
     };
     /** ConversationRequest */
     ConversationRequest: {
@@ -5254,6 +6048,54 @@ export interface components {
       error: string;
     };
     /**
+     * NativeNoticeDto
+     * @description Account notices and provider-version advisories shown in the UI.
+     */
+    NativeNoticeDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** At */
+      at?: number | null;
+      /** Baseline */
+      baseline?: string | null;
+      /** Connectionid */
+      connectionId?: string | null;
+      details?: components["schemas"]["JsonValue"] | null;
+      /** Id */
+      id?: string | null;
+      /** Message */
+      message?: string | null;
+      /** Provider */
+      provider?: string | null;
+      /** Version */
+      version?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /**
+     * NativeProviderError
+     * @description Known app-server error fields plus JSON-safe provider extensions.
+     */
+    NativeProviderError: {
+      /** Additionaldetails */
+      additionalDetails?: string | null;
+      /** Code */
+      code?: number | string | null;
+      /** Codexerrorinfo */
+      codexErrorInfo?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | components["schemas"]["JsonValue"][]
+        | null;
+      data?: components["schemas"]["JsonValue"] | null;
+      /** Message */
+      message?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /**
      * NativeReleasePhase
      * @enum {string}
      */
@@ -5283,6 +6125,85 @@ export interface components {
       error?: string | null;
       selected?: components["schemas"]["NativeBinary"] | null;
       status: components["schemas"]["NativeRuntimeState"];
+    };
+    /** NativeSafetyBufferingDto */
+    NativeSafetyBufferingDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** At */
+      at?: number | null;
+      /** Connectionid */
+      connectionId?: string | null;
+      /** Dismissed */
+      dismissed?: boolean | null;
+      /** Fastermodel */
+      fasterModel?: string | null;
+      /** Responsestarted */
+      responseStarted?: boolean | null;
+      /** Showbufferingui */
+      showBufferingUi?: boolean | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeSafetyRetryDto */
+    NativeSafetyRetryDto: {
+      /** Acceptedturnid */
+      acceptedTurnId?: string | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Model */
+      model?: string | null;
+      /** Newthreadid */
+      newThreadId?: string | null;
+      /** Requestid */
+      requestId?: string | null;
+      /** Rpcmethod */
+      rpcMethod?: string | null;
+      stage?: components["schemas"]["NativeSafetyStage"] | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Updated */
+      updated?: number | null;
+    };
+    /**
+     * NativeSafetyStage
+     * @enum {string}
+     */
+    NativeSafetyStage:
+      | "turns"
+      | "items"
+      | "interrupt"
+      | "verify_turns"
+      | "verify_items"
+      | "fork"
+      | "start"
+      | "unknown"
+      | "running"
+      | "failed"
+      | "cancelled";
+    /** NativeThreadBlockDto */
+    NativeThreadBlockDto: {
+      error?: components["schemas"]["NativeProviderError"] | null;
+      /** Threadid */
+      threadId?: string | null;
+    };
+    /** NativeTurnErrorDto */
+    NativeTurnErrorDto: {
+      error?: components["schemas"]["NativeProviderError"] | null;
+      /** Turnid */
+      turnId?: string | null;
     };
     /** OrganizationBody */
     OrganizationBody: {
@@ -5853,40 +6774,6 @@ export interface components {
       /** Version */
       version: number;
     };
-    /** PreparationSettings */
-    PreparationSettings: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Accountkey */
-      accountKey?: string | null;
-      claudeOptions?: components["schemas"]["JsonValue"] | null;
-      /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
-      /** Daybreakenabled */
-      daybreakEnabled?: boolean | null;
-      /** Effort */
-      effort?: string | null;
-      /** Fastmode */
-      fastMode?: boolean | null;
-      /** Model */
-      model?: string | null;
-      /** Nativeeffort */
-      nativeEffort?: string | null;
-      pendingSettings?: components["schemas"]["PreparationSettings"] | null;
-      /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
-      portableHistory?: components["schemas"]["JsonValue"] | null;
-      /** Profileinstructions */
-      profileInstructions?: string | null;
-      /** Provider */
-      provider?: string | null;
-      role?:
-        | components["schemas"]["studio_api__agents__models__AgentRole"]
-        | null;
-      workerDefaults?: components["schemas"]["PreparationSettings"] | null;
-      /** Yolomode */
-      yoloMode?: boolean | null;
-    };
     /**
      * ProcessKind
      * @enum {string}
@@ -6271,6 +7158,15 @@ export interface components {
       /** Id */
       id: string;
     };
+    /** QuestionEntry */
+    QuestionEntry: {
+      /** Id */
+      id: string;
+      /** Issecret */
+      isSecret: boolean;
+      /** Question */
+      question: string;
+    };
     /** QuestionHistory */
     QuestionHistory: {
       /** Syncentities */
@@ -6278,13 +7174,13 @@ export interface components {
       /** Items */
       items: components["schemas"]["AgentRequest"][];
     };
-    /** QueueBody */
-    QueueBody: {
+    /** QueueCancelBody */
+    QueueCancelBody: {
       /**
-       * Action
+       * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
-      action: "cancel" | "edit" | "first" | "reorder";
+      action: "cancel";
       /** Agent */
       agent?: string | null;
       /** Expected Revision */
@@ -6295,12 +7191,8 @@ export interface components {
       id?: string | null;
       /** Message Id */
       message_id?: string | null;
-      /** Ordered Ids */
-      ordered_ids?: string[] | null;
       /** Request Id */
       request_id?: string | null;
-      /** Text */
-      text?: string | null;
     };
     /** QueueCapabilities */
     QueueCapabilities: {
@@ -6309,12 +7201,54 @@ export interface components {
       /** Reorder */
       reorder: boolean;
     };
+    /** QueueEditBody */
+    QueueEditBody: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "edit";
+      /** Agent */
+      agent?: string | null;
+      /** Expected Revision */
+      expected_revision?: string | null;
+      /** Expectedtext */
+      expectedText?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Message Id */
+      message_id?: string | null;
+      /** Request Id */
+      request_id?: string | null;
+      /** Text */
+      text: string;
+    };
+    /** QueueFirstBody */
+    QueueFirstBody: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "first";
+      /** Agent */
+      agent?: string | null;
+      /** Expected Revision */
+      expected_revision?: string | null;
+      /** Expectedtext */
+      expectedText?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Message Id */
+      message_id?: string | null;
+      /** Request Id */
+      request_id?: string | null;
+    };
     /** QueueItem */
     QueueItem: {
       /** Acceptedat */
       acceptedAt?: number | null;
       /** Assets */
-      assets?: components["schemas"]["JsonValue"][];
+      assets?: components["schemas"]["TranscriptAsset"][];
       /** Created */
       created: number;
       /**
@@ -6343,6 +7277,24 @@ export interface components {
       status: "pending";
       /** Text */
       text: string;
+    };
+    /** QueueReorderBody */
+    QueueReorderBody: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "reorder";
+      /** Agent */
+      agent?: string | null;
+      /** Expected Revision */
+      expected_revision: string;
+      /** Id */
+      id?: string | null;
+      /** Ordered Ids */
+      ordered_ids: string[];
+      /** Request Id */
+      request_id?: string | null;
     };
     /**
      * QueueSizes
@@ -6384,6 +7336,21 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** RateLimitBucketDto */
+    RateLimitBucketDto: {
+      /** Limitid */
+      limitId?: string | null;
+      /** Limitname */
+      limitName?: string | null;
+      /** Plantype */
+      planType?: string | null;
+      primary?: components["schemas"]["RateLimitWindowDto"] | null;
+      /** Ratelimitreachedtype */
+      rateLimitReachedType?: string | null;
+      secondary?: components["schemas"]["RateLimitWindowDto"] | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** RateLimitIndividualLimit */
     RateLimitIndividualLimit: {
       /** Remainingpercent */
@@ -6413,6 +7380,28 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * RateLimitsDataDto
+     * @description Known renderer-facing rate-limit fields with provider JSON extensions.
+     */
+    RateLimitsDataDto: {
+      /** Accountid */
+      accountId?: string | null;
+      /** Ordinaryusageallowed */
+      ordinaryUsageAllowed?: boolean | null;
+      rateLimitResetCredits?: components["schemas"]["JsonValue"] | null;
+      rateLimits?: components["schemas"]["RateLimitBucketDto"] | null;
+      /** Ratelimitsbylimitid */
+      rateLimitsByLimitId?: {
+        [key: string]: components["schemas"]["RateLimitBucketDto"];
+      } | null;
+      /** Signedin */
+      signedIn?: boolean | null;
+      /** Status */
+      status?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** RateLimitWindow */
     RateLimitWindow: {
       /** Resetsat */
@@ -6421,6 +7410,17 @@ export interface components {
       usedPercent?: number | null;
       /** Windowdurationmins */
       windowDurationMins?: number | null;
+    };
+    /** RateLimitWindowDto */
+    RateLimitWindowDto: {
+      /** Resetsat */
+      resetsAt?: number | null;
+      /** Usedpercent */
+      usedPercent?: number | null;
+      /** Windowdurationmins */
+      windowDurationMins?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ReadStateBody */
     ReadStateBody: {
@@ -6432,6 +7432,17 @@ export interface components {
       thread_id: string;
       /** Turn Id */
       turn_id: string;
+    };
+    /** ReadStateDto */
+    ReadStateDto: {
+      /** Read */
+      read: boolean;
+      /** Revision */
+      revision: number;
+      /** Threadid */
+      threadId: string;
+      /** Turnid */
+      turnId: string;
     };
     /**
      * RecoveryOutcome
@@ -6513,31 +7524,142 @@ export interface components {
     };
     /** RequestEntityDto */
     RequestEntityDto: {
+      /** Accountkey */
+      accountKey?: string | null;
       /** Agent */
       agent?: string | null;
       /** At */
       at?: number | null;
+      /** Connectionid */
+      connectionId?: string | null;
       /** Created */
       created?: number | null;
       /** Createdat */
       createdAt?: number | null;
       /** Deferred */
       deferred?: boolean | null;
+      /** Epoch */
+      epoch?: number | null;
       /** Error */
       error?: string | null;
       /** Id */
       id: string;
       /** Method */
       method?: string | null;
-      params?: components["schemas"]["JsonValue"] | null;
+      params?: components["schemas"]["RequestParamsDto"] | null;
+      preview?: components["schemas"]["RequestPreviewDto"] | null;
       result?: components["schemas"]["JsonValue"] | null;
       status?: components["schemas"]["RequestStatus"] | null;
+      /** Threadid */
+      threadId?: string | null;
       /** Title */
       title?: string | null;
+      /** Turnid */
+      turnId?: string | null;
       /** Updated */
       updated?: number | null;
       /** Updatedat */
       updatedAt?: number | null;
+    };
+    /**
+     * RequestParamsDto
+     * @description Known request UI fields and typed JSON-safe native protocol extensions.
+     */
+    RequestParamsDto: {
+      changes?: components["schemas"]["JsonValue"] | null;
+      /** Command */
+      command?: string | string[] | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Message */
+      message?: string | null;
+      /** Permissions */
+      permissions?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Questions */
+      questions?: components["schemas"]["RequestQuestionDto"][] | null;
+      /** Reason */
+      reason?: string | null;
+      requestedSchema?: components["schemas"]["RequestSchemaDto"] | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Url */
+      url?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestPreviewDto */
+    RequestPreviewDto: {
+      changes?: components["schemas"]["JsonValue"] | null;
+      /** Command */
+      command?: string | string[] | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Permissions */
+      permissions?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Url */
+      url?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestQuestionDto */
+    RequestQuestionDto: {
+      /** Id */
+      id: string;
+      /** Issecret */
+      isSecret?: boolean | null;
+      /** Multiselect */
+      multiSelect?: boolean | null;
+      /** Options */
+      options?: components["schemas"]["RequestQuestionOptionDto"][] | null;
+      /** Question */
+      question: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestQuestionOptionDto */
+    RequestQuestionOptionDto: {
+      /** Description */
+      description?: string | null;
+      /** Label */
+      label?: string | null;
+      value?: components["schemas"]["JsonValue"] | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestSchemaDto */
+    RequestSchemaDto: {
+      /** Properties */
+      properties: {
+        [key: string]: components["schemas"]["RequestSchemaPropertyDto"];
+      };
+      /** Required */
+      required?: string[] | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestSchemaPropertyDto */
+    RequestSchemaPropertyDto: {
+      /** Enum */
+      enum?: components["schemas"]["JsonValue"][] | null;
+      /** Format */
+      format?: string | null;
+      /** Issecret */
+      isSecret?: boolean | null;
+      items?: components["schemas"]["RequestSchemaPropertyDto"] | null;
+      /** Title */
+      title?: string | null;
+      /** Type */
+      type?: string | string[] | null;
+      /** Writeonly */
+      writeOnly?: boolean | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * RequestStatus
@@ -6545,6 +7667,11 @@ export interface components {
      */
     RequestStatus:
       | "pending"
+      | "blocked"
+      | "answering"
+      | "answered"
+      | "declined"
+      | "resolved"
       | "expired"
       | "submitted"
       | "acknowledged"
@@ -6600,7 +7727,10 @@ export interface components {
      * @enum {string}
      */
     RetryAction: "retry" | "cancel";
-    /** RetryResponse */
+    /**
+     * RetryResponse
+     * @description Capacity retry endpoint DTO using the canonical sync receipt fields.
+     */
     RetryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -6625,10 +7755,10 @@ export interface components {
       maxAttempts?: number | null;
       /** Reason */
       reason?: string | null;
-      /** Retry Id */
-      retry_id?: string | null;
-      settings?: components["schemas"]["PreparationSettings"] | null;
-      status: components["schemas"]["RetryStatus"];
+      /** Retryat */
+      retryAt?: number | null;
+      settings?: components["schemas"]["CapacityRetrySettingsDto"] | null;
+      status: components["schemas"]["CapacityRetryStatus"];
       /** Taskclaims */
       taskClaims?: string[] | null;
       /** Threadid */
@@ -6640,18 +7770,6 @@ export interface components {
       /** Waits */
       waits?: number | null;
     };
-    /**
-     * RetryStatus
-     * @enum {string}
-     */
-    RetryStatus:
-      | "scheduled"
-      | "starting"
-      | "unknown"
-      | "failed"
-      | "cancelled"
-      | "finished"
-      | "exhausted";
     /** ReviewDefaults */
     ReviewDefaults: {
       /** Effort */
@@ -6746,6 +7864,10 @@ export interface components {
       eventId: string;
       /** Identity */
       identity: [string | null, number | null, number];
+      /** Interruptrequested */
+      interruptRequested?: boolean | null;
+      /** Questioncontinuationplanned */
+      questionContinuationPlanned?: boolean | null;
       /** Threadid */
       threadId: string | null;
       /** Through */
@@ -6904,7 +8026,7 @@ export interface components {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Rules */
-      rules: components["schemas"]["VersionedRuntimeRecord"][];
+      rules: components["schemas"]["RuleRecord"][];
     };
     /** RuleMutation */
     RuleMutation: {
@@ -6934,6 +8056,109 @@ export interface components {
       updated?: number | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RuleRecord */
+    RuleRecord: {
+      /** Activeworkers */
+      activeWorkers?: number | null;
+      /** Agent */
+      agent?: string | null;
+      /** Alerted */
+      alerted?: boolean | null;
+      /** At */
+      at?: number | null;
+      /** Checks */
+      checks?: number | null;
+      /** Command */
+      command?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Description */
+      description?: string | null;
+      /** Durationminutes */
+      durationMinutes?: number | null;
+      /** Enabled */
+      enabled?: boolean | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Event */
+      event?: string | null;
+      /** Eventtext */
+      eventText?: string | null;
+      /** Fileactivityat */
+      fileActivityAt?: number | null;
+      /** Filegeneration */
+      fileGeneration?: number | null;
+      /** Fingerprint */
+      fingerprint?: number[] | null;
+      /** Id */
+      id: string;
+      /** Inflight */
+      inFlight?: boolean | null;
+      /** Intervalseconds */
+      intervalSeconds?: number | null;
+      kind?: components["schemas"]["RuleKind"] | null;
+      /** Lastat */
+      lastAt?: number | null;
+      /** Lastevent */
+      lastEvent?: string | null;
+      /** Lastexitcode */
+      lastExitCode?: number | null;
+      /** Lastfinished */
+      lastFinished?: number | null;
+      /** Lastoutput */
+      lastOutput?: string | null;
+      /** Laststallerror */
+      lastStallError?: string | null;
+      /** Laststallexitcode */
+      lastStallExitCode?: number | null;
+      /** Laststallfinished */
+      lastStallFinished?: number | null;
+      /** Livenesscommand */
+      livenessCommand?: string | null;
+      /** Lowsince */
+      lowSince?: number | null;
+      /** Minimumworkers */
+      minimumWorkers?: number | null;
+      /** Name */
+      name?: string | null;
+      /** Nextat */
+      nextAt?: number | null;
+      /** Path */
+      path?: string | null;
+      restartCheck?: components["schemas"]["RuleRestartCheck"] | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Stall Timeout Seconds */
+      stall_timeout_seconds?: number | null;
+      /** Stalleventkey */
+      stallEventKey?: string | null;
+      /** Stallprobe */
+      stallProbe?: boolean | null;
+      /** Stalltext */
+      stallText?: string | null;
+      /** Stalltimeoutseconds */
+      stallTimeoutSeconds?: number | null;
+      /** Stallwakegeneration */
+      stallWakeGeneration?: number | null;
+      status?: components["schemas"]["RuleStatus"] | null;
+      /** Text */
+      text?: string | null;
+      /** Updated */
+      updated?: number | null;
+      /** Wakes */
+      wakes?: number | null;
+    };
+    /** RuleRestartCheck */
+    RuleRestartCheck: {
+      /** Checks */
+      checks: number;
+      /** Epoch */
+      epoch: number;
+      /** Monitorid */
+      monitorId: string;
     };
     /** RuleSnapshotDto */
     RuleSnapshotDto: {
@@ -7038,7 +8263,7 @@ export interface components {
       /** Monitors */
       monitors: components["schemas"]["MonitorEntityDto"][];
       /** Nativenotices */
-      nativeNotices: components["schemas"]["JsonValue"][];
+      nativeNotices: components["schemas"]["NativeNoticeDto"][];
       /** Peerteams */
       peerTeams: components["schemas"]["PeerTeamEntityDto"][];
       /** Peerteamsversion */
@@ -7047,10 +8272,10 @@ export interface components {
       projectOrganizationVersion: number;
       /** Projects */
       projects: components["schemas"]["SnapshotProjectDto"][];
-      rateLimits: components["schemas"]["JsonValue"];
+      rateLimits: components["schemas"]["AccountRateLimitsDto"];
       /** Ratelimitsbyaccount */
       rateLimitsByAccount: {
-        [key: string]: components["schemas"]["JsonValue"];
+        [key: string]: components["schemas"]["AccountRateLimitsDto"];
       };
       /** Requests */
       requests: components["schemas"]["RequestEntityDto"][];
@@ -7123,10 +8348,26 @@ export interface components {
       createdBy?: string | null;
       /** Decisions */
       decisions?: components["schemas"]["WorkDecisionDto"][] | null;
+      /** Deliveries */
+      deliveries?: string | null;
       /** Deliveryerror */
       deliveryError?: string | null;
       /** Deliverystatus */
-      deliveryStatus?: string | null;
+      deliveryStatus?:
+        | (
+            | "pending"
+            | "reserved"
+            | "dispatching"
+            | "uncertain"
+            | "failed"
+            | "cancelled"
+            | "delivered"
+            | "stored_only"
+            | "queued"
+            | "accepted"
+            | "sent"
+          )
+        | null;
       /** Dependencies */
       dependencies?: string[] | null;
       /** Description */
@@ -7183,7 +8424,9 @@ export interface components {
       /** Recipient */
       recipient?: ("user" | "lead") | null;
       /** Requesteddelivery */
-      requestedDelivery?: string | null;
+      requestedDelivery?:
+        | ("queue" | "steer" | "after_tool" | "after_turn")
+        | null;
       /** Responses */
       responses?: components["schemas"]["ComplaintResponseDto"][] | null;
       /** Results */
@@ -7525,7 +8768,7 @@ export interface components {
       capacity?: components["schemas"]["JsonValue"] | null;
       /** Capacityretries */
       capacityRetries?: number | null;
-      capacityRetry?: components["schemas"]["JsonValue"] | null;
+      capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
       claudeOptions?: components["schemas"]["JsonValue"] | null;
       /** Command */
       command?: string | null;
@@ -7539,13 +8782,14 @@ export interface components {
       complaintsPresented?: string[] | null;
       /** Concurrency */
       concurrency?: number | null;
+      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
       /** Content */
       content?: string | null;
       contextRepair?: components["schemas"]["JsonValue"] | null;
       /** Contextrepairhistory */
       contextRepairHistory?: components["schemas"]["JsonValue"][] | null;
-      contextRepairWait?: components["schemas"]["JsonValue"] | null;
-      contextUsage?: components["schemas"]["JsonValue"] | null;
+      contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
+      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       /** Created */
       created?: number | null;
       /** Currentmessageid */
@@ -7568,7 +8812,8 @@ export interface components {
       empty?: boolean | null;
       /** Epoch */
       epoch?: number | null;
-      error?: components["schemas"]["JsonValue"] | null;
+      /** Error */
+      error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Events */
       events?: number | null;
       /** Executionsettingsaccountkey */
@@ -7611,7 +8856,8 @@ export interface components {
       lastContextRepairCheck?: number | null;
       /** Lastcontextrepairwait */
       lastContextRepairWait?: number | null;
-      lastEvent?: components["schemas"]["JsonValue"] | null;
+      /** Lastevent */
+      lastEvent?: string | null;
       /** Lastreadat */
       lastReadAt?: number | null;
       /** Lastturnstatus */
@@ -7644,20 +8890,26 @@ export interface components {
       /** Nativeerror */
       nativeError?: string | null;
       nativeFailureHold?: components["schemas"]["JsonValue"] | null;
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: number | null;
       /** Nativenamesynced */
       nativeNameSynced?: boolean | null;
       nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
       nativeReview?: components["schemas"]["JsonValue"] | null;
-      nativeSafetyRetry?: components["schemas"]["JsonValue"] | null;
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingDto"]
+        | null;
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
       /** Nativestatus */
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
         | null;
-      nativeThreadBlock?: components["schemas"]["JsonValue"] | null;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
       /** Nativetoolrefreshid */
       nativeToolRefreshId?: string | null;
       nativeToolUpdate?: components["schemas"]["JsonValue"] | null;
+      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
       /** Needstitle */
       needsTitle?: boolean | null;
       nextTurn?: components["schemas"]["JsonValue"] | null;
@@ -7692,6 +8944,8 @@ export interface components {
       profileId?: string | null;
       /** Profileinstructions */
       profileInstructions?: string | null;
+      /** Project */
+      project?: string | null;
       /** Projectfolder */
       projectFolder?: string | null;
       /** Projectfolderrevision */
@@ -7705,6 +8959,7 @@ export interface components {
       rateLimitResetCredits?: components["schemas"]["JsonValue"] | null;
       rateLimits?: components["schemas"]["JsonValue"] | null;
       rateLimitsByLimitId?: components["schemas"]["JsonValue"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
       /** Reportedat */
@@ -7763,6 +9018,7 @@ export interface components {
       unreadCount?: number | null;
       /** Updated */
       updated?: number | null;
+      usageResume?: components["schemas"]["UsageResumeDto"] | null;
       /** Usageresumeenabled */
       usageResumeEnabled?: boolean | null;
       /** Version */
@@ -7992,7 +9248,7 @@ export interface components {
     /** SnapshotTaskDto */
     SnapshotTaskDto: {
       /** Agent */
-      agent?: string | null;
+      agent: string;
       /** Arguments */
       arguments?: string | null;
       /** Bytes */
@@ -8001,8 +9257,10 @@ export interface components {
       cancelRequested?: boolean | null;
       /** Command */
       command?: string | null;
+      /** Completedatms */
+      completedAtMs?: number | null;
       /** Created */
-      created?: number | null;
+      created: number;
       /** Cwd */
       cwd?: string | null;
       /** Durationms */
@@ -8017,7 +9275,9 @@ export interface components {
       id: string;
       /** Interactive */
       interactive?: boolean | null;
-      kind?: components["schemas"]["TaskKind"] | null;
+      /** Itemid */
+      itemId?: string | null;
+      kind: components["schemas"]["TaskKind"];
       /** Log */
       log?: string | null;
       /** Name */
@@ -8028,7 +9288,11 @@ export interface components {
       processId?: string | null;
       /** Query */
       query?: string | null;
-      status?: components["schemas"]["TaskStatus"] | null;
+      /** Server */
+      server?: string | null;
+      /** Startedatms */
+      startedAtMs?: number | null;
+      status: components["schemas"]["TaskStatus"];
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
@@ -8041,6 +9305,8 @@ export interface components {
       timeout_ms?: number | null;
       /** Turnid */
       turnId?: string | null;
+      /** Type */
+      type?: string | null;
     };
     /** SqliteActiveScan */
     SqliteActiveScan: {
@@ -8531,13 +9797,31 @@ export interface components {
       /** Supportedversions */
       supportedVersions: (1 | 2)[];
     };
+    /** SyncPullResetResponse */
+    SyncPullResetResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Floor */
+      floor: number;
+      /** Generation */
+      generation: number;
+      /** Maxseq */
+      maxSeq: number;
+      /**
+       * Reset
+       * @constant
+       */
+      reset: true;
+      /** Workspaceid */
+      workspaceId: string;
+    };
     /** SyncPullResponse */
     SyncPullResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      checkpoint?: components["schemas"]["SyncCheckpoint"] | null;
+      checkpoint: components["schemas"]["SyncCheckpoint"];
       /** Documents */
-      documents?: components["schemas"]["SyncDocument"][] | null;
+      documents: components["schemas"]["SyncDocument"][];
       /** Floor */
       floor?: number | null;
       /** Generation */
@@ -8547,7 +9831,7 @@ export interface components {
       /** Maxseq */
       maxSeq?: number | null;
       /** Reset */
-      reset?: boolean | null;
+      reset?: false | null;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -8556,6 +9840,85 @@ export interface components {
      * @enum {string}
      */
     TailscaleStatus: "verified" | "unavailable";
+    /** TaskCursor */
+    TaskCursor: {
+      /** Id */
+      id: string;
+      /** Updated */
+      updated: number;
+    };
+    /** TaskDetailResponse */
+    TaskDetailResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Agent */
+      agent: string;
+      /** Arguments */
+      arguments?: string | null;
+      /** Bytes */
+      bytes?: number | null;
+      /** Cancelrequested */
+      cancelRequested?: boolean | null;
+      /** Command */
+      command?: string | null;
+      /** Completedatms */
+      completedAtMs?: number | null;
+      /** Created */
+      created: number;
+      /** Cwd */
+      cwd?: string | null;
+      /** Durationms */
+      durationMs?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Exitcode */
+      exitCode?: number | null;
+      /** Finished */
+      finished?: number | null;
+      /** Id */
+      id: string;
+      /** Interactive */
+      interactive?: boolean | null;
+      /** Itemid */
+      itemId?: string | null;
+      kind: components["schemas"]["TaskKind"];
+      /** Log */
+      log?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Outputtruncated */
+      outputTruncated?: boolean | null;
+      /** Processid */
+      processId?: string | null;
+      /** Query */
+      query?: string | null;
+      /** Server */
+      server?: string | null;
+      /** Startedatms */
+      startedAtMs?: number | null;
+      status: components["schemas"]["TaskStatus"];
+      /** Stdinclosed */
+      stdinClosed?: boolean | null;
+      /** Stdincloserequested */
+      stdinCloseRequested?: string | null;
+      /** Stdinerror */
+      stdinError?: string | null;
+      /** Tail */
+      tail?: string | null;
+      /** Timeout Ms */
+      timeout_ms?: number | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Type */
+      type?: string | null;
+    };
+    /** TaskHistoryCursor */
+    TaskHistoryCursor: {
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+    };
     /**
      * TaskKind
      * @enum {string}
@@ -8753,8 +10116,7 @@ export interface components {
       compactions?: number | null;
       /** Compactionsobservedonly */
       compactionsObservedOnly?: number | null;
-      /** @description Provider-specific token-window and usage measurements for this turn. */
-      contextUsage?: components["schemas"]["JsonValue"];
+      contextUsage?: components["schemas"]["TranscriptContextUsage"] | null;
       /** Id */
       id: string;
       /** Inflight */
@@ -8785,6 +10147,18 @@ export interface components {
       size: number;
     };
     /**
+     * TranscriptContextUsage
+     * @description Runtime token usage shape published by tokenUsage notifications.
+     */
+    TranscriptContextUsage: {
+      /** At */
+      at: number;
+      /** Tokens */
+      tokens?: number | null;
+      /** Window */
+      window?: number | null;
+    };
+    /**
      * TranscriptInput
      * @description One native/runtime input batch entry shown inside a transcript item.
      */
@@ -8793,10 +10167,38 @@ export interface components {
       assets?: components["schemas"]["TranscriptAsset"][];
       /** At */
       at?: number | null;
+      /** Clientmessageid */
+      clientMessageId?: string | null;
+      /** Deliveryerror */
+      deliveryError?: string | null;
+      /** Deliverystatus */
+      deliveryStatus?:
+        | (
+            | "pending"
+            | "reserved"
+            | "dispatching"
+            | "uncertain"
+            | "failed"
+            | "cancelled"
+            | "delivered"
+            | "stored_only"
+            | "queued"
+            | "accepted"
+            | "sent"
+          )
+        | null;
       /** Id */
       id?: string | null;
       /** Kind */
       kind: string;
+      /** Materialized */
+      materialized?: boolean | null;
+      /** Pending */
+      pending?: boolean | null;
+      /** Requesteddelivery */
+      requestedDelivery?:
+        | ("queue" | "steer" | "after_tool" | "after_turn")
+        | null;
       /** Text */
       text: string;
       /** Truncated */
@@ -8820,17 +10222,36 @@ export interface components {
       /** Deliveryerror */
       deliveryError?: string | null;
       /** Deliverystatus */
-      deliveryStatus?: string | null;
+      deliveryStatus?:
+        | (
+            | "pending"
+            | "reserved"
+            | "dispatching"
+            | "uncertain"
+            | "failed"
+            | "cancelled"
+            | "delivered"
+            | "stored_only"
+            | "queued"
+            | "accepted"
+            | "sent"
+          )
+        | null;
       /** Id */
       id: string;
       /** Inputs */
       inputs?: components["schemas"]["TranscriptInput"][] | null;
+      /** Kind */
+      kind?: string | null;
       /** Materialized */
       materialized?: boolean | null;
       /** Observedwait */
       observedWait?: boolean | null;
-      /** Pending */
-      pending?: boolean | null;
+      /**
+       * Pending
+       * @default false
+       */
+      pending?: boolean;
       /** Phase */
       phase?: string | null;
       /** Reasoningms */
@@ -8840,17 +10261,106 @@ export interface components {
       /** Reasoningsince */
       reasoningSince?: number | null;
       /** Requesteddelivery */
-      requestedDelivery?: string | null;
+      requestedDelivery?:
+        | ("queue" | "steer" | "after_tool" | "after_turn")
+        | null;
       /** Role */
-      role?: string | null;
+      role: string;
       /** Sourceid */
       sourceId?: string | null;
       /** Streaming */
       streaming?: boolean | null;
       /** Text */
       text: string;
-      /** Title */
-      title?: string | null;
+      /**
+       * Title
+       * @default
+       */
+      title?: string;
+      /** Toolstatus */
+      toolStatus?: string | null;
+      /** Truncated */
+      truncated?: boolean | null;
+      /** Turnerror */
+      turnError?: string | null;
+      /** Turnerrorresolved */
+      turnErrorResolved?: boolean | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Turnstatus */
+      turnStatus?: string | null;
+    };
+    /**
+     * TranscriptMessageRecord
+     * @description Transcript rows always carry their runtime role and display text.
+     */
+    TranscriptMessageRecord: {
+      /** Agent */
+      agent?: string | null;
+      /** Assets */
+      assets?: components["schemas"]["TranscriptAsset"][] | null;
+      /** At */
+      at?: number | string | null;
+      /** Clientmessageid */
+      clientMessageId?: string | null;
+      /** Deliveryerror */
+      deliveryError?: string | null;
+      /** Deliverystatus */
+      deliveryStatus?:
+        | (
+            | "pending"
+            | "reserved"
+            | "dispatching"
+            | "uncertain"
+            | "failed"
+            | "cancelled"
+            | "delivered"
+            | "stored_only"
+            | "queued"
+            | "accepted"
+            | "sent"
+          )
+        | null;
+      /** Id */
+      id: string;
+      /** Inputs */
+      inputs?: components["schemas"]["TranscriptInput"][] | null;
+      /** Kind */
+      kind?: string | null;
+      /** Materialized */
+      materialized?: boolean | null;
+      /** Observedwait */
+      observedWait?: boolean | null;
+      /**
+       * Pending
+       * @default false
+       */
+      pending?: boolean;
+      /** Phase */
+      phase?: string | null;
+      /** Reasoningms */
+      reasoningMs?: number | null;
+      /** Reasoningobservedat */
+      reasoningObservedAt?: number | null;
+      /** Reasoningsince */
+      reasoningSince?: number | null;
+      /** Requesteddelivery */
+      requestedDelivery?:
+        | ("queue" | "steer" | "after_tool" | "after_turn")
+        | null;
+      /** Role */
+      role: string;
+      /** Sourceid */
+      sourceId?: string | null;
+      /** Streaming */
+      streaming?: boolean | null;
+      /** Text */
+      text: string;
+      /**
+       * Title
+       * @default
+       */
+      title?: string;
       /** Toolstatus */
       toolStatus?: string | null;
       /** Truncated */
@@ -8872,7 +10382,7 @@ export interface components {
       /** Historyversion */
       historyVersion?: string | null;
       /** Items */
-      items: components["schemas"]["TranscriptRecord"][];
+      items: components["schemas"]["TranscriptMessageRecord"][];
       /** Nextaftercursor */
       nextAfterCursor?: string | null;
       /** Nextcursor */
@@ -8883,66 +10393,6 @@ export interface components {
       truncated: boolean;
       /** Unavailable */
       unavailable?: string | null;
-    };
-    /**
-     * TranscriptRecord
-     * @description One persisted or synthesized transcript row with named UI fields.
-     */
-    TranscriptRecord: {
-      /** Agent */
-      agent?: string | null;
-      /** Assets */
-      assets?: components["schemas"]["TranscriptAsset"][] | null;
-      /** At */
-      at?: number | string | null;
-      /** Clientmessageid */
-      clientMessageId?: string | null;
-      /** Deliveryerror */
-      deliveryError?: string | null;
-      /** Deliverystatus */
-      deliveryStatus?: string | null;
-      /** Id */
-      id: string;
-      /** Inputs */
-      inputs?: components["schemas"]["TranscriptInput"][] | null;
-      /** Materialized */
-      materialized?: boolean | null;
-      /** Observedwait */
-      observedWait?: boolean | null;
-      /** Pending */
-      pending?: boolean | null;
-      /** Phase */
-      phase?: string | null;
-      /** Reasoningms */
-      reasoningMs?: number | null;
-      /** Reasoningobservedat */
-      reasoningObservedAt?: number | null;
-      /** Reasoningsince */
-      reasoningSince?: number | null;
-      /** Requesteddelivery */
-      requestedDelivery?: string | null;
-      /** Role */
-      role?: string | null;
-      /** Sourceid */
-      sourceId?: string | null;
-      /** Streaming */
-      streaming?: boolean | null;
-      /** Text */
-      text: string;
-      /** Title */
-      title?: string | null;
-      /** Toolstatus */
-      toolStatus?: string | null;
-      /** Truncated */
-      truncated?: boolean | null;
-      /** Turnerror */
-      turnError?: string | null;
-      /** Turnerrorresolved */
-      turnErrorResolved?: boolean | null;
-      /** Turnid */
-      turnId?: string | null;
-      /** Turnstatus */
-      turnStatus?: string | null;
     };
     /** TranscriptSearchResponse */
     TranscriptSearchResponse: {
@@ -9194,6 +10644,47 @@ export interface components {
      * @enum {string}
      */
     UsageResumeCause: "usage_limit" | "rate_limit" | "auth";
+    /** UsageResumeDto */
+    UsageResumeDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Authattempt */
+      authAttempt?: number | null;
+      /** Authrefreshmarker */
+      authRefreshMarker?: string | null;
+      cause?: components["schemas"]["UsageResumeCause"] | null;
+      /** Dueat */
+      dueAt?: number | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Failedat */
+      failedAt?: number | null;
+      /** Id */
+      id?: string | null;
+      /** Lastcheckedat */
+      lastCheckedAt?: number | null;
+      /** Plannedat */
+      plannedAt?: number | null;
+      /** Proofat */
+      proofAt?: number | null;
+      /** Reason */
+      reason?: string | null;
+      /** Resetat */
+      resetAt?: number | null;
+      /** Startedat */
+      startedAt?: number | null;
+      status?: components["schemas"]["UsageResumeStatus"] | null;
+      /** Taskclaims */
+      taskClaims?: string[] | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Updatedat */
+      updatedAt?: number | null;
+      /** Waitingforauth */
+      waitingForAuth?: boolean | null;
+    };
     /** UsageResumeRequest */
     UsageResumeRequest: {
       /** Enabled */
@@ -9203,7 +10694,10 @@ export interface components {
       /** Resume Id */
       resume_id: string;
     };
-    /** UsageResumeResponse */
+    /**
+     * UsageResumeResponse
+     * @description Usage resume endpoint DTO using the canonical sync receipt fields.
+     */
     UsageResumeResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -9250,7 +10744,7 @@ export interface components {
      * UsageResumeStatus
      * @enum {string}
      */
-    UsageResumeStatus: "scheduled" | "started" | "cancelled";
+    UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
     /**
      * VersionedRuntimeRecord
      * @description Typed runtime record; its versioned domain fields remain JSON-valued extras.
@@ -9789,35 +11283,92 @@ export interface components {
     WorkspaceTaskFeed: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      cursor?: components["schemas"]["JsonValue"] | null;
+      cursor?: components["schemas"]["TaskCursor"] | null;
       /** Hasmore */
       hasMore: boolean;
       /** Hasmorechanges */
       hasMoreChanges?: boolean | null;
-      nextBefore?: components["schemas"]["JsonValue"] | null;
+      nextBefore?: components["schemas"]["TaskHistoryCursor"] | null;
       /** Reset */
       reset?: boolean | null;
       /** Tasks */
-      tasks: components["schemas"]["VersionedRuntimeRecord"][];
+      tasks: components["schemas"]["WorkspaceTaskRecord"][];
+    };
+    /** WorkspaceTaskRecord */
+    WorkspaceTaskRecord: {
+      /** Agent */
+      agent: string;
+      /** Bytes */
+      bytes?: number | null;
+      /** Cancelrequested */
+      cancelRequested?: boolean | null;
+      /** Command */
+      command?: string | null;
+      /** Completedatms */
+      completedAtMs?: number | null;
+      /** Created */
+      created: number;
+      /** Cwd */
+      cwd?: string | null;
+      /** Durationms */
+      durationMs?: number | null;
+      /** Exitcode */
+      exitCode?: number | null;
+      /** Finished */
+      finished?: number | null;
+      /** Id */
+      id: string;
+      /** Interactive */
+      interactive?: boolean | null;
+      /** Itemid */
+      itemId?: string | null;
+      kind: components["schemas"]["TaskKind"];
+      /** Log */
+      log?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Outputtruncated */
+      outputTruncated?: boolean | null;
+      /** Processid */
+      processId?: string | null;
+      /** Query */
+      query?: string | null;
+      /** Server */
+      server?: string | null;
+      /** Startedatms */
+      startedAtMs?: number | null;
+      status: components["schemas"]["TaskStatus"];
+      /** Stdinclosed */
+      stdinClosed?: boolean | null;
+      /** Stdincloserequested */
+      stdinCloseRequested?: string | null;
+      /** Stdinerror */
+      stdinError?: string | null;
+      /** Timeout Ms */
+      timeout_ms?: number | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Type */
+      type?: string | null;
     };
     /** WorkspaceView */
     WorkspaceView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Annotations */
-      annotations?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      annotations?: components["schemas"]["AnnotationRecord"][] | null;
       /** Checkpoints */
-      checkpoints?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      checkpoints?: components["schemas"]["CheckpointSummary"][] | null;
       /** Inbox */
       inbox?: components["schemas"]["VersionedRuntimeRecord"][] | null;
       /** Monitors */
-      monitors?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      monitors?: components["schemas"]["MonitorEntityDto"][] | null;
       /** Plans */
       plans?: components["schemas"]["PlanView"][] | null;
       /** Rules */
-      rules?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      rules?: components["schemas"]["RuleRecord"][] | null;
       /** Tasks */
-      tasks?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      tasks?: components["schemas"]["WorkspaceTaskRecord"][] | null;
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null;
       /** Work */
@@ -11320,7 +12871,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionedRuntimeRecord"];
+          "application/json": components["schemas"]["AnnotationReceipt"];
         };
       };
       /** @description Bad Request */
@@ -12367,7 +13918,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionedRuntimeRecord"];
+          "application/json": components["schemas"]["ComplaintDetailResponse"];
         };
       };
       /** @description Bad Request */
@@ -15343,7 +16894,11 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["QueueBody"];
+        "application/json":
+          | components["schemas"]["QueueCancelBody"]
+          | components["schemas"]["QueueEditBody"]
+          | components["schemas"]["QueueFirstBody"]
+          | components["schemas"]["QueueReorderBody"];
       };
     };
     responses: {
@@ -15570,7 +17125,9 @@ export interface operations {
   };
   rules_api_rules_get: {
     parameters: {
-      query?: never;
+      query?: {
+        agent?: string | null;
+      };
       header?: never;
       path?: never;
       cookie?: never;
@@ -16424,7 +17981,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["SyncPullResponse"];
+          "application/json":
+            | components["schemas"]["SyncPullResponse"]
+            | components["schemas"]["SyncPullResetResponse"];
         };
       };
       /** @description Bad Request */
@@ -16614,7 +18173,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionedRuntimeRecord"];
+          "application/json": components["schemas"]["TaskDetailResponse"];
         };
       };
       /** @description Bad Request */
