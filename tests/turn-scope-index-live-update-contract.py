@@ -34,7 +34,7 @@ class TurnScopeIndexUpdate(unittest.TestCase):
         self.assertFalse(self.runtime.scheduler.is_alive())
         self.runtime.closed = False
         with self.runtime.lock, self.runtime.db() as db:
-            db.execute('DROP INDEX runtime_item_turn_scope')
+            db.execute('DROP INDEX IF EXISTS runtime_item_turn_scope')
             db.executemany('INSERT INTO runtime_items VALUES (?,?,?,?)', (
                 ('item-' + str(i), 'actor-' + str(i % 2), json.dumps({
                     'id': 'item-' + str(i), 'text': 'Exact text ' + 'x' * 512,

@@ -7,8 +7,8 @@ from codex_source import signature, source_function
 
 SOURCE_HASH = 'ba3a71a6624917d80019cb5d4d8de408dfb03c4bce4e9d975dcb6514ecdb061a'
 RUNTIME_HASHES = frozenset({
-    'ec05e1d6b43d80a36a0548db1cd6baf185af8ca4a8f048998425f6c3d4312d51',
-    '0855e2e41b6652a4a7c3f8e472855d4b171c920b0fea3ad91cc961b3dfea51d2',
+    '7e2f7a03acdf9c6a1c8876f022b70c14821ef37a7119f33ed910845e18ba7450',
+    '9b7fcf91543d2e469bc8581ec8d4c1cd868afe64a4b035a15fe0f5fd1beac7e7',
 })
 BEFORE = '6278ad43b71a2a2ba34c86c8ee3c7fdcf634a0fa5043f2232965c0c0da2e46e6'
 AFTER = '974cdbc5ccda9713aab3e3d08c2440bcf38b9f7eedc7fddf700cd1e17f883a05'

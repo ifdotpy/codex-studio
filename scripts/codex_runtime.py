@@ -1500,8 +1500,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
-                CREATE INDEX IF NOT EXISTS runtime_item_turn_scope ON runtime_items(
-                    agent, json_extract(record,'$.turnId'), created);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
