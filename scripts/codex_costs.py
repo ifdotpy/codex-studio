@@ -397,6 +397,7 @@ class ClaudeCostReader:
         self.files = {}
         self.data = None
         self.checked = 0
+        self.refreshing = False
         self.error = None
         try:
             cached = json.loads(self.state_path.read_text())
@@ -408,12 +409,22 @@ class ClaudeCostReader:
             pass
 
     def snapshot(self):
+        start_refresh = False
         with self.lock:
-            if self.clock() - self.checked >= 300:
+            now = self.clock()
+            if now - self.checked >= 300 and not self.refreshing:
+                self.refreshing = True
+                self.checked = now
+                start_refresh = True
+        if start_refresh:
+            try:
                 threading.Thread(target=self._refresh, name="claude-costs", daemon=True).start()
-                self.checked = self.clock()
+            except RuntimeError:
+                with self.lock:
+                    self.refreshing = False
+        with self.lock:
             return {"at": self.checked or None, "error": self.error,
-                    "data": self.data, "refreshing": self.clock() - self.checked < 2,
+                    "data": self.data, "refreshing": self.refreshing,
                     "stale": self.data is None or self.error is not None}
 
     def _refresh(self):
@@ -489,5 +500,8 @@ class ClaudeCostReader:
         finally:
             # Refresh completion and failure both change what the API returns.
             # Notify only after releasing the reader lock.
+            with self.lock:
+                self.refreshing = False
+                self.checked = self.clock()
             if self.on_change is not None:
                 self.on_change()

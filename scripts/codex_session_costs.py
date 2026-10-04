@@ -48,6 +48,7 @@ class SessionCostReader:
         self.cache = OrderedDict()
         self.file_cache = OrderedDict()
         self.refreshing = set()
+        self.refresh_waiters = OrderedDict()
         self.inflight = {}
         self.lock = threading.RLock()
 
@@ -234,18 +235,26 @@ class SessionCostReader:
     def _start_refresh(self, agent_id, root, *, min_interval=0):
         with self.lock:
             # Heavy history reads share one worker across all chats.
+            if root in self.refreshing:
+                waiters = self.refresh_waiters.setdefault(root, OrderedDict())
+                waiters[agent_id] = None
+                waiters.move_to_end(agent_id)
+                return False
             if self.refreshing:
                 return False
             checked = self.__dict__.setdefault("refresh_checks", OrderedDict()).get(root)
             if checked is not None and self.clock() - checked < min_interval:
                 return False
             self.refreshing.add(root)
+            self.refresh_waiters[root] = OrderedDict(((agent_id, None),))
+            self.refresh_waiters.move_to_end(root)
         try:
             threading.Thread(target=self._background_refresh, args=(agent_id, root),
                              name="session-cost-refresh", daemon=True).start()
         except RuntimeError:
             with self.lock:
                 self.refreshing.discard(root)
+                self.refresh_waiters.pop(root, None)
             return False
         return True
 
@@ -272,12 +281,14 @@ class SessionCostReader:
                 while len(checks) > self.CACHE_ROOTS:
                     checks.popitem(last=False)
                 self.refreshing.discard(root)
+                waiters = tuple(self.refresh_waiters.pop(root, {agent_id: None}))
                 current_cache = self.cache.get(root)
                 current_error = self.__dict__.setdefault("refresh_errors", OrderedDict()).get(root)
             previous_error_key = (type(previous_error), str(previous_error)) if previous_error else None
             current_error_key = (type(current_error), str(current_error)) if current_error else None
             if current_cache != previous_cache or current_error_key != previous_error_key:
-                _publish_session_cost(self.state_root, agent_id)
+                for waiter_id in waiters:
+                    _publish_session_cost(self.state_root, waiter_id)
 
     def snapshot(self, agent_id, *, wait=False):
         db = self._connect()
@@ -343,9 +354,10 @@ class SessionCostReader:
                        or source.get("pricingSignature") != pricing_signature
                        or source.get("agentsSignature") != agent_signature)
             due = checked is None or self.clock() - checked >= 10
-            started = self._start_refresh(agent_id, root, min_interval=10) if changed or due else False
+            if changed or due:
+                self._start_refresh(agent_id, root, min_interval=10)
             with self.lock:
-                refreshing = changed or started or root in self.refreshing
+                refreshing = root in self.refreshing
             return {**result, "cacheAgeSeconds": round(max(0, self.clock() - cached_at), 1),
                     "refreshing": refreshing}
         self._start_refresh(agent_id, root, min_interval=10)

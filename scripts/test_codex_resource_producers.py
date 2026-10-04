@@ -20,6 +20,7 @@ isolate_supervisor_environment()
 
 from codex_costs import CostReader, _publish_costs
 from codex_session_costs import SessionCostReader
+import codex_session_costs
 from codex_token_rate import TokenRates
 from codex_voice import VoiceStore
 from codex_worktree_disk import WorktreeDiskScanner, _publish_worktree_disk
@@ -167,6 +168,75 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                  "inFlight": True, "turnId": "turn-a"},
                 "turn/started", {"turnId": "turn-a"}, "account-a", "connection-a", 100.0,
             )
+
+    async def test_shared_session_refresh_notifies_each_waiting_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            loop = asyncio.get_running_loop()
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(root, hub)
+            subscription = hub.subscribe(
+                [
+                    ResourceRef(SessionCostResource(kind="session-cost", agentId="lead")),
+                    ResourceRef(SessionCostResource(kind="session-cost", agentId="worker-a")),
+                ],
+                loop=loop,
+            )
+            reader = SessionCostReader(root / "canvas.sqlite3", pricing=None, state_root=root)
+            compute_started = threading.Event()
+            release_compute = threading.Event()
+            both_published = threading.Event()
+            published: list[str] = []
+            published_lock = threading.Lock()
+            original_publish = codex_session_costs._publish_session_cost
+
+            def compute(_agent_id: str, team_root: str, *, refresh: bool) -> dict[str, object]:
+                if not refresh:
+                    raise AssertionError("expected a shared background refresh")
+                compute_started.set()
+                if not release_compute.wait(2):
+                    raise TimeoutError("test did not release shared session-cost refresh")
+                with reader.lock:
+                    reader.cache[team_root] = (
+                        reader.clock(),
+                        {"rootId": team_root, "totalUSD": 2.0},
+                        {},
+                    )
+                return reader.cache[team_root][1]
+
+            def publish(state_dir: str | Path, agent_id: str) -> None:
+                original_publish(state_dir, agent_id)
+                with published_lock:
+                    published.append(agent_id)
+                    if len(published) == 2:
+                        both_published.set()
+
+            try:
+                with patch.object(reader, "_compute_shared", side_effect=compute), patch.object(
+                    codex_session_costs, "_publish_session_cost", side_effect=publish
+                ):
+                    self.assertTrue(reader._start_refresh("lead", "lead"))
+                    self.assertTrue(await asyncio.to_thread(compute_started.wait, 1))
+                    self.assertFalse(reader._start_refresh("worker-a", "lead"))
+                    release_compute.set()
+                    self.assertTrue(await asyncio.to_thread(both_published.wait, 1))
+
+                received: set[str] = set()
+                while received != {"lead", "worker-a"}:
+                    event = await subscription.next_event(timeout=1)
+                    assert event is not None
+                    received.update(
+                        resource.root.agentId
+                        for resource in event.resources
+                        if resource.root.kind == "session-cost"
+                    )
+                self.assertEqual(set(published), {"lead", "worker-a"})
+                self.assertEqual(reader.refreshing, set())
+                self.assertEqual(reader.refresh_waiters, {})
+            finally:
+                release_compute.set()
+                subscription.close()
+                unregister_resource_hub(root, hub)
 
 
 if __name__ == "__main__":

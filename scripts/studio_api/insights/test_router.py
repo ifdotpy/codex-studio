@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
+import json
+import sqlite3
+import tempfile
 import threading
 import time
 import unittest
@@ -20,6 +23,7 @@ import httpx
 import uvicorn
 
 from studio_api.context import ApiContext
+from codex_session_costs import SessionCostReader
 from studio_api.insights.router import _stream_export, create_router
 from studio_api.models import ErrorResponse, JsonValue, ResponseModel
 
@@ -103,12 +107,13 @@ class _Context:
         self.canvas = SimpleNamespace(root=Path("/state"))
         self.cost_snapshots: list[str] = []
         self.session_snapshots: list[str] = []
+        self.session_reader: SessionCostReader | None = None
 
     def costs(self) -> _CostReader:
         return _CostReader(self)
 
     def session_costs(self) -> _SessionCostReader:
-        return _SessionCostReader(self)
+        return self.session_reader or _SessionCostReader(self)
 
     def send(
         self,
@@ -285,6 +290,47 @@ class InsightsRouterTests(unittest.TestCase):
         self.assertEqual(invalid_session.status_code, 400)
         self.assertEqual(self.context.session_snapshots, ["agent_123"])
         self.assertEqual(session.json()["pricingState"], "loading")
+
+    def test_session_cost_http_returns_cached_values_after_failed_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db_path = root / "canvas.sqlite3"
+            with sqlite3.connect(db_path) as db:
+                db.executescript("""
+                  CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                  CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                  CREATE TABLE analytics_usage (seq INTEGER PRIMARY KEY, agent TEXT, root TEXT,
+                    thread TEXT, turn TEXT, at REAL, record TEXT);
+                  CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL);
+                  CREATE TABLE analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                """)
+                db.execute("INSERT INTO analytics_agents VALUES (?, ?)",
+                           ("lead", json.dumps({"rootId": "lead"})))
+
+            class _Pricing:
+                @staticmethod
+                def snapshot() -> dict[str, object]:
+                    return {"version": 1}
+
+            now = 100.0
+            reader = SessionCostReader(db_path, _Pricing(), state_root=root, clock=lambda: now)
+            result = {
+                "rootId": "lead", "totalUSD": 7.5, "pricedSamples": 1,
+                "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
+                "estimated": True, "pricingState": "ready", "method": "cached estimate",
+            }
+            reader.cache["lead"] = (90.0, result, {})
+            reader.__dict__.setdefault("refresh_checks", {})["lead"] = now
+            reader.__dict__.setdefault("refresh_errors", {})["lead"] = ValueError(
+                "source temporarily unavailable"
+            )
+            self.context.session_reader = reader
+
+            response = self.client.get("/api/session-cost?agent=lead")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["totalUSD"], 7.5)
+        self.assertFalse(response.json()["refreshing"])
 
     def test_disk_query_is_validated_before_scanner_side_effect(self) -> None:
         scanner = SimpleNamespace(
