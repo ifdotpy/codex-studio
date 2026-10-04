@@ -31,5 +31,50 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(accountLimits({ data: {} }, "default"), null);
   assert.equal(accountLimits(null, "default"), null);
   assert.equal(accountLimits("not an object", "a"), null);
-  console.log("Account limits ownership: 8 passed");
+
+  const generatedResponse = {
+    accountKey: "a",
+    at: 120,
+    checkedAt: 121,
+    data: {
+      accountId: "native-a",
+      ordinaryUsageAllowed: true,
+      rateLimits: { primary: { usedPercent: 25, resetsAt: 200 } },
+    },
+  };
+  assert.equal(
+    accountLimits(generatedResponse, "a", "native-a"),
+    generatedResponse,
+  );
+  assert.equal(
+    accountLimits(
+      {
+        ...generatedResponse,
+        data: {
+          ...generatedResponse.data,
+          rateLimits: { primary: { usedPercent: "25" } },
+        },
+      },
+      "a",
+      "native-a",
+    ),
+    null,
+  );
+  const generatedSnapshot = {
+    accountKey: "a",
+    at: 122,
+    data: {
+      accountId: "native-a",
+      ordinaryUsageAllowed: true,
+      rateLimits: {
+        planType: "plus",
+        primary: { usedPercent: 25, windowDurationMins: 10080 },
+      },
+    },
+  };
+  assert.equal(
+    accountLimits(generatedSnapshot, "a", "native-a"),
+    generatedSnapshot,
+  );
+  console.log("Account limits ownership: 11 passed");
 });

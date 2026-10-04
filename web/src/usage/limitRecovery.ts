@@ -1,6 +1,6 @@
-import type { Agent, Json, JsonValue } from "../types";
+import type { Agent, Json } from "../types";
 import { nativeErrorKind } from "../nativeErrors";
-import { jsonObject } from "./accountUsage";
+import { providerLimitData, type RateLimitWindow } from "./providerLimits";
 
 export type LimitRecovery = {
   title: string;
@@ -24,14 +24,11 @@ function freshLimits(limits: Json | null, agent: Agent, now: number) {
 }
 
 function windowAllowsUsage(
-  value: JsonValue | undefined | null,
+  window: RateLimitWindow | undefined | null,
   now: number,
 ): boolean {
-  if (value == null) return true;
-  const window = jsonObject(value);
-  if (!window) return false;
-  const usedPercent = window.usedPercent;
-  const resetsAt = window.resetsAt;
+  if (window == null) return true;
+  const { usedPercent, resetsAt } = window;
   return (
     finite(usedPercent) &&
     usedPercent >= 0 &&
@@ -40,8 +37,10 @@ function windowAllowsUsage(
   );
 }
 
-function hasExhaustedWindow(value: JsonValue | undefined, now: number) {
-  const window = jsonObject(value);
+function hasExhaustedWindow(
+  window: RateLimitWindow | undefined | null,
+  now: number,
+) {
   const resetsAt = window?.resetsAt;
   return finite(resetsAt) && resetsAt <= now;
 }
@@ -63,10 +62,12 @@ export function limitRecovered(
     : typeof agent.lastEvent === "string"
       ? Date.parse(agent.lastEvent) / 1000
       : Number.NaN;
-  const data = jsonObject(limits?.data);
-  const rateLimits = jsonObject(data?.rateLimits);
-  const rateLimitsByLimitId = jsonObject(data?.rateLimitsByLimitId);
-  const buckets = [rateLimits, ...Object.values(rateLimitsByLimitId ?? {})];
+  const data = providerLimitData(limits?.data);
+  const rateLimits = data?.rateLimits;
+  const buckets = [
+    rateLimits,
+    ...Object.values(data?.rateLimitsByLimitId ?? {}),
+  ];
   if (
     !limits ||
     !freshLimits(limits, agent, now) ||
@@ -77,24 +78,17 @@ export function limitRecovered(
     return false;
   return (
     !!rateLimits &&
-    buckets.every((value) => {
-      const bucket = jsonObject(value);
+    buckets.every((bucket) => {
       if (!bucket) return false;
-      const individualLimitValue = bucket.individualLimit;
-      const individualLimit = jsonObject(individualLimitValue);
-      const remainingPercent = individualLimit?.remainingPercent;
-      const validIndividualLimit =
-        individualLimitValue == null ||
-        (individualLimit !== null &&
-          (remainingPercent == null ||
-            (finite(remainingPercent) &&
-              remainingPercent >= 0 &&
-              remainingPercent <= 100)));
+      const remainingPercent = bucket.individualLimit?.remainingPercent;
       return Boolean(
         bucket.rateLimitReachedType == null &&
         (bucket.spendControlReached == null ||
           bucket.spendControlReached === false) &&
-        validIndividualLimit &&
+        (remainingPercent == null ||
+          (finite(remainingPercent) &&
+            remainingPercent >= 0 &&
+            remainingPercent <= 100)) &&
         !(finite(remainingPercent) && remainingPercent <= 0) &&
         windowAllowsUsage(bucket.primary, now) &&
         windowAllowsUsage(bucket.secondary, now),
@@ -116,8 +110,8 @@ export function limitRecovery(
     title: "Usage limit reached",
     message: "View account limits for reset times and available credits.",
   };
-  const data = jsonObject(limits?.data);
-  const snapshot = jsonObject(data?.rateLimits);
+  const data = providerLimitData(limits?.data);
+  const snapshot = data?.rateLimits;
   if (
     !snapshot ||
     !freshLimits(limits, agent, now) ||
@@ -126,8 +120,7 @@ export function limitRecovery(
   )
     return fallback;
 
-  const resets = [snapshot.primary, snapshot.secondary].flatMap((value) => {
-    const window = jsonObject(value);
+  const resets = [snapshot.primary, snapshot.secondary].flatMap((window) => {
     return finite(window?.usedPercent) &&
       window.usedPercent >= 100 &&
       finite(window.resetsAt)

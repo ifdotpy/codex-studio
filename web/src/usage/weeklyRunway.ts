@@ -1,5 +1,5 @@
-import type { Json, JsonValue } from "../types";
-import { jsonObject } from "./accountUsage";
+import type { Json } from "../types";
+import { jsonObject, type JsonObject } from "./accountUsage";
 
 const DAY = 86400;
 const WEEK_MINUTES = 10080;
@@ -26,22 +26,17 @@ export function weeklyRunway(
   const data = jsonObject(limits?.data);
   const reported = jsonObject(data?.rateLimitsByLimitId);
   const rateLimits = jsonObject(data?.rateLimits);
-  const buckets: [string, JsonValue][] =
+  const buckets: [string, JsonObject][] =
     reported && Object.keys(reported).length > 0
-      ? Object.entries(reported)
+      ? Object.entries(reported).flatMap(([id, value]) => {
+          const bucket = jsonObject(value);
+          return bucket ? [[id, bucket]] : [];
+        })
       : rateLimits
-        ? [
-            [
-              typeof rateLimits.limitId === "string"
-                ? rateLimits.limitId
-                : "codex",
-              rateLimits,
-            ],
-          ]
+        ? [[rateLimits.limitId || "codex", rateLimits]]
         : [];
   const windows = buckets.flatMap(([id, value]) => {
-    const bucket = jsonObject(value);
-    if (!bucket) return [];
+    const bucket = value;
     return [bucket.primary, bucket.secondary].flatMap((windowValue) => {
       const window = jsonObject(windowValue);
       if (window?.windowDurationMins !== WEEK_MINUTES) return [];
