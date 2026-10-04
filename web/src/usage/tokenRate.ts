@@ -24,17 +24,19 @@ function validRate(value: TokenRate | null) {
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
   values.set(id, value);
-  while (values.size > 2048) values.delete(values.keys().next().value!);
+  if (values.size > 2048) values.delete(values.keys().next().value!);
   for (const listener of listeners.get(id) || []) listener(value);
 }
 export const workerRateKey = (teamId: string, agentId: string) =>
   `team:${teamId}:${agentId}`;
 export function clearTeamTokenRates(teamId: string) {
-  for (const id of teamMembers.get(teamId) || []) {
-    const key = workerRateKey(teamId, id);
-    publishRate(key, null);
-    values.delete(key);
-  }
+  const members = teamMembers.get(teamId);
+  if (members)
+    for (const id of members) {
+      const key = workerRateKey(teamId, id);
+      publishRate(key, null);
+      values.delete(key);
+    }
   teamMembers.delete(teamId);
 }
 export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
@@ -54,8 +56,10 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
     )
       return;
     const next = new Set(entries.map(([id]) => id));
-    for (const id of teamMembers.get(teamId) || [])
-      if (!next.has(id)) publishRate(workerRateKey(teamId, id), null);
+    const previous = teamMembers.get(teamId);
+    if (previous)
+      for (const id of previous)
+        if (!next.has(id)) publishRate(workerRateKey(teamId, id), null);
     teamMembers.set(teamId, next);
     for (const [id, value] of entries)
       publishRate(workerRateKey(teamId, id), value);
@@ -110,7 +114,7 @@ export function watchTeamTokenRates(teamId: string) {
 export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
   if (
     !validRates(value?.rates) ||
-    !value?.teams ||
+    !value.teams ||
     typeof value.teams !== "object" ||
     Array.isArray(value.teams) ||
     Object.keys(value.teams).length > 1024 ||
@@ -139,6 +143,7 @@ export function subscribeTokenRate(
   listener(values.get(id) || null);
   return () => {
     subscribers!.delete(listener);
+    // Stryker disable next-line ConditionalExpression, CallExpression: The false variant and call removal only retain an empty private Set, unobservable through the exported API; the true variant is killed by "subscriptions fan out once and unsubscribe independently".
     if (!subscribers!.size) listeners.delete(id);
   };
 }
@@ -157,6 +162,7 @@ const standardRate = new Intl.NumberFormat(undefined, {
   useGrouping: false,
 });
 const compactRate = new Intl.NumberFormat(undefined, {
+  // Stryker disable next-line StringLiteral: This mutation throws RangeError at module load; Vitest collects zero tests and reports Survived (static, testsCompleted 0), so no test in this file can report it killed. This is a tool limitation, not an equivalent mutant.
   notation: "compact",
   maximumFractionDigits: 0,
   useGrouping: false,

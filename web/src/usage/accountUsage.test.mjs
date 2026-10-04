@@ -8,8 +8,18 @@ it("returns limits only for the selected account and matching native identity", 
   assert.equal(accountLimits(a, "a", "native-a"), a);
   assert.equal(accountLimits(a, "b"), null);
   assert.equal(accountLimits(a, "a", "replacement-login"), null);
+  const legacyWithoutAccountId = { accountKey: "a", data: {} };
+  assert.equal(
+    accountLimits(legacyWithoutAccountId, "a", "native-a"),
+    legacyWithoutAccountId,
+  );
+  const legacyWithoutData = { accountKey: "a" };
+  assert.equal(
+    accountLimits(legacyWithoutData, "a", "native-a"),
+    legacyWithoutData,
+  );
   assert.equal(accountLimits({ data: {} }, "a"), null);
   assert.equal(accountLimits({ data: {} }, "default"), null);
   assert.equal(accountLimits(null, "default"), null);
-  console.log("Account limits ownership: 6 passed");
+  console.log("Account limits ownership: 8 passed");
 });

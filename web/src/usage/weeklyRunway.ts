@@ -2,8 +2,7 @@ import type { Json } from "../types";
 
 const DAY = 86400;
 const WEEK_MINUTES = 10080;
-const finite = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const finite = (value: unknown): value is number => Number.isFinite(value);
 
 export type WeeklyRunway = {
   color: "green" | "yellow" | "red" | "gray";
@@ -46,27 +45,25 @@ export function weeklyRunway(
         finite(window.resetsAt) && window.resetsAt > 0 ? window.resetsAt : null;
       const expired = reset !== null && reset <= now;
       const remaining = expired ? 100 : used === null ? null : 100 - used;
-      const observed = limits?.at;
-      const start = reset === null ? null : reset - WEEK_MINUTES * 60;
+      const observed = limits!.at;
+      const observedAt = finite(observed) ? observed : Number.NaN;
       const elapsed =
-        finite(observed) && start !== null ? (observed - start) / DAY : null;
+        reset !== null
+          ? (observedAt - (reset - WEEK_MINUTES * 60)) / DAY
+          : null;
+      const elapsedDays = elapsed ?? Number.NaN;
       const valid =
         !signedOut &&
-        reset !== null &&
         !expired &&
-        finite(observed) &&
-        observed <= now + 5 &&
-        elapsed !== null &&
-        elapsed > 0 &&
-        elapsed <= 7;
+        observedAt <= now + 5 &&
+        elapsedDays > 0 &&
+        elapsedDays <= 7;
       const days =
-        remaining !== null
-          ? expired || used === 0
-            ? Infinity
-            : valid
-              ? remaining / (used / elapsed!)
-              : null
-          : null;
+        expired || used === 0
+          ? Infinity
+          : valid && used !== null
+            ? (100 - used) / (used / elapsedDays)
+            : null;
       return [
         {
           name:
@@ -76,10 +73,7 @@ export function weeklyRunway(
           reset,
           days,
           resetFirst:
-            days !== null &&
-            days > 0 &&
-            reset !== null &&
-            (reset - now) / DAY < days,
+            reset !== null && (reset - now) / DAY < (days ?? Number.NaN),
         },
       ];
     }),
@@ -90,13 +84,7 @@ export function weeklyRunway(
     (windows.length > 0 && windows.every((window) => window.remaining === null))
   )
     return { color: "gray", days: null, windows };
-  if (!windows.length) return { color: "green", days: Infinity, windows };
-  if (
-    windows.some(
-      (window) =>
-        window.remaining === 0 && (window.reset === null || window.reset > now),
-    )
-  )
+  if (windows.some((window) => window.remaining === 0))
     return { color: "red", days: 0, windows };
   if (windows.some((window) => window.days === null))
     return { color: "red", days: null, windows };

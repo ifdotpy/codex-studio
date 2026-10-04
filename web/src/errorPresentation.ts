@@ -3,7 +3,6 @@ import { serviceTimeText } from "./local-time.ts";
 // available separately from the short message used in labels and notifications.
 export function errorDetails(value: unknown): string {
   if (value == null) return "";
-  if (typeof value === "string") return value;
   if (typeof value !== "object") return String(value);
   try {
     const seen = new WeakSet<object>();
@@ -37,7 +36,6 @@ export function displayError(value: unknown): string {
   const visited = new Set<unknown>();
   function message(current: unknown, depth: number): string {
     if (current == null) return "";
-    if (typeof current === "string") return current;
     if (typeof current !== "object") return String(current);
     if (depth >= 8 || visited.has(current)) return "";
     visited.add(current);

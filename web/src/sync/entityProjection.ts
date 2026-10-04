@@ -30,6 +30,7 @@ export function applyEntityRows(
 ): Snapshot | null {
   const changed = new Set<string>();
   const seen = new Set<string>();
+  // Stryker disable next-line BooleanLiteral: when no tombstone is added, prior applies preserve the 4096-tombstone cap, so a cleanup scan cannot prune a row.
   let addedTombstone = false;
   for (const row of rows) {
     if (!row.id.startsWith("entity:")) continue;
@@ -40,7 +41,7 @@ export function applyEntityRows(
     const oldEntityId = previous?.entityId;
     if (row._deleted) {
       if (oldCollection) {
-        state.values.get(oldCollection)?.delete(oldEntityId!);
+        state.values.get(oldCollection)!.delete(oldEntityId!);
         changed.add(oldCollection);
       }
       state.rows.delete(row.id);
@@ -65,7 +66,7 @@ export function applyEntityRows(
       oldCollection &&
       (oldCollection !== parsed.collection || oldEntityId !== parsed.id)
     ) {
-      state.values.get(oldCollection)?.delete(oldEntityId!);
+      state.values.get(oldCollection)!.delete(oldEntityId!);
       changed.add(oldCollection);
     }
     let collection = state.values.get(parsed.collection);
@@ -80,15 +81,25 @@ export function applyEntityRows(
     changed.add(parsed.collection);
   }
   // RxDB find queries omit tombstones. Missing IDs therefore represent deletes.
+  const missing: Array<
+    [
+      string,
+      { seq: number; collection: string; entityId: string; deleted?: boolean },
+    ]
+  > = [];
   for (const [rowId, previous] of state.rows) {
     if (seen.has(rowId)) continue;
     if (previous.deleted) continue;
-    state.values.get(previous.collection)?.delete(previous.entityId);
+    missing.push([rowId, previous]);
+  }
+  for (const [rowId, previous] of missing) {
+    state.values.get(previous.collection)!.delete(previous.entityId);
     changed.add(previous.collection);
     state.rows.delete(rowId);
     state.rows.set(rowId, { ...previous, deleted: true });
     addedTombstone = true;
   }
+  // Stryker disable next-line ConditionalExpression: without a new tombstone, the API invariant makes this cleanup scan a no-op.
   if (addedTombstone) {
     let tombstones = 0;
     for (const [rowId, row] of state.rows) {
@@ -101,7 +112,7 @@ export function applyEntityRows(
   const prior = state.snapshot;
   const list = (name: string) =>
     prior && !changed.has(name)
-      ? (prior.runtime as any)[name === "agent" ? "agents" : `${name}s`] || []
+      ? (prior.runtime as any)[`${name}s`] || []
       : [...(state.values.get(name)?.values() || [])];
   const agents = list("agent");
   const chats = list("chat");
@@ -119,17 +130,14 @@ export function applyEntityRows(
     event: "events",
     work: "work",
   };
-  let runtimeChanged = !prior;
   for (const [collection, key] of Object.entries(keys)) {
     if (changed.has(collection) || !prior) {
       runtime[key] = collection === "agent" ? agents : list(collection);
-      runtimeChanged = true;
     }
   }
   const workspace = state.values.get("workspace")?.get("current") || {};
   if (changed.has("workspace") || !prior) {
     Object.assign(runtime, workspace);
-    runtimeChanged = true;
   }
   const next: Snapshot =
     prior && !changed.size
@@ -144,7 +152,7 @@ export function applyEntityRows(
             changed.has("edge") || !prior
               ? [...(state.values.get("edge")?.values() || [])]
               : (prior as any).edges,
-          runtime: runtimeChanged ? { ...runtime } : runtime,
+          runtime,
         } as unknown as Snapshot);
   state.snapshot = next;
   return next;

@@ -16,7 +16,6 @@ export interface FileDiff {
 }
 
 function sourceLines(source: string): string[] {
-  if (!source) return [];
   const lines = source.split(/\r?\n/);
   if (lines.at(-1) === "") lines.pop();
   return lines;
@@ -38,7 +37,7 @@ function headerPath(header: string): string {
     try {
       path = JSON.parse(text);
     } catch {
-      return text;
+      // Invalid quoted input leaves `path` untouched.
     }
   }
   return path.replace(/^[ab]\//, "");
@@ -48,27 +47,27 @@ const hunkHeader = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/;
 const metadata =
   /^(?:diff --git |index |old mode |new mode |new file mode |deleted file mode |similarity index |dissimilarity index |rename from |rename to )/;
 
-function parseFile(source: string, requestedPath = ""): FileDiff {
+function parseFile(source: string, requestedPath: string): FileDiff {
   const result = fallback(source, requestedPath);
   const input = sourceLines(source);
-  let oldPath = "",
-    newPath = "",
-    oldEnd = 0,
+  let oldPath = "";
+  let newPath: string | undefined;
+  let oldEnd = 0,
     newEnd = 0,
-    hunks = 0;
+    hasHunks = false;
   let renameFrom = "",
     renameTo = "",
     emptyKind: FileDiff["kind"] = "unknown";
   const lines: DiffLine[] = [];
   let added = 0,
     removed = 0;
-  for (let i = 0; i < input.length;) {
+  for (let i = 0; i < input.length; i++) {
     const text = input[i];
     if (
       text.startsWith("--- ") &&
       input[i + 1]?.startsWith("+++ ") &&
       !oldPath &&
-      !hunks
+      !hasHunks
     ) {
       oldPath = headerPath(text);
       newPath = headerPath(input[i + 1]);
@@ -81,7 +80,7 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
           : newPath === "/dev/null"
             ? "delete"
             : "update";
-      i += 2;
+      i++;
       continue;
     }
     const match = text.match(hunkHeader);
@@ -93,8 +92,8 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
         Number(match[4] ?? 1),
       ];
       if (
-        (oldPath === "/dev/null" && (oldStart !== 0 || oldCount !== 0)) ||
-        (newPath === "/dev/null" && (newStart !== 0 || newCount !== 0)) ||
+        (oldPath === "/dev/null" && oldStart !== 0) ||
+        (newPath === "/dev/null" && newStart !== 0) ||
         ![
           oldStart,
           oldCount,
@@ -105,7 +104,8 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
         ].every(Number.isSafeInteger) ||
         (oldCount > 0 && oldStart === 0) ||
         (newCount > 0 && newStart === 0) ||
-        (hunks > 0 && (oldStart < oldEnd || newStart < newEnd)) ||
+        oldStart < oldEnd ||
+        newStart < newEnd ||
         (oldCount === 0 && newCount === 0)
       )
         return result;
@@ -116,54 +116,50 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
       newEnd = newStart + newCount;
       i++;
       let canMark = false;
-      while (i < input.length) {
+      for (; i < input.length; i++) {
         const body = input[i];
         if (body === "\\ No newline at end of file") {
           if (!canMark) return result;
           lines.push({ kind: "meta", text: body });
           canMark = false;
-          i++;
           continue;
         }
         if (oldLine === oldEnd && newLine === newEnd) break;
-        if (body.startsWith(" ") && oldLine < oldEnd && newLine < newEnd) {
+        if (body.startsWith(" ")) {
           lines.push({ kind: "context", text: body.slice(1), line: newLine++ });
           oldLine++;
-        } else if (body.startsWith("-") && oldLine < oldEnd) {
+        } else if (body.startsWith("-")) {
           lines.push({ kind: "delete", text: body.slice(1), line: oldLine++ });
           removed++;
-        } else if (body.startsWith("+") && newLine < newEnd) {
+        } else if (body.startsWith("+")) {
           lines.push({ kind: "add", text: body.slice(1), line: newLine++ });
           added++;
         } else return result;
         canMark = true;
-        i++;
       }
       if (oldLine !== oldEnd || newLine !== newEnd) return result;
-      hunks++;
+      i--;
+      hasHunks = true;
       continue;
     }
-    if (metadata.test(text) && !hunks) {
-      if (text.startsWith("diff --git ")) {
-        const samePath = text.match(/^diff --git a\/(.+) b\/\1$/);
-        if (samePath) result.path ||= samePath[1];
-      }
+    if (metadata.test(text) && !hasHunks) {
+      const samePath = text.match(/^diff --git a\/(.+) b\/\1$/);
+      if (samePath) result.path ||= samePath[1];
       if (text.startsWith("new file mode ")) emptyKind = "add";
       if (text.startsWith("deleted file mode ")) emptyKind = "delete";
       if (text.startsWith("rename from ")) renameFrom = text.slice(12);
       if (text.startsWith("rename to ")) renameTo = text.slice(10);
-      i++;
       continue;
     }
     return result;
   }
   if (
-    !hunks &&
+    !hasHunks &&
     !(renameFrom && renameTo) &&
     !(result.path && !oldPath && emptyKind !== "unknown")
   )
     return result;
-  if (!hunks && emptyKind !== "unknown") result.kind = emptyKind;
+  if (!hasHunks && emptyKind !== "unknown") result.kind = emptyKind;
   if (result.kind === "unknown") result.kind = "update";
   result.path ||= renameFrom;
   if (renameTo) result.movePath = renameTo;
@@ -172,10 +168,9 @@ function parseFile(source: string, requestedPath = ""): FileDiff {
 
 /** Read recorded unified diffs, without consulting the current filesystem. */
 export function unifiedDiff(source: string, path = ""): FileDiff[] {
-  if (!source) return [];
   const input = sourceLines(source);
   const chunks: string[] = [];
-  const rawLines = source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const rawLines = source.match(/[^\n]*\n|[^\n]+/g)!;
   let chunk: string[] = [],
     oldLeft = 0,
     newLeft = 0,
@@ -271,7 +266,7 @@ export function fileChanges(value: unknown, args?: unknown): FileDiff[] {
       return [fallback(source, item.path)];
     const move = item.kind?.move_path ?? item.kind?.movePath;
     const movePath = typeof move === "string" && move ? move : undefined;
-    const suffix = movePath ? `\n\nMoved to: ${movePath}` : "";
+    const suffix = movePath ? `\n\nMoved to: ${movePath}` : undefined;
     const patch =
       suffix && source.endsWith(suffix)
         ? source.slice(0, -suffix.length)

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { sentencePrefix } from "./sentenceStream.ts";
 
 import { it } from "vitest";
 
-it("keeps partial text visible and never retracts streamed content", () => {
+it("keeps streamed text visible and returns sentence offsets", async () => {
+  const { sentencePrefix, sentences } = await import("./sentenceStream.ts");
   const cases = [
     "Первое предложение. Второе ещё",
     "First sentence. Second sentence! Unfinished",
@@ -56,4 +56,22 @@ it("keeps partial text visible and never retracts streamed content", () => {
     }
   }
   console.log("PASS character-by-character stream never retracts visible text");
+  for (const [input, expected] of [
+    [
+      "Первое предложение. Второе!",
+      [
+        { text: "Первое предложение. ", index: 0 },
+        { text: "Второе!", index: 20 },
+      ],
+    ],
+    [
+      "First sentence. Second!",
+      [
+        { text: "First sentence. ", index: 0 },
+        { text: "Second!", index: 16 },
+      ],
+    ],
+  ]) {
+    assert.deepEqual(sentences(input), expected);
+  }
 });

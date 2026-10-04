@@ -5,7 +5,7 @@ export function explicitQueue(item: Record<string, unknown>) {
   if (item.localDelivery && item.deliveryStatus === "queued") return false;
   return (
     ["pending", "queued"].includes(
-      String(item.deliveryStatus || item.status || ""),
+      String(item.deliveryStatus || item.status),
     ) || item.pending === true
   );
 }
@@ -14,7 +14,7 @@ export function dispatchedMessage(item: Message) {
   return (
     item.materialized === true ||
     ["reserved", "dispatching", "delivered", "sent"].includes(
-      item.deliveryStatus || "",
+      item.deliveryStatus,
     ) ||
     (!item.localDelivery && item.materialized !== false && !item.pending)
   );
@@ -71,7 +71,7 @@ export function outgoingTranscript(
           : present;
       if (!shown.requestedDelivery && entry.body.delivery)
         shown = { ...shown, requestedDelivery: entry.body.delivery };
-      if (shown !== present) updates.set(present.id, shown);
+      updates.set(present.id, shown);
       if (
         ["failed", "uncertain"].includes(entry.status) &&
         !present.deliveryStatus
@@ -117,7 +117,7 @@ export function outgoingTranscript(
 }
 
 export function deliveryLabel(item: Message) {
-  const status = item.deliveryStatus || (item.pending ? "pending" : "");
+  const status = item.deliveryStatus || (item.pending ? "pending" : undefined);
   if (status === "sending" && item.pending) return "Waiting for agent";
   return (
     (

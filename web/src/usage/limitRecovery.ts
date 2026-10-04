@@ -8,8 +8,7 @@ export type LimitRecovery = {
   action?: { label: string; href: string };
   ownerRequest?: string;
 };
-const finite = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const finite = (value: unknown): value is number => Number.isFinite(value);
 
 export function limitRecovered(
   agent: Agent,
@@ -24,7 +23,9 @@ export function limitRecovered(
     return false;
   const errorAt = finite(agent.nativeLimitErrorAt)
     ? agent.nativeLimitErrorAt
-    : Date.parse(agent.lastEvent || "") / 1000;
+    : agent.lastEvent
+      ? Date.parse(agent.lastEvent) / 1000
+      : Number.NaN;
   if (
     !limits ||
     limits.error ||
@@ -81,11 +82,11 @@ export function limitRecovery(
   const snapshot = limits?.data?.rateLimits;
   if (
     !snapshot ||
-    limits?.error ||
-    limits?.stale ||
-    limits?.loading ||
-    (limits?.accountKey || "default") !== (agent.accountKey || "default") ||
-    !finite(limits?.at) ||
+    limits.error ||
+    limits.stale ||
+    limits.loading ||
+    (limits.accountKey || "default") !== (agent.accountKey || "default") ||
+    !finite(limits.at) ||
     now - limits.at > 300 ||
     [snapshot.primary, snapshot.secondary].some(
       (window) => finite(window?.resetsAt) && window.resetsAt <= now,
@@ -98,8 +99,7 @@ export function limitRecovery(
       (window) =>
         finite(window?.usedPercent) &&
         window.usedPercent >= 100 &&
-        finite(window?.resetsAt) &&
-        window.resetsAt > now,
+        finite(window.resetsAt),
     )
     .map((window) => window.resetsAt as number);
   const reset = resets.length ? { resetAt: Math.max(...resets) } : {};

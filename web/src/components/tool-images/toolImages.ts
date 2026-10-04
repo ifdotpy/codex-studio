@@ -27,9 +27,7 @@ export function toolImages(payload: Json): ToolImage[] {
     if (typeof args === "string") {
       try {
         args = JSON.parse(args);
-      } catch {
-        args = null;
-      }
+      } catch {}
     }
     path(args?.path);
   }
@@ -37,21 +35,21 @@ export function toolImages(payload: Json): ToolImage[] {
     if (typeof source === "string" && inlineImage.test(source))
       images.push({ kind: "inline", source, name: "Tool image" });
   };
-  if (payload.type === "dynamicToolCall")
-    for (const block of Array.isArray(payload.contentItems)
-      ? payload.contentItems
-      : [])
+  if (payload.type === "dynamicToolCall" && Array.isArray(payload.contentItems))
+    for (const block of payload.contentItems)
       if (block?.type === "inputImage") inline(block.imageUrl);
-  if (payload.type === "mcpToolCall")
-    for (const block of Array.isArray(payload.result?.content)
-      ? payload.result.content
-      : [])
+  if (payload.type === "mcpToolCall" && Array.isArray(payload.result?.content))
+    for (const block of payload.result.content)
       if (
         block?.type === "image" &&
         typeof block.data === "string" &&
-        /^image\/(png|jpeg|gif|webp)$/i.test(block.mimeType || "")
+        /^image\/(png|jpeg|gif|webp)$/i.test(block.mimeType)
       )
-        inline(`data:${block.mimeType};base64,${block.data}`);
+        images.push({
+          kind: "inline",
+          source: `data:${block.mimeType};base64,${block.data}`,
+          name: "Tool image",
+        });
   return images.filter(
     (image, index) =>
       images.findIndex(

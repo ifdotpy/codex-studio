@@ -13,7 +13,8 @@ export function encodeDraftPayload(value: unknown): string {
   };
   const encode = (item: any): string => {
     if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;
-    if (item !== null && typeof item === "object")
+    if (item === null) return "null";
+    if (typeof item === "object")
       return `{${Object.keys(item)
         .sort(compareKeys)
         .map((key) => `${JSON.stringify(key)}:${encode(item[key])}`)

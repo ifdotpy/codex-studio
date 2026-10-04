@@ -23,11 +23,12 @@ export function checkedMessageReceipts(
   ids: string[],
 ): MessageReceipt[] {
   const requested = new Set(ids);
-  if (value?.agent !== room || !Array.isArray(value.items))
+  if (value == null || value.agent !== room || !Array.isArray(value.items))
     throw new Error("The delivery receipts belong to another chat.");
   if (
     value.items.some(
-      (item: any) => !requested.has(item?.id) || !statuses.has(item?.status),
+      (item: any) =>
+        item == null || !requested.has(item.id) || !statuses.has(item.status),
     ) ||
     new Set(value.items.map((item: MessageReceipt) => item.id)).size !==
       value.items.length

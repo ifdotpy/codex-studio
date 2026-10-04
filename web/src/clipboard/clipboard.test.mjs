@@ -1,108 +1,179 @@
-#!/usr/bin/env node
-// copyText falls back to the copy command when the Clipboard API is denied.
 import assert from "node:assert/strict";
+import { afterEach, test } from "vitest";
 
-import { test } from "vitest";
-const originalNavigator = Object.getOwnPropertyDescriptor(
-  globalThis,
-  "navigator",
-);
-const originalDocument = Object.getOwnPropertyDescriptor(
-  globalThis,
-  "document",
+import { copyText } from "./clipboard.ts";
+
+const originalGlobals = new Map(
+  ["navigator", "document"].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(globalThis, name),
+  ]),
 );
 
-test("copyText uses the clipboard API, fallback command and restores selection", async () => {
-  try {
-    const log = [];
-    let rejectApi = true;
-    let commandResult = true;
-    const area = () => ({
+function setGlobal(name, value) {
+  Object.defineProperty(globalThis, name, {
+    configurable: true,
+    value,
+  });
+}
+
+afterEach(() => {
+  for (const [name, descriptor] of originalGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+});
+
+test("copyText awaits the Clipboard API and does not touch the fallback", async () => {
+  const calls = [];
+  setGlobal("navigator", {
+    clipboard: {
+      writeText: async (text) => {
+        calls.push(text);
+      },
+    },
+  });
+
+  await copyText("secret code");
+
+  assert.deepEqual(calls, ["secret code"]);
+});
+
+test("copyText falls back and restores textarea, selection and focus state", async () => {
+  const calls = [];
+  const ranges = [{ id: "first" }, { id: "second" }];
+  const attributes = new Map();
+  const styles = {};
+  let textarea;
+  setGlobal("navigator", {
+    clipboard: {
+      writeText: async (text) => {
+        calls.push(["clipboard", text]);
+        throw new Error("permission denied");
+      },
+    },
+  });
+  setGlobal("document", {
+    activeElement: {
+      focus: (options) => calls.push(["focus", options]),
+    },
+    getSelection: () => ({
+      rangeCount: ranges.length,
+      getRangeAt: (index) => {
+        calls.push(["getRangeAt", index]);
+        return ranges[index];
+      },
+      removeAllRanges: () => calls.push(["clearSelection"]),
+      addRange: (range) => calls.push(["restoreRange", range.id]),
+    }),
+    createElement: (tag) => {
+      calls.push(["createElement", tag]);
+      textarea = {
+        value: "",
+        style: styles,
+        setAttribute: (name, value) => attributes.set(name, value),
+        select: () => calls.push(["select", textarea.value]),
+        setSelectionRange: (start, end) =>
+          calls.push(["setSelectionRange", start, end]),
+        remove: () => calls.push(["remove"]),
+      };
+      return textarea;
+    },
+    body: {
+      appendChild: (element) => calls.push(["append", element]),
+    },
+    execCommand: (command) => {
+      calls.push(["command", command]);
+      return true;
+    },
+  });
+
+  await copyText("secret code");
+
+  assert.equal(textarea.value, "secret code");
+  assert.deepEqual([...attributes], [["readonly", ""]]);
+  assert.deepEqual(styles, {
+    position: "fixed",
+    top: "-1000px",
+    opacity: "0",
+  });
+  assert.deepEqual(
+    calls.find(([name]) => name === "createElement"),
+    ["createElement", "textarea"],
+  );
+  assert.deepEqual(
+    calls.map(([name]) => name),
+    [
+      "clipboard",
+      "getRangeAt",
+      "getRangeAt",
+      "createElement",
+      "append",
+      "select",
+      "setSelectionRange",
+      "command",
+      "remove",
+      "clearSelection",
+      "restoreRange",
+      "restoreRange",
+      "focus",
+    ],
+  );
+  assert.deepEqual(
+    calls.filter(([name]) => name === "getRangeAt"),
+    [
+      ["getRangeAt", 0],
+      ["getRangeAt", 1],
+    ],
+  );
+  assert.deepEqual(
+    calls.find(([name]) => name === "setSelectionRange"),
+    ["setSelectionRange", 0, "secret code".length],
+  );
+  assert.deepEqual(
+    calls.find(([name]) => name === "append"),
+    ["append", textarea],
+  );
+  assert.deepEqual(
+    calls.find(([name]) => name === "command"),
+    ["command", "copy"],
+  );
+  assert.deepEqual(
+    calls.find(([name]) => name === "restoreRange"),
+    ["restoreRange", "first"],
+  );
+  assert.deepEqual(
+    calls.find(([name]) => name === "focus"),
+    ["focus", { preventScroll: true }],
+  );
+});
+
+test("copyText cleans up and rejects when the fallback command fails without selection", async () => {
+  const calls = [];
+  let removed = false;
+  setGlobal("navigator", {});
+  setGlobal("document", {
+    activeElement: null,
+    getSelection: () => null,
+    createElement: () => ({
       value: "",
       style: {},
-      attrs: {},
-      setAttribute(k, v) {
-        this.attrs[k] = v;
+      setAttribute: () => {},
+      select: () => calls.push("select"),
+      setSelectionRange: () => calls.push("setSelectionRange"),
+      remove: () => {
+        removed = true;
       },
-      select() {
-        log.push(["select", this.value]);
-      },
-      setSelectionRange() {},
-      remove() {
-        log.push(["remove"]);
-      },
-    });
-    const saved = { id: "range" };
-    // Node 24 defines a read-only navigator; replace it for this test.
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: {
-        clipboard: {
-          writeText: async (text) => {
-            log.push(["api", text]);
-            if (rejectApi) throw new Error("denied");
-          },
-        },
-      },
-    });
-    globalThis.document = {
-      activeElement: { focus: () => log.push(["focus"]) },
-      getSelection: () => ({
-        rangeCount: 1,
-        getRangeAt: () => saved,
-        removeAllRanges: () => log.push(["clear"]),
-        addRange: (r) => log.push(["restore", r.id]),
-      }),
-      createElement: () => area(),
-      body: { appendChild: (el) => log.push(["append", el.value]) },
-      execCommand: (name) => {
-        log.push(["command", name]);
-        return commandResult;
-      },
-    };
-    const { copyText } = await import("./clipboard.ts");
+    }),
+    body: { appendChild: () => calls.push("append") },
+    execCommand: (command) => {
+      calls.push(command);
+      return false;
+    },
+  });
 
-    await copyText("secret code");
-    assert.deepEqual(
-      log.map((e) => e[0]),
-      [
-        "api",
-        "append",
-        "select",
-        "command",
-        "remove",
-        "clear",
-        "restore",
-        "focus",
-      ],
-    );
-    assert.deepEqual(
-      log.find((e) => e[0] === "select"),
-      ["select", "secret code"],
-    );
+  await assert.rejects(copyText("blocked"), /blocked clipboard access/);
 
-    log.length = 0;
-    rejectApi = false;
-    await copyText("direct");
-    assert.deepEqual(log, [["api", "direct"]]);
-
-    log.length = 0;
-    rejectApi = true;
-    commandResult = false;
-    await assert.rejects(copyText("blocked"), /blocked clipboard access/);
-    assert.ok(
-      log.some((e) => e[0] === "remove"),
-      "the hidden field is removed after a failure",
-    );
-    console.log(
-      "PASS: Clipboard API, copy-command fallback, cleanup and failure",
-    );
-  } finally {
-    if (originalNavigator)
-      Object.defineProperty(globalThis, "navigator", originalNavigator);
-    else delete globalThis.navigator;
-    if (originalDocument)
-      Object.defineProperty(globalThis, "document", originalDocument);
-    else delete globalThis.document;
-  }
+  assert.equal(removed, true);
+  assert.deepEqual(calls, ["append", "select", "setSelectionRange", "copy"]);
 });

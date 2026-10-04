@@ -45,3 +45,61 @@ it("extracts readable diagnostics and normalizes native error details", () => {
     "PASS: nested diagnostics, complete JSON, primitives, Error causes, cycles, large integers, failed serialization",
   );
 });
+
+it("preserves direct detail formatting for nullish, string, and other values", () => {
+  assert.equal(errorDetails(null), "");
+  assert.equal(errorDetails(undefined), "");
+  assert.equal(errorDetails("plain details"), "plain details");
+  assert.equal(errorDetails(0), "0");
+  assert.equal(errorDetails(false), "false");
+  assert.equal(errorDetails(5n), "5");
+  assert.equal(errorDetails({ toJSON: () => undefined }), "");
+});
+
+it("stringifies primitive nested messages before checking later fields", () => {
+  assert.equal(displayError({ message: 42 }), "42");
+  assert.equal(displayError({ error: false }), "false");
+  assert.equal(
+    displayError({ message: 0, error: "Later string message" }),
+    "0",
+  );
+});
+
+it("bounds nested message lookup while preserving fallback diagnostics", () => {
+  let deep = { message: "Too deep to summarize" };
+  for (let level = 0; level < 8; level++) deep = { message: deep };
+  assert.equal(displayError(deep), errorDetails(deep));
+
+  const whitespaceOnly = { message: " \t ", code: "E_EMPTY" };
+  assert.equal(displayError(whitespaceOnly), errorDetails(whitespaceOnly));
+});
+
+it("breaks repeated message references and continues to a readable fallback", () => {
+  let messageReads = 0;
+  const loop = {
+    get message() {
+      messageReads++;
+      return this;
+    },
+    error: "Fallback from the repeated diagnostic",
+  };
+
+  assert.equal(displayError(loop), "Fallback from the repeated diagnostic");
+  assert.equal(messageReads, 1);
+});
+
+it("returns complete diagnostics if service-time display conversion throws", () => {
+  const originalToLocaleString = Date.prototype.toLocaleString;
+  const diagnostic = {
+    message: "You've hit a failure at 2026-01-01T00:00:00Z",
+    context: "preserved",
+  };
+  try {
+    Date.prototype.toLocaleString = function () {
+      throw new Error("Locale conversion failed");
+    };
+    assert.equal(displayError(diagnostic), errorDetails(diagnostic));
+  } finally {
+    Date.prototype.toLocaleString = originalToLocaleString;
+  }
+});

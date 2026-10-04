@@ -80,3 +80,60 @@ it("retains identity for unchanged transcript items and replaces changed data", 
     "PASS: full JSON snapshots retain unchanged rows; nested edits, removed fields, completion, reordering and deletion remain authoritative",
   );
 });
+
+it("keeps changed JSON shapes and deeply nested projections authoritative", () => {
+  const row = (value) => [{ id: "message", role: "assistant", value }];
+  const changed = [
+    [null, {}],
+    [{}, null],
+    [false, {}],
+    [42, {}],
+    [{}, 42],
+    [[], {}],
+    [{}, []],
+    [["first"], ["second"]],
+    [{ key: "same" }, {}],
+    [{}, { added: "new projection field" }],
+    [{ first: "same" }, { other: "same" }],
+  ];
+
+  for (const [priorValue, incomingValue] of changed) {
+    const previous = row(priorValue);
+    const incoming = row(incomingValue);
+    const retained = retainTranscriptItems(previous, incoming);
+    assert.equal(retained[0], incoming[0]);
+    assert.notEqual(retained[0], previous[0]);
+    assert.deepEqual(retained, incoming);
+  }
+
+  // A JSON-like record may have inherited properties. Matching an inherited
+  // key must not hide the changed own keys in an incoming projection.
+  const previousWithOwnKey = row({ key: "same" });
+  const incomingWithInheritedKey = row(
+    Object.assign(Object.create({ key: "same" }), { other: "same" }),
+  );
+  const inheritedResult = retainTranscriptItems(
+    previousWithOwnKey,
+    incomingWithInheritedKey,
+  );
+  assert.equal(inheritedResult[0], incomingWithInheritedKey[0]);
+
+  const nest = (value, levels) => {
+    for (let level = 0; level < levels; level++) value = { child: value };
+    return value;
+  };
+  const unchangedAtLimit = row(nest({ leaf: "same" }, 31));
+  assert.equal(
+    retainTranscriptItems(unchangedAtLimit, structuredClone(unchangedAtLimit)),
+    unchangedAtLimit,
+  );
+
+  const deeperPrevious = row(nest({ leaf: "same" }, 34));
+  const deeperIncoming = structuredClone(deeperPrevious);
+  const deeperResult = retainTranscriptItems(deeperPrevious, deeperIncoming);
+  assert.equal(deeperResult[0], deeperIncoming[0]);
+  assert.notEqual(deeperResult[0], deeperPrevious[0]);
+  console.log(
+    "PASS: changed shapes and keys stay authoritative; reference retention respects the JSON comparison depth limit",
+  );
+});

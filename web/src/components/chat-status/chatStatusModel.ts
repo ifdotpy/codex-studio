@@ -57,25 +57,28 @@ export function chatWaitState(
       (child.inFlight ||
         ["queued", "starting", "running", "approval"].includes(child.status)),
   );
-  const owned = (activities.get(agent.id) || []).filter(
-    (activity) => activity.agentId === agent.id,
-  );
-  const commands = owned.filter(
-    (activity) =>
-      activity.kind === "task" &&
-      activity.commandTask &&
-      (activity.background || !agent.inFlight),
-  );
-  const monitors = owned.filter((activity) => activity.kind === "monitor");
-  const inputs = (data.runtime.requests || []).filter(
-    (request) =>
-      request.agent === agent.id &&
-      (!request.status || request.status === "pending") &&
-      !request.deferred &&
-      (request.epoch == null ||
-        agent.epoch == null ||
-        request.epoch === agent.epoch),
-  ).length;
+  const owned = activities
+    .get(agent.id)
+    ?.filter((activity) => activity.agentId === agent.id);
+  const commands =
+    owned?.filter(
+      (activity) =>
+        activity.kind === "task" &&
+        activity.commandTask &&
+        (activity.background || !agent.inFlight),
+    ) ?? [];
+  const monitors =
+    owned?.filter((activity) => activity.kind === "monitor") ?? [];
+  const inputs =
+    data.runtime.requests?.filter(
+      (request) =>
+        request.agent === agent.id &&
+        (!request.status || request.status === "pending") &&
+        !request.deferred &&
+        (request.epoch == null ||
+          agent.epoch == null ||
+          request.epoch === agent.epoch),
+    ).length ?? 0;
   const event = agent.parkedEvent || undefined;
   const count = (value: number, name: string) =>
     value ? `${value} ${name}${value === 1 ? "" : "s"}` : "";
@@ -111,9 +114,10 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
   const result = new Map<string, ChatActivity[]>();
   const concrete = new Set<string>();
   const add = (agent: Agent, activity: ChatActivity) => {
-    for (const id of new Set([agent.id, agent.rootId].filter(Boolean))) {
-      if (!byId.has(id!)) continue;
-      result.set(id!, [...(result.get(id!) || []), activity]);
+    const ids = new Set([agent.id]);
+    if (agent.rootId && byId.has(agent.rootId)) ids.add(agent.rootId);
+    for (const id of ids) {
+      result.set(id, [...(result.get(id) || []), activity]);
     }
   };
   for (const [kind, entries] of [
@@ -210,67 +214,81 @@ export function unreadResult(
   );
 }
 
+function savedReadState(agent: Agent): ReadState | null {
+  return agent.readState || null;
+}
+
 // Operational state and read receipts are separate: a question cannot disappear
 // merely because its conversation was opened or a background command is active.
 export function chatIndicators(
   data: Snapshot,
-  readStateFor: (agent: Agent) => ReadState | null = (agent) =>
-    agent.readState || null,
+  readStateFor: (agent: Agent) => ReadState | null = savedReadState,
   activities = chatActivities(data),
 ): Map<string, ChatIndicator> {
   const agents = data.threads.filter((agent) => agent.source === "managed");
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   const answers = new Set<string>(),
     deferred = new Set<string>(),
-    monitoring = new Set<string>(),
-    tasks = new Set<string>();
+    active = new Set<string>();
   const includeLead = (set: Set<string>, id: string) => {
     set.add(id);
-    const agent = byId.get(id);
-    if (agent?.rootId && byId.has(agent.rootId)) set.add(agent.rootId);
+    const agent = byId.get(id)!;
+    if (agent.rootId) {
+      const root = byId.get(agent.rootId);
+      if (root) set.add(root.id);
+    }
   };
-  for (const request of data.runtime.requests || []) {
-    if (request.status && request.status !== "pending") continue;
-    const agent = byId.get(request.agent);
-    if (
-      !agent ||
-      (request.epoch != null &&
-        agent.epoch != null &&
-        request.epoch !== agent.epoch)
-    )
-      continue;
-    if (request.deferred) deferred.add(agent.id);
-    else includeLead(answers, agent.id);
+  const requests = data.runtime.requests;
+  if (requests) {
+    for (const request of requests) {
+      if (request.status && request.status !== "pending") continue;
+      const agent = byId.get(request.agent);
+      if (
+        !agent ||
+        (request.epoch != null &&
+          agent.epoch != null &&
+          request.epoch !== agent.epoch)
+      )
+        continue;
+      if (request.deferred) deferred.add(agent.id);
+      else includeLead(answers, agent.id);
+    }
   }
   for (const [id, entries] of activities) {
-    if (entries.some((entry) => entry.kind === "monitor")) monitoring.add(id);
-    if (entries.some((entry) => entry.kind !== "monitor")) tasks.add(id);
+    if (entries.length) active.add(id);
   }
   return new Map(
     agents.map((agent) => {
       let indicator: ChatIndicator;
       const waiting = ["waiting", "parked"].includes(agent.status);
-      const wait =
-        waiting ||
-        (!agent.inFlight && (tasks.has(agent.id) || monitoring.has(agent.id)))
-          ? chatWaitState(data, agent, activities)
-          : undefined;
-      if (answers.has(agent.id))
+      const getWait = () => chatWaitState(data, agent, activities);
+      if (answers.has(agent.id)) {
+        let label = "Needs your answer";
+        if (waiting) {
+          const wait = getWait();
+          if (wait.live) label = wait.label;
+        }
         indicator = {
           kind: "answer",
-          label: waiting && wait?.live ? wait.label : "Needs your answer",
+          label,
         };
-      else if (waiting)
+      } else if (waiting) {
+        const wait = getWait();
         indicator = {
-          kind: wait?.live ? "working" : "none",
-          label: wait?.label || endedWaitLabel,
+          kind: wait.live ? "working" : "none",
+          label: wait.label || endedWaitLabel,
         };
-      else if (tasks.has(agent.id) || monitoring.has(agent.id))
+      } else if (active.has(agent.id)) {
+        let label = "Working";
+        if (!agent.inFlight) {
+          const wait = getWait();
+          if (wait.live) label = wait.label;
+        }
         indicator = {
           kind: "working",
-          label: !agent.inFlight && wait?.live ? wait.label : "Working",
+          label,
         };
-      else if (agent.status === "failed")
+      } else if (agent.status === "failed")
         indicator = { kind: "error", label: "Failed" };
       else if (
         ["paused", "interrupted"].includes(agent.status) ||
@@ -284,7 +302,7 @@ export function chatIndicators(
         indicator = { kind: "paused", label: "Question deferred" };
       else if (
         agent.status === "completed" &&
-        unreadResult(agent, readStateFor(agent))
+        unreadResult(agent, readStateFor(agent) ?? null)
       )
         indicator = { kind: "unread", label: "Unread result" };
       else

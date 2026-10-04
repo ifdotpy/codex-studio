@@ -3,6 +3,10 @@ import { spawnSync } from "node:child_process";
 import { encodeDraftPayload } from "./draftPayload.ts";
 import { it } from "vitest";
 
+it("keeps JSON booleans out of object encoding", () => {
+  assert.equal(encodeDraftPayload(false), "false");
+});
+
 const original = {
   updated: 1788798612345,
   text: 'Привет 👋\nA quoted "value"',
@@ -44,3 +48,16 @@ for (const [scenario, value] of [
     );
   });
 }
+
+it("orders keys that share a prefix by code point and then by length", () => {
+  assert.equal(
+    encodeDraftPayload({ aa: 2, a: 1, "😀": 3, "😀a": 4 }),
+    '{"a":1,"aa":2,"😀":3,"😀a":4}',
+  );
+});
+
+it("preserves JSON scalar and null payloads", () => {
+  for (const value of [null, false, 0, "draft"]) {
+    assert.equal(encodeDraftPayload(value), JSON.stringify(value));
+  }
+});

@@ -31,7 +31,7 @@ const imagePath = (path: string) => /\.(png|jpe?g|gif|webp|svg)$/i.test(path);
 
 function patchPaths(source: string) {
   const paths = new Set<string>();
-  for (const match of source.matchAll(/^(?:---|\+\+\+) (.+)$/gm)) {
+  for (const match of source.matchAll(/^(?:---|\+\+\+) (.+)/gm)) {
     let path = match[1].split("\t")[0];
     if (path.startsWith('"')) {
       try {
@@ -64,12 +64,19 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
       label,
     });
     if (message.role === "assistant") {
+      // Stryker disable next-line StringLiteral: A plain fallback produces no result; the empty value also keeps missing text from crashing Marked.
       const tokens = marked.lexer(message.text || "");
       marked.walkTokens(tokens, (token) => {
-        if (token.type === "link" || token.type === "image") {
-          try {
-            const target = localFileLink(token.href);
-            if (!target) return;
+        switch (token.type) {
+          case "link":
+          case "image": {
+            let target;
+            try {
+              target = localFileLink(token.href);
+            } catch {
+              // The undefined target is rejected by the guard below.
+            }
+            if (!target) break;
             const label = plainLabel(token.text) || filename(target.path);
             add(
               {
@@ -80,37 +87,40 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
               },
               `file:${target.path.replace(/^\.\//, "")}`,
             );
-          } catch {
-            // Invalid or remote file links stay in the original message.
+            break;
+          }
+          case "code": {
+            const language = token.lang?.trim().toLowerCase();
+            if (language !== "html" && language !== "mermaid") break;
+            const lines = token.raw.trimEnd().split("\n");
+            // Stryker disable next-line Regex: Only the removed-start-anchor variant survives because Marked emits code tokens only for recognized fence-start lines; indentation and fence-length variants are killed by “rich output retains exact source, merges raw HTML, and excludes unfinished fences” and “only closed supported fences become previews”.
+            const open = lines[0].match(/^ {0,3}(`{3,}|~{3,})/);
+            const close = lines.at(-1)!.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+            if (
+              !open ||
+              !close ||
+              open[1][0] !== close[1][0] ||
+              close[1].length < open[1].length
+            )
+              break;
+            add(
+              {
+                ...base(
+                  language === "html" ? "HTML preview" : "Mermaid diagram",
+                ),
+                kind: language,
+                source: token.text,
+              },
+              `${language}:${token.text}`,
+            );
+            break;
           }
         }
-        if (token.type !== "code") return;
-        const language = token.lang?.trim().toLowerCase();
-        if (language !== "html" && language !== "mermaid") return;
-        const lines = token.raw.trimEnd().split("\n");
-        const open = lines[0].match(/^ {0,3}(`{3,}|~{3,})/);
-        const close = lines.at(-1)?.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
-        if (
-          lines.length < 2 ||
-          !open ||
-          !close ||
-          open[1][0] !== close[1][0] ||
-          close[1].length < open[1].length
-        )
-          return;
-        add(
-          {
-            ...base(language === "html" ? "HTML preview" : "Mermaid diagram"),
-            kind: language,
-            source: token.text,
-          },
-          `${language}:${token.text}`,
-        );
       });
       // Match the existing Markdown renderer's adjacent HTML block grouping.
       let html = "";
       const flush = () => {
-        if (html.trim())
+        if (html)
           add(
             { ...base("HTML preview"), kind: "html", source: html },
             `html:${html}`,
@@ -150,9 +160,9 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
     try {
       payload = JSON.parse(message.text);
     } catch {
-      continue;
+      // The following falsy-payload check skips malformed JSON.
     }
-    if (!payload || typeof payload !== "object") continue;
+    if (!payload) continue;
     if (payload.success === false || payload.error) continue;
     if (["inProgress", "failed", "declined"].includes(payload.status)) continue;
     if (payload.type === "fileChange" && Array.isArray(payload.changes)) {

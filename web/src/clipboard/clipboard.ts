@@ -3,10 +3,8 @@
 // user's click, so it is the fallback for every copy button.
 export async function copyText(text: string): Promise<void> {
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
-    }
+    await navigator.clipboard.writeText(text);
+    return;
   } catch {
     // Fall through to the copy command.
   }
@@ -16,7 +14,7 @@ export async function copyText(text: string): Promise<void> {
     ? Array.from({ length: selection.rangeCount }, (_, i) =>
         selection.getRangeAt(i),
       )
-    : [];
+    : undefined;
   const area = document.createElement("textarea");
   area.value = text;
   area.setAttribute("readonly", "");
@@ -26,14 +24,16 @@ export async function copyText(text: string): Promise<void> {
   document.body.appendChild(area);
   area.select();
   area.setSelectionRange(0, text.length);
-  let copied = false;
+  let copied: boolean;
   try {
     copied = document.execCommand("copy");
   } finally {
     area.remove();
-    selection?.removeAllRanges();
-    ranges.forEach((range) => selection?.addRange(range));
-    active?.focus?.({ preventScroll: true });
+    if (selection) {
+      selection.removeAllRanges();
+      ranges!.forEach((range) => selection.addRange(range));
+    }
+    active?.focus({ preventScroll: true });
   }
   if (!copied) throw new Error("The browser blocked clipboard access");
 }
