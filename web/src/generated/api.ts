@@ -2487,6 +2487,7 @@ export interface components {
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
       created?: number | null;
       /** Cwd */
@@ -2525,6 +2526,8 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Manualname */
+      manualName?: boolean | null;
       /** Model */
       model?: string | null;
       /** Name */
@@ -3805,6 +3808,7 @@ export interface components {
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
       created?: number | null;
       /** Cwd */
@@ -3844,6 +3848,8 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Manualname */
+      manualName?: boolean | null;
       /** Model */
       model?: string | null;
       /** Name */
@@ -4807,6 +4813,25 @@ export interface components {
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
+    };
+    /**
+     * ConvertedFromLeadDto
+     * @description User conversion provenance persisted when a peer lead becomes a worker.
+     */
+    ConvertedFromLeadDto: {
+      /** At */
+      at: number;
+      /**
+       * By
+       * @constant
+       */
+      by: "user";
+      /** Oldrootid */
+      oldRootId: string;
+      /** Requestid */
+      requestId: string;
+      /** Rootid */
+      rootId: string;
     };
     /** CostBreakdown */
     CostBreakdown: {
@@ -8953,6 +8978,7 @@ export interface components {
       contextRepairHistory?: components["schemas"]["JsonValue"][] | null;
       contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
       created?: number | null;
       /** Currentmessageid */
@@ -9045,6 +9071,8 @@ export interface components {
       liveSteerRejectedTurnId?: string | null;
       /** Mailboxerror */
       mailboxError?: string | null;
+      /** Manualname */
+      manualName?: boolean | null;
       /** Maxagents */
       maxAgents?: number | null;
       /** Maxagentsexplicit */
