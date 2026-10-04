@@ -139,6 +139,18 @@ def make_app(runtime: RuntimeFixture) -> tuple[FastAPI, ContextFixture]:
     return app, context
 
 
+def make_api_context_app(runtime: RuntimeFixture) -> tuple[FastAPI, "ApiContext"]:
+    """Mount the I/O domain with the production response sender."""
+    from studio_api.context import ApiContext
+
+    context = ApiContext.for_schema()
+    setattr(context.canvas, "runtime", runtime)
+    setattr(context, "_terminal", TerminalFixture())
+    app = FastAPI()
+    app.include_router(create_router(context))
+    return app, context
+
+
 class IORouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -171,6 +183,26 @@ class IORouterTests(unittest.TestCase):
         file_names = {item["name"] for item in paths["/api/file"]["get"]["parameters"]}
         self.assertTrue({"id", "offset", "history", "limit"}.issubset(terminal_names))
         self.assertEqual(file_names, {"agent", "path", "asset"})
+
+    def test_typed_terminal_response_uses_actual_api_context_sender(self) -> None:
+        app, _context = make_api_context_app(self.runtime)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            output = client.get("/api/terminals/output?id=term")
+            upload = client.post("/api/assets", json={"agent": "agent-1", "name": "a.txt", "data": "YWJj"})
+            self.runtime.cancel_status = "lost"
+            cancel = client.post("/api/monitor/cancel", json={"id": "watch-1"})
+        self.assertEqual(output.status_code, 200)
+        self.assertEqual(output.json(), {
+            "text": "tail", "offset": 4, "truncated": False, "status": "running",
+            "exitCode": None, "error": None,
+        })
+        self.assertEqual(upload.status_code, 200)
+        self.assertEqual(upload.json(), {
+            "id": "generated", "agent": "agent-1", "name": "a.txt", "mime": "text/plain",
+            "image": False, "size": 3, "hash": "digest", "created": 1.0,
+        })
+        self.assertEqual(cancel.status_code, 200)
+        self.assertEqual(cancel.json(), {"id": "watch-1", "status": "lost"})
 
     def test_terminal_input_keeps_durable_request_identity(self) -> None:
         response = self.client.post("/api/terminals/input", json={"id": "term", "text": "go", "request_id": "durable-1"})
