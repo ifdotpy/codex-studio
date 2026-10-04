@@ -738,8 +738,9 @@ function Plan(c: Context) {
   const state = useResource("/api/plan", c.revision, {
     query: c.selected ? { agent: c.selected.id } : {},
   });
-  const steps = state.data?.steps ?? [];
-  const explanation = state.data?.text ?? "";
+  const native = state.data?.native;
+  const steps = native?.plan ?? [];
+  const explanation = native?.explanation ?? "";
   return (
     <>
       <ResourceState state={state} />
@@ -1309,6 +1310,7 @@ function Profiles(c: Context) {
               try {
                 const worker = await c.run("/api/agents", {
                   id: launch.id,
+                  name: launch.name,
                   profile_id: launch.profile_id,
                   prompt: launch.prompt,
                   parent: lead!.id,
