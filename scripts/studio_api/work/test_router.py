@@ -317,6 +317,8 @@ class WorkRouterTests(unittest.TestCase):
             "intervalSeconds": 60, "nextAt": 2.0, "event": "worker_completed",
             "command": "", "text": "Continue.", "inFlight": False, "checks": 3,
             "wakes": 1, "lastOutput": "ok", "lastExitCode": 0, "lastFinished": 2.0,
+            "error": "Previous check failed", "fingerprint": [3, 12, 5],
+            "restartCheck": {"epoch": 2, "checks": 3, "monitorId": "monitor-1"},
         }]})
         client = make_client(context)
 
@@ -325,6 +327,8 @@ class WorkRouterTests(unittest.TestCase):
         rule_response = client.get("/api/rules")
         self.assertEqual(rule_response.status_code, 200, rule_response.text)
         self.assertEqual(rule_response.json()["rules"][0]["lastOutput"], "ok")
+        self.assertEqual(rule_response.json()["rules"][0]["error"], "Previous check failed")
+        self.assertEqual(rule_response.json()["rules"][0]["restartCheck"]["monitorId"], "monitor-1")
 
     def test_message_post_preserves_canvas_receipt_and_request_identity(self) -> None:
         context = FakeContext()

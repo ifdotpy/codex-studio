@@ -11,7 +11,8 @@ from studio_api.history.models import CheckpointSummary, TranscriptAsset
 from studio_api.sync.models import (
     MonitorEntityDto,
     ComplaintResponseDto,
-    RuleSnapshotDto,
+    RuleKind,
+    RuleStatus,
     SnapshotComplaintDto,
     SnapshotRoomDto,
     SnapshotTaskDto,
@@ -516,7 +517,49 @@ class AnnotationRecord(ContractModel):
     turnId: StrictStr | None = None
 
 
-class RuleRecord(RuleSnapshotDto):
+class RuleRestartCheck(ContractModel):
+    epoch: StrictInt
+    checks: StrictInt
+    monitorId: StrictStr
+
+
+class RuleRecord(ContractModel):
+    id: StrictStr
+    agent: StrictStr | None = None
+    rootId: StrictStr | None = None
+    name: StrictStr | None = None
+    enabled: StrictBool | None = None
+    epoch: StrictInt | None = None
+    kind: RuleKind | None = None
+    intervalSeconds: StrictInt | None = None
+    nextAt: StrictInt | StrictFloat | None = None
+    at: StrictInt | StrictFloat | None = None
+    path: StrictStr | None = None
+    event: StrictStr | None = None
+    command: StrictStr | None = None
+    stallTimeoutSeconds: StrictInt | None = None
+    livenessCommand: StrictStr | None = None
+    fileActivityAt: StrictInt | StrictFloat | None = None
+    fileGeneration: StrictInt | None = None
+    stallWakeGeneration: StrictInt | None = None
+    text: StrictStr | None = None
+    status: RuleStatus | None = None
+    created: StrictInt | StrictFloat | None = None
+    inFlight: StrictBool | None = None
+    checks: StrictInt | None = None
+    wakes: StrictInt | None = None
+    fingerprint: list[StrictInt] | None = None
+    minimumWorkers: StrictInt | None = None
+    durationMinutes: StrictInt | None = None
+    lowSince: StrictInt | StrictFloat | None = None
+    alerted: StrictBool | None = None
+    error: StrictStr | None = None
+    restartCheck: RuleRestartCheck | None = None
+    lastAt: StrictInt | StrictFloat | None = None
+    lastExitCode: StrictInt | None = None
+    lastOutput: StrictStr | None = None
+    lastFinished: StrictInt | StrictFloat | None = None
+    activeWorkers: StrictInt | None = None
     updated: StrictInt | StrictFloat | None = None
     stall_timeout_seconds: StrictInt | None = None
     eventText: StrictStr | None = None
@@ -526,11 +569,7 @@ class RuleRecord(RuleSnapshotDto):
     lastStallFinished: StrictInt | StrictFloat | None = None
     lastStallExitCode: StrictInt | None = None
     lastStallError: StrictStr | None = None
-    lastExitCode: StrictInt | None = None
-    lastOutput: StrictStr | None = None
-    activeWorkers: StrictInt | None = None
     lastEvent: StrictStr | None = None
-    lastFinished: StrictInt | StrictFloat | None = None
 
 
 class AnnotationReceipt(AnnotationRecord, ResponseModel):
