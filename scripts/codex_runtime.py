@@ -1227,6 +1227,8 @@ class AppServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait(5)
+        if self.supervisor_mode:
+            self.proc.detach()
         # The caller can hold a Runtime lock needed by queued callbacks. Never
         # join their dispatcher here; it drains accepted work independently.
         if threading.current_thread() is not self.reader:
@@ -1759,6 +1761,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         resource_changes[db] = {}
         resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
         resource_overflow[db] = False
+        if db.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
+        ).fetchone():
+            def stage_event_resource(agent_id):
+                if isinstance(agent_id, str) and agent_id:
+                    self._stage_event_resources(db, agent_id)
+
+            db.create_function("studio_stage_event_resource", 1, stage_event_resource)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_insert
+                AFTER INSERT ON main.runtime_events
+                BEGIN
+                  SELECT studio_stage_event_resource(NEW.agent);
+                END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_update
+                AFTER UPDATE ON main.runtime_events
+                WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent
+                  OR OLD.kind IS NOT NEW.kind OR OLD.text IS NOT NEW.text
+                  OR OLD.status IS NOT NEW.status OR OLD.created IS NOT NEW.created
+                  OR OLD.epoch IS NOT NEW.epoch OR OLD.turn_id IS NOT NEW.turn_id
+                  OR OLD.error IS NOT NEW.error
+                BEGIN
+                  SELECT studio_stage_event_resource(OLD.agent);
+                  SELECT studio_stage_event_resource(NEW.agent);
+                END;
+            """)
+            db.execute("""
+                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_delete
+                AFTER DELETE ON main.runtime_events
+                BEGIN
+                  SELECT studio_stage_event_resource(OLD.agent);
+                END;
+            """)
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
         original_commit, original_rollback = db.commit, db.rollback
@@ -1853,8 +1890,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             )
 
     def _stage_team_task_resources(self, db, agent_id: str) -> None:
-        from studio_api.sync.resources.models import ResourceRef, TasksResource
-
         row = db.execute(
             "SELECT json_extract(record,'$.rootId') FROM runtime_agents WHERE id=?",
             (agent_id,),
@@ -1862,6 +1897,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if row is None:
             return
         root_id = row[0] or agent_id
+        self._stage_task_resources_for_root(db, str(root_id))
+
+    def _stage_task_resources_for_root(self, db, root_id: str) -> None:
+        from studio_api.sync.resources.models import ResourceRef, TasksResource
+
         members = db.execute(
             "SELECT id FROM runtime_agents WHERE (id=? OR json_extract(record,'$.rootId')=?) "
             "AND json_extract(record,'$.deletedAt') IS NULL",
@@ -2477,7 +2517,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_entity_put(db, "room", room["id"], room)
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
-            self.touch_ui(record["id"], db)
+            self.touch_ui(record["id"], db, publish_resource=False)
         elif table == "work":
             # Work ownership and status retain deleted owners in the scheduler roster.
             self.__dict__.pop("_scheduler_agent_roster", None)
@@ -2491,6 +2531,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if workspace_agent_resource_changed(previous, record):
                     self._stage_resource_change(
                         db, ResourceRef(WorkspaceResource(kind="workspace", agentId=agent_id))
+                    )
+                if previous is not None and any(
+                    previous.get(field) != record.get(field)
+                    for field in ("rootId", "deletedAt")
+                ):
+                    self._stage_task_resources_for_root(
+                        db, str(previous.get("rootId") or agent_id)
+                    )
+                    self._stage_task_resources_for_root(
+                        db, str(record.get("rootId") or agent_id)
                     )
             elif table == "tasks":
                 self._stage_resource_change(
@@ -2520,11 +2570,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         local.agent_cache_dirty = True
         self.invalidate_agent_records(key)
 
-    def touch_ui(self, key, db=None):
+    def touch_ui(self, key, db=None, *, publish_resource=True):
         if db is None:
             local = self.__dict__.get("_callback_db")
             db = getattr(local, "resource_db", None) if local else None
-        if db is not None:
+        if db is not None and publish_resource:
             from studio_api.sync.resources.models import ResourceRef, TranscriptResource
 
             self._stage_resource_change(
@@ -2599,6 +2649,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return server
         selected = None
         while True:
+            desktop_changed = False
             with self.start_lock:
                 if self.closed:
                     raise RuntimeError("Runtime is stopped")
@@ -2619,6 +2670,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.servers.pop(account_key, None)
                         server = None
                     if server is None:
+                        desktop_changed = True
                         connection_id = uid()
                         self.connection_ids[account_key] = connection_id
                         self.offline_accounts.discard(account_key)
@@ -2668,10 +2720,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 raise RuntimeError("Late native callbacks did not drain; runtime lease retained")
                             raise RuntimeError("Runtime is stopped")
                         startup_memory_mark("account-server-start:" + account_key)
-                    return server
+            if not needs_executable:
+                if desktop_changed:
+                    self._publish_desktop_resource()
+                return server
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self)
+
+    def _publish_desktop_resource(self) -> None:
+        from studio_api.sync.resources.models import DesktopResource, ResourceRef
+
+        resource = ResourceRef(DesktopResource(kind="desktop"))
+        key = resource.model_dump_json(by_alias=True)
+        with self._committed_resource_lock:
+            if key not in self._committed_resource_changes and len(self._committed_resource_changes) >= MAX_QUEUED_RESOURCE_CHANGES:
+                self._committed_resource_overflow = True
+            else:
+                self._committed_resource_changes[key] = resource
+        self.changed.set()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -2841,6 +2908,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record.pop("reattachRecovery", None)
                 self.put(db, "tasks", record)
             self.changed.set()
+        self._publish_desktop_resource()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None):
         from codex_agent_modes import mode_fields
@@ -3058,12 +3126,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if voice:
             voice.disconnected_native(account_key, connection_id)
         if desktop_changed:
-            from studio_api.sync.resources.hub import publish_resources
-            from studio_api.sync.resources.models import DesktopResource, ResourceRef
-
-            publish_resources(
-                self.root, ResourceRef(DesktopResource(kind="desktop"))
-            )
+            self._publish_desktop_resource()
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
         key = agent + ":" + key

@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 from codex_runtime import (
+    AppServer,
     MAX_STAGED_RESOURCE_CHANGES,
     Runtime,
     TokenRateObservation,
@@ -24,12 +29,14 @@ from studio_api.sync.resources.hub import (
     unregister_resource_hub,
 )
 from studio_api.sync.resources.models import (
+    DesktopResource,
     LimitsResource,
     PanelResource,
     QueueResource,
     ReceiptsResource,
     ResourceRef,
     StateResource,
+    TranscriptResource,
     TasksResource,
 )
 
@@ -96,43 +103,49 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 runtime.lock = threading.RLock()
                 runtime._rate_cache_lock = threading.RLock()
                 runtime.changed = threading.Event()
-                detached = threading.Event()
+                publisher_waiting = threading.Event()
                 writer_locked = threading.Event()
+                writer_queued = threading.Event()
                 release_writer = threading.Event()
                 captured: list[tuple[ResourceRef, ...]] = []
                 resource_lock = threading.Lock()
 
-                class DrainLock:
+                class BarrierLock:
                     def __enter__(self):
+                        if threading.current_thread().name == "resource-publisher":
+                            publisher_waiting.set()
                         resource_lock.acquire()
                         return self
 
                     def __exit__(self, *_args: object) -> None:
                         resource_lock.release()
-                        if threading.current_thread().name == "resource-publisher":
-                            detached.set()
 
-                runtime._committed_resource_lock = DrainLock()
+                runtime._committed_resource_lock = threading.Lock()
+                barrier = BarrierLock()
+                setattr(runtime, barrier_name, barrier)
                 first = ResourceRef(StateResource(kind="state"))
                 second = ResourceRef(LimitsResource(kind="limits", accountKey="account-b"))
                 runtime._committed_resource_changes = {first.model_dump_json(by_alias=True): first}
                 runtime._committed_resource_overflow = False
 
                 def writer() -> None:
-                    self.assertTrue(detached.wait(1))
-                    with getattr(runtime, barrier_name):
+                    with barrier:
                         writer_locked.set()
+                        self.assertTrue(publisher_waiting.wait(1))
                         key = second.model_dump_json(by_alias=True)
                         with runtime._committed_resource_lock:
                             runtime._committed_resource_changes[key] = second
+                        writer_queued.set()
                         self.assertTrue(release_writer.wait(1))
 
                 with patch("studio_api.sync.resources.hub.publish_resources", side_effect=lambda _root, *refs: captured.append(refs)):
                     publisher = threading.Thread(target=runtime._publish_committed_resource_changes, name="resource-publisher")
                     writer_thread = threading.Thread(target=writer, name="resource-writer")
-                    publisher.start()
                     writer_thread.start()
                     self.assertTrue(writer_locked.wait(1))
+                    publisher.start()
+                    self.assertTrue(writer_queued.wait(1))
+                    self.assertEqual(captured, [])
                     release_writer.set()
                     publisher.join(timeout=1)
                     writer_thread.join(timeout=1)
@@ -150,6 +163,8 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime.root = state_dir
             runtime.lock = threading.RLock()
             runtime._rate_cache_lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
+            runtime.ui_revisions = {}
             runtime.changed = threading.Event()
             runtime._committed_resource_changes = {}
             runtime._committed_resource_overflow = False
@@ -157,13 +172,16 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             local = threading.local()
             runtime._callback_db = local
             connection = sqlite3.connect(":memory:")
-            connection.execute("CREATE TABLE runtime_agents(id TEXT, record TEXT)")
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
             connection.execute("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT)")
             for agent_id, root_id in (("lead", "lead"), ("worker-a", "lead"), ("worker-b", "lead")):
                 connection.execute(
                     "INSERT INTO runtime_agents VALUES (?,?)",
-                    (agent_id, json.dumps({"rootId": root_id})),
+                    (agent_id, json.dumps({"id": agent_id, "rootId": root_id})),
                 )
+            runtime.agent_entity_view = lambda _db, record: record
+            runtime.chat_rooms = lambda *_args, **_kwargs: []
+            runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None
             resources: dict[object, dict[str, ResourceRef]] = {connection: {}}
             overflowed: dict[object, bool] = {connection: False}
             local.after_commit_resources = resources
@@ -178,8 +196,17 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 )
                 for agent_id in ("lead", "worker-a", "worker-b")
             ]
+            transcript_subscription = hub.subscribe(
+                [ResourceRef(TranscriptResource(kind="transcript", agentId="worker-b"))],
+                loop=asyncio.get_running_loop(),
+            )
             try:
-                with patch("codex_sync_entities.put"), patch("codex_sync_entities.sync_task_write"):
+                with (
+                    patch("codex_sync_entities.put"),
+                    patch("codex_sync_entities.sync_task_write"),
+                    patch("codex_sync_entities.sync_task_agent_change"),
+                    patch("codex_sync_entities.sync_monitor_agent_change"),
+                ):
                     runtime.put(connection, "tasks", {
                         "id": "task-a", "agent": "worker-a", "status": "running",
                     })
@@ -193,9 +220,25 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                         event.resources,
                         [ResourceRef(TasksResource(kind="tasks", agentId=agent_id))],
                     )
+                with (
+                    patch("codex_sync_entities.put"),
+                    patch("codex_sync_entities.sync_task_agent_change"),
+                    patch("codex_sync_entities.sync_monitor_agent_change"),
+                ):
+                    runtime.put(connection, "agents", {
+                        "id": "worker-b", "rootId": "lead", "deletedAt": 10,
+                    })
+                runtime._queue_staged_resource_changes(resources, overflowed, connection)
+                runtime._publish_committed_resource_changes()
+                for subscription in subscriptions[:2]:
+                    event = await subscription.next_event(timeout=1)
+                    self.assertIsNotNone(event)
+                self.assertIsNone(await subscriptions[2].next_event(timeout=0.01))
+                self.assertIsNone(await transcript_subscription.next_event(timeout=0.01))
             finally:
                 for subscription in subscriptions:
                     subscription.close()
+                transcript_subscription.close()
                 unregister_resource_hub(state_dir, hub)
                 hub.close()
                 connection.close()
@@ -327,6 +370,194 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 unregister_resource_hub(state_dir, hub)
                 hub.close()
                 connection.close()
+
+    async def test_runtime_event_sql_writes_are_commit_only_and_deduped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.db_path = state_dir / "canvas.sqlite3"
+            runtime.analytics_db_path = state_dir / "analytics.sqlite3"
+            runtime.lock = threading.RLock()
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            runtime._agent_records_cache_lock = threading.RLock()
+            runtime.analytics_safe = lambda *_args, **_kwargs: None
+            runtime.schedule_analytics_captures = lambda *_args, **_kwargs: None
+            runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None
+            seed = sqlite3.connect(runtime.db_path)
+            try:
+                seed.execute("""CREATE TABLE runtime_events(
+                    id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
+                    text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
+                    epoch INTEGER NOT NULL, turn_id TEXT, error TEXT
+                )""")
+                seed.execute(
+                    "INSERT INTO runtime_events VALUES ('event-a','agent-a','user','hello','pending',1,1,NULL,NULL)"
+                )
+                seed.commit()
+            finally:
+                seed.close()
+
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            queue = hub.subscribe(
+                [ResourceRef(QueueResource(kind="queue", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            receipts = hub.subscribe(
+                [ResourceRef(ReceiptsResource(kind="receipts", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "rollback"):
+                    with runtime.db() as db:
+                        db.execute("UPDATE runtime_events SET status='reserved' WHERE id='event-a'")
+                        raise RuntimeError("rollback")
+                runtime._publish_committed_resource_changes()
+                self.assertIsNone(await queue.next_event(timeout=0.01))
+                self.assertIsNone(await receipts.next_event(timeout=0.01))
+
+                with runtime.db() as db:
+                    db.execute("UPDATE runtime_events SET status='reserved' WHERE id='event-a'")
+                runtime._publish_committed_resource_changes()
+                for subscription in (queue, receipts):
+                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+
+                with runtime.db() as db:
+                    db.execute("UPDATE runtime_events SET status='reserved' WHERE id='event-a'")
+                runtime._publish_committed_resource_changes()
+                self.assertIsNone(await queue.next_event(timeout=0.01))
+                self.assertIsNone(await receipts.next_event(timeout=0.01))
+
+                with runtime.db() as db:
+                    db.execute("DELETE FROM runtime_events WHERE id='event-a'")
+                runtime._publish_committed_resource_changes()
+                for subscription in (queue, receipts):
+                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+
+                with runtime.db() as db:
+                    db.execute(
+                        "INSERT INTO runtime_events VALUES "
+                        "('event-b','agent-a','user','again','pending',2,1,NULL,NULL)"
+                    )
+                runtime._publish_committed_resource_changes()
+                for subscription in (queue, receipts):
+                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+
+                with runtime.db() as db:
+                    db.execute("UPDATE runtime_events SET status='failed' WHERE id='event-b'")
+                runtime._publish_committed_resource_changes()
+                for subscription in (queue, receipts):
+                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+
+                with runtime.db() as db:
+                    db.execute("UPDATE runtime_events SET status='cancelled' WHERE id='event-b'")
+                runtime._publish_committed_resource_changes()
+                for subscription in (queue, receipts):
+                    self.assertIsNotNone(await subscription.next_event(timeout=1))
+            finally:
+                queue.close()
+                receipts.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+
+    async def test_separate_supervisor_process_exit_reaches_desktop_subscriber(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            child = state_dir / "fake-app-server"
+            child.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json,sys\n"
+                "request=json.loads(sys.stdin.readline())\n"
+                "print(json.dumps({'id':request['id'],'result':{}}),flush=True)\n"
+                "sys.stdin.readline()\n"
+            )
+            child.chmod(0o700)
+            supervisor_script = Path(__file__).resolve().parents[3] / "codex_process_supervisor.py"
+            repo_root = Path(__file__).resolve().parents[4]
+            environment = dict(os.environ)
+            environment["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
+            environment["CODEX_AGENTS_STATE_DIR"] = str(state_dir)
+            supervisor = subprocess.Popen(
+                [sys.executable, str(supervisor_script), "--state", str(state_dir)],
+                cwd=repo_root, env=environment, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            server = None
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(DesktopResource(kind="desktop"))],
+                loop=asyncio.get_running_loop(),
+            )
+            disconnected = threading.Event()
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = threading.RLock()
+            runtime.changed = threading.Event()
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            runtime.closed = False
+            runtime.connection_ids = {"default": "connection-a"}
+            runtime.offline_accounts = set()
+            runtime.offline = False
+            runtime.loaded = set()
+            runtime.servers = {}
+            runtime.preparations = {}
+            runtime.records = lambda _db, _table: []
+            db_connection = sqlite3.connect(":memory:", check_same_thread=False)
+            db_connection.row_factory = sqlite3.Row
+            db_connection.execute("CREATE TABLE runtime_tasks(record TEXT)")
+            db_connection.execute("CREATE TABLE runtime_monitors(record TEXT)")
+
+            @contextmanager
+            def database():
+                yield db_connection
+
+            runtime.db = database
+
+            def on_disconnect() -> None:
+                runtime.disconnected("default", "connection-a")
+                disconnected.set()
+
+            try:
+                deadline = time.monotonic() + 10
+                socket_path = state_dir / "supervisor.sock"
+                while not socket_path.exists() and supervisor.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(socket_path.exists(), "separate supervisor did not create its IPC socket")
+                account_root = state_dir / "account-server"
+                account_root.mkdir()
+                with patch.dict(os.environ, environment):
+                    server = AppServer(
+                        account_root, lambda _message: None, lambda _message: None,
+                        on_disconnect, executable=str(child), supervisor_handle="account:default",
+                        supervisor_root=state_dir,
+                    )
+                self.assertTrue(disconnected.wait(10), "supervisor exit did not reach Runtime.disconnected")
+                runtime._publish_committed_resource_changes()
+                event = await subscription.next_event(timeout=1)
+                self.assertIsNotNone(event)
+                assert event is not None
+                self.assertEqual(event.resources, [ResourceRef(DesktopResource(kind="desktop"))])
+            finally:
+                if server is not None:
+                    server.close()
+                subscription.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+                db_connection.close()
+                supervisor.terminate()
+                try:
+                    supervisor.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    supervisor.kill()
+                    supervisor.wait(timeout=5)
 
     async def test_limits_emit_after_commit_only_for_visible_projection_change(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
