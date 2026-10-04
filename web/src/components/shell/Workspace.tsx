@@ -39,7 +39,7 @@ import {
   type PostBody,
   type PostResult,
 } from "../../api";
-import type { Agent, Snapshot } from "../../types";
+import type { Agent, Json, JsonValue, Snapshot } from "../../types";
 import { useFormDraft } from "../useFormDraft";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import { useWorkerModels } from "../agents/WorkerModelPicker";
@@ -823,7 +823,7 @@ function Checkpoints(c: Context) {
           variant="filled"
           type="submit"
           loading={busy}
-          disabled={c.selected?.inFlight}
+          disabled={!!c.selected?.inFlight}
         >
           Save checkpoint
         </Button>
@@ -920,7 +920,9 @@ function Tools(c: Context) {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
     [query, setQuery] = useState("");
-  const managedTools = (state.data?.managed ?? []).filter(isRecord);
+  const managedTools = (state.data?.managed ?? []).filter(
+    (value): value is Record<string, JsonValue> => isJsonObject(value),
+  );
   const observedNative = (state.data?.observedNative ?? []).filter(
     (name): name is string => typeof name === "string",
   );
@@ -1037,6 +1039,12 @@ function Inventory({ value, query }: { value: unknown; query: string }) {
   );
 }
 
+function isJsonObject(
+  value: JsonValue | null | undefined,
+): value is Record<string, JsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1072,8 +1080,14 @@ function Profiles(c: Context) {
   const catalog = useWorkerModels(lead?.accountKey || "default", !!draft, true);
   const profileModels: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
-    label: row.displayName || row.model,
-    description: row.description || undefined,
+    label:
+      typeof row.displayName === "string" && row.displayName
+        ? row.displayName
+        : row.model,
+    description:
+      typeof row.description === "string" && row.description
+        ? row.description
+        : undefined,
     isDefault: !!row.isDefault,
   }));
   const draftModel = typeof draft?.model === "string" ? draft.model : "";
@@ -1333,12 +1347,15 @@ function Rules(c: Context) {
   const state = useResource("/api/rules", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
-    [draft, setDraft] = useFormDraft(
+    [draftValue, setDraftValue] = useFormDraft(
       `studio-rule-draft:${JSON.stringify([c.data.stateDir, c.selected?.id])}`,
       c.notify,
     ),
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<RuleRecord | null>(null);
+  const draft = parseRuleDraft(draftValue);
+  const setDraft = (value: RuleDraft | null) =>
+    setDraftValue(value ? { ...value } : null);
   const act = async (rule: RuleRecord, action: RuleAction) => {
     setBusy(true);
     try {
@@ -1434,7 +1451,12 @@ function Rules(c: Context) {
                 variant="subtle"
                 onClick={() =>
                   setDraft({
-                    ...rule,
+                    id: rule.id,
+                    name: rule.name || "",
+                    kind: rule.kind || "interval",
+                    intervalSeconds: rule.intervalSeconds ?? 60,
+                    minimumWorkers: rule.minimumWorkers ?? 8,
+                    durationMinutes: rule.durationMinutes ?? 30,
                     at: rule.at
                       ? new Date(
                           typeof rule.at === "number"
@@ -1445,6 +1467,15 @@ function Rules(c: Context) {
                           .slice(0, 16)
                           .replace(" ", "T")
                       : "",
+                    path: rule.path || "",
+                    event:
+                      rule.event === "monitor_exit" ||
+                      rule.event === "work_review" ||
+                      rule.event === "complaint"
+                        ? rule.event
+                        : "worker_completed",
+                    command: rule.command || "",
+                    text: rule.text || "",
                   })
                 }
               >
@@ -1494,18 +1525,38 @@ function Rules(c: Context) {
             onSubmit={async (e) => {
               e.preventDefault();
               setBusy(true);
+              const submittedDraft = draftValue;
               try {
                 await c.run("/api/rules", {
-                  ...draft,
+                  id: draft.id,
                   agent: c.selected!.id,
                   action: "save",
-                  command: draft.kind === "low_workers" ? "" : draft.command,
+                  name: draft.name,
+                  kind: draft.kind,
+                  intervalSeconds:
+                    draft.kind === "interval"
+                      ? Number(draft.intervalSeconds)
+                      : undefined,
+                  minimumWorkers:
+                    draft.kind === "low_workers"
+                      ? Number(draft.minimumWorkers)
+                      : undefined,
+                  durationMinutes:
+                    draft.kind === "low_workers"
+                      ? Number(draft.durationMinutes)
+                      : undefined,
                   at:
                     draft.kind === "once"
                       ? new Date(draft.at).getTime() / 1000
                       : undefined,
+                  path: draft.kind === "file" ? draft.path : undefined,
+                  event: draft.kind === "event" ? draft.event : undefined,
+                  command: draft.kind === "low_workers" ? "" : draft.command,
+                  text: draft.text,
                 });
-                setDraft((current) => (current === draft ? null : current));
+                setDraftValue((current) =>
+                  current === submittedDraft ? null : current,
+                );
               } catch {
               } finally {
                 setBusy(false);
@@ -1523,6 +1574,7 @@ function Rules(c: Context) {
               value={draft.kind}
               onChange={(e) => {
                 const kind = e.target.value;
+                if (!isRuleKind(kind)) return;
                 setDraft({
                   ...draft,
                   kind,
@@ -1621,7 +1673,10 @@ function Rules(c: Context) {
                 label="Runtime event"
                 required
                 value={draft.event}
-                onChange={(e) => setDraft({ ...draft, event: e.target.value })}
+                onChange={(e) => {
+                  const event = e.target.value;
+                  if (isRuleEvent(event)) setDraft({ ...draft, event });
+                }}
                 data={[
                   { value: "", label: "Select an event" },
                   {
@@ -1684,3 +1739,65 @@ function Rules(c: Context) {
 
 type RuleRecord = GetResult<"/api/rules">["rules"][number];
 type RuleAction = PostBody<"/api/rules">["action"];
+type RuleDraft = {
+  id: string;
+  isNew?: boolean;
+  name: string;
+  kind: NonNullable<RuleRecord["kind"]>;
+  intervalSeconds: number | string;
+  minimumWorkers: number | string;
+  durationMinutes: number | string;
+  at: string;
+  path: string;
+  event: NonNullable<PostBody<"/api/rules">["event"]>;
+  command: string;
+  text: string;
+};
+
+const ruleKinds = ["interval", "once", "file", "event", "low_workers"] as const;
+const ruleEvents = [
+  "worker_completed",
+  "monitor_exit",
+  "complaint",
+  "work_review",
+] as const;
+
+function isRuleKind(value: string): value is RuleDraft["kind"] {
+  return ruleKinds.some((kind) => kind === value);
+}
+
+function isRuleEvent(value: string): value is RuleDraft["event"] {
+  return ruleEvents.some((event) => event === value);
+}
+
+export function parseRuleDraft(value: Json | null): RuleDraft | null {
+  if (
+    !value ||
+    typeof value.id !== "string" ||
+    typeof value.name !== "string" ||
+    typeof value.kind !== "string" ||
+    !isRuleKind(value.kind)
+  )
+    return null;
+  const asNumberOrString = (candidate: JsonValue, fallback: number) =>
+    typeof candidate === "number" || typeof candidate === "string"
+      ? candidate
+      : fallback;
+  return {
+    id: value.id,
+    isNew: value.isNew === true,
+    name: value.name,
+    kind: value.kind,
+    intervalSeconds: asNumberOrString(value.intervalSeconds, 60),
+    minimumWorkers: asNumberOrString(value.minimumWorkers, 8),
+    durationMinutes: asNumberOrString(value.durationMinutes, 30),
+    at: typeof value.at === "string" ? value.at : "",
+    path: typeof value.path === "string" ? value.path : "",
+    event:
+      typeof value.event === "string" && isRuleEvent(value.event)
+        ? value.event
+        : "worker_completed",
+    command: typeof value.command === "string" ? value.command : "",
+    text: typeof value.text === "string" ? value.text : "",
+  };
+}

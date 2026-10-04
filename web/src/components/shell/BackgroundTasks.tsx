@@ -28,7 +28,15 @@ import {
   Wrench,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { get, post, apiDownload, errorText } from "../../api";
+import {
+  get,
+  post,
+  apiDownload,
+  errorText,
+  type ApiPostPath,
+  type GetResult,
+  type PostBody,
+} from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
 import type { Agent, BackgroundTask, JsonValue, Snapshot } from "../../types";
@@ -36,26 +44,52 @@ import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
 
-type PostPath = Extract<
-  {
-    [Path in keyof paths]: paths[Path] extends { post: unknown } ? Path : never;
-  }[keyof paths],
-  string
->;
-type PostBody<Path extends PostPath> = paths[Path] extends {
-  post: {
-    requestBody: { content: { "application/json": infer Body } };
-  };
-}
-  ? Body
-  : never;
-type BackgroundAction = <Path extends PostPath>(
+type BackgroundAction = <Path extends ApiPostPath>(
   path: Path,
   body: PostBody<Path>,
 ) => Promise<boolean>;
 type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
+type MonitorTask = NonNullable<Snapshot["runtime"]>["monitors"][number];
+type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
 type PendingRequest = NonNullable<Snapshot["runtime"]>["requests"][number];
+
+const taskStatuses: readonly BackgroundTask["status"][] = [
+  "running",
+  "starting",
+  "approval",
+  "queued",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+  "lost",
+];
+
+function isTaskStatus(value: unknown): value is BackgroundTask["status"] {
+  return taskStatuses.some((status) => status === value);
+}
+
+export function monitorTask(monitor: MonitorTask): BackgroundTask | null {
+  if (
+    typeof monitor.agent !== "string" ||
+    typeof monitor.created !== "number" ||
+    !isTaskStatus(monitor.status)
+  )
+    return null;
+  return {
+    ...monitor,
+    agent: monitor.agent,
+    created: monitor.created,
+    kind: "monitor",
+    status: monitor.status,
+  };
+}
+
+function workspaceTask(task: WorkspaceTask | BackgroundTask): BackgroundTask {
+  return { ...task };
+}
 
 function isJsonObject(
   value: JsonValue | null | undefined,
@@ -179,10 +213,10 @@ export default function BackgroundTasks({
   }, [opened]);
   const agents = data.threads,
     tasks = [
-      ...(data.runtime.monitors || []).map(
-        (m) => ({ ...m, kind: "monitor" as const }) as BackgroundTask,
-      ),
-      ...(taskFeed ?? data.runtime.tasks ?? []),
+      ...(data.runtime?.monitors ?? [])
+        .map(monitorTask)
+        .filter((task): task is BackgroundTask => task !== null),
+      ...(taskFeed ?? data.runtime?.tasks ?? []).map(workspaceTask),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
@@ -387,7 +421,7 @@ export default function BackgroundTasks({
             opened={opened}
             owner={owner(selectedTask.agent)}
             now={now}
-            requests={data.runtime.requests}
+            requests={data.runtime?.requests ?? []}
             back={() => setMobileDetail(false)}
             openAgent={() => {
               close();
@@ -471,7 +505,7 @@ function TaskDetail({
     if (follow && output.current)
       output.current.scrollTop = output.current.scrollHeight;
   }, [task.tail, follow]);
-  const act: BackgroundAction = async <Path extends PostPath>(
+  const act: BackgroundAction = async <Path extends ApiPostPath>(
     path: Path,
     body: PostBody<Path>,
   ) => {
@@ -689,7 +723,7 @@ function TaskDetail({
             color="red"
             leftSection={<Square size={12} />}
             loading={pending}
-            disabled={task.cancelRequested}
+            disabled={!!task.cancelRequested}
             onClick={() => void act("/api/monitor/cancel", { id: task.id })}
           >
             {task.cancelRequested ? "Stop requested" : "Cancel monitor"}

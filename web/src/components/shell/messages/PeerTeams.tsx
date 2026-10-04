@@ -77,6 +77,10 @@ export function PeerTeamGroup({
       openRoom(roomId);
       return;
     }
+    if (typeof team.projectPath !== "string") {
+      setError("This team has no project path for a shared chat.");
+      return;
+    }
     lock.current = true;
     setPending(true);
     setError("");
@@ -148,7 +152,7 @@ export function PeerTeamGroup({
             </ActionIcon>
           </Menu.Target>
           <Menu.Dropdown>
-            {(team.members.length === 2 || roomId) && (
+            {((team.members ?? []).length === 2 || roomId) && (
               <Menu.Item disabled={pending} onClick={() => void openShared()}>
                 Open shared chat
               </Menu.Item>
@@ -214,10 +218,14 @@ export function PeerTeamForm({
       a.isLead &&
       !a.deletedAt &&
       a.cwd === project.path &&
-      !teams.some((t) => t.id !== team?.id && t.members.includes(a.id)),
+      !teams.some((t) => t.id !== team?.id && (t.members ?? []).includes(a.id)),
   );
   const submit = async () => {
     if (locked.current) return;
+    if (typeof project.path !== "string") {
+      setError("This team has no project path.");
+      return;
+    }
     locked.current = true;
     setPending(true);
     setError("");
@@ -242,7 +250,9 @@ export function PeerTeamForm({
           };
     try {
       if (!committed.current) {
-        await post("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        const body = request.current;
+        if (!body) return;
+        await post("/api/peer-teams", body, { timeoutMs: 15000 });
         committed.current = true;
       }
       await refresh?.();
@@ -412,6 +422,7 @@ export function usePeerTeamMove(
   };
   const move = (project: Project, member: string, teamId: string | null) => {
     if (request.current) return;
+    if (typeof project.path !== "string") return;
     request.current = {
       action: "move",
       path: project.path,

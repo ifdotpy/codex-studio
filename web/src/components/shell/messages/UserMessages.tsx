@@ -80,7 +80,7 @@ function MessageResponse({
     setSending(true);
     setError("");
     try {
-      const result = await post("/api/complaints", payload, {
+      await post("/api/complaints", payload, {
         sessionToken: token,
       });
       requests.delete(detail.id);
@@ -90,7 +90,11 @@ function MessageResponse({
       const storageError = writeLocalDraft(storageKey, null);
       if (storageError) notify(storageError);
       setText("");
-      onResponse(result);
+      try {
+        onResponse(await get("/api/complaint", { query: { id: detail.id } }));
+      } catch (error) {
+        notify(errorText(error));
+      }
       try {
         await refresh();
       } catch (error) {
@@ -299,14 +303,17 @@ function UserMessage({
   return (
     <article className="message-inline-thread" data-complaint={message.id}>
       <div className="chat-message-author">
-        <AgentAvatar id={message.author} size={24} />
-        <strong>{authorName(message.author)}</strong>
+        <AgentAvatar id={message.author || ""} size={24} />
+        <strong>{authorName(message.author || "")}</strong>
         {message.recipient === "lead" && (
           <span>to {message.leadName || "Main agent"}</span>
         )}
       </div>
       <MessageDate at={detail.created || message.created} />
-      <StreamingText text={detail.text || ""} agentId={message.author} />
+      <StreamingText
+        text={detail.text || ""}
+        agentId={message.author || undefined}
+      />
       {typeof detail.text !== "string" && !error && (
         <p role="status">Loading message…</p>
       )}
@@ -320,9 +327,12 @@ function UserMessage({
       )}
       {(detail.responses || []).map((response) => (
         <article className="complaint-response" key={response.id}>
-          <strong>{authorName(response.author || detail.leadId)}</strong>
+          <strong>{authorName(response.author || detail.leadId || "")}</strong>
           <MessageDate at={response.at} />
-          <StreamingText text={response.text || ""} agentId={response.author} />
+          <StreamingText
+            text={response.text || ""}
+            agentId={response.author || undefined}
+          />
         </article>
       ))}
       {isComplaintDetail(detail) && detail.recipient === "user" && (

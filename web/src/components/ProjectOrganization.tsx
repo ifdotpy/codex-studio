@@ -160,6 +160,7 @@ export function ConvertChatForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (typeof project.path !== "string") return;
         void save.submit({
           action: "convert",
           path: project.path,
