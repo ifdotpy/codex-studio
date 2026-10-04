@@ -219,7 +219,12 @@ class SyncEntityContractTests(unittest.TestCase):
                 "id": "capacity-a", "threadId": "thread-a", "turnId": "turn-a",
                 "accountKey": "default", "epoch": 4, "cause": "serverOverloaded",
                 "status": "scheduled", "dueAt": 20.0, "attempt": 1, "maxAttempts": 4,
-                "settings": {"model": "gpt-6-mini"}, "taskClaims": ["work-a"],
+                "settings": {
+                    "model": "gpt-6-mini", "effort": "high", "nativeEffort": "medium",
+                    "fastMode": True, "yoloMode": False,
+                    "profileInstructions": "Use the project profile.", "role": "worker",
+                    "daybreakEnabled": True, "cyberAccessProgram": "approved",
+                }, "taskClaims": ["work-a"],
             },
             "usageResume": {
                 "id": "usage-a", "status": "scheduled", "accountKey": "default",
@@ -255,7 +260,10 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIsNotNone(parsed.usageResume)
         assert parsed.capacityRetry is not None
         assert parsed.usageResume is not None
+        assert parsed.capacityRetry.settings is not None
         self.assertEqual(parsed.capacityRetry.taskClaims, ["work-a"])
+        self.assertEqual(parsed.capacityRetry.settings.role, "worker")
+        self.assertFalse(parsed.capacityRetry.settings.yoloMode)
         self.assertEqual(parsed.usageResume.cause, "usage_limit")
         self.assertEqual(parsed.lastEvent, "2026-10-04T03:00:00Z")
 

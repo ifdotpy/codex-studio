@@ -215,7 +215,7 @@ class CapacityRetryDto(ContractModel):
     attempt: int | None = None
     maxAttempts: int | None = None
     cwd: str | None = None
-    settings: ExecutionSettingsDto | None = None
+    settings: CapacityRetrySettingsDto | None = None
     updatedAt: float | None = None
     waits: int | None = None
     taskClaims: list[str] | None = None
@@ -410,6 +410,14 @@ class ExecutionSettingsDto(ContractModel):
     cyberAccessProgram: str | None = None
     accountKey: str | None = None
     updatedAt: float | None = None
+
+
+class CapacityRetrySettingsDto(ExecutionSettingsDto):
+    """Settings captured by Runtime.preparation_settings for a retry receipt."""
+
+    yoloMode: bool | None = None
+    profileInstructions: str | None = None
+    role: AgentRole | None = None
 
 
 class AgentOverview(ContractModel):
