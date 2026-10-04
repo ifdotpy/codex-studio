@@ -460,6 +460,11 @@ async function finishTurn(s, active, result, error) {
       ...(turn.apiErrorInfo && !turn.limitError
         ? { codexErrorInfo: turn.apiErrorInfo }
         : {}),
+      ...(turn.startOutcome === "not_applied" &&
+      error?.preparationTimedOut === true &&
+      error?.data?.turnStartOutcome === "not_applied"
+        ? { data: { turnStartOutcome: "not_applied" } }
+        : {}),
       ...turn.limitError,
     };
   const answer = turn.items
@@ -551,7 +556,14 @@ async function finishTurn(s, active, result, error) {
   active.responseUsages.clear();
   emit("turn/completed", {
     threadId: s.id,
-    turn: { id: turn.id, status: turn.status, error: turn.error },
+    turn: {
+      id: turn.id,
+      status: turn.status,
+      error: turn.error,
+      ...(turn.startOutcome === "not_applied"
+        ? { startOutcome: "not_applied" }
+        : {}),
+    },
   });
 }
 async function startSession(s, active, p) {
@@ -1070,6 +1082,15 @@ async function startSession(s, active, p) {
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
+    if (
+      !allowed &&
+      active.turn === initial &&
+      error?.preparationTimedOut === true &&
+      error?.data?.turnStartOutcome === "not_applied"
+    ) {
+      // The prompt gate proves this exact input never reached the SDK.
+      initial.startOutcome = "not_applied";
+    }
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
     allowed = false;
