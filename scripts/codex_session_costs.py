@@ -634,6 +634,9 @@ class SessionCostReader:
         response_join = ("LEFT JOIN session_cost_responded_turns rt ON rt.agent=u.agent AND rt.thread IS u.thread AND rt.turn IS u.turn"
                          if missing_responses else "")
         response_filter = "(u.has_response OR rt.agent IS NULL)" if missing_responses else "1"
+        # The final query uses only the completed temporary tables. Release the
+        # history snapshot before opening its cursor and calculating prices.
+        db.commit()
         return db.execute(f"""
           WITH priced AS MATERIALIZED (
             SELECT {model} AS model,u.account_key,u.input_tokens,u.cached_tokens,u.write_tokens,u.output_tokens,u.input_uncached
@@ -715,6 +718,7 @@ class SessionCostReader:
             except sqlite3.OperationalError as error:
                 if "no such table: analytics_usage" not in str(error):
                     raise
+                db.commit()
                 groups = ()
             for model, account_key, input_tokens, cached_tokens, write_tokens, output_tokens, input_uncached, count in groups:
                 if model == "<synthetic>":

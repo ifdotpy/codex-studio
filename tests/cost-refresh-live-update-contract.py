@@ -30,10 +30,12 @@ BASE_PRICING = subprocess.check_output(
     ["git", "show", "6316a847:scripts/codex_pricing.py"], cwd=ROOT)
 RUNTIME = subprocess.check_output(
     ["git", "show", "85f3f8d8:scripts/codex_runtime.py"], cwd=ROOT)
+REVIEWED_COSTS = subprocess.check_output(
+    ["git", "show", "72bfb56e:scripts/codex_session_costs.py"], cwd=ROOT)
 
 
 def released_cost_source():
-    current = (ROOT / "scripts/codex_session_costs.py").read_bytes()
+    current = REVIEWED_COSTS
     def compute(raw):
         return next(node for node in ast.walk(ast.parse(raw))
                     if isinstance(node, ast.FunctionDef) and node.name == "_compute")
