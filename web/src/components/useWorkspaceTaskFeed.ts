@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { get, type ApiReadMetadata, type GetResult } from "../api";
+import type { BackgroundTask } from "../types";
 
 type TaskFeed = GetResult<"/api/workspace/tasks">;
 

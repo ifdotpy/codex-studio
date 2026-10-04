@@ -533,20 +533,28 @@ function ShellView({
         const value = await get("/api/terminals/output", {
           query: {
             id: shell.id,
-            history: "1",
-            offset,
-            limit: Math.min(65536, end === undefined ? 65536 : end - offset),
+            history: ["1"],
+            offset: String(offset),
+            limit: String(
+              Math.min(65536, end === undefined ? 65536 : end - offset),
+            ),
           },
         });
         if (downloadAttempt.current !== attempt) return;
         if (
+          !value ||
+          typeof value.offset !== "number" ||
           !Number.isSafeInteger(value.offset) ||
+          typeof value.availableOffset !== "number" ||
           !Number.isSafeInteger(value.availableOffset) ||
+          typeof value.historyStart !== "number" ||
+          !Number.isSafeInteger(value.historyStart) ||
           typeof value.text !== "string" ||
           typeof value.hasMore !== "boolean"
         )
           throw new Error("The server did not return saved terminal output.");
-        end ??= value.availableOffset;
+        const endOffset = end ?? value.availableOffset;
+        end = endOffset;
         if (value.offset < offset || (value.hasMore && value.offset === offset))
           throw new Error(
             "The saved output did not advance. Try the download again.",
@@ -554,7 +562,7 @@ function ShellView({
         parts.push(value.text);
         incomplete ||= value.truncated;
         offset = value.offset;
-        if (!value.hasMore || offset >= end) {
+        if (!value.hasMore || offset >= endOffset) {
           const url = URL.createObjectURL(
             new Blob(parts, { type: "text/plain;charset=utf-8" }),
           );
@@ -571,7 +579,7 @@ function ShellView({
           return;
         }
         setDownloadStatus(
-          `Preparing saved output: ${offset.toLocaleString()} of ${end.toLocaleString()} characters`,
+          `Preparing saved output: ${offset.toLocaleString()} of ${endOffset.toLocaleString()} characters`,
         );
       }
       throw new Error(
@@ -688,7 +696,7 @@ function ShellView({
         const poll = async () => {
           try {
             const output = await get("/api/terminals/output", {
-              query: { id: shell.id, offset },
+              query: { id: shell.id, offset: String(offset) },
             });
             if (disposed) return;
             if (output.truncated) {

@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 import { get, post, ApiError, errorText } from "../api";
-import type { Agent, Message } from "../types";
+import type { Agent, Message, Snapshot } from "../types";
 
 export type ChatReadState = {
   threadId: string;

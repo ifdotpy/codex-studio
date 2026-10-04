@@ -3,7 +3,7 @@ import { ApiError, get, errorText, type GetResult } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
 
 type ModelCatalog = GetResult<"/api/models">;
-type ModelInfo = ModelCatalog["data"][number];
+type ModelInfo = NonNullable<ModelCatalog["data"]>[number];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -11,9 +11,18 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const isDaybreakAlias = (model: string) =>
   /^gpt-daybreak-(blue|red)-latest$/.test(model);
 
+const cyberAccessPrograms = (info?: ModelInfo): string[] | undefined => {
+  const access = info?.availableAccessPrograms;
+  if (!isRecord(access)) return undefined;
+  const cyber = access.cyber;
+  return Array.isArray(cyber)
+    ? cyber.filter((program): program is string => typeof program === "string")
+    : undefined;
+};
+
 export function daybreakProgram(info?: ModelInfo): string | null {
-  const programs = info?.availableAccessPrograms?.cyber;
-  if (!Array.isArray(programs)) return null;
+  const programs = cyberAccessPrograms(info);
+  if (!programs) return null;
   if (programs.includes("daybreakBlue")) return "daybreakBlue";
   if (programs.includes("daybreakRed")) return "daybreakRed";
   return null;
@@ -24,12 +33,9 @@ export function supportsDaybreakMode(
   enabled: boolean,
 ) {
   if (!info || isDaybreakAlias(info.model)) return false;
+  const programs = cyberAccessPrograms(info);
   if (enabled) return !!daybreakProgram(info);
-  const programs = info.availableAccessPrograms?.cyber;
-  return (
-    programs === undefined ||
-    (Array.isArray(programs) && programs.includes("standard"))
-  );
+  return programs === undefined || programs.includes("standard");
 }
 
 export function useWorkerModels(
@@ -73,7 +79,7 @@ export function useWorkerModels(
               typeof item.accountKey === "string" &&
               typeof item.error === "string",
           );
-        const models = data.data;
+        const models = Array.isArray(data.data) ? data.data : [];
         setResult((previous) => ({
           key: catalogKey,
           models:
@@ -121,9 +127,15 @@ export function useWorkerModels(
         .filter((model) => model.model && !model.hidden)
         .map((model): ModelInfo => ({
           ...model,
-          displayName: model.displayName
-            ? claudeModelLabel(model.displayName, model.description || "")
-            : model.displayName,
+          displayName:
+            typeof model.displayName === "string" && model.displayName
+              ? claudeModelLabel(
+                  model.displayName,
+                  typeof model.description === "string"
+                    ? model.description
+                    : "",
+                )
+              : model.displayName,
         })) || [],
     loading: !current || Boolean(current.pending && !current.models.length),
     error: current?.error || "",
