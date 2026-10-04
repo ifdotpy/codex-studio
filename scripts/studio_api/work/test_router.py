@@ -110,6 +110,30 @@ class WorkRouterTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(context.runtime.request_action.call_count, 1)
 
+    def test_work_and_queue_writes_forward_durable_receipt_ids(self) -> None:
+        context = FakeContext()
+        context.runtime.work_action = Mock(return_value={
+            "id": "task-1", "rootId": "agent-1", "title": "Task", "status": "ready",
+            "created": 1.0, "updated": 1.0, "version": 0,
+        })
+        context.runtime.queue_action = Mock(return_value={
+            "status": "updated", "revision": "revision-2",
+            "capabilities": {"reorder": True, "receipts": True},
+        })
+        client = make_client(context)
+
+        work_body = {"agent": "agent-1", "action": "create", "id": "operation-1", "title": "Task"}
+        queue_body = {
+            "agent": "agent-1", "action": "edit", "id": "message-1",
+            "request_id": "operation-2", "expected_revision": "revision-1",
+            "expectedText": "before", "text": "after",
+        }
+        self.assertEqual(client.post("/api/work", json=work_body).status_code, 200)
+        self.assertEqual(client.post("/api/queue", json=queue_body).status_code, 200)
+
+        context.runtime.work_action.assert_called_once_with("agent-1", work_body, "operation-1")
+        context.runtime.queue_action.assert_called_once_with("agent-1", queue_body)
+
     def test_profile_and_rule_editor_payload_fields_are_preserved(self) -> None:
         context = FakeContext()
         context.runtime.profiles = Mock(return_value={"id": "profile-1", "deleted": None})
