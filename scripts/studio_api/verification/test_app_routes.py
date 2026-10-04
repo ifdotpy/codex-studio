@@ -158,6 +158,7 @@ STREAM_OR_FILE_ROUTES = frozenset(
         ("GET", "/api/monitor/log"),
     }
 )
+HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
 
 
 def query_parameter_names(document: dict[str, object], path: str) -> set[str]:
@@ -200,7 +201,11 @@ class ApplicationRouteContract(unittest.TestCase):
                 self.assertNotIn("{path:path}", route.path)
                 methods = route.methods or set()
                 self.assertTrue(methods.issubset({"GET", "POST", "HEAD", "OPTIONS"}))
-                if not any((method, route.path) in STREAM_OR_FILE_ROUTES for method in methods):
+                route_keys = {(method, route.path) for method in methods}
+                if route_keys & HIDDEN_COMPATIBILITY_ROUTES:
+                    self.assertEqual(route_keys, {("POST", "/api/voice/{action:path}")})
+                    self.assertFalse(route.include_in_schema)
+                elif not any(key in STREAM_OR_FILE_ROUTES for key in route_keys):
                     self.assertIsNotNone(route.response_model)
 
     def test_openapi_exposes_existing_query_parameters(self) -> None:
@@ -214,10 +219,23 @@ class ApplicationRouteContract(unittest.TestCase):
         self.assertTrue({"room", "before", "after", "limit"}.issubset(query_names["/api/agent-chat"]))
 
     def test_application_has_no_generic_api_catchall(self) -> None:
+        dynamic_routes: set[tuple[str, str]] = set()
         for route in self.app.routes:
             path = getattr(route, "path", "")
             if path.startswith("/api/"):
-                self.assertNotIn("{", path, f"Unexpected generic/dynamic API route: {path}")
+                methods = getattr(route, "methods", None) or set()
+                if "{" in path:
+                    dynamic_routes.update((method, path) for method in methods)
+        self.assertEqual(dynamic_routes, HIDDEN_COMPATIBILITY_ROUTES)
+
+    def test_openapi_has_no_dynamic_api_contracts(self) -> None:
+        document = cast(dict[str, object], self.app.openapi())
+        paths = cast(dict[str, object], document["paths"])
+        dynamic_paths = {
+            path for path in paths
+            if path.startswith("/api/") and "{" in path
+        }
+        self.assertEqual(dynamic_paths, set())
 
     def test_unknown_api_route_keeps_legacy_not_found_response(self) -> None:
         with TestClient(self.app) as client:

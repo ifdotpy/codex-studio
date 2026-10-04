@@ -125,6 +125,11 @@ header. The generic rejection statuses currently include 400, 403, 404, 409,
 compatibility authority. Static paths are served only from the existing web
 distribution allowlist; a missing root build returns 503.
 
+The FastAPI route table also retains exactly one hidden POST compatibility
+pattern, `/api/voice/{action:path}`, for legacy unknown voice actions. It must
+stay out of OpenAPI; every other API route remains concrete so generated
+clients cannot treat a generic dispatcher as part of the contract.
+
 ## Live update and rollout boundary
 
 `scripts/codex_live_updates.py` applies versioned source patches to the existing
