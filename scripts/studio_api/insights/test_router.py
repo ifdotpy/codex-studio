@@ -161,6 +161,24 @@ class InsightsRouterTests(unittest.TestCase):
             for parameter in paths["/api/session-cost"]["get"]["parameters"]
         })
 
+    def test_routes_validate_through_the_real_api_context_sender(self) -> None:
+        context = ApiContext.for_schema()
+        runtime = _Runtime()
+        setattr(context.canvas, "runtime", runtime)
+        setattr(context, "costs", lambda: _CostReader(self.context))
+        app = FastAPI()
+        app.include_router(create_router(context))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        analytics = client.get("/api/analytics?timing=1")
+        costs = client.get("/api/costs")
+
+        self.assertEqual(analytics.status_code, 200)
+        self.assertEqual(analytics.json(), {"at": 123.0, "tokens": {"inputTokens": 7}})
+        self.assertIn("Server-Timing", analytics.headers)
+        self.assertEqual(costs.status_code, 200)
+        self.assertIsNone(costs.json()["data"])
+
     def test_analytics_keeps_first_query_value_and_timing_header(self) -> None:
         response = self.client.get(
             "/api/analytics?scope=team&scope=all&from=10.5&timing=1"

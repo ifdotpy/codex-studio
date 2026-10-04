@@ -52,6 +52,14 @@ class WorktreeScanner(Protocol):
     def snapshot(self, priority_ids: list[str]) -> dict[str, JsonValue]: ...
 
 
+class CostSnapshotReader(Protocol):
+    def snapshot(self, account_key: str) -> dict[str, JsonValue]: ...
+
+
+class SessionCostSnapshotReader(Protocol):
+    def snapshot(self, agent_id: str) -> dict[str, JsonValue]: ...
+
+
 def _query_first_values(request: Request) -> dict[str, str]:
     """Match the legacy parse_qs contract: first occurrence, blank omitted."""
     return {
@@ -171,7 +179,8 @@ def create_router(context: ApiContext) -> APIRouter:
         query = _query_first_values(request)
         account_key = query.get("account_key", "default")
         try:
-            result = context.costs().snapshot(account_key)
+            reader = cast(CostSnapshotReader, context.costs())
+            result = reader.snapshot(account_key)
         except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
             return _error(context, request, error)
         return context.send(request, result)
@@ -185,7 +194,8 @@ def create_router(context: ApiContext) -> APIRouter:
         if not agent_id or re.fullmatch(AGENT_ID_PATTERN, agent_id) is None:
             return _error(context, request, ValueError("Select a chat"))
         try:
-            result = context.session_costs().snapshot(agent_id)
+            reader = cast(SessionCostSnapshotReader, context.session_costs())
+            result = reader.snapshot(agent_id)
         except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
             return _error(context, request, error)
         return context.send(request, result)
