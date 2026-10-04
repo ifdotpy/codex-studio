@@ -169,6 +169,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/sync/stream",
         response_class=StreamingResponse,
+        response_model=None,
         responses={
             200: {
                 "description": "Server-sent sync updates",
@@ -318,6 +319,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/transcript/stream",
         response_class=StreamingResponse,
+        response_model=None,
         responses={
             200: {
                 "description": "Server-sent transcript updates",
