@@ -617,8 +617,8 @@ class SessionCostReader:
                 usage = {"inputTokens": input_tokens, "cachedInputTokens": cached_tokens,
                          "cacheWriteInputTokens": write_tokens, "outputTokens": output_tokens}
                 context_tokens = usage.get("inputTokens")
-                if input_uncached:
-                    context_tokens += usage.get("cachedInputTokens", 0) + usage.get("cacheWriteInputTokens", 0)
+                if input_uncached and context_tokens is not None:
+                    context_tokens += (usage.get("cachedInputTokens") or 0) + (usage.get("cacheWriteInputTokens") or 0)
                 cost, status, tier = price_usage(catalog, provider, model, usage,
                                                  context_tokens=context_tokens,
                                                  input_tokens_are_uncached=bool(input_uncached))

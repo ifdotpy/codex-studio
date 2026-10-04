@@ -41,7 +41,9 @@ def reviewed_fixture():
         modules = {}
         for name, real in (('codex_runtime', codex_runtime), ('codex_session_costs', codex_session_costs)):
             path = scripts / (name + '.py')
-            path.write_bytes((ROOT / 'scripts' / path.name).read_bytes())
+            # This released patch checks its reviewed source, before later cost fixes.
+            reviewed = subprocess.check_output(['git', 'show', '85f3f8d8:scripts/' + path.name], cwd=ROOT)
+            path.write_bytes(reviewed)
             module = ModuleType(name)
             vars(module).update(vars(real))
             module.__file__ = str(path)
