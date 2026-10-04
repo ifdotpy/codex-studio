@@ -2163,6 +2163,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             transfer_roots = (
                 " OR json_extract(record,'$.rootId') IN (SELECT json_extract(record,'$.leadId') "
                 "FROM runtime_account_transfers WHERE json_extract(record,'$.status')='pending')")
+        idle_status = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked')"
+        completed_start = (
+            idle_status + " AND COALESCE(json_extract(record,'$.inFlight'),0)=0 "
+            "AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 "
+            "AND json_extract(record,'$.startAttempt.action') IS NULL "
+            "AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 "
+            "AND json_extract(record,'$.startOutcomeHold') IS NULL "
+            "AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' "
+            "AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' "
+            "AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' "
+            "AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' "
+            "AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') "
+            "AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'")
         filters = (
             # dispatch_candidates: queued work, active capacity, workspace reservations,
             # legacy steer receipts, budget/capacity waits, safety retries, and failure holds.
@@ -2185,12 +2198,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "(json_extract(record,'$.status')='interrupted' "
             "AND json_extract(record,'$.threadId') IS NOT NULL "
             "AND json_extract(record,'$.turnId') IS NOT NULL) OR "
-            "json_extract(record,'$.disconnectRecovery') IS NOT NULL OR "
-            "json_extract(record,'$.restartRecovery') IS NOT NULL OR "
-            "json_extract(record,'$.contextRepair') IS NOT NULL OR "
+            # Idle agents retain their receipts without another scheduler visit.
+            # Unknown stages and unfinished cleanup remain in this roster.
+            "(json_extract(record,'$.disconnectRecovery') IS NOT NULL AND (NOT (" + idle_status + ") "
+            "OR json_extract(record,'$.disconnectRecovery.stage') IS NOT NULL)) OR "
+            "(json_extract(record,'$.restartRecovery') IS NOT NULL AND (NOT (" + idle_status + ") "
+            "OR COALESCE(json_extract(record,'$.restartRecovery.stage'),'') "
+            "NOT IN ('finished','continued','reattached','input_restored'))) OR "
+            "(json_extract(record,'$.contextRepair') IS NOT NULL AND (NOT (" + idle_status + ") "
+            "OR COALESCE(json_extract(record,'$.contextRepair.phase'),'') NOT IN ('unchanged','completed','failed') "
+            "OR (json_type(record,'$.contextRepair.sourceCleanup')='object' "
+            "AND COALESCE(json_extract(record,'$.contextRepair.sourceCleanup.phase'),'') NOT IN ('completed','skipped')))) OR "
             "json_extract(record,'$.contextRepairWait') IS NOT NULL OR "
-            "json_extract(record,'$.lastContextRepairWait') IS NOT NULL OR "
-            "json_extract(record,'$.startAttempt') IS NOT NULL OR "
+            "(json_extract(record,'$.lastContextRepairWait') IS NOT NULL AND (NOT (" + idle_status + ") "
+            "OR COALESCE(json_extract(record,'$.lastContextRepairWait.status'),'') NOT IN ('resumed','superseded'))) OR "
+            "(json_extract(record,'$.startAttempt') IS NOT NULL AND NOT (" + completed_start + ")) OR "
             "json_extract(record,'$.browserRecovery') IS NOT NULL OR "
             "json_extract(record,'$.liveSteerAttempt') IS NOT NULL OR "
             "json_extract(record,'$.liveSteerRejectedTurnId') IS NOT NULL OR "
@@ -2198,9 +2220,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "json_extract(record,'$.queueNotice') IS NOT NULL")
         filters += transfer_roots
         filters += (
-            " OR json_extract(runtime_agents.record,'$.id') IN ("
+            " OR ((json_extract(record,'$.status')='failed' OR json_extract(record,'$.deletedAt') IS NOT NULL) "
+            "AND json_extract(runtime_agents.record,'$.id') IN ("
             "SELECT json_extract(runtime_work.record,'$.owner') FROM runtime_work "
-            "WHERE json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked'))")
+            "WHERE json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked')))")
         # The selected rows are consumed by AccountTransfers.tick/adopt,
         # retire_legacy_steer, release_failed_work, queue_turn_recovery,
         # connection_recovery.tick, browser_recovery.tick, recover_context_failures,
@@ -5300,8 +5323,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         key = a["id"] + ":" + item_id
         row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (key,)).fetchone()
         task = json.loads(row[0]) if row else None
-        # Only a known command may report after its original model turn ends.
-        if stale and not (task and task["kind"] == "command" and task.get("turnId") == p.get("turnId")):
+        # An exact result can settle an existing historical tool. A stale start
+        # or an unknown item cannot establish work in the current agent state.
+        historical_tool = (stale and method == "item/completed" and task
+                           and task.get("kind") == "tool" and task.get("agent") == a["id"]
+                           and task.get("itemId") == item_id
+                           and task.get("turnId") == p.get("turnId")
+                           and task.get("type") == item.get("type"))
+        if stale and not (historical_tool or (task and task["kind"] == "command"
+                                             and task.get("turnId") == p.get("turnId"))):
             return
         if method in {"item/started", "item/completed"}:
             kind = item.get("type")
@@ -5349,14 +5379,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
             if row:
                 record = json.loads(row[0])
-                try:
-                    recorded = json.loads(record["text"])
-                except ValueError:
-                    recorded = {"id": item_id, "type": "commandExecution", "command": task.get("command")}
-                recorded.update(aggregatedOutput=task.get("tail", ""), outputTruncated=task.get("outputTruncated", False),
-                                exitCode=task.get("exitCode"), durationMs=task.get("durationMs"),
-                                startedAtMs=task.get("startedAtMs"), completedAtMs=task.get("completedAtMs"))
-                self.item(db, a["id"], item_id, "output", json.dumps(recorded), "commandExecution",
+                if historical_tool:
+                    try:
+                        saved_item = json.loads(record["text"])
+                    except (KeyError, TypeError, ValueError):
+                        saved_item = None
+                    if (record.get("turnId") != task.get("turnId")
+                            or record.get("title") != task["type"]
+                            or not isinstance(saved_item, dict)
+                            or saved_item.get("id") != item_id
+                            or saved_item.get("type") != task["type"]):
+                        self.touch_ui(a["id"])
+                        return
+                    recorded = dict(item)
+                    for field in ("durationMs", "startedAtMs", "completedAtMs"):
+                        if task.get(field) is not None:
+                            recorded[field] = task[field]
+                else:
+                    try:
+                        recorded = json.loads(record["text"])
+                    except ValueError:
+                        recorded = {"id": item_id, "type": "commandExecution", "command": task.get("command")}
+                    recorded.update(aggregatedOutput=task.get("tail", ""), outputTruncated=task.get("outputTruncated", False),
+                                    exitCode=task.get("exitCode"), durationMs=task.get("durationMs"),
+                                    startedAtMs=task.get("startedAtMs"), completedAtMs=task.get("completedAtMs"))
+                self.item(db, a["id"], item_id, "output", json.dumps(recorded), task["type"] if historical_tool else "commandExecution",
                           toolStatus=task["status"], turnId=task.get("turnId"))
         self.touch_ui(a["id"])
 
