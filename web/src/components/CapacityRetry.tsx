@@ -1,7 +1,7 @@
 import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
-import { api, errorText } from "../api";
+import { errorText, post, type PostResult } from "../api";
 import type { Json } from "../types";
 
 export default function CapacityRetry({
@@ -11,7 +11,8 @@ export default function CapacityRetry({
   agentId: string;
   retry: Json;
 }) {
-  const [confirmed, setConfirmed] = useState<Json | null>(null);
+  const [confirmed, setConfirmed] =
+    useState<PostResult<"/api/capacity-retry"> | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -42,7 +43,7 @@ export default function CapacityRetry({
     setPending(true);
     setError("");
     try {
-      const result = await api<Json>(
+      const result = await post(
         "/api/capacity-retry",
         {
           id: agentId,

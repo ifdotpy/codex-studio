@@ -5,7 +5,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json } from "../types";
-import { api, errorText } from "../api";
+import { errorText, get, post, type GetResult } from "../api";
 import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
@@ -214,43 +214,45 @@ export default function Usage({
     setResetError("");
     setResetNotice("");
     try {
-      const key = `${limits?.data?.accountId}:${creditId}`;
+      const accountId = limits?.data?.accountId;
+      if (typeof accountId !== "string")
+        throw new Error("Refresh limits before using this reset credit.");
+      const key = `${accountId}:${creditId}`;
       const requestId = resetAttempts.current.get(key) || crypto.randomUUID();
       resetAttempts.current.set(key, requestId);
-      const result = await api("/api/limits/reset", {
+      const result = await post("/api/limits/reset", {
         credit_id: creditId,
-        account_id: limits?.data?.accountId,
+        account_id: accountId,
         account_key: selectedAccountKey,
         request_id: requestId,
       });
-      if (
-        ["reset", "alreadyRedeemed", "nothingToReset", "noCredit"].includes(
-          result.outcome,
-        )
-      )
-        resetAttempts.current.delete(key);
-      if (result.outcome === "reset" || result.outcome === "alreadyRedeemed") {
-        setResetApplied((ids) => [...ids, resetAppliedKey(creditId)]);
-        setConfirmReset(null);
-        setResetNotice(
-          result.outcome === "reset"
-            ? "Reset applied."
-            : "This reset credit was already used.",
-        );
-      } else if (result.outcome === "nothingToReset") {
-        setConfirmReset(null);
-        setResetNotice("No limits need a reset.");
-      } else if (result.outcome === "noCredit") {
-        setResetError("This reset credit is no longer available.");
-      } else if (result.outcome === "uncertain") {
-        setResetError(
-          result.error ||
-            "Reset result uncertain. Refresh limits before trying again.",
-        );
-      } else {
-        throw new Error(
-          "Reset result unavailable. Refresh limits before trying again.",
-        );
+      switch (result.outcome) {
+        case "reset":
+        case "alreadyRedeemed":
+          resetAttempts.current.delete(key);
+          setResetApplied((ids) => [...ids, resetAppliedKey(creditId)]);
+          setConfirmReset(null);
+          setResetNotice(
+            result.outcome === "reset"
+              ? "Reset applied."
+              : "This reset credit was already used.",
+          );
+          break;
+        case "nothingToReset":
+          resetAttempts.current.delete(key);
+          setConfirmReset(null);
+          setResetNotice("No limits need a reset.");
+          break;
+        case "noCredit":
+          resetAttempts.current.delete(key);
+          setResetError("This reset credit is no longer available.");
+          break;
+        case "uncertain":
+          setResetError(
+            result.error ||
+              "Reset result uncertain. Refresh limits before trying again.",
+          );
+          break;
       }
       void (activeAccount?.reload(true) ?? reload());
     } catch (error) {
@@ -261,7 +263,9 @@ export default function Usage({
     }
   };
   const accountKey = selectedAccountKey;
-  const [costs, setCosts] = useState<Json | null>(null);
+  const [costs, setCosts] = useState<
+    (Partial<GetResult<"/api/costs">> & { error?: string }) | null
+  >(null);
   const rootId = agent.rootId || agent.id;
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
@@ -299,11 +303,10 @@ export default function Usage({
             },
       );
       try {
-        const value = await api<Json>(
-          `/api/session-cost?agent=${encodeURIComponent(agent.id)}`,
-          undefined,
-          { timeoutMs: 5000 },
-        );
+        const value = await get("/api/session-cost", {
+          query: { agent: agent.id },
+          timeoutMs: 5000,
+        });
         if (!active) return;
         if (value.pricingState === "loading") {
           setSessionCostState((previous) => {
@@ -352,13 +355,10 @@ export default function Usage({
     let timer: number;
     const load = async () => {
       try {
-        const result = await api<Json>(
-          `/api/costs?account_key=${encodeURIComponent(accountKey)}`,
-          undefined,
-          {
-            timeoutMs: 15000,
-          },
-        );
+        const result = await get("/api/costs", {
+          query: { account_key: accountKey },
+          timeoutMs: 15000,
+        });
         if (!active) return;
         if (result.accountKey !== accountKey)
           throw new Error("Cost account mismatch");

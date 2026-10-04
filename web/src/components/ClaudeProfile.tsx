@@ -1,15 +1,17 @@
 import { Button, NumberInput, Stack, Textarea, TextInput } from "@mantine/core";
 import { useRef, useState } from "react";
-import { api, errorText } from "../api";
-import type { Json } from "../types";
-import type { Account, AccountsState } from "./Accounts";
+import { errorText, post, type PostBody, type PostResult } from "../api";
+import type { Account } from "./Accounts";
+
+type ClaudeProfileOptions = PostBody<"/api/claude/profiles">["options"];
+type ClaudeProfileResult = PostResult<"/api/claude/profiles">;
 
 export default function ClaudeProfile({
   account,
   onSaved,
 }: {
   account?: Account;
-  onSaved: (state: AccountsState) => void;
+  onSaved: (state: ClaudeProfileResult) => void;
 }) {
   const initial = account?.claudeOptions || {};
   const [label, setLabel] = useState(account?.label || "Claude Code");
@@ -22,7 +24,7 @@ export default function ClaudeProfile({
   const [models, setModels] = useState(
     (initial.customModels || [])
       .map(
-        (model: Json) =>
+        (model) =>
           `${model.id}${model.label && model.label !== model.id ? ` | ${model.label}` : ""}`,
       )
       .join("\n"),
@@ -38,7 +40,7 @@ export default function ClaudeProfile({
     setError("");
     setSaved(false);
     try {
-      const options: Json = {
+      const options: ClaudeProfileOptions = {
         ...initial,
         binaryPath: binaryPath.trim(),
         configDir: configDir.trim(),
@@ -53,7 +55,7 @@ export default function ClaudeProfile({
       };
       if (window === "") delete options.autoCompactWindow;
       else options.autoCompactWindow = Number(window);
-      const result = await api<AccountsState>("/api/claude/profiles", {
+      const result = await post("/api/claude/profiles", {
         options,
         label: label.trim(),
         ...(account ? { account_key: account.id } : {}),
