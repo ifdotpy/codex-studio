@@ -903,6 +903,7 @@ export function watchResourceChanges(
     if (!listeners?.size) {
       subscribers.delete(key);
       resourceRefs.delete(key);
+      baselineReconciliations.delete(key);
     }
     announceSubscriptions();
     if (

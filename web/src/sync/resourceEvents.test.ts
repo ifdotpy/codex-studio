@@ -619,4 +619,76 @@ describe("shared resource event transport", () => {
     expect(onChange).toHaveBeenCalledTimes(2);
     stop();
   });
+
+  it("drops a recovery marker when its last local subscriber leaves", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.useFakeTimers();
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const a = { kind: "panel", agentId: "resume-panel-a" } as const;
+    const b = { kind: "panel", agentId: "resume-panel-b" } as const;
+    const onA = vi.fn();
+    const onB = vi.fn();
+    let stopA = transport.watchResourceChanges(a, onA);
+    const stopB = transport.watchResourceChanges(b, onB);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(Source.instances).toHaveLength(1);
+
+    const baseline = {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 7,
+      reason: "initial",
+      resources: [a, b],
+    };
+    Source.instances[0]!.emit("resources", baseline);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onA).toHaveBeenCalledTimes(1);
+    expect(onB).toHaveBeenCalledTimes(1);
+
+    Source.instances[0]!.onerror?.();
+    stopA();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.emit("resources", {
+      ...baseline,
+      reason: "reconnect",
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onB).toHaveBeenCalledTimes(2);
+
+    const resumedA = vi.fn();
+    stopA = transport.watchResourceChanges(a, resumedA);
+    expect(resumedA).toHaveBeenCalledTimes(1);
+    Source.instances[1]!.emit("resources", baseline);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(resumedA).toHaveBeenCalledTimes(1);
+    stopA();
+    stopB();
+  });
 });
