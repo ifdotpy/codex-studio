@@ -1,9 +1,12 @@
 """Regression tests for core API response behavior."""
 from __future__ import annotations
 
+from contextlib import closing
+
 import gzip
 import json
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import sys
@@ -17,7 +20,7 @@ from unittest.mock import patch
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 import httpx
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -291,6 +294,60 @@ class CoreResponseTests(unittest.TestCase):
             response = self.context.send(request_for(FederationManagementResponse), value)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(json.loads(bytes(response.body)), value)
+
+    def test_cached_union_still_validates_each_response(self) -> None:
+        ApiContext._response_adapter.cache_clear()
+        self.addCleanup(ApiContext._response_adapter.cache_clear)
+        request = request_for(FederationManagementResponse)
+        with patch("studio_api.context.TypeAdapter", wraps=TypeAdapter) as factory:
+            for value, status in (
+                ({"paired": True}, 200),
+                ({"invitation": "signed", "expires": 123, "warning": None}, 200),
+                ({"paired": "true"}, 500),
+                ({"paired": True, "unexpected": 1}, 500),
+                ({"paired": False}, 200),
+            ):
+                response = self.context.send(request, value)
+                self.assertEqual(response.status_code, status)
+                if status == 200:
+                    self.assertEqual(bytes(response.body), json.dumps(value, separators=(",", ":")).encode())
+                else:
+                    self.assertNotIn("outcome", json.loads(bytes(response.body)))
+            self.assertEqual(factory.call_count, 1)
+
+    def test_sync_envelope_does_not_mutate_or_leak_between_responses(self) -> None:
+        value = {"paired": True}
+        request = request_for(FederationSnapshot)
+        request.scope["studio_sync_entities_after"] = 0
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE sync_entities(collection, id, seq, payload, deleted)")
+            db.execute("INSERT INTO sync_entities VALUES ('agent', 'a1', 1, '{}', 0)")
+            with patch.object(self.context, "sync", return_value=SimpleNamespace(connect=lambda: db)):
+                first = self.context.send(request, value)
+                db.execute("DELETE FROM sync_entities")
+                second = self.context.send(request, value)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(json.loads(bytes(first.body)), {
+            "paired": True,
+            "_syncEntities": [{"id": "entity:agent:a1", "seq": 1, "payload": "{}", "_deleted": False}],
+        })
+        self.assertEqual(bytes(second.body), b'{"paired":true}')
+        self.assertEqual(value, {"paired": True})
+
+    def test_cached_adapter_preserves_union_branch_order(self) -> None:
+        class First(ResponseModel):
+            value: str = Field(serialization_alias="first")
+
+        class Second(ResponseModel):
+            value: str = Field(serialization_alias="second")
+
+        for model, expected in (
+            (First | Second, b'{"first":"same"}'),
+            (Second | First, b'{"second":"same"}'),
+        ):
+            response = self.context.send(request_for(model), {"value": "same"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(bytes(response.body), expected)
 
     def test_output_contract_failure_does_not_claim_not_applied(self) -> None:
         response = self.context.send(request_for(MessageHistory), [{"id": 1, "text": "hello"}])

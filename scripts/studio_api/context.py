@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import threading
 from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, get_args, get_origin
 
@@ -266,6 +267,7 @@ class ApiContext:
                     (sync_after,),
                 ).fetchall()
             if rows:
+                body_value = dict(body_value)
                 body_value["_syncEntities"] = [
                     {"id": f"entity:{row[0]}:{row[1]}", "seq": row[2], "payload": row[3], "_deleted": bool(row[4])}
                     for row in rows
@@ -276,9 +278,7 @@ class ApiContext:
                 response_model = getattr(route, "response_model", None)
                 if status >= 400:
                     response_model = ErrorResponse
-                elif not self._response_contract(response_model):
-                    raise TypeError("JSON API route has no explicit response model")
-                adapter: TypeAdapter[object] = TypeAdapter(response_model)
+                adapter = ApiContext._response_adapter(response_model, id(response_model))
                 validated = adapter.validate_python(body_value)
                 body_value = adapter.dump_python(validated, mode="json", by_alias=True, exclude_unset=True)
                 if not isinstance(body_value, (dict, list, str, int, float, bool)) and body_value is not None:
@@ -339,11 +339,18 @@ class ApiContext:
             return value.wire_dump()
         if isinstance(value, BaseModel):
             return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        if isinstance(value, dict):
-            return dict(value)
-        if isinstance(value, (list, str, int, float, bool)) or value is None:
+        if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
             return value
         raise TypeError("Unsupported JSON response value")
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def _response_adapter(response_model: object, _identity: int) -> TypeAdapter[object]:
+        """Reuse contract metadata, never response values or validation results."""
+        # Equal unions can have different branch order. Keep their adapters distinct.
+        if not ApiContext._response_contract(response_model):
+            raise TypeError("JSON API route has no explicit response model")
+        return TypeAdapter(response_model)
 
     @staticmethod
     def _response_contract(candidate: object) -> bool:

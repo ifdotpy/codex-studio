@@ -190,6 +190,39 @@ signal for follow-up, not a claim about end-user performance. Raw measurements
 and environment details were retained outside the checkout in
 `http-fastapi-paired-evidence.json` under the task cache.
 
+### Response allocation optimization
+
+A follow-up retains strict validation of every response and the existing JSON
+serializer. A bounded cache holds up to 256 response adapters, keyed by model
+identity as well as type equality so reordered unions remain distinct. Input
+dictionaries are copied only when adding the server-owned sync envelope.
+There are no new dependencies, response-data caches, or changes to retry rules.
+
+Against `f331343`, an isolated same-server ABBA comparison (before, after,
+after, before) measured 600 requests per route per variant, excluding ten
+warmups per block. Each GET opened a new connection with compression disabled;
+all compared response bodies were byte-identical.
+
+| Route                                          | p50 ms before → after | p95 ms before → after |
+| ---------------------------------------------- | --------------------: | --------------------: |
+| `/api/session`                                 |         0.269 → 0.257 |         0.344 → 0.309 |
+| `/api/sync/identity`                           |         0.444 → 0.410 |         0.571 → 0.541 |
+| `/api/sync/pull?scope=state&after=0&limit=100` |         0.974 → 0.568 |         1.172 → 0.760 |
+
+The state-pull median fell about 42%. The small session/identity differences
+varied across runs and should not be treated as established gains. This remains
+a Canvas-only fixture measurement, not a live latency or throughput claim.
+A warmed 1,000-call union-response microbenchmark reduced the `tracemalloc`
+peak from 5,193 to 2,134 bytes; this measures traced temporary memory, not total
+allocation count or process RSS, and excludes the retained adapter cache.
+
+The script and raw samples are retained under
+`/home/alex/.cache/codex-studio-fastapi/response-perf.py` and
+`response-perf-results.json`. Run the script from this worktree with the prepared
+Python environment and `PYTHONPATH=scripts`. The 266 backend tests and strict
+mypy check of 62 files pass, including warmed-cache rejection, union ordering,
+and sync-envelope isolation regressions.
+
 ## Implementation evidence ledger
 
 | Area                                              | Evidence state                                                                                                                                                                                                                                                                    |
