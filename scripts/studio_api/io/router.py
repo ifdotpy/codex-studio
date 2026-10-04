@@ -204,8 +204,8 @@ def create_router(context: ApiContext) -> APIRouter:
         "/api/monitor/log",
         response_class=Response,
         responses={
-            200: {"content": {"text/plain": {}}},
-            206: {"content": {"text/plain": {}}},
+            200: {"content": {"text/plain": {"schema": {"type": "string"}}}},
+            206: {"content": {"text/plain": {"schema": {"type": "string"}}}},
             400: {"model": ErrorResponse},
         },
     )

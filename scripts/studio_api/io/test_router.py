@@ -186,6 +186,8 @@ class IORouterTests(unittest.TestCase):
         log_responses = paths["/api/monitor/log"]["get"]["responses"]
         self.assertEqual(set(log_responses["200"]["content"]), {"text/plain"})
         self.assertEqual(set(log_responses["206"]["content"]), {"text/plain"})
+        self.assertEqual(log_responses["200"]["content"]["text/plain"]["schema"], {"type": "string"})
+        self.assertEqual(log_responses["206"]["content"]["text/plain"]["schema"], {"type": "string"})
 
     def test_typed_terminal_response_uses_actual_api_context_sender(self) -> None:
         app, _context = make_api_context_app(self.runtime)
