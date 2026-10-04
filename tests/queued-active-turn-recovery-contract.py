@@ -22,7 +22,7 @@ class QueuedActiveRecovery(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-queued-active-')
         self.addCleanup(self.temp.cleanup)
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.RecoveryServer)
+        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.NativeHistoryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         self.server.supervisor_mode = True
@@ -32,7 +32,7 @@ class QueuedActiveRecovery(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             agent = self.runtime.agent(self.key, db)
             agent.update(threadId='native-thread', turnId='live-turn', status='queued', autoWake=True,
-                         inFlight=False, activeTools=[{'id': 'remote-compile', 'type': 'commandExecution'}])
+                         inFlight=False, activeTools=[{'id': 'remote-compile', 'type': 'commandExecution', 'name': 'Remote compile'}])
             for index in range(4):
                 self.runtime.enqueue(db, agent, 'user', 'Pending input ' + str(index), 'pending-' + str(index))
             attempt = {'id': 'unsent-attempt', 'epoch': agent['epoch'], 'accountKey': agent['accountKey'],
@@ -267,12 +267,12 @@ class QueuedActiveRecovery(unittest.TestCase):
             self.assertEqual(item['turnStatus'], 'completed')
         self.assertEqual([method for method, _ in self.server.calls],
             ['thread/read', 'thread/turns/list', 'thread/read', 'thread/turns/list',
-             'thread/turns/list', 'thread/read', 'thread/turns/list'])
-        full_reads = [params for method, params in self.server.calls
-                      if method == 'thread/turns/list' and params.get('itemsView') == 'full']
-        self.assertEqual(len(full_reads), 1)
+             'thread/turns/list', 'thread/items/list', 'thread/turns/list', 'thread/read', 'thread/turns/list'])
+        item_reads = [params for method, params in self.server.calls if method == 'thread/items/list']
+        self.assertEqual(len(item_reads), 1)
+        self.assertEqual(item_reads[0]['turnId'], 'live-turn')
         self.assertEqual(recovery.recover(self.runtime, self.key)['status'], 'superseded')
-        self.assertEqual(len(self.server.calls), 7)
+        self.assertEqual(len(self.server.calls), 9)
 
     def test_failed_and_interrupted_terminal_turns_use_the_normal_outcome_policy(self):
         for outcome in ('failed', 'interrupted'):
@@ -297,26 +297,28 @@ class QueuedActiveRecovery(unittest.TestCase):
                 self.assertNotIn('startAttempt', agent)
                 self.assertNotIn('contextRepairWait', agent)
                 self.assertEqual(self.events(), events)
-                self.assertTrue(all(method in {'thread/read', 'thread/turns/list'}
+                self.assertTrue(all(method in {'thread/read', 'thread/turns/list', 'thread/items/list'}
                                     for method, _ in self.server.calls))
 
     def test_terminal_full_turn_and_final_native_status_must_still_match(self):
         self.server.native = {'id': 'native-thread', 'status': {'type': 'idle'},
-            'turns': [{'id': 'live-turn', 'status': 'completed', 'items': []}]}
+            'turns': [{'id': 'live-turn', 'status': 'completed', 'items': [
+                {'id': 'answer', 'type': 'agentMessage', 'text': 'Exact answer'}]}]}
         original = self.server.call
         for change in ('id', 'outcome', 'latest', 'request'):
             with self.subTest(change=change):
                 pages = []
                 self.server.calls.clear()
                 self.server.before_apply = None
+                self.server.native['turns'][0]['status'] = 'completed'
                 def call(method, params, timeout=60):
                     result = original(method, params, timeout)
+                    if method == 'thread/items/list':
+                        if change == 'id': result['data'][0]['turnId'] = 'other-turn'
+                        if change == 'outcome': self.server.native['turns'][0]['status'] = 'failed'
                     if method == 'thread/turns/list':
                         pages.append(params['itemsView'])
-                        if params['itemsView'] == 'full' and change in ('id', 'outcome'):
-                            return {'data': [{'id': 'other-turn' if change == 'id' else 'live-turn',
-                                             'status': 'failed' if change == 'outcome' else 'completed'}]}
-                        if len(pages) == 4 and change == 'latest':
+                        if len(pages) == 5 and change == 'latest':
                             return {'data': [{'id': 'newer-turn', 'status': 'completed'}]}
                     return result
                 if change == 'request':

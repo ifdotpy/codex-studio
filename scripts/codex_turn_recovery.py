@@ -32,26 +32,113 @@ def recent_account_starts(agents, now=None):
 
 
 def read_native_turn(server, thread_id, turn_id):
-    """Find the exact turn across history pages within one read deadline."""
+    """Read all items of one exact turn without loading other turns' bodies."""
+    from codex_native_errors import NativeRpcError
+
     deadline = time.monotonic() + 20
-    cursor, seen = None, set()
-    while True:
+
+    def read(method, params):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError('Native turn history read timed out')
+        return server.call(method, params, timeout=min(10, remaining))
+
+    def turn_page(params):
+        page = read('thread/turns/list', params)
+        if not isinstance(page, dict) or not isinstance(page.get('data'), list):
+            raise ValueError('Native turn history returned an invalid page')
+        ids = set()
+        for turn in page['data']:
+            if (not isinstance(turn, dict) or not isinstance(turn.get('id'), str)
+                    or not turn['id'] or turn['id'] in ids
+                    or turn.get('threadId', thread_id) != thread_id
+                    or not isinstance(turn.get('items'), list)
+                    or turn.get('itemsView', 'full') not in {'full', 'summary', 'notLoaded'}):
+                raise ValueError('Native turn history changed a turn identity or items view')
+            ids.add(turn['id'])
+        return page
+
+    def full_turn(turn):
+        if turn.get('itemsView', 'full') != 'full':
+            raise ValueError('Native turn history did not return all target items')
+        items, known = [], {}
+        for item in turn['items']:
+            add_item(items, known, item)
+        return {**turn, 'items': items}
+
+    def add_item(items, known, item):
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not item['id'] or not isinstance(item.get('type'), str) or not item['type']
+                or item.get('turnId', turn_id) != turn_id
+                or item.get('threadId', thread_id) != thread_id):
+            raise ValueError('Native turn history changed an item identity')
+        previous = known.get(item['id'])
+        if previous is not None:
+            if previous != item:
+                raise ValueError('Native turn history returned conflicting item receipts')
+            return
+        known[item['id']] = item
+        items.append(item)
+
+    cursor, seen = None, set()
+    while True:
         params = {'threadId': thread_id, 'limit': 10,
-                  'sortDirection': 'desc', 'itemsView': 'full'}
+                  'sortDirection': 'desc', 'itemsView': 'notLoaded'}
         if cursor is not None:
             params['cursor'] = cursor
-        page = server.call('thread/turns/list', params, timeout=min(10, remaining))
-        turn = next((t for t in page.get('data', []) if t.get('id') == turn_id), None)
+        page = turn_page(params)
+        turn = next((t for t in page['data'] if t['id'] == turn_id), None)
         if turn is not None:
-            return turn
+            if turn.get('itemsView', 'full') == 'full':
+                return full_turn(turn)
+            items, known = [], {}
+            item_cursor, item_seen = None, set()
+            while True:
+                item_params = {'threadId': thread_id, 'turnId': turn_id,
+                               'limit': 100, 'sortDirection': 'asc'}
+                if item_cursor is not None:
+                    item_params['cursor'] = item_cursor
+                try:
+                    item_page = read('thread/items/list', item_params)
+                except NativeRpcError as error:
+                    if error.code != -32601:
+                        raise
+                    fallback = turn_page({**params, 'itemsView': 'full'})
+                    exact = next((t for t in fallback['data'] if t['id'] == turn_id), None)
+                    if exact is None:
+                        raise ValueError('Native target turn changed during its history read')
+                    return full_turn(exact)
+                if not isinstance(item_page, dict) or not isinstance(item_page.get('data'), list):
+                    raise ValueError('Native turn history returned an invalid item page')
+                for entry in item_page['data']:
+                    if not isinstance(entry, dict):
+                        raise ValueError('Native turn history returned an invalid item entry')
+                    if 'item' in entry:
+                        if (entry.get('turnId') != turn_id
+                                or entry.get('threadId', thread_id) != thread_id):
+                            raise ValueError('Native turn history changed the item source identity')
+                        item = entry['item']
+                    else:
+                        item = entry
+                    add_item(items, known, item)
+                item_cursor = item_page.get('nextCursor')
+                if item_cursor is None:
+                    break
+                if not isinstance(item_cursor, str) or not item_cursor or item_cursor in item_seen:
+                    raise ValueError('Native turn history repeated or changed its item page cursor')
+                item_seen.add(item_cursor)
+            # Item pages can span native updates. Keep terminal metadata tied to
+            # the same exact turn after the complete item read.
+            confirmed = next((t for t in turn_page(params)['data'] if t['id'] == turn_id), None)
+            if (confirmed is None or confirmed.get('status') != turn.get('status')
+                    or confirmed.get('error') != turn.get('error')):
+                raise ValueError('Native target turn changed during its history read')
+            return {**confirmed, 'items': items, 'itemsView': 'full'}
         cursor = page.get('nextCursor')
-        if not cursor:
+        if cursor is None:
             return None
-        if cursor in seen:
-            raise ValueError('Native turn history repeated its page cursor')
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise ValueError('Native turn history repeated or changed its page cursor')
         seen.add(cursor)
 
 
