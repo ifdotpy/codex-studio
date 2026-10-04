@@ -332,7 +332,7 @@ class HistoryRouteTests(unittest.TestCase):
                 return None
 
             @staticmethod
-            def touch_ui(_agent: str) -> None:
+            def touch_ui(_agent: str, _db: sqlite3.Connection | None = None) -> None:
                 return None
 
             @contextmanager

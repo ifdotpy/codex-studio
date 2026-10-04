@@ -8,14 +8,13 @@ from __future__ import annotations
 import base64
 import copy
 import concurrent.futures
+from dataclasses import dataclass
 from contextlib import contextmanager
-from collections.abc import Callable
 import fcntl
 import json
 import math
 import os
 from pathlib import Path
-from queue import Empty, SimpleQueue
 import re
 import sqlite3
 import subprocess
@@ -23,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from codex_accounts import AccountStore
 from codex_account_transfer import transfer_store
@@ -52,6 +52,40 @@ from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
+
+if TYPE_CHECKING:
+    from studio_api.sync.resources.models import ResourceRef
+
+MAX_STAGED_RESOURCE_CHANGES = 256
+MAX_QUEUED_RESOURCE_CHANGES = 4096
+MAX_RECOVERY_TOKEN_OBSERVATIONS = 4096
+WORKSPACE_AGENT_RESOURCE_FIELDS = (
+    "name", "status", "parentId", "rootId", "threadId", "deletedAt", "isLead", "role",
+    "sharedRoomId", "model", "provider", "effort", "fastMode", "concurrency", "accountKey",
+    "cwd", "worktree", "worktreePreparation", "turnId", "turnStatus", "inFlight", "error",
+    "canSend", "launcherAlive", "empty", "yoloMode", "agentMode", "agentModeRevision",
+    "agentModeSupported", "subagentConcurrencyVersion", "workerDefaults", "reviewDefaults",
+    "pendingSettings", "pendingSettingsAccountKey", "queuedSettings", "quickCreate",
+    "nativeThreadBlock", "nativeSafetyBuffering", "nativeSafetyRetry", "nativeTurnError",
+    "readState", "nativeLimitErrorAt", "startAttempt", "unreadCount", "lastReadAt",
+)
+
+
+@dataclass(frozen=True)
+class TokenRateObservation:
+    agent: dict[str, object]
+    method: str
+    params: dict[str, object]
+    account_key: str
+    connection_id: str | None
+    observed_at: float
+
+
+def workspace_agent_resource_changed(previous: dict[str, object] | None, current: dict[str, object]) -> bool:
+    return previous is None or any(
+        previous.get(field) != current.get(field)
+        for field in WORKSPACE_AGENT_RESOURCE_FIELDS
+    )
 
 def sqlite_busy(error):
     if not isinstance(error, sqlite3.OperationalError):
@@ -1290,8 +1324,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.monitor_threads = set()
         self.offline = False
         self.changed = threading.Event()
-        self._committed_resource_changes: SimpleQueue[list[object]] = SimpleQueue()
-        self._committed_resource_callbacks: SimpleQueue[Callable[[], None]] = SimpleQueue()
+        self._committed_resource_changes: dict[str, ResourceRef] = {}
+        self._committed_resource_overflow = False
+        self._committed_resource_lock = threading.Lock()
         self.closed = False
         self._fast_delivery_enabled = False
         self._wal_keeper = None
@@ -1722,8 +1757,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         pending[db] = []
         resource_changes = local.__dict__.setdefault("after_commit_resources", {})
         resource_changes[db] = {}
-        resource_callbacks = local.__dict__.setdefault("after_commit_resource_callbacks", {})
-        resource_callbacks[db] = []
+        resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
+        resource_overflow[db] = False
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
         original_commit, original_rollback = db.commit, db.rollback
@@ -1733,8 +1768,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         def commit_analytics():
             original_commit()
-            self._queue_staged_resource_changes(resource_changes, db)
-            self._queue_staged_resource_callbacks(resource_callbacks, db)
+            self._queue_staged_resource_changes(resource_changes, resource_overflow, db)
             captures = analytics.get(db, {})
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
             self.schedule_analytics_captures(captures.get("captures", []),
@@ -1744,7 +1778,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             original_rollback()
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
             resource_changes[db] = {}
-            resource_callbacks[db] = []
+            resource_overflow[db] = False
 
         db.commit = commit_analytics
         db.rollback = rollback_analytics
@@ -1757,10 +1791,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
             with sqlite_scope(db, "Runtime.db"):
                 yield db
-            self._queue_staged_resource_changes(resource_changes, db)
-            self._queue_staged_resource_callbacks(resource_callbacks, db)
+            self._queue_staged_resource_changes(resource_changes, resource_overflow, db)
             resource_changes.pop(db, None)
-            resource_callbacks.pop(db, None)
+            resource_overflow.pop(db, None)
             captures = analytics.pop(db)
             self.schedule_analytics_captures(captures["captures"], overflow=captures["overflow"])
             if getattr(local, "agent_cache_dirty", False):
@@ -1776,7 +1809,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pending.pop(db, None)
             analytics.pop(db, None)
             resource_changes.pop(db, None)
-            resource_callbacks.pop(db, None)
+            resource_overflow.pop(db, None)
             # An explicit commit inside the context can already have made work visible.
             self.changed.set()
             raise
@@ -1796,42 +1829,77 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 db.close()
             local.resource_db = previous_resource_db
 
-    def _stage_resource_change(self, db, resource):
+    def _stage_resource_change(self, db, resource: ResourceRef) -> None:
         """Associate a typed invalidation with the transaction that made it visible."""
         local = self.__dict__.get("_callback_db")
         changes = getattr(local, "after_commit_resources", {}).get(db) if local else None
         if changes is not None:
-            changes[resource.model_dump_json(by_alias=True)] = resource
+            key = resource.model_dump_json(by_alias=True)
+            if key not in changes and len(changes) >= MAX_STAGED_RESOURCE_CHANGES:
+                getattr(local, "after_commit_resource_overflow", {})[db] = True
+            else:
+                changes[key] = resource
 
-    def _queue_staged_resource_changes(self, staged, db):
+    def _publish_token_rate_observation(self, observation: TokenRateObservation) -> None:
+        from codex_token_rate import token_rates
+
+        token_rates(self).observe(
+            observation.agent,
+            observation.method,
+            observation.params,
+            observation.account_key,
+            observation.connection_id,
+            observation.observed_at,
+        )
+
+    @contextmanager
+    def _token_rate_observation_batch(self):
+        """Defer committed recovery observations until its outer runtime lock releases."""
+        local = self.__dict__.setdefault("_token_rate_observation_local", threading.local())
+        previous = getattr(local, "observations", None)
+        if previous is not None:
+            yield previous
+            return
+        observations: list[TokenRateObservation] = []
+        local.observations = observations
+        try:
+            yield observations
+        finally:
+            local.observations = None
+            for observation in observations:
+                self._publish_token_rate_observation(observation)
+
+    @staticmethod
+    def _token_rate_observation_limit() -> int:
+        return MAX_RECOVERY_TOKEN_OBSERVATIONS
+
+    def _dispatch_token_rate_observation(self, observation: TokenRateObservation) -> None:
+        local = self.__dict__.setdefault("_token_rate_observation_local", threading.local())
+        observations = getattr(local, "observations", None)
+        if observations is None:
+            self._publish_token_rate_observation(observation)
+            return
+        if len(observations) >= MAX_RECOVERY_TOKEN_OBSERVATIONS:
+            raise RuntimeError("Recovery produced too many token-rate observations")
+        observations.append(observation)
+
+    def _queue_staged_resource_changes(self, staged, overflowed, db):
         changes = staged.get(db)
-        if not changes:
+        overflow = bool(overflowed.get(db))
+        if not changes and not overflow:
             return
         staged[db] = {}
-        self.__dict__.setdefault("_committed_resource_changes", SimpleQueue()).put(
-            list(changes.values())
-        )
+        overflowed[db] = False
+        with self._committed_resource_lock:
+            if overflow:
+                self._committed_resource_overflow = True
+            for key, resource in changes.items():
+                if key not in self._committed_resource_changes and len(self._committed_resource_changes) >= MAX_QUEUED_RESOURCE_CHANGES:
+                    self._committed_resource_overflow = True
+                    break
+                self._committed_resource_changes[key] = resource
         # `schedule` drains this exact queue. Its ordinary timeout is not a
         # resource scan and this wake avoids adding notification latency.
-        self.changed.set()
-
-    def _stage_resource_callback(self, db, callback: Callable[[], None]) -> None:
-        """Run volatile projections only after their durable source commits."""
-        local = self.__dict__.get("_callback_db")
-        callbacks = getattr(local, "after_commit_resource_callbacks", {}).get(db) if local else None
-        if callbacks is not None:
-            callbacks.append(callback)
-
-    def _queue_staged_resource_callbacks(self, staged, db):
-        callbacks = staged.get(db)
-        if not callbacks:
-            return
-        staged[db] = []
-        queue = self.__dict__.setdefault("_committed_resource_callbacks", SimpleQueue())
-        for callback in callbacks:
-            queue.put(callback)
-        # The existing runtime scheduler drains post-commit work; this adds no
-        # worker thread and cannot publish a rolled-back observation.
         self.changed.set()
 
     def _publish_committed_resource_changes(self):
@@ -1842,25 +1910,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pass
         with self.__dict__.setdefault("_rate_cache_lock", threading.RLock()):
             pass
-        callback_queue = self.__dict__.setdefault("_committed_resource_callbacks", SimpleQueue())
-        while True:
-            try:
-                callback = callback_queue.get_nowait()
-            except Empty:
-                break
-            callback()
-        resources = {}
-        while True:
-            try:
-                batch = self._committed_resource_changes.get_nowait()
-            except Empty:
-                break
-            for resource in batch:
-                resources[resource.model_dump_json(by_alias=True)] = resource
+        with self._committed_resource_lock:
+            resources = self._committed_resource_changes
+            self._committed_resource_changes = {}
+            overflow = self._committed_resource_overflow
+            self._committed_resource_overflow = False
         if resources:
             from studio_api.sync.resources.hub import publish_resources
 
             publish_resources(self.root, *resources.values())
+        if overflow:
+            from studio_api.sync.resources.hub import publish_resource_overflow
+
+            publish_resource_overflow(self.root)
 
     def analytics_safe(self, db, operation, *args, **kwargs):
         """Keep analytics waits outside the main writer and its caller's lock."""
@@ -2387,20 +2449,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
-                PanelResource, QueueResource, ReceiptsResource, ResourceRef,
-                RoomResource, TaskResource, TasksResource, WorkspaceResource,
+                ResourceRef, RoomResource, TaskResource, TasksResource, WorkspaceResource,
             )
 
             if table == "agents":
                 agent_id = str(record["id"])
-                for resource in (
-                    PanelResource(kind="panel", agentId=agent_id),
-                    QueueResource(kind="queue", agentId=agent_id),
-                    ReceiptsResource(kind="receipts", agentId=agent_id),
-                    TasksResource(kind="tasks", agentId=agent_id),
-                    WorkspaceResource(kind="workspace", agentId=agent_id),
-                ):
-                    self._stage_resource_change(db, ResourceRef(resource))
+                if workspace_agent_resource_changed(previous, record):
+                    self._stage_resource_change(
+                        db, ResourceRef(WorkspaceResource(kind="workspace", agentId=agent_id))
+                    )
             elif table == "tasks":
                 self._stage_resource_change(
                     db, ResourceRef(TaskResource(kind="task", taskId=str(record["id"])))
@@ -5457,6 +5514,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not self.connection_current(account_key, connection_id):
             return
         method, p = message.get("method"), message.get("params", {})
+        token_observation: TokenRateObservation | None = None
         voice = getattr(self, "_voice_store", None)
         if voice and voice.native_notification(message, account_key, connection_id):
             return
@@ -6005,13 +6063,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 restart.update(stage='finished', reconciledAt=time.time(),
                                outcome=(p.get('turn') or {}).get('status'))
             if method in {'turn/started', 'turn/completed', 'item/started', 'item/completed', 'thread/tokenUsage/updated'}:
-                observed_agent = copy.deepcopy(a)
-                observed_params = copy.deepcopy(p)
-                self._stage_resource_callback(
-                    db,
-                    lambda agent=observed_agent, params=observed_params: token_rates(self).observe(
-                        agent, method, params, account_key, connection_id, token_rate_at,
-                    ),
+                token_observation = TokenRateObservation(
+                    agent=copy.deepcopy(a),
+                    method=method,
+                    params=copy.deepcopy(p),
+                    account_key=account_key,
+                    connection_id=connection_id,
+                    observed_at=token_rate_at,
                 )
             self.put(db, "agents", a)
             # Most teams have no budget. Avoid decoding the root's large record
@@ -6029,6 +6087,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_budget import budget_status
                 if budget_status(self, db, a, check_coverage=False)["reached"]:
                     self.pool.submit(self.stop, root["id"], True, "Team token budget reached")
+        if token_observation is not None:
+            self._dispatch_token_rate_observation(token_observation)
 
     def request(self, message, account_key="default", connection_id=None):
         token_rate_received_at = time.time()

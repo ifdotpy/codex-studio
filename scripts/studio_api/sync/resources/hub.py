@@ -343,6 +343,18 @@ class ResourceHub:
         self._close_orphaned_subscriptions()
         return revision
 
+    def publish_overflow(self) -> int:
+        """Force each live reader to re-read its complete subscribed set."""
+        with self._lock:
+            self._advance_revision()
+            for subscription in self._subscriptions:
+                subscription._pending.clear()
+                subscription._overflow = True
+                self._schedule_wake(subscription)
+            revision = self._revision
+        self._close_orphaned_subscriptions()
+        return revision
+
     def _schedule_wake(self, subscription: ResourceSubscription) -> None:
         if subscription._wake_scheduled:
             return
@@ -435,6 +447,17 @@ def publish_resources(state_dir: str | Path, *resources: ResourceRef) -> None:
             hub.publish_many(resources)
         except Exception:
             _LOGGER.exception("Unable to publish committed resource changes")
+
+
+def publish_resource_overflow(state_dir: str | Path) -> None:
+    """Request a full subscribed-resource reconciliation after bounded staging overflows."""
+    with _registry_lock:
+        hub = _hub_registry.get(_root_key(state_dir))
+    if hub is not None:
+        try:
+            hub.publish_overflow()
+        except Exception:
+            _LOGGER.exception("Unable to publish resource reconciliation")
 
 
 def publish_token_rates(state_dir: str | Path, snapshot: TokenRateSnapshot) -> None:

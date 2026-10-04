@@ -410,37 +410,40 @@ class TurnRecoveryMixin:
 
     def apply_turn_recovery(self, expected, connection, native_state, turn):
         account = expected.get('accountKey') or 'default'
-        with self.lock:
-            with self.db() as db:
-                a = self.agent(expected['id'], db)
-                if (not self.connection_current(account, connection) or self.closed
-                        or not a.get('inFlight') or a.get('deletedAt')
-                        or any(a.get(k) != value for k, value in expected.items())):
-                    return {'status': 'superseded'}
-                if (native_state not in {'idle', 'notLoaded', 'active'} or turn.get('id') != a.get('turnId')
-                        or turn.get('status') not in {'completed', 'failed', 'interrupted'}):
-                    return {'status': 'unconfirmed'}
-                # Do not manufacture user delivery receipts or re-execute tool calls.
-                messages = []
-                for item in turn.get('items', []):
-                    if item.get('type') != 'agentMessage':
-                        continue
-                    row = db.execute('SELECT record FROM runtime_items WHERE id=?', (a['id'] + ':' + item['id'],)).fetchone()
-                    stored = json.loads(row[0]) if row else {}
-                    if not stored or stored.get('streaming') or stored.get('text') != item.get('text', ''):
-                        messages.append(item)
-            if native_state == 'notLoaded':
-                self.loaded.discard(a['id'])
-            for item in messages:
-                self.notification({'method': 'item/completed', 'params': {
-                    'threadId': a['threadId'], 'turnId': a['turnId'], 'item': item,
+        with self._token_rate_observation_batch():
+            with self.lock:
+                with self.db() as db:
+                    a = self.agent(expected['id'], db)
+                    if (not self.connection_current(account, connection) or self.closed
+                            or not a.get('inFlight') or a.get('deletedAt')
+                            or any(a.get(k) != value for k, value in expected.items())):
+                        return {'status': 'superseded'}
+                    if (native_state not in {'idle', 'notLoaded', 'active'} or turn.get('id') != a.get('turnId')
+                            or turn.get('status') not in {'completed', 'failed', 'interrupted'}):
+                        return {'status': 'unconfirmed'}
+                    # Do not manufacture user delivery receipts or re-execute tool calls.
+                    messages = []
+                    for item in turn.get('items', []):
+                        if item.get('type') != 'agentMessage':
+                            continue
+                        row = db.execute('SELECT record FROM runtime_items WHERE id=?', (a['id'] + ':' + item['id'],)).fetchone()
+                        stored = json.loads(row[0]) if row else {}
+                        if not stored or stored.get('streaming') or stored.get('text') != item.get('text', ''):
+                            messages.append(item)
+                    if len(messages) + 1 > self._token_rate_observation_limit():
+                        return {'status': 'unconfirmed'}
+                if native_state == 'notLoaded':
+                    self.loaded.discard(a['id'])
+                for item in messages:
+                    self.notification({'method': 'item/completed', 'params': {
+                        'threadId': a['threadId'], 'turnId': a['turnId'], 'item': item,
+                    }}, account, connection)
+                self.notification({'method': 'turn/completed', 'params': {
+                    'threadId': a['threadId'], 'turn': {k: turn.get(k) for k in ('id', 'status', 'error')},
                 }}, account, connection)
-            self.notification({'method': 'turn/completed', 'params': {
-                'threadId': a['threadId'], 'turn': {k: turn.get(k) for k in ('id', 'status', 'error')},
-            }}, account, connection)
-            with self.db() as db:
-                current = self.agent(a['id'], db)
-                current['turnRecovery'] = {'at': time.time(), 'turnId': turn['id'],
-                                           'outcome': turn['status'], 'source': 'native_thread_read'}
-                self.put(db, 'agents', current)
-            return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': turn['status']}
+                with self.db() as db:
+                    current = self.agent(a['id'], db)
+                    current['turnRecovery'] = {'at': time.time(), 'turnId': turn['id'],
+                                               'outcome': turn['status'], 'source': 'native_thread_read'}
+                    self.put(db, 'agents', current)
+                return {'status': 'reconciled', 'turnId': turn['id'], 'outcome': turn['status']}
