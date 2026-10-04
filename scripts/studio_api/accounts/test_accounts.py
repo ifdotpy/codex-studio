@@ -427,6 +427,42 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["accounts"][0]["accountId"], "account-default")
         self.assertNotIn("fixture-secret", response.text)
 
+    def test_accounts_get_does_not_publish_but_explicit_discovery_does(self) -> None:
+        with patch("studio_api.accounts.router.publish_account_change") as publish:
+            self.assertEqual(self.client.get("/api/accounts").status_code, 200)
+            publish.assert_not_called()
+            response = self.client.post("/api/accounts/discover")
+        self.assertEqual(response.status_code, 200)
+        publish.assert_called_once_with(cast(Path, getattr(self.store, "root")).parent)
+
+    def test_async_native_login_completion_publishes_after_account_lock(self) -> None:
+        import codex_accounts
+
+        request_id = str(uuid4())
+        store_data = cast(dict[str, object], getattr(self.store, "data"))
+        store_data["logins"] = {
+            request_id: {
+                "requestId": request_id,
+                "accountKey": "default",
+                "status": "pending",
+                "loginId": "native-login",
+            }
+        }
+        lock_was_available: list[bool] = []
+        account_lock = getattr(self.store, "lock")
+
+        def published(state_dir: Path) -> None:
+            lock_was_available.append(account_lock.acquire(blocking=False))
+            if lock_was_available[-1]:
+                account_lock.release()
+            self.assertEqual(state_dir, cast(Path, getattr(self.store, "root")).parent)
+
+        with patch.object(codex_accounts, "publish_account_change", side_effect=published) as publish:
+            getattr(self.store, "login_completed")("default", {"loginId": "native-login", "success": False})
+
+        publish.assert_called_once()
+        self.assertEqual(lock_was_available, [True])
+
     def test_account_route_uses_actual_api_context_response_validation(self) -> None:
         context = ApiContext.for_schema()
         setattr(context.canvas, "runtime", self.runtime)

@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import uuid
 
 import codex_claude
+from studio_api.accounts.events import publish_account_change
 
 ACTIVE = {'starting', 'pending'}
 _LOCK = threading.Lock()
@@ -197,6 +198,7 @@ class LoginManager:
 
     def _run(self, job, env):
         process = None
+        publication_needed = False
         try:
             binary = codex_claude.installed(job['profile'])
             if not binary:
@@ -220,6 +222,7 @@ class LoginManager:
                         with self.lock:
                             if job['receipt']['status'] in ACTIVE:
                                 self._finish(job, 'error', 'Claude sign-in timed out. Start a new sign-in request.')
+                                publication_needed = True
                             self._stop(job)
                         break
                     for key, _ in selector.select(.2):
@@ -258,12 +261,14 @@ class LoginManager:
                     self._finish(job, 'error', 'A different Claude account signed in. Sign in with ' + job['receipt']['email'] + '.')
                 else:
                     self._finish(job, 'error', 'Claude sign-in failed. Start a new sign-in request.')
+                publication_needed = True
             if job['receipt']['status'] == 'ready':
                 self._refresh_chats(job)
         except Exception:
             with self.lock:
                 if job['receipt']['status'] in ACTIVE:
                     self._finish(job, 'error', 'Cannot complete Claude sign-in. Start a new sign-in request.')
+                    publication_needed = True
         finally:
             if process:
                 if process.poll() is None:
@@ -272,6 +277,8 @@ class LoginManager:
                 process.stdin.close()
                 process.stdout.close()
             job['lease'].close()
+            if publication_needed:
+                publish_account_change(self.runtime.root)
 
 
 def supervise():

@@ -12,6 +12,7 @@ import uuid
 import time
 
 from codex_state import codex_home
+from studio_api.accounts.events import publish_account_change
 
 
 def auth_metadata(home):
@@ -631,3 +632,4 @@ class AccountStore:
                 self.refresh(key)
                 self.login_receipts()
             self._save()
+        publish_account_change(self.root.parent)

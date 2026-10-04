@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Annotated, Any, TYPE_CHECKING, Protocol, cast
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
@@ -10,6 +11,7 @@ from starlette.responses import Response
 
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.request_helpers import body_data, first_nonempty_query
+from .events import publish_account_change
 from .models import (
     AccountsResponse,
     AccountDiscoverRequest,
@@ -50,6 +52,8 @@ if TYPE_CHECKING:
 
 
 class AccountService(Protocol):
+    root: Path
+
     def snapshot(self) -> JsonValue: ...
 
     def discover(self) -> JsonValue: ...
@@ -70,6 +74,7 @@ class AccountService(Protocol):
 
 
 class RuntimePort(Protocol):
+    root: Path
     accounts: AccountService
 
     def projects(self, data: dict[str, JsonValue] | None = None) -> JsonValue: ...
@@ -176,20 +181,24 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
     def claude_login_start(request: Request, body: Annotated[ClaudeStartRequest, Body()]) -> Response:
-        return context.send(
-            request,
-            _claude_login(_runtime(context)).start(body.account_key, body.request_id),
-        )
+        runtime = _runtime(context)
+        result = _claude_login(runtime).start(body.account_key, body.request_id)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/claude/login/code", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
     def claude_login_code(request: Request, body: Annotated[ClaudeCodeRequest, Body()]) -> Response:
-        return context.send(
-            request, _claude_login(_runtime(context)).code(body.request_id, body.code)
-        )
+        runtime = _runtime(context)
+        result = _claude_login(runtime).code(body.request_id, body.code)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/claude/login/cancel", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
     def claude_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
-        return context.send(request, _claude_login(_runtime(context)).cancel(body.request_id))
+        runtime = _runtime(context)
+        result = _claude_login(runtime).cancel(body.request_id)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/discover", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_discover(
@@ -197,58 +206,72 @@ def create_router(context: ApiContext) -> APIRouter:
         body: Annotated[AccountDiscoverRequest, Body()] = AccountDiscoverRequest(),
     ) -> Response:
         del body
-        return context.send(request, _runtime(context).accounts.discover())
+        runtime = _runtime(context)
+        result = runtime.accounts.discover()
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/register", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_register(request: Request, body: Annotated[RegisterAccountRequest, Body()]) -> Response:
         runtime = _runtime(context)
         runtime.accounts.register(body.home)
-        return context.send(request, runtime.accounts.snapshot())
+        result = runtime.accounts.snapshot()
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/default", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_default(request: Request, body: Annotated[AccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
         runtime.accounts.default(body.account_key)
-        return context.send(request, runtime.accounts.snapshot())
+        result = runtime.accounts.snapshot()
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/login/cancel", response_model=AccountLoginResponse, responses=_ERROR_RESPONSES)
     def account_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
-        return context.send(
-            request,
-            runtime.accounts.cancel_login(runtime, body.request_id),
-        )
+        result = runtime.accounts.cancel_login(runtime, body.request_id)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/delete", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_delete(request: Request, body: Annotated[DeleteAccountRequest, Body()]) -> Response:
         runtime = _runtime(context)
         runtime.accounts.delete(body.account_key, body.request_id)
-        return context.send(request, runtime.accounts.snapshot())
+        result = runtime.accounts.snapshot()
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/disconnect", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_disconnect(request: Request, body: Annotated[RequiredAccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
-        return context.send(request, runtime.accounts.disconnect(body.account_key))
+        result = runtime.accounts.disconnect(body.account_key)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/reconnect", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def account_reconnect(request: Request, body: Annotated[RequiredAccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
-        return context.send(request, runtime.accounts.reconnect(body.account_key))
+        result = runtime.accounts.reconnect(body.account_key)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/accounts/login", response_model=AccountLoginResponse, responses=_ERROR_RESPONSES)
     def account_login(request: Request, body: Annotated[LoginRequest, Body()]) -> Response:
         runtime = _runtime(context)
-        return context.send(
-            request,
-            runtime.accounts.start_login(runtime, body.request_id, body.account_key),
-        )
+        result = runtime.accounts.start_login(runtime, body.request_id, body.account_key)
+        publish_account_change(runtime.accounts.root.parent)
+        return context.send(request, result)
 
     @router.post("/api/claude/profiles", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def claude_profile(request: Request, body: Annotated[ClaudeProfileRequest, Body()]) -> Response:
         from codex_claude_controls import profile
 
         profile_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], profile)
-        return context.send(request, profile_service(_runtime(context), body_data(body)))
+        runtime = _runtime(context)
+        result = profile_service(runtime, body_data(body))
+        publish_account_change(runtime.root)
+        return context.send(request, result)
 
     @router.post("/api/claude/session", response_model=ClaudeSessionResponse, responses=_ERROR_RESPONSES)
     def claude_session(

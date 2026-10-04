@@ -6,6 +6,7 @@ import contextvars
 import copy
 import threading
 import time
+from collections.abc import Callable
 
 
 class CatalogPending(RuntimeError):
@@ -31,7 +32,8 @@ class ModelCatalogCache:
         self.lock = threading.Lock()
         self.entries = {}
 
-    def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False):
+    def read(self, account, server, connection_id, current, *, submit=None, stale_ok=False,
+             on_commit: Callable[[], None] | None = None):
         """stale_ok serves an expired catalog for display while it refreshes; never for admission."""
         if not current():
             raise CatalogUnavailable("Model catalog connection changed; no workers were created")
@@ -92,9 +94,13 @@ class ModelCatalogCache:
                     value = {**first_page, 'data': rows}
                     if 'nextCursor' in first_page or seen_cursors:
                         value['nextCursor'] = None
+                    committed = False
                     with self.lock:
                         if self.entries.get(account) is entry:
                             entry.update(value=value, expires=self.clock() + self.ttl)
+                            committed = True
+                    if committed and on_commit is not None:
+                        on_commit()
                     future.set_result(value)
                 except Exception as error:
                     fail(error)
@@ -156,4 +162,14 @@ def runtime_catalog(runtime, account, *, stale_ok=None):
         def submit(_method, _params):
             return submit_model_catalog(home, executable=executable, isolated=account != "default", current=current)
 
-    return cache.read(account, server, connection_id, current, submit=submit, stale_ok=stale_ok)
+    from studio_api.accounts.events import publish_models_change
+
+    return cache.read(
+        account,
+        server,
+        connection_id,
+        current,
+        submit=submit,
+        stale_ok=stale_ok,
+        on_commit=lambda: publish_models_change(runtime.root),
+    )
