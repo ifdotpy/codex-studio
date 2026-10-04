@@ -971,9 +971,7 @@ export default function App() {
       cwd =
         (lead?.cwd ?? undefined) ||
         (mobileClient
-          ? (typeof data?.runtime?.projects?.[0]?.path === "string"
-              ? data.runtime.projects[0].path
-              : undefined) ||
+          ? (data?.runtime?.projects?.[0]?.path ?? undefined) ||
             leads.find((item) => item.cwd)?.cwd ||
             undefined
           : undefined);
@@ -1006,9 +1004,7 @@ export default function App() {
     if (mobileClient && !cwd) {
       cwd =
         (lead?.cwd ?? undefined) ||
-        (typeof data?.runtime?.projects?.[0]?.path === "string"
-          ? data.runtime.projects[0].path
-          : undefined) ||
+        (data?.runtime?.projects?.[0]?.path ?? undefined) ||
         (leads.find((item) => item.cwd)?.cwd ?? undefined);
       if (!cwd) {
         setSidebar(false);
