@@ -237,18 +237,21 @@ def create_router(context: ApiContext) -> APIRouter:
                         )
                     kind = batch["kind"]
                     if kind in ("reset", "cursor-ahead"):
+                        identity = await run_in_threadpool(store.identity)
                         payload = {
                             "protocolVersion": 1,
-                            "workspaceId": store.identity()["workspaceId"],
+                            "workspaceId": identity["workspaceId"],
                             "scope": query_scope,
                             **batch,
                         }
                         yield _event("reset" if kind == "reset" else "cursor-ahead", payload)
                         return
                     if kind == "changes":
+                        identity = await run_in_threadpool(store.identity)
+                        workspace_id = identity["workspaceId"]
                         body = {
                             "protocolVersion": 1,
-                            "workspaceId": store.identity()["workspaceId"],
+                            "workspaceId": workspace_id,
                             "scope": query_scope,
                             "documents": batch["documents"],
                             "cursor": batch["cursor"],
@@ -257,7 +260,7 @@ def create_router(context: ApiContext) -> APIRouter:
                         if len(encoded.encode("utf-8")) > SYNC_STREAM_BYTE_LIMIT:
                             reset_payload = {
                                 "protocolVersion": 1,
-                                "workspaceId": store.identity()["workspaceId"],
+                                "workspaceId": workspace_id,
                                 "scope": query_scope,
                                 "kind": "reset",
                                 "reason": "event-too-large",

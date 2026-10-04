@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import threading
 import unittest
 from typing import cast
 
@@ -356,6 +357,69 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("id: 5\nevent: changes", body)
         self.assertEqual(context.store.stream_calls, 2)
         self.assertEqual(context.store.stream_cursors, [4, 5])
+
+    def test_protocol_one_change_identity_read_does_not_block_event_loop(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+        context.store.stream_batches = [
+            {"kind": "changes", "documents": [{"id": "doc", "payload": "{}"}],
+             "cursor": 5, "maxSeq": 5, "floor": 0},
+        ]
+        identity_entered = threading.Event()
+        identity_release = threading.Event()
+        event_loop_progressed = threading.Event()
+
+        def blocked_identity() -> dict[str, object]:
+            identity_entered.set()
+            if not identity_release.wait(2):
+                raise TimeoutError("Identity fixture was not released")
+            return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
+
+        router = create_router(cast(ApiContext, context))
+        route = cast(
+            APIRoute,
+            next(route for route in router.routes
+                 if getattr(route, "path", None) == "/api/sync/stream"),
+        )
+        scope: dict[str, object] = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/api/sync/stream",
+            "raw_path": b"/api/sync/stream", "query_string": b"protocol=1&scope=drafts&after=4",
+            "headers": [], "client": ("test", 1000), "server": ("test", 80),
+        }
+        request = ConnectedRequest(scope)
+
+        async def read_one() -> bytes:
+            response = await route.endpoint(
+                request, SyncStreamQuery(protocol="1", scope="drafts", after=4)
+            )
+
+            async def prove_loop_progress() -> None:
+                try:
+                    self.assertTrue(await asyncio.to_thread(identity_entered.wait, 1))
+                    asyncio.get_running_loop().call_soon_threadsafe(event_loop_progressed.set)
+                    self.assertTrue(await asyncio.to_thread(event_loop_progressed.wait, 0.5))
+                finally:
+                    identity_release.set()
+
+            progress = asyncio.create_task(prove_loop_progress())
+            try:
+                chunk = cast(bytes, await asyncio.wait_for(response.body_iterator.__anext__(), 1))
+                await asyncio.wait_for(progress, 1)
+                return chunk
+            finally:
+                identity_release.set()
+                await response.body_iterator.aclose()
+
+        with patch.object(context.store, "identity", side_effect=blocked_identity):
+            chunk = asyncio.run(read_one())
+        self.assertEqual(
+            chunk.decode(),
+            'id: 5\nevent: changes\ndata: '
+            '{"protocolVersion":1,"workspaceId":"workspace-a","scope":"drafts",'
+            '"documents":[{"id":"doc","payload":"{}"}],"cursor":5}\n\n',
+        )
+        self.assertTrue(event_loop_progressed.is_set())
 
     def test_protocol_one_stream_emits_reset_control_event(self) -> None:
         context = ContextStub()

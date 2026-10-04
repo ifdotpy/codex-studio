@@ -64,9 +64,15 @@ class SyncStore:
             reader.close()
 
     def identity(self):
-        with self.connection("SyncStore.identity") as db:
-            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0], 'syncProtocol': 2,
-                    **({'chatState': True} if self.chat_snapshot else {})}
+        reader = getattr(self, '_version_reader', None)
+        if reader is None:
+            with self.connection("SyncStore.identity") as db:
+                workspace_id = db.execute('SELECT id FROM sync_identity').fetchone()[0]
+        else:
+            with self._version_lock:
+                workspace_id = reader.execute('SELECT id FROM sync_identity').fetchone()[0]
+        return {'workspaceId': workspace_id, 'syncProtocol': 2,
+                **({'chatState': True} if self.chat_snapshot else {})}
 
     def generation(self):
         # A persistent reader sees one data_version change per committed writer
