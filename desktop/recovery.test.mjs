@@ -159,6 +159,7 @@ test.skipIf(process.platform !== "darwin")(
         ),
       );
       assert.equal(plist.KeepAlive, true);
+      assert.equal(plist.ProcessType, "Interactive");
       assert.equal(plist.AbandonProcessGroup, true);
       assert.equal(plist.ProgramArguments[2], fixtureData.supervisor);
       assert.equal(plist.ProgramArguments[4], result.config);
@@ -195,6 +196,7 @@ test.skipIf(process.platform !== "darwin")(
         ),
       );
       assert.equal(supervisorPlist.KeepAlive, true);
+      assert.equal(supervisorPlist.ProcessType, "Interactive");
       assert.equal(supervisorPlist.AbandonProcessGroup, true);
       assert.equal(supervisorPlist.Label, result.supervisorLabel);
       assert.deepEqual(supervisorPlist.ProgramArguments.slice(-3), [
@@ -214,6 +216,41 @@ test.skipIf(process.platform !== "darwin")(
     }
   },
 );
+
+test("a resource policy update preserves the registered recovery process", async () => {
+  const data = fixture();
+  const calls = [];
+  try {
+    const initial = await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async () => {},
+    });
+    const nextPlist = readFileSync(initial.plist, "utf8");
+    writeFileSync(
+      initial.plist,
+      nextPlist.replace(
+        "<key>ProcessType</key><string>Interactive</string>\n",
+        "",
+      ),
+    );
+    await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async (_file, args) => {
+        calls.push(args);
+        return { stdout: "pid = 4242\n" };
+      },
+    });
+    assert.deepEqual(
+      calls.map((args) => args[0]),
+      ["print", "print"],
+    );
+    assert.equal(readFileSync(initial.plist, "utf8"), nextPlist);
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
 
 test("recovery rewrite refuses to stop its legacy supervisor while handles are live", async () => {
   const data = fixture();
