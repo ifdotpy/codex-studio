@@ -121,6 +121,45 @@ class NativeRuntimeStatus(ContractModel):
     error: str | None = None
 
 
+class ProviderVersionState(ContractStrEnum):
+    CHECKING = "checking"
+    CURRENT = "current"
+    OUTDATED = "outdated"
+    UNKNOWN = "unknown"
+    ERROR = "error"
+
+
+class ProviderVersion(ContractModel):
+    id: str
+    accountKey: str
+    # New provider integrations may report names beyond codex and claude.
+    provider: str
+    status: ProviderVersionState
+    runningVersion: str | None
+    installedVersion: str | None
+    configuredVersion: str | None
+    baseline: str | None
+    error: str | None
+    message: str | None
+    at: float | None
+
+
+class ProviderVersionWarning(ContractModel):
+    id: str
+    accountKey: str
+    provider: str
+    version: str
+    baseline: str
+    message: str
+    at: float
+
+
+class ProviderVersions(ContractModel):
+    checkedAt: float | None
+    providers: list[ProviderVersion]
+    warnings: list[ProviderVersionWarning]
+
+
 class BrowserStatus(ContractModel):
     enabled: bool
     reason: str | None = None
@@ -199,6 +238,7 @@ class DesktopResponse(ResponseModel):
     mobileProtocol: int
     backendBuild: str
     nativeRuntime: NativeRuntimeStatus | None
+    providerVersions: ProviderVersions
     browser: BrowserStatus | None
     liveUpdate: LiveUpdateStatus | None
     restartEnvironment: dict[RestartEnvironmentKey, str]

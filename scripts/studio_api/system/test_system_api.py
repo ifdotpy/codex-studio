@@ -28,6 +28,7 @@ from .models import (
     MigrationStatus,
     NativeProviderAccount,
     ProcessRecord,
+    ProviderVersions,
 )
 from .router import create_router
 
@@ -139,6 +140,9 @@ class SystemApiTests(unittest.TestCase):
             }},
         }
         with patch("codex_native_runtime.status", return_value=None) as native, \
+                patch("codex_provider_versions.status", return_value={
+                    "checkedAt": 11.0, "providers": [], "warnings": [],
+                }), \
                 patch("codex_browser.diagnostics", return_value=None) as browser, \
                 patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "0"}, clear=False):
             self.context.canvas.runtime = runtime
@@ -168,7 +172,15 @@ class SystemApiTests(unittest.TestCase):
         app.add_middleware(RequestBoundary, context=context)
         app.include_router(create_router(context))
         client = TestClient(app)
-        runtime = SimpleNamespace(live_updates=None)
+        runtime = SimpleNamespace(
+            live_updates=None,
+            lock=threading.RLock(),
+            servers={},
+            accounts={},
+            connection_ids={},
+            offline_accounts=set(),
+            changed=threading.Event(),
+        )
         context.canvas.runtime = runtime
         valid_native_status: dict[str, JsonValue] = {
             "status": "checking", "selected": None, "candidates": [], "accounts": {},
@@ -179,6 +191,8 @@ class SystemApiTests(unittest.TestCase):
 
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.json()["nativeRuntime"], valid_native_status)
+        self.assertEqual(accepted.json()["providerVersions"]["providers"], [])
+        self.assertEqual(accepted.json()["providerVersions"]["warnings"], [])
         self.assertNotIn("outcome", accepted.json())
 
         invalid_native_status: dict[str, JsonValue] = {
@@ -190,6 +204,63 @@ class SystemApiTests(unittest.TestCase):
 
         self.assertEqual(rejected.status_code, 500)
         self.assertEqual(rejected.json(), {"error": "The server could not validate its response"})
+        provider_monitor = runtime.provider_version_monitor
+        provider_monitor.worker.join(timeout=2)
+        self.assertFalse(provider_monitor.worker.is_alive())
+
+    def test_provider_versions_contract_matches_real_producer(self) -> None:
+        from codex_provider_versions import ProviderVersionMonitor as UntypedProviderVersionMonitor
+        from codex_provider_versions import status as untyped_status
+
+        monitor_factory = cast(Callable[[], object], UntypedProviderVersionMonitor)
+        monitor = monitor_factory()
+        provider_rows: list[dict[str, JsonValue]] = [
+            {
+                "id": "provider-version:checking", "accountKey": "checking",
+                "provider": "codex", "status": "checking", "runningVersion": None,
+                "installedVersion": None, "configuredVersion": None, "baseline": "0.153.4",
+                "error": None, "message": "Checking provider CLI version.", "at": None,
+            },
+            {
+                "id": "provider-version:current", "accountKey": "current",
+                "provider": "claude", "status": "current", "runningVersion": "2.1.278",
+                "installedVersion": "2.1.278", "configuredVersion": None, "baseline": "2.1.278",
+                "error": None, "message": None, "at": 100.0,
+            },
+            {
+                "id": "provider-version:outdated", "accountKey": "outdated",
+                "provider": "codex", "status": "outdated", "runningVersion": "0.153.3",
+                "installedVersion": "0.153.3", "configuredVersion": None, "baseline": "0.153.4",
+                "error": None, "message": "Below the tested baseline.", "at": 101.0,
+            },
+            {
+                "id": "provider-version:unknown", "accountKey": "unknown",
+                "provider": "other-provider", "status": "unknown", "runningVersion": None,
+                "installedVersion": None, "configuredVersion": None, "baseline": None,
+                "error": None, "message": "No evidence-backed version baseline is configured.",
+                "at": 102.0,
+            },
+            {
+                "id": "provider-version:error", "accountKey": "error",
+                "provider": "claude", "status": "error", "runningVersion": None,
+                "installedVersion": None, "configuredVersion": None, "baseline": "2.1.278",
+                "error": "Could not read the Claude Code executable version.",
+                "message": "Version check failed.", "at": 103.0,
+            },
+        ]
+        setattr(monitor, "checked_at", 104.0)
+        setattr(monitor, "providers", provider_rows)
+        setattr(monitor, "tick", lambda _runtime: None)
+        producer = cast(Callable[[object], dict[str, JsonValue]], untyped_status)
+        with patch("codex_provider_versions.monitor", return_value=monitor):
+            result = producer(object())
+
+        response = ProviderVersions.model_validate_json(json.dumps(result))
+        self.assertEqual([row.status.value for row in response.providers], [
+            "checking", "current", "outdated", "unknown", "error",
+        ])
+        self.assertEqual(len(response.warnings), 1)
+        self.assertEqual(response.warnings[0].version, "0.153.3")
 
     def test_diagnostics_without_runtime_remains_not_found(self) -> None:
         response = self.client.get("/api/diagnostics")
@@ -316,6 +387,8 @@ class SystemApiTests(unittest.TestCase):
         directory_params = paths["/api/directories"]["get"]["parameters"]
         self.assertIn("account_key", {item["name"] for item in desktop_params})
         self.assertIn("path", {item["name"] for item in directory_params})
+        self.assertIn("providerVersions", schemas["DesktopResponse"]["properties"])
+        self.assertIn("ProviderVersions", schemas)
 
     def test_process_kind_enum_accepts_wire_string_and_rejects_unknown_kind(self) -> None:
         record = '{"pid":1,"parentPid":0,"kind":"codex_app_server","rssMiB":1.0,"cpuPercent":0.0}'

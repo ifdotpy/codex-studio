@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 
 NativeRuntimeStatus = Callable[[object], dict[str, JsonValue] | None]
+ProviderVersionStatus = Callable[[object], dict[str, JsonValue]]
 BrowserDiagnostics = Callable[[object, str], dict[str, JsonValue] | None]
 SupervisorStatus = Callable[[str], dict[str, JsonValue]]
 DiagnosticsSnapshot = Callable[[object], dict[str, JsonValue]]
@@ -40,9 +41,11 @@ def create_router(context: ApiContext) -> APIRouter:
         from codex_backend_identity import BACKEND_BUILD
         from codex_browser import diagnostics as untyped_browser_diagnostics
         from codex_native_runtime import status as untyped_native_runtime_status
+        from codex_provider_versions import status as untyped_provider_version_status
 
         browser_diagnostics = cast(BrowserDiagnostics, untyped_browser_diagnostics)
         native_runtime_status = cast(NativeRuntimeStatus, untyped_native_runtime_status)
+        provider_version_status = cast(ProviderVersionStatus, untyped_provider_version_status)
 
         canvas = context.canvas
         try:
@@ -76,6 +79,7 @@ def create_router(context: ApiContext) -> APIRouter:
             "mobileProtocol": 1,
             "backendBuild": BACKEND_BUILD,
             "nativeRuntime": native_runtime_status(runtime),
+            "providerVersions": provider_version_status(runtime),
             "browser": browser_diagnostics(runtime, browser_account),
             "liveUpdate": (
                 runtime.live_updates.status()
