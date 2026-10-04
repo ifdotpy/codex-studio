@@ -4369,40 +4369,98 @@ function validate25(
                                               }
                                               errors++;
                                             }
+                                            if (errors === _errs26) {
+                                              if (
+                                                typeof data9 == "number" &&
+                                                isFinite(data9)
+                                              ) {
+                                                if (data9 < 0 || isNaN(data9)) {
+                                                  const err3 = {
+                                                    instancePath:
+                                                      instancePath +
+                                                      "/rates/" +
+                                                      key2
+                                                        .replace(/~/g, "~0")
+                                                        .replace(/\//g, "~1") +
+                                                      "/rate",
+                                                    schemaPath:
+                                                      "#/$defs/TokenRateValue/properties/rate/anyOf/0/minimum",
+                                                    keyword: "minimum",
+                                                    params: {
+                                                      comparison: ">=",
+                                                      limit: 0,
+                                                    },
+                                                    message: "must be >= 0",
+                                                  };
+                                                  if (vErrors === null) {
+                                                    vErrors = [err3];
+                                                  } else {
+                                                    vErrors.push(err3);
+                                                  }
+                                                  errors++;
+                                                }
+                                              }
+                                            }
                                             var _valid0 = _errs26 === errors;
                                             valid5 = valid5 || _valid0;
                                             const _errs28 = errors;
-                                            if (
-                                              !(
+                                            if (errors === _errs28) {
+                                              if (
                                                 typeof data9 == "number" &&
                                                 isFinite(data9)
-                                              )
-                                            ) {
-                                              const err3 = {
-                                                instancePath:
-                                                  instancePath +
-                                                  "/rates/" +
-                                                  key2
-                                                    .replace(/~/g, "~0")
-                                                    .replace(/\//g, "~1") +
-                                                  "/rate",
-                                                schemaPath:
-                                                  "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
-                                                keyword: "type",
-                                                params: { type: "number" },
-                                                message: "must be number",
-                                              };
-                                              if (vErrors === null) {
-                                                vErrors = [err3];
+                                              ) {
+                                                if (data9 < 0 || isNaN(data9)) {
+                                                  const err4 = {
+                                                    instancePath:
+                                                      instancePath +
+                                                      "/rates/" +
+                                                      key2
+                                                        .replace(/~/g, "~0")
+                                                        .replace(/\//g, "~1") +
+                                                      "/rate",
+                                                    schemaPath:
+                                                      "#/$defs/TokenRateValue/properties/rate/anyOf/1/minimum",
+                                                    keyword: "minimum",
+                                                    params: {
+                                                      comparison: ">=",
+                                                      limit: 0,
+                                                    },
+                                                    message: "must be >= 0",
+                                                  };
+                                                  if (vErrors === null) {
+                                                    vErrors = [err4];
+                                                  } else {
+                                                    vErrors.push(err4);
+                                                  }
+                                                  errors++;
+                                                }
                                               } else {
-                                                vErrors.push(err3);
+                                                const err5 = {
+                                                  instancePath:
+                                                    instancePath +
+                                                    "/rates/" +
+                                                    key2
+                                                      .replace(/~/g, "~0")
+                                                      .replace(/\//g, "~1") +
+                                                    "/rate",
+                                                  schemaPath:
+                                                    "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
+                                                  keyword: "type",
+                                                  params: { type: "number" },
+                                                  message: "must be number",
+                                                };
+                                                if (vErrors === null) {
+                                                  vErrors = [err5];
+                                                } else {
+                                                  vErrors.push(err5);
+                                                }
+                                                errors++;
                                               }
-                                              errors++;
                                             }
                                             var _valid0 = _errs28 === errors;
                                             valid5 = valid5 || _valid0;
                                             if (!valid5) {
-                                              const err4 = {
+                                              const err6 = {
                                                 instancePath:
                                                   instancePath +
                                                   "/rates/" +
@@ -4418,9 +4476,9 @@ function validate25(
                                                   "must match a schema in anyOf",
                                               };
                                               if (vErrors === null) {
-                                                vErrors = [err4];
+                                                vErrors = [err6];
                                               } else {
-                                                vErrors.push(err4);
+                                                vErrors.push(err6);
                                               }
                                               errors++;
                                               validate25.errors = vErrors;
@@ -4454,7 +4512,7 @@ function validate25(
                                                   isFinite(data10)
                                                 )
                                               ) {
-                                                const err5 = {
+                                                const err7 = {
                                                   instancePath:
                                                     instancePath +
                                                     "/rates/" +
@@ -4469,46 +4527,116 @@ function validate25(
                                                   message: "must be integer",
                                                 };
                                                 if (vErrors === null) {
-                                                  vErrors = [err5];
+                                                  vErrors = [err7];
                                                 } else {
-                                                  vErrors.push(err5);
+                                                  vErrors.push(err7);
                                                 }
                                                 errors++;
+                                              }
+                                              if (errors === _errs32) {
+                                                if (
+                                                  typeof data10 == "number" &&
+                                                  isFinite(data10)
+                                                ) {
+                                                  if (
+                                                    data10 < 0 ||
+                                                    isNaN(data10)
+                                                  ) {
+                                                    const err8 = {
+                                                      instancePath:
+                                                        instancePath +
+                                                        "/rates/" +
+                                                        key2
+                                                          .replace(/~/g, "~0")
+                                                          .replace(
+                                                            /\//g,
+                                                            "~1",
+                                                          ) +
+                                                        "/outputTokens",
+                                                      schemaPath:
+                                                        "#/$defs/TokenRateValue/properties/outputTokens/anyOf/0/minimum",
+                                                      keyword: "minimum",
+                                                      params: {
+                                                        comparison: ">=",
+                                                        limit: 0,
+                                                      },
+                                                      message: "must be >= 0",
+                                                    };
+                                                    if (vErrors === null) {
+                                                      vErrors = [err8];
+                                                    } else {
+                                                      vErrors.push(err8);
+                                                    }
+                                                    errors++;
+                                                  }
+                                                }
                                               }
                                               var _valid1 = _errs32 === errors;
                                               valid6 = valid6 || _valid1;
                                               const _errs34 = errors;
-                                              if (
-                                                !(
+                                              if (errors === _errs34) {
+                                                if (
                                                   typeof data10 == "number" &&
                                                   isFinite(data10)
-                                                )
-                                              ) {
-                                                const err6 = {
-                                                  instancePath:
-                                                    instancePath +
-                                                    "/rates/" +
-                                                    key2
-                                                      .replace(/~/g, "~0")
-                                                      .replace(/\//g, "~1") +
-                                                    "/outputTokens",
-                                                  schemaPath:
-                                                    "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
-                                                  keyword: "type",
-                                                  params: { type: "number" },
-                                                  message: "must be number",
-                                                };
-                                                if (vErrors === null) {
-                                                  vErrors = [err6];
+                                                ) {
+                                                  if (
+                                                    data10 < 0 ||
+                                                    isNaN(data10)
+                                                  ) {
+                                                    const err9 = {
+                                                      instancePath:
+                                                        instancePath +
+                                                        "/rates/" +
+                                                        key2
+                                                          .replace(/~/g, "~0")
+                                                          .replace(
+                                                            /\//g,
+                                                            "~1",
+                                                          ) +
+                                                        "/outputTokens",
+                                                      schemaPath:
+                                                        "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/minimum",
+                                                      keyword: "minimum",
+                                                      params: {
+                                                        comparison: ">=",
+                                                        limit: 0,
+                                                      },
+                                                      message: "must be >= 0",
+                                                    };
+                                                    if (vErrors === null) {
+                                                      vErrors = [err9];
+                                                    } else {
+                                                      vErrors.push(err9);
+                                                    }
+                                                    errors++;
+                                                  }
                                                 } else {
-                                                  vErrors.push(err6);
+                                                  const err10 = {
+                                                    instancePath:
+                                                      instancePath +
+                                                      "/rates/" +
+                                                      key2
+                                                        .replace(/~/g, "~0")
+                                                        .replace(/\//g, "~1") +
+                                                      "/outputTokens",
+                                                    schemaPath:
+                                                      "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
+                                                    keyword: "type",
+                                                    params: { type: "number" },
+                                                    message: "must be number",
+                                                  };
+                                                  if (vErrors === null) {
+                                                    vErrors = [err10];
+                                                  } else {
+                                                    vErrors.push(err10);
+                                                  }
+                                                  errors++;
                                                 }
-                                                errors++;
                                               }
                                               var _valid1 = _errs34 === errors;
                                               valid6 = valid6 || _valid1;
                                               if (!valid6) {
-                                                const err7 = {
+                                                const err11 = {
                                                   instancePath:
                                                     instancePath +
                                                     "/rates/" +
@@ -4524,9 +4652,9 @@ function validate25(
                                                     "must match a schema in anyOf",
                                                 };
                                                 if (vErrors === null) {
-                                                  vErrors = [err7];
+                                                  vErrors = [err11];
                                                 } else {
-                                                  vErrors.push(err7);
+                                                  vErrors.push(err11);
                                                 }
                                                 errors++;
                                                 validate25.errors = vErrors;
@@ -4606,7 +4734,7 @@ function validate25(
                             const _errs38 = errors;
                             if (typeof key4 === "string") {
                               if (func1(key4) < 1) {
-                                const err8 = {
+                                const err12 = {
                                   instancePath: instancePath + "/teams",
                                   schemaPath:
                                     "#/properties/teams/propertyNames/minLength",
@@ -4617,16 +4745,16 @@ function validate25(
                                   propertyName: key4,
                                 };
                                 if (vErrors === null) {
-                                  vErrors = [err8];
+                                  vErrors = [err12];
                                 } else {
-                                  vErrors.push(err8);
+                                  vErrors.push(err12);
                                 }
                                 errors++;
                               }
                             }
                             var valid7 = _errs38 === errors;
                             if (!valid7) {
-                              const err9 = {
+                              const err13 = {
                                 instancePath: instancePath + "/teams",
                                 schemaPath: "#/properties/teams/propertyNames",
                                 keyword: "propertyNames",
@@ -4634,9 +4762,9 @@ function validate25(
                                 message: "property name must be valid",
                               };
                               if (vErrors === null) {
-                                vErrors = [err9];
+                                vErrors = [err13];
                               } else {
-                                vErrors.push(err9);
+                                vErrors.push(err13);
                               }
                               errors++;
                               validate25.errors = vErrors;
@@ -4658,7 +4786,7 @@ function validate25(
                                     const _errs42 = errors;
                                     if (typeof key6 === "string") {
                                       if (func1(key6) < 1) {
-                                        const err10 = {
+                                        const err14 = {
                                           instancePath:
                                             instancePath +
                                             "/teams/" +
@@ -4674,16 +4802,16 @@ function validate25(
                                           propertyName: key6,
                                         };
                                         if (vErrors === null) {
-                                          vErrors = [err10];
+                                          vErrors = [err14];
                                         } else {
-                                          vErrors.push(err10);
+                                          vErrors.push(err14);
                                         }
                                         errors++;
                                       }
                                     }
                                     var valid9 = _errs42 === errors;
                                     if (!valid9) {
-                                      const err11 = {
+                                      const err15 = {
                                         instancePath:
                                           instancePath +
                                           "/teams/" +
@@ -4697,9 +4825,9 @@ function validate25(
                                         message: "property name must be valid",
                                       };
                                       if (vErrors === null) {
-                                        vErrors = [err11];
+                                        vErrors = [err15];
                                       } else {
-                                        vErrors.push(err11);
+                                        vErrors.push(err15);
                                       }
                                       errors++;
                                       validate25.errors = vErrors;
@@ -4989,7 +5117,7 @@ function validate25(
                                                           isFinite(data17)
                                                         )
                                                       ) {
-                                                        const err12 = {
+                                                        const err16 = {
                                                           instancePath:
                                                             instancePath +
                                                             "/teams/" +
@@ -5023,70 +5151,183 @@ function validate25(
                                                             "must be integer",
                                                         };
                                                         if (vErrors === null) {
-                                                          vErrors = [err12];
+                                                          vErrors = [err16];
                                                         } else {
-                                                          vErrors.push(err12);
+                                                          vErrors.push(err16);
                                                         }
                                                         errors++;
+                                                      }
+                                                      if (errors === _errs56) {
+                                                        if (
+                                                          typeof data17 ==
+                                                            "number" &&
+                                                          isFinite(data17)
+                                                        ) {
+                                                          if (
+                                                            data17 < 0 ||
+                                                            isNaN(data17)
+                                                          ) {
+                                                            const err17 = {
+                                                              instancePath:
+                                                                instancePath +
+                                                                "/teams/" +
+                                                                key5
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/" +
+                                                                key7
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/rate",
+                                                              schemaPath:
+                                                                "#/$defs/TokenRateValue/properties/rate/anyOf/0/minimum",
+                                                              keyword:
+                                                                "minimum",
+                                                              params: {
+                                                                comparison:
+                                                                  ">=",
+                                                                limit: 0,
+                                                              },
+                                                              message:
+                                                                "must be >= 0",
+                                                            };
+                                                            if (
+                                                              vErrors === null
+                                                            ) {
+                                                              vErrors = [err17];
+                                                            } else {
+                                                              vErrors.push(
+                                                                err17,
+                                                              );
+                                                            }
+                                                            errors++;
+                                                          }
+                                                        }
                                                       }
                                                       var _valid2 =
                                                         _errs56 === errors;
                                                       valid13 =
                                                         valid13 || _valid2;
                                                       const _errs58 = errors;
-                                                      if (
-                                                        !(
+                                                      if (errors === _errs58) {
+                                                        if (
                                                           typeof data17 ==
                                                             "number" &&
                                                           isFinite(data17)
-                                                        )
-                                                      ) {
-                                                        const err13 = {
-                                                          instancePath:
-                                                            instancePath +
-                                                            "/teams/" +
-                                                            key5
-                                                              .replace(
-                                                                /~/g,
-                                                                "~0",
-                                                              )
-                                                              .replace(
-                                                                /\//g,
-                                                                "~1",
-                                                              ) +
-                                                            "/" +
-                                                            key7
-                                                              .replace(
-                                                                /~/g,
-                                                                "~0",
-                                                              )
-                                                              .replace(
-                                                                /\//g,
-                                                                "~1",
-                                                              ) +
-                                                            "/rate",
-                                                          schemaPath:
-                                                            "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
-                                                          keyword: "type",
-                                                          params: {
-                                                            type: "number",
-                                                          },
-                                                          message:
-                                                            "must be number",
-                                                        };
-                                                        if (vErrors === null) {
-                                                          vErrors = [err13];
+                                                        ) {
+                                                          if (
+                                                            data17 < 0 ||
+                                                            isNaN(data17)
+                                                          ) {
+                                                            const err18 = {
+                                                              instancePath:
+                                                                instancePath +
+                                                                "/teams/" +
+                                                                key5
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/" +
+                                                                key7
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/rate",
+                                                              schemaPath:
+                                                                "#/$defs/TokenRateValue/properties/rate/anyOf/1/minimum",
+                                                              keyword:
+                                                                "minimum",
+                                                              params: {
+                                                                comparison:
+                                                                  ">=",
+                                                                limit: 0,
+                                                              },
+                                                              message:
+                                                                "must be >= 0",
+                                                            };
+                                                            if (
+                                                              vErrors === null
+                                                            ) {
+                                                              vErrors = [err18];
+                                                            } else {
+                                                              vErrors.push(
+                                                                err18,
+                                                              );
+                                                            }
+                                                            errors++;
+                                                          }
                                                         } else {
-                                                          vErrors.push(err13);
+                                                          const err19 = {
+                                                            instancePath:
+                                                              instancePath +
+                                                              "/teams/" +
+                                                              key5
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/" +
+                                                              key7
+                                                                .replace(
+                                                                  /~/g,
+                                                                  "~0",
+                                                                )
+                                                                .replace(
+                                                                  /\//g,
+                                                                  "~1",
+                                                                ) +
+                                                              "/rate",
+                                                            schemaPath:
+                                                              "#/$defs/TokenRateValue/properties/rate/anyOf/1/type",
+                                                            keyword: "type",
+                                                            params: {
+                                                              type: "number",
+                                                            },
+                                                            message:
+                                                              "must be number",
+                                                          };
+                                                          if (
+                                                            vErrors === null
+                                                          ) {
+                                                            vErrors = [err19];
+                                                          } else {
+                                                            vErrors.push(err19);
+                                                          }
+                                                          errors++;
                                                         }
-                                                        errors++;
                                                       }
                                                       var _valid2 =
                                                         _errs58 === errors;
                                                       valid13 =
                                                         valid13 || _valid2;
                                                       if (!valid13) {
-                                                        const err14 = {
+                                                        const err20 = {
                                                           instancePath:
                                                             instancePath +
                                                             "/teams/" +
@@ -5118,9 +5359,9 @@ function validate25(
                                                             "must match a schema in anyOf",
                                                         };
                                                         if (vErrors === null) {
-                                                          vErrors = [err14];
+                                                          vErrors = [err20];
                                                         } else {
-                                                          vErrors.push(err14);
+                                                          vErrors.push(err20);
                                                         }
                                                         errors++;
                                                         validate25.errors =
@@ -5162,7 +5403,7 @@ function validate25(
                                                             isFinite(data18)
                                                           )
                                                         ) {
-                                                          const err15 = {
+                                                          const err21 = {
                                                             instancePath:
                                                               instancePath +
                                                               "/teams/" +
@@ -5198,11 +5439,74 @@ function validate25(
                                                           if (
                                                             vErrors === null
                                                           ) {
-                                                            vErrors = [err15];
+                                                            vErrors = [err21];
                                                           } else {
-                                                            vErrors.push(err15);
+                                                            vErrors.push(err21);
                                                           }
                                                           errors++;
+                                                        }
+                                                        if (
+                                                          errors === _errs62
+                                                        ) {
+                                                          if (
+                                                            typeof data18 ==
+                                                              "number" &&
+                                                            isFinite(data18)
+                                                          ) {
+                                                            if (
+                                                              data18 < 0 ||
+                                                              isNaN(data18)
+                                                            ) {
+                                                              const err22 = {
+                                                                instancePath:
+                                                                  instancePath +
+                                                                  "/teams/" +
+                                                                  key5
+                                                                    .replace(
+                                                                      /~/g,
+                                                                      "~0",
+                                                                    )
+                                                                    .replace(
+                                                                      /\//g,
+                                                                      "~1",
+                                                                    ) +
+                                                                  "/" +
+                                                                  key7
+                                                                    .replace(
+                                                                      /~/g,
+                                                                      "~0",
+                                                                    )
+                                                                    .replace(
+                                                                      /\//g,
+                                                                      "~1",
+                                                                    ) +
+                                                                  "/outputTokens",
+                                                                schemaPath:
+                                                                  "#/$defs/TokenRateValue/properties/outputTokens/anyOf/0/minimum",
+                                                                keyword:
+                                                                  "minimum",
+                                                                params: {
+                                                                  comparison:
+                                                                    ">=",
+                                                                  limit: 0,
+                                                                },
+                                                                message:
+                                                                  "must be >= 0",
+                                                              };
+                                                              if (
+                                                                vErrors === null
+                                                              ) {
+                                                                vErrors = [
+                                                                  err22,
+                                                                ];
+                                                              } else {
+                                                                vErrors.push(
+                                                                  err22,
+                                                                );
+                                                              }
+                                                              errors++;
+                                                            }
+                                                          }
                                                         }
                                                         var _valid3 =
                                                           _errs62 === errors;
@@ -5210,60 +5514,118 @@ function validate25(
                                                           valid14 || _valid3;
                                                         const _errs64 = errors;
                                                         if (
-                                                          !(
+                                                          errors === _errs64
+                                                        ) {
+                                                          if (
                                                             typeof data18 ==
                                                               "number" &&
                                                             isFinite(data18)
-                                                          )
-                                                        ) {
-                                                          const err16 = {
-                                                            instancePath:
-                                                              instancePath +
-                                                              "/teams/" +
-                                                              key5
-                                                                .replace(
-                                                                  /~/g,
-                                                                  "~0",
-                                                                )
-                                                                .replace(
-                                                                  /\//g,
-                                                                  "~1",
-                                                                ) +
-                                                              "/" +
-                                                              key7
-                                                                .replace(
-                                                                  /~/g,
-                                                                  "~0",
-                                                                )
-                                                                .replace(
-                                                                  /\//g,
-                                                                  "~1",
-                                                                ) +
-                                                              "/outputTokens",
-                                                            schemaPath:
-                                                              "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
-                                                            keyword: "type",
-                                                            params: {
-                                                              type: "number",
-                                                            },
-                                                            message:
-                                                              "must be number",
-                                                          };
-                                                          if (
-                                                            vErrors === null
                                                           ) {
-                                                            vErrors = [err16];
+                                                            if (
+                                                              data18 < 0 ||
+                                                              isNaN(data18)
+                                                            ) {
+                                                              const err23 = {
+                                                                instancePath:
+                                                                  instancePath +
+                                                                  "/teams/" +
+                                                                  key5
+                                                                    .replace(
+                                                                      /~/g,
+                                                                      "~0",
+                                                                    )
+                                                                    .replace(
+                                                                      /\//g,
+                                                                      "~1",
+                                                                    ) +
+                                                                  "/" +
+                                                                  key7
+                                                                    .replace(
+                                                                      /~/g,
+                                                                      "~0",
+                                                                    )
+                                                                    .replace(
+                                                                      /\//g,
+                                                                      "~1",
+                                                                    ) +
+                                                                  "/outputTokens",
+                                                                schemaPath:
+                                                                  "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/minimum",
+                                                                keyword:
+                                                                  "minimum",
+                                                                params: {
+                                                                  comparison:
+                                                                    ">=",
+                                                                  limit: 0,
+                                                                },
+                                                                message:
+                                                                  "must be >= 0",
+                                                              };
+                                                              if (
+                                                                vErrors === null
+                                                              ) {
+                                                                vErrors = [
+                                                                  err23,
+                                                                ];
+                                                              } else {
+                                                                vErrors.push(
+                                                                  err23,
+                                                                );
+                                                              }
+                                                              errors++;
+                                                            }
                                                           } else {
-                                                            vErrors.push(err16);
+                                                            const err24 = {
+                                                              instancePath:
+                                                                instancePath +
+                                                                "/teams/" +
+                                                                key5
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/" +
+                                                                key7
+                                                                  .replace(
+                                                                    /~/g,
+                                                                    "~0",
+                                                                  )
+                                                                  .replace(
+                                                                    /\//g,
+                                                                    "~1",
+                                                                  ) +
+                                                                "/outputTokens",
+                                                              schemaPath:
+                                                                "#/$defs/TokenRateValue/properties/outputTokens/anyOf/1/type",
+                                                              keyword: "type",
+                                                              params: {
+                                                                type: "number",
+                                                              },
+                                                              message:
+                                                                "must be number",
+                                                            };
+                                                            if (
+                                                              vErrors === null
+                                                            ) {
+                                                              vErrors = [err24];
+                                                            } else {
+                                                              vErrors.push(
+                                                                err24,
+                                                              );
+                                                            }
+                                                            errors++;
                                                           }
-                                                          errors++;
                                                         }
                                                         var _valid3 =
                                                           _errs64 === errors;
                                                         valid14 =
                                                           valid14 || _valid3;
                                                         if (!valid14) {
-                                                          const err17 = {
+                                                          const err25 = {
                                                             instancePath:
                                                               instancePath +
                                                               "/teams/" +
@@ -5297,9 +5659,9 @@ function validate25(
                                                           if (
                                                             vErrors === null
                                                           ) {
-                                                            vErrors = [err17];
+                                                            vErrors = [err25];
                                                           } else {
-                                                            vErrors.push(err17);
+                                                            vErrors.push(err25);
                                                           }
                                                           errors++;
                                                           validate25.errors =

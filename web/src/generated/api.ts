@@ -10361,7 +10361,7 @@ export interface components {
        */
       streamEndpoint: "/api/sync/stream";
       /** Supportedversions */
-      supportedVersions: (1 | 2)[];
+      supportedVersions: (1 | 2 | 3)[];
     };
     /** SyncPullResetResponse */
     SyncPullResetResponse: {
