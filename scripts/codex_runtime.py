@@ -1017,6 +1017,42 @@ class AppServer:
             with self.callback_lock:
                 if not self.dispatch_stopped:
                     if self.supervisor_mode:
+                        if (callback == self.request and isinstance(message, dict)
+                                and message.get("method") == "item/tool/call"
+                                and type(message.get("id")) in {int, str}
+                                and type(message.get("_studioSupervisorSequence")) is int
+                                and message["_studioSupervisorSequence"] > 0):
+                            # Keep lifecycle and receipt callbacks before the call.
+                            # Only raw stream fragments can wait until
+                            # after its durable admission on this same dispatcher.
+                            with self.callbacks.not_empty:
+                                entries = self.callbacks.queue
+                                if self.callbacks.maxsize > 0 and len(entries) >= self.callbacks.maxsize:
+                                    raise queue.Full
+                                position = len(entries)
+                                sequence = message["_studioSupervisorSequence"]
+                                for previous_callback, previous in reversed(entries):
+                                    params = previous.get("params") if isinstance(previous, dict) else None
+                                    previous_sequence = (previous.get("_studioSupervisorSequence")
+                                                         if isinstance(previous, dict) else None)
+                                    if (previous_callback != self.notification or not isinstance(previous, dict)
+                                            or "id" in previous or previous.get("method") not in self.SHED_METHODS
+                                            or not isinstance(params, dict) or not isinstance(params.get("delta"), str)
+                                            or any(not isinstance(params.get(key), str) or not params[key]
+                                                   for key in ("threadId", "turnId", "itemId"))
+                                            or any(key in previous for key in ("_studioSlot", "_studioLatestSlot",
+                                                                               "_studioNotificationSamples"))
+                                            or type(previous_sequence) is not int or previous_sequence < 1
+                                            or previous_sequence >= sequence):
+                                        break
+                                    position -= 1
+                                    sequence = previous_sequence
+                                entries.insert(position, (callback, message))
+                                # Match Queue.put bookkeeping while its mutex is
+                                # held, so consumers and bounded producers agree.
+                                self.callbacks.unfinished_tasks += 1
+                                self.callbacks.not_empty.notify()
+                            return
                         self.callbacks.put_nowait((callback, message))
                         return
                     if callback == self.notification and isinstance(message, dict) and "id" not in message:
@@ -1464,6 +1500,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
+                CREATE INDEX IF NOT EXISTS runtime_item_turn_scope ON runtime_items(
+                    agent, json_extract(record,'$.turnId'), created);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
@@ -4655,17 +4693,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def dispatch_active_slots(self, db):
         """A busy input keeps its slot until its exact native receipt settles."""
-        return [{"id": row[0], "rootId": row[1]} for row in db.execute(
+        # UNION sorts both branches and can scan agent history for busy inputs.
+        # UNION ALL keeps one snapshot and lets each branch use its partial index.
+        slots = {row[0]: {"id": row[0], "rootId": row[1]} for row in db.execute(
             "SELECT id,json_extract(record,'$.rootId') FROM runtime_agents "
             "WHERE json_extract(record,'$.inFlight')=1 "
             "OR json_extract(record,'$.status') IN ('running','starting','approval') "
-            "UNION SELECT id,json_extract(record,'$.rootId') FROM runtime_agents "
+            "UNION ALL SELECT id,json_extract(record,'$.rootId') FROM runtime_agents "
             "WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1 "
             "AND EXISTS (SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input "
             "JOIN runtime_events AS event ON event.id=input.value "
             "WHERE event.agent=runtime_agents.id "
             "AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') "
-            "AND event.status IN ('reserved','dispatching','uncertain'))")]
+            "AND event.status IN ('reserved','dispatching','uncertain'))")}
+        return [slots[key] for key in sorted(slots)]
 
     @contextmanager
     def dispatch_lock(self, observations=None):
@@ -6096,15 +6137,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
-                # Items of this turn are created after its start attempt. The
-                # (agent, created) index then skips the chat's older history;
-                # a long chat otherwise decoded every item under the lock.
+                # The turn index skips unrelated history even without a bound
+                # start receipt. Keep the existing window for a bound receipt.
                 attempt = a.get("startAttempt") or {}
                 since = (attempt["created"] - 60 if attempt.get("created")
                          and attempt.get("turnId") == turn.get("id") else 0)
                 db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                           "WHERE agent=? AND created>=? AND json_extract(record,'$.turnId')=?",
-                           (turn.get("status") or "ended", a["id"], since, turn.get("id")))
+                           "WHERE agent=? AND json_extract(record,'$.turnId')=? AND created>=?",
+                           (turn.get("status") or "ended", a["id"], turn.get("id"), since))
                 for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
                     task = json.loads(row[0])
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):

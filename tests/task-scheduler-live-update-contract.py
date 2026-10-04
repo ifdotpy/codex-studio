@@ -24,11 +24,16 @@ from codex_source import signature, source_function
 def fixture():
     with tempfile.TemporaryDirectory(prefix='studio-task-scheduler-update-') as folder:
         path = Path(folder) / 'codex_runtime.py'
-        path.write_bytes((ROOT / 'scripts' / path.name).read_bytes())
+        reviewed = subprocess.check_output(['git', 'show', '7ce4b11c:scripts/codex_runtime.py'], cwd=ROOT)
+        path.write_bytes(reviewed)
         module = ModuleType('codex_runtime')
         vars(module).update(vars(codex_runtime))
         module.__file__ = str(path)
         module.Runtime = type('Runtime', (codex_runtime.Runtime,), {})
+        # This released patch validates its original dependency code.
+        for name in update.DEPENDENCIES:
+            guard, _ = source_function(reviewed, ['Runtime', name], vars(module), '<reviewed-7ce4b11c>')
+            setattr(module.Runtime, name, guard)
         before = subprocess.check_output(['git', 'show', '36f1143d:scripts/codex_runtime.py'], cwd=ROOT)
         for name in update.FUNCTIONS:
             old, _ = source_function(before, ['Runtime', name], vars(module), '<baseline-36f1143d>')
