@@ -355,6 +355,18 @@ test("project tree ui", async ({ page: runnerPage }) => {
       keyboardId,
       "Keyboard reorder stays below pins",
     );
+    // The visual order is optimistic; wait for its receipt before the next move.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Object.keys(localStorage).some(
+            (key) =>
+              key.startsWith("codex-sidebar-order:") &&
+              key.endsWith(":pending"),
+          ),
+        ),
+      )
+      .toBe(false);
     const beforeFailure = await chatOrder();
     await page.evaluate(() => {
       window.originalSetItem = Storage.prototype.setItem;
@@ -693,12 +705,25 @@ test("project tree ui", async ({ page: runnerPage }) => {
           .evaluateAll((rows) => rows.map((row) => row.dataset.folderId));
       await secondPage.locator(`[data-folder-id="${emptyFolder}"]`).waitFor();
       const beforeFolderOrder = await rootFolders(page);
-      await folderHeading(emptyFolder)
-        .locator(".project-tree-toggle")
-        .dragTo(folderHeading(workFolder).locator(".project-tree-toggle"), {
-          targetPosition: { x: 45, y: 3 },
-        });
-      assert.notDeepEqual(await rootFolders(page), beforeFolderOrder);
+      const folderSource = folderHeading(emptyFolder).locator(
+        ".project-tree-toggle",
+      );
+      const folderTarget = folderHeading(workFolder).locator(
+        ".project-tree-toggle",
+      );
+      await folderSource.hover();
+      const sourceBox = await folderSource.boundingBox();
+      await page.mouse.down();
+      await page.mouse.move(
+        sourceBox.x + sourceBox.width / 2,
+        sourceBox.y + sourceBox.height / 2 + 10,
+        { steps: 5 },
+      );
+      await folderTarget.hover({ position: { x: 45, y: 3 } });
+      await folderTarget.hover({ position: { x: 45, y: 3 } });
+      await expect(folderTarget).toHaveAttribute("data-drop-edge", "before");
+      await page.mouse.up();
+      await expect.poll(() => rootFolders(page)).not.toEqual(beforeFolderOrder);
       await expect
         .poll(() => rootFolders(secondPage))
         .toEqual(await rootFolders(page));
