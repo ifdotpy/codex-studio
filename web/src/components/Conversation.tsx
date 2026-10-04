@@ -1044,7 +1044,7 @@ export default function Conversation(p: {
       [
         ...items
           .filter((item) => !queueEntry(item))
-          .map((item) =>
+          .map((item): Message =>
             sendingEntry(item)
               ? { ...item, pending: true, deliveryStatus: "sending" }
               : item,
@@ -1053,19 +1053,16 @@ export default function Conversation(p: {
           .filter(
             (entry) => !items.some((item) => sendingEntry(item) === entry),
           )
-          .map(
-            (entry) =>
-              ({
-                id: entry.id,
-                clientMessageId: entry.id,
-                role: "user",
-                text: entry.text,
-                ...("assets" in entry ? { assets: entry.assets } : {}),
-                pending: true,
-                localDelivery: true,
-                deliveryStatus: "sending",
-              }) satisfies Message,
-          ),
+          .map((entry): Message => ({
+            id: entry.id,
+            clientMessageId: entry.id,
+            role: "user",
+            text: entry.text,
+            ...("assets" in entry ? { assets: entry.assets } : {}),
+            pending: true,
+            localDelivery: true,
+            deliveryStatus: "sending",
+          })),
       ].filter((message) => !removed.hidden(message)),
     [items, queue, sending, p.id, removed.hidden],
   );

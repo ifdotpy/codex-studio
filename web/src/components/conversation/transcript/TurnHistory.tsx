@@ -444,7 +444,7 @@ export default function TurnHistory({
             storageKey={storageKey}
             render={renderMessage}
             agentId={agentId}
-            cwd={agent?.cwd}
+            cwd={agent?.cwd ?? undefined}
             onJump={onJump}
           />
         );
