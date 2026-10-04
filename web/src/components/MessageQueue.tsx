@@ -29,14 +29,19 @@ function isServerQueueItem(item: QueueItem): item is QueueItemDto {
 }
 
 function isQueueItemDto(value: unknown): value is QueueItemDto {
-  if (typeof value !== "object" || value === null) return false;
-  const item = value as Partial<QueueItemDto>;
   return (
-    typeof item.id === "string" &&
-    typeof item.text === "string" &&
-    typeof item.created === "number" &&
-    item.status === "pending" &&
-    (item.kind === "user" || item.kind === "followup")
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "text" in value &&
+    typeof value.text === "string" &&
+    "created" in value &&
+    typeof value.created === "number" &&
+    "status" in value &&
+    value.status === "pending" &&
+    "kind" in value &&
+    (value.kind === "user" || value.kind === "followup")
   );
 }
 
