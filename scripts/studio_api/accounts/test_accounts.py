@@ -11,6 +11,7 @@ from pathlib import Path
 import sys
 import shutil
 import tempfile
+import types
 from typing import Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
@@ -378,6 +379,10 @@ class _AccountStore(Protocol):
 
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
+        hub = types.ModuleType("studio_api.sync.resources.hub")
+        hub.publish_resources = lambda *_args: None  # type: ignore[attr-defined]
+        self.hub_patch = patch.dict(sys.modules, {hub.__name__: hub})
+        self.hub_patch.start()
         self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
         self.cache.mkdir(parents=True)
         self.tmp = tempfile.TemporaryDirectory(dir=self.cache)
@@ -410,6 +415,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.claude.stop()
         self.path_home.stop()
         self.environment.stop()
+        self.hub_patch.stop()
         self.tmp.cleanup()
         shutil.rmtree(self.cache, ignore_errors=True)
 
@@ -427,13 +433,22 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["accounts"][0]["accountId"], "account-default")
         self.assertNotIn("fixture-secret", response.text)
 
-    def test_accounts_get_does_not_publish_but_explicit_discovery_does(self) -> None:
+    def test_accounts_get_does_not_publish_and_mutation_retries_are_deduplicated(self) -> None:
         with patch("studio_api.accounts.router.publish_account_change") as publish:
             self.assertEqual(self.client.get("/api/accounts").status_code, 200)
             publish.assert_not_called()
-            response = self.client.post("/api/accounts/discover")
+            second = self.root / "second-profile"
+            second.mkdir()
+            self._write_auth(second, "account-second")
+            body = {"home": str(second)}
+            response = self.client.post("/api/accounts/register", json=body)
+            self.assertEqual(response.status_code, 200, response.text)
+            publish.assert_called_once_with(cast(Path, getattr(self.store, "root")).parent)
+            repeated = self.client.post("/api/accounts/register", json=body)
+            self.assertEqual(repeated.status_code, 200, repeated.text)
         self.assertEqual(response.status_code, 200)
-        publish.assert_called_once_with(cast(Path, getattr(self.store, "root")).parent)
+        self.assertEqual(repeated.json(), response.json())
+        publish.assert_called_once()
 
     def test_async_native_login_completion_publishes_after_account_lock(self) -> None:
         import codex_accounts
@@ -458,6 +473,7 @@ class AccountsRouterTests(unittest.TestCase):
             self.assertEqual(state_dir, cast(Path, getattr(self.store, "root")).parent)
 
         with patch.object(codex_accounts, "publish_account_change", side_effect=published) as publish:
+            getattr(self.store, "login_completed")("default", {"loginId": "native-login", "success": False})
             getattr(self.store, "login_completed")("default", {"loginId": "native-login", "success": False})
 
         publish.assert_called_once()
@@ -609,6 +625,14 @@ class AccountsRouterTests(unittest.TestCase):
             response = self.client.get("/api/models")
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Still loading", "catalogPending": True})
+
+    def test_catalog_unavailable_returns_terminal_error_body(self) -> None:
+        from codex_catalog import CatalogUnavailable
+
+        with patch.object(self.runtime, "catalog", side_effect=CatalogUnavailable("Catalog is unavailable")):
+            response = self.client.get("/api/models")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Catalog is unavailable"})
 
     def test_real_reset_producer_reuses_exact_request_after_retry(self) -> None:
         fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"

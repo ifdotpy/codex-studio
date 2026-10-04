@@ -611,6 +611,7 @@ class AccountStore:
 
     def login_completed(self, key, params):
         with self.lock:
+            before = json.dumps(self.data, sort_keys=True)
             row = self._row(key)
             receipts = [r for r in self.data.setdefault("logins", {}).values() if r.get("accountKey") == key]
             for receipt in receipts:
@@ -632,4 +633,6 @@ class AccountStore:
                 self.refresh(key)
                 self.login_receipts()
             self._save()
-        publish_account_change(self.root.parent)
+            changed = json.dumps(self.data, sort_keys=True) != before
+        if changed:
+            publish_account_change(self.root.parent)

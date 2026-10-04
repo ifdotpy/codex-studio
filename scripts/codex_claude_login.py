@@ -88,6 +88,16 @@ class LoginManager:
             job['receipt']['error'] = error
         self._save(job)
 
+    def _publish_verification_url(self, job, url):
+        """Expose each newly observed native URL while sign-in is still active."""
+        with self.lock:
+            receipt = job['receipt']
+            if receipt['status'] not in ACTIVE or receipt.get('verificationUrl') == url:
+                return False
+            receipt.update(status='pending', verificationUrl=url)
+        publish_account_change(self.runtime.root)
+        return True
+
     def status(self, rid):
         with self.lock:
             job = self._job(rid)
@@ -233,9 +243,7 @@ class LoginManager:
                         for match in re.finditer(r'https://[^\s\x1b]+(?=\s|\x1b)', buffer):
                             url = match.group(0)
                             if verification_url(url):
-                                with self.lock:
-                                    if job['receipt']['status'] in ACTIVE:
-                                        job['receipt'].update(status='pending', verificationUrl=url)
+                                self._publish_verification_url(job, url)
                                 break
             process.wait(timeout=3)
             with self.lock:

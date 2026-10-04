@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from importlib import import_module
+import logging
 from pathlib import Path
-from typing import Protocol, cast
 
 from studio_api.sync.resources.models import (
     AccountsResource,
@@ -13,9 +12,7 @@ from studio_api.sync.resources.models import (
     ResourceRef,
 )
 
-
-class ResourcePublisher(Protocol):
-    def __call__(self, state_dir: str | Path, *resources: ResourceRef) -> None: ...
+_LOGGER = logging.getLogger(__name__)
 
 
 def publish_account_change(state_dir: str | Path) -> None:
@@ -34,12 +31,10 @@ def publish_models_change(state_dir: str | Path) -> None:
 
 
 def _publish(state_dir: str | Path, *resources: ResourceRef) -> None:
-    """Use the optional sync hub when installed; older runtimes remain valid."""
+    """Resolve the sync publisher only when a producer emits a change."""
+    from studio_api.sync.resources.hub import publish_resources  # type: ignore[import-not-found]
+
     try:
-        hub = import_module("studio_api.sync.resources.hub")
-    except ModuleNotFoundError as error:
-        if error.name != "studio_api.sync.resources.hub":
-            raise
-        return
-    publish_resources = cast(ResourcePublisher, getattr(hub, "publish_resources"))
-    publish_resources(state_dir, *resources)
+        publish_resources(state_dir, *resources)
+    except Exception:
+        _LOGGER.exception("Could not publish a UI resource invalidation")

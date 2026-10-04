@@ -4,9 +4,22 @@ from __future__ import annotations
 import concurrent.futures
 import contextvars
 import copy
+import logging
 import threading
 import time
 from collections.abc import Callable
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _publish_after_commit(callback: Callable[[], None] | None) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        _LOGGER.exception("Could not publish model catalog invalidation")
 
 
 class CatalogPending(RuntimeError):
@@ -44,6 +57,8 @@ class ModelCatalogCache:
             same = (entry is not None and entry["server"] is server
                     and entry["connectionId"] == connection_id)
             if same and entry["expires"] > self.clock():
+                if entry.get("error") is not None:
+                    raise CatalogUnavailable(entry["error"])
                 result = copy.deepcopy(entry["value"])
                 future = None
             else:
@@ -52,7 +67,8 @@ class ModelCatalogCache:
                 if not same or entry["future"].done():
                     entry = {"server": server, "connectionId": connection_id,
                              "future": concurrent.futures.Future(),
-                             "expires": 0, "value": entry["value"] if same and entry else None}
+                             "expires": 0, "value": entry["value"] if same and entry else None,
+                             "error": None}
                     self.entries[account] = entry
                     start = True
                 future = entry["future"]
@@ -61,9 +77,17 @@ class ModelCatalogCache:
             first_page = None
 
             def fail(error):
+                failure = CatalogUnavailable(
+                    f"Model catalog unavailable; no workers were created: {error}")
+                committed = False
+                with self.lock:
+                    if self.entries.get(account) is entry and not future.done():
+                        entry.update(error=str(failure), expires=self.clock() + self.ttl)
+                        committed = True
+                if committed:
+                    _publish_after_commit(on_commit)
                 if not future.done():
-                    future.set_exception(CatalogUnavailable(
-                        f"Model catalog unavailable; no workers were created: {error}"))
+                    future.set_exception(failure)
 
             def complete(native_future):
                 nonlocal first_page
@@ -99,8 +123,8 @@ class ModelCatalogCache:
                         if self.entries.get(account) is entry:
                             entry.update(value=value, expires=self.clock() + self.ttl)
                             committed = True
-                    if committed and on_commit is not None:
-                        on_commit()
+                    if committed:
+                        _publish_after_commit(on_commit)
                     future.set_result(value)
                 except Exception as error:
                     fail(error)
