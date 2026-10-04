@@ -1,27 +1,28 @@
 # FastAPI boundary migration contract
 
 **Audience:** maintainers migrating the local Python HTTP boundary and renderer API.
-**Status:** approved design; implementation in progress; live runtime evidence pending.
+**Status:** implementation complete; isolated migration evidence verified; live startup against existing state remains unverified.
 
-This page records the compatibility contract for replacing the Python
-`BaseHTTPRequestHandler` boundary with FastAPI. The implementation owns the
-mechanically enforced details; route models, code, and tests are the authority
-for exact fields and response shapes. The current behavior inventory below was
-read from `scripts/codex_canvas.py` at the migration baseline. Do not treat this
-page as evidence that a migrated route already works.
+This page records the compatibility contract and evidence for replacing the
+Python `BaseHTTPRequestHandler` boundary with FastAPI. The implementation owns
+the mechanically enforced details; route models, code, and tests are the
+authority for exact fields and response shapes. The behavior inventory below
+was read from the archived legacy handler and checked against the current
+FastAPI route table and isolated contract tests. Evidence is local to the
+fixtures named below; it does not establish a live deployment or restart.
 
 ## Requirements and acceptance contracts
 
-| ID   | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Acceptance evidence                                                                                                                                                                      |
-| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R-01 | Replace the Python-to-web request boundary with a real FastAPI application composed from ten domain routers. Each domain owns `scripts/studio_api/<domain>/{__init__.py,models.py,router.py,test_*.py}` and exports `create_router(context: ApiContext) -> APIRouter`.                                                                                                                                                                        | Actual app route inspection finds all expected domain routes; component discovery finds every colocated `test_*.py`; no generic API dispatcher owns migrated routes.                     |
-| R-02 | Use strict Pydantic request and response models, closed `StrEnum`/`Literal` values for closed domains, and typed Python modules. Query parameters must be registered with FastAPI models so OpenAPI includes them. `JsonValue`/unknown data is limited to documented provider or extensible payload boundaries. Generated OpenAPI and TypeScript types are the shared contract; do not hand-maintain duplicate DTOs, field lists, or schemas. | Model and schema checks reject invalid inputs before side effects, validate success output, and verify generated OpenAPI/TypeScript contracts, including query parameters.               |
-| R-03 | Preserve methods, paths, statuses, error shapes, null-versus-absent behavior, query parsing behavior, streams, attachments, cache/ETag, compression, and static-asset behavior for supported valid requests. Newly rejected invalid types, enum values, and unknown body fields fail safely with HTTP 400 before side effects. Unknown `/api` paths return the existing 404 shape; static serving is not an API fallback.                     | Contract tests compare actual FastAPI responses and route registration with the baseline inventory and focused compatibility fixtures.                                                   |
-| R-04 | Preserve authentication, origin, workspace, token, and remote federation checks at the same effective boundary. Reject invalid input before any stateful or expensive side effect.                                                                                                                                                                                                                                                            | Isolated route tests exercise allowed and denied origins, missing/invalid token, stale workspace, federation origin, invalid body, and prove service spies were not called on rejection. |
-| R-05 | Preserve caller-supplied operation identities and never mint a replacement identity when a caller supplied one. A timeout, disconnect, output validation failure, or lost response never authorizes replay with a new ID. Input validation maps to the existing safe HTTP 400 before side effects; output validation after service execution maps to HTTP 500 with uncertain outcome and never `outcome: not_applied`.                        | Retry matrix verifies same-ID recovery and changed-content conflicts at each durable service boundary; route response validation failures cannot enqueue a retry.                        |
-| R-06 | Keep SQLite and orchestration writes in their existing service/runtime owners. The HTTP layer validates, authenticates, delegates to those services, and preserves service receipts.                                                                                                                                                                                                                                                          | Tests inspect actual service calls and durable receipt lookup paths; no renderer-side or router-owned parallel persistence is added.                                                     |
-| R-07 | Keep runtime state outside the checkout and preserve the existing state-directory identity. Do not start a second backend against an occupied directory or interrupt active agents, monitors, terminals, or waves.                                                                                                                                                                                                                            | Isolated fixtures use temporary state; migration integration is deferred until safe idle/restart. No live backend evidence is claimed by this work.                                      |
-| R-08 | Do not apply a source update that changes an already-running legacy HTTP server into FastAPI in place. Deployment of the server architecture change waits for active work to become idle and a planned restart.                                                                                                                                                                                                                               | Live-update contract proves the architecture migration is not published as an in-process patch; startup/version checks make the pending restart visible.                                 |
+| ID   | Requirement                                                                                                                                                                                                                                                                                                                                                                                                                                   | Acceptance evidence                                                                                                                                                                                              |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R-01 | Replace the Python-to-web request boundary with a real FastAPI application composed from ten domain routers. Each domain owns `scripts/studio_api/<domain>/{__init__.py,models.py,router.py,test_*.py}` and exports `create_router(context: ApiContext) -> APIRouter`.                                                                                                                                                                        | `scripts/studio_api/app.py` assembles all ten routers; isolated route and component-discovery checks pass. No generic API dispatcher owns migrated routes.                                                       |
+| R-02 | Use strict Pydantic request and response models, closed `StrEnum`/`Literal` values for closed domains, and typed Python modules. Query parameters must be registered with FastAPI models so OpenAPI includes them. `JsonValue`/unknown data is limited to documented provider or extensible payload boundaries. Generated OpenAPI and TypeScript types are the shared contract; do not hand-maintain duplicate DTOs, field lists, or schemas. | Isolated model/schema suites and strict TypeScript/API contract checks pass, including generated query parameter types.                                                                                          |
+| R-03 | Preserve methods, paths, statuses, error shapes, null-versus-absent behavior, query parsing behavior, streams, attachments, cache/ETag, compression, and static-asset behavior for supported valid requests. Newly rejected invalid types, enum values, and unknown body fields fail safely with HTTP 400 before side effects. Unknown `/api` paths return the existing 404 shape; static serving is not an API fallback.                     | Route registration, focused HTTP compatibility and boundary tests, and assigned renderer flows pass; the live update guard is separately checked under R-08.                                                     |
+| R-04 | Preserve authentication, origin, workspace, token, and remote federation checks at the same effective boundary. Reject invalid input before any stateful or expensive side effect.                                                                                                                                                                                                                                                            | Isolated domain and route tests cover trust checks, stale workspace, federation origin, invalid input, and rejection before service effects.                                                                     |
+| R-05 | Preserve caller-supplied operation identities and never mint a replacement identity when a caller supplied one. A timeout, disconnect, output validation failure, or lost response never authorizes replay with a new ID. Input validation maps to the existing safe HTTP 400 before side effects; output validation after service execution maps to HTTP 500 with uncertain outcome and never `outcome: not_applied`.                        | Retry contract and renderer checks pass for exact-ID recovery, changed-content refusal, and no duplicate message/write after uncertain HTTP responses.                                                           |
+| R-06 | Keep SQLite and orchestration writes in their existing service/runtime owners. The HTTP layer validates, authenticates, delegates to those services, and preserves service receipts.                                                                                                                                                                                                                                                          | Domain tests exercise existing service and receipt surfaces; persistence remains in the existing runtime, canvas, and sync owners.                                                                               |
+| R-07 | Keep runtime state outside the checkout and preserve the existing state-directory identity. Do not start a second backend against an occupied directory or interrupt active agents, monitors, terminals, or waves.                                                                                                                                                                                                                            | HTTP/performance fixtures used fresh temporary state. No live backend was started, reset credit redeemed, or active backend restarted for this evidence.                                                         |
+| R-08 | Do not apply a source update that changes an already-running legacy HTTP server into FastAPI in place. Deployment of the server architecture change waits for active work to become idle and a planned restart.                                                                                                                                                                                                                               | `tests/http-timeout-live-update-contract.py` passes all six isolated cases, including refusing the legacy HTTP patch when the running runtime has no compatible legacy handler. Live restart remains unverified. |
 
 ## Field provenance and operation identity
 
@@ -85,12 +86,12 @@ owner in its colocated tests before migration acceptance.
 
 ## Baseline route and behavior inventory
 
-The legacy handler implements only `GET` and `POST`. The inventory below is
-derived from its dispatch branches and should be checked against the FastAPI
-application's concrete routes. Query parameters are deliberately not expanded
-into a new grammar here: handlers currently use `parse_qs`, first-value
-selection, and route-specific defaults, and those details need compatibility
-tests before they are tightened.
+The archived legacy handler implements only `GET` and `POST`. The inventory
+below follows its dispatch branches; current route registration is inspected
+by `scripts/studio_api/verification/test_app_routes.py`. Query parameters are
+deliberately not expanded into a new grammar here: handlers retain first-value
+selection and route-specific defaults, with focused tests covering the
+behavior the migration relies on.
 
 ### GET routes
 
@@ -145,12 +146,13 @@ in source identities and live-update input hashes, while excluding
 `studio_api/schema_tests/`.
 
 The existing HTTP timeout live patch inspects `RequestHandlerClass.do_GET`.
-It now requires a matching legacy handler associated with that runtime and
-checks loaded function signatures before comparing source hashes. The patch
-refuses when no compatible handler exists; it does not weaken the existing
-reviewed-source hash checks. This lets unrelated runtime patches keep their
-behavior while preventing a legacy handler patch from mutating an incompatible
-FastAPI server. The
+It requires a matching legacy handler associated with that runtime and checks
+loaded function signatures before comparing source hashes. The patch refuses
+when no compatible handler exists; it does not weaken the reviewed-source hash
+checks. `tests/http-timeout-live-update-contract.py` verifies this guard with
+an isolated FastAPI-shaped runtime and verifies that rejected updates do not
+change loaded functions. This is patch-safety evidence, not proof that the new
+server has been started against an existing user state directory. The
 runtime-load benchmark handler monkeypatch is fixture-only. The
 `tests/sync-live-patch-http-contract.py` helper requires `_studio_lp_server` and
 `_studio_lp_runtime` injected into `__main__`; it is explicitly excluded from
@@ -161,30 +163,42 @@ invocation is valid. Keep it excluded until the fixture owner restores a runner
 and documents that runner's command. Other tests should assert HTTP behavior
 rather than preserve a legacy dispatch class solely for a source pattern.
 
-## Isolated baseline measurement
+## Isolated fixture comparison
 
-Measured 2026-10-04 against the legacy in-process HTTP fixture before FastAPI
-integration. The fixture used a new temporary state directory, loopback HTTP,
-no native/model process, and no live Studio runtime. For each route, one warmup
-request was discarded and 300 sequential requests were timed end-to-end with
-one new HTTP connection per request. Responses were uncompressed; size is the
-last response body. These measurements include local connection setup and are
-reference points for a like-for-like fixture, not live user latency.
+Measured 2026-10-04 against the archived legacy handler and current FastAPI
+server with a reconstructed, matching Canvas-only fixture. Each source tree
+used a fresh temporary state directory with the same `Canvas` initialization;
+no `Runtime`, app-server, model process, or live Studio backend was started.
+For each route, one warmup was discarded and 300 sequential loopback GETs were
+timed end-to-end, each over a new HTTP connection with compression disabled.
+The table reports body bytes and p50/p95/p99 in milliseconds. Positive deltas
+mean the FastAPI fixture took longer. The earlier legacy-only entry recorded
+343 bytes for the state pull; that size was not reproduced by this matched
+Canvas-only pair (337 bytes), so the paired measurement below is the comparison
+for this fixture. These measurements include local connection setup and do not
+establish live-user latency or production impact.
 
-| GET route                                      | Samples | Response bytes | p50 (ms) | p95 (ms) | p99 (ms) |
-| ---------------------------------------------- | ------: | -------------: | -------: | -------: | -------: |
-| `/api/session`                                 |     300 |             56 |    0.240 |    0.335 |    0.421 |
-| `/api/sync/identity`                           |     300 |             89 |    0.430 |    0.490 |    0.527 |
-| `/api/sync/pull?scope=state&after=0&limit=100` |     300 |            343 |    0.488 |    0.546 |    0.583 |
+| GET route                                      | Body bytes legacy → FastAPI | p50 ms legacy → FastAPI (Δ) | p95 ms legacy → FastAPI (Δ) | p99 ms legacy → FastAPI (Δ) |
+| ---------------------------------------------- | --------------------------: | --------------------------: | --------------------------: | --------------------------: |
+| `/api/session`                                 |                     56 → 55 |        0.154 → 0.269 (+75%) |        0.259 → 0.366 (+41%) |        0.449 → 0.623 (+39%) |
+| `/api/sync/identity`                           |                     89 → 84 |        0.346 → 0.512 (+48%) |        0.510 → 0.637 (+25%) |        0.675 → 0.834 (+24%) |
+| `/api/sync/pull?scope=state&after=0&limit=100` |                   337 → 322 |       0.388 → 1.014 (+161%) |       0.543 → 1.208 (+123%) |       0.609 → 1.592 (+161%) |
+
+The three measured FastAPI percentiles are higher in this fixture; the state
+pull shows the largest relative change. This is an isolated-fixture regression
+signal for follow-up, not a claim about end-user performance. Raw measurements
+and environment details were retained outside the checkout in
+`http-fastapi-paired-evidence.json` under the task cache.
 
 ## Implementation evidence ledger
 
-| Area                                                            | Evidence state                                                                                                                                                                                                 |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Baseline legacy path/method inventory                           | Source inspected in `scripts/codex_canvas.py`; tests pending.                                                                                                                                                  |
-| Route models and pre-side-effect validation                     | Pending domain implementations and colocated tests.                                                                                                                                                            |
-| Actual FastAPI app route inspection and unknown `/api` behavior | Pending core app factory and verification suite.                                                                                                                                                               |
-| Authentication/origin/workspace compatibility                   | Pending isolated route tests.                                                                                                                                                                                  |
-| Retry/timeout receipt compatibility                             | Existing service owners identified above; migration regression tests pending.                                                                                                                                  |
-| Isolated fixture performance                                    | Legacy loopback baseline measured above; same-fixture FastAPI comparison pending. Read-only live measurement is permitted. No user-mutating native/model request or active-backend restart has been performed. |
-| Startup against existing state after idle/restart               | Pending integration window; deliberately not performed during this source migration.                                                                                                                           |
+| Area                                              | Evidence state                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FastAPI app and ten routers                       | `scripts/studio_api/app.py` assembles the ten domain routers; isolated app-route verification passes.                                                                                                                                                                             |
+| Models, OpenAPI, generated TypeScript             | Lead-reported local API checks, strict TypeScript, and generated contract-type checks pass. The initial API model suite and mypy run preceded the numeric analytics-rate correction; the latest 20-test insights suite and full build include that correction.                    |
+| HTTP routes, auth, and caller integration         | Lead-reported API/full-build checks pass. Assigned browser flows pass for workspace/sidebar/project/inbox/task feed (5/5), limits (28 cases), terminal/navigation/worker model (8 fixtures), message metadata, markdown images, skill autocomplete, and draft/sync/message retry. |
+| Exact request identity and retry                  | Isolated service/API and renderer evidence passes same-ID recovery and no-duplicate retry scenarios. A response loss remains an uncertain outcome until the existing receipt surface is read.                                                                                     |
+| Architecture live-update guard                    | `tests/http-timeout-live-update-contract.py`: 6/6 pass. FastAPI without a compatible legacy handler rejects the legacy handler patch before mutation.                                                                                                                             |
+| Isolated performance                              | Paired Canvas-only legacy/FastAPI fixture measured above. FastAPI p50 increased on all three routes; there is no live-user measurement.                                                                                                                                           |
+| Scoped repository checks                          | Lead-reported changed-file lint/format, hook fixture, API check, and current-revision full build pass. Whole-repository lint had seven existing warnings across two unchanged files; format reported 38 unchanged files.                                                          |
+| Startup against existing state after idle/restart | Not run. Existing occupied state, active work, and restart safety were not inspected or changed; no live-startup claim is made.                                                                                                                                                   |
