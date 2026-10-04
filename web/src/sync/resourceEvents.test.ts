@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const workspaceId = "b".repeat(32);
-const { syncDatabase } = vi.hoisted(() => ({ syncDatabase: vi.fn() }));
+const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
+  resumeListeners: new Set<() => void>(),
+  syncDatabase: vi.fn(),
+}));
 vi.mock("./client", () => ({ syncDatabase }));
 vi.mock("../usage/tokenRate", () => ({
   configureTokenRateStream: vi.fn(),
   receiveResourceTokenRates: vi.fn(),
 }));
-vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
+vi.mock("./resume", () => ({
+  onResume: (listener: () => void) => {
+    resumeListeners.add(listener);
+    return () => resumeListeners.delete(listener);
+  },
+}));
 
 class Source {
   static instances: Source[] = [];
@@ -41,6 +49,7 @@ describe("shared resource event transport", () => {
     vi.unstubAllGlobals();
     Source.instances = [];
     syncDatabase.mockClear();
+    resumeListeners.clear();
   });
 
   it("notifies only the matching resource once per revision and preserves liveness on reconfigure", async () => {
@@ -160,6 +169,56 @@ describe("shared resource event transport", () => {
     expect(syncDatabase).toHaveBeenCalledTimes(1);
     stop();
     vi.useRealTimers();
+  });
+
+  it("opens only one replacement stream when online and pageshow resume overlap", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const windowListeners = new Map<string, () => void>();
+    const windowStub = {
+      addEventListener: vi.fn((name: string, listener: () => void) =>
+        windowListeners.set(name, listener),
+      ),
+      removeEventListener: vi.fn(),
+    };
+    const navigatorStub = { onLine: true };
+    vi.stubGlobal("window", windowStub);
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", navigatorStub);
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges(
+      { kind: "voice", agentId: "agent-one" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const first = Source.instances[0]!;
+    first.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "voice", agentId: "agent-one" }],
+    });
+    await vi.waitFor(() => expect(first.closed).toBe(false));
+
+    navigatorStub.onLine = false;
+    windowListeners.get("offline")?.();
+    expect(first.closed).toBe(true);
+    navigatorStub.onLine = true;
+    windowListeners.get("online")?.();
+    for (const listener of resumeListeners) listener();
+
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
+    expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
+    stop();
   });
 
   it("treats valid busy-stream events as liveness and reconnects after silence", async () => {

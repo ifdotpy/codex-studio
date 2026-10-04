@@ -9,6 +9,7 @@ import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
 import {
   watchResourceChanges,
   watchResourceConnection,
+  type ResourceConnectionState,
   type ResourceRef,
 } from "./resourceEvents";
 
@@ -598,6 +599,8 @@ async function acquireProjection(
     let resetReadySeq: number | undefined;
     let invalidationBlocked = false;
     let readFailed = false;
+    let connectionStatus: ResourceConnectionState = "connecting";
+    let stopConnection: (() => void) | undefined;
     const report = (error: unknown | null) => {
       invalidationBlocked =
         error instanceof WorkspaceMismatchError ||
@@ -605,6 +608,43 @@ async function acquireProjection(
       if (error === null) readFailed = false;
       else readFailed = isTransientSyncReadFailure(error);
       listeners.forEach((listener) => listener(error));
+    };
+    const retryRead = async <T>(
+      request: () => Promise<T>,
+      signal?: AbortSignal,
+    ): Promise<T> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await request();
+        } catch (error) {
+          const canRetry =
+            attempt < 2 &&
+            isTransientSyncReadFailure(error) &&
+            connectionStatus === "live" &&
+            !document.hidden &&
+            navigator.onLine !== false &&
+            !signal?.aborted;
+          if (!canRetry) throw error;
+          const delay = 200 * 2 ** attempt + Math.random() * 150;
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              signal?.removeEventListener("abort", abort);
+              resolve();
+            }, delay);
+            const abort = () => {
+              clearTimeout(timer);
+              reject(new DOMException("Aborted", "AbortError"));
+            };
+            signal?.addEventListener("abort", abort, { once: true });
+          });
+          if (
+            connectionStatus !== "live" ||
+            document.hidden ||
+            navigator.onLine === false
+          )
+            throw error;
+        }
+      }
     };
 
     const checkpointId =
@@ -678,22 +718,28 @@ async function acquireProjection(
                 initialHigh = undefined;
               }
             }
-            const result = await pull(
-              remoteScope,
-              after,
-              remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
-              workspaceId,
-              verifyWorkspace,
-              initialHigh,
-              remoteScope === "state:entities:v1" &&
-                after === 0 &&
-                initialHigh !== undefined &&
-                window.matchMedia("(max-width: 760px)").matches
-                ? saved<string | null>("codex-mobile-opened", null)
-                : null,
+            const requestSignal =
               signal && scopes.get(scope)?.foreground === 0
                 ? signal
-                : undefined,
+                : undefined;
+            const result = await retryRead(
+              () =>
+                pull(
+                  remoteScope,
+                  after,
+                  remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
+                  workspaceId,
+                  verifyWorkspace,
+                  initialHigh,
+                  remoteScope === "state:entities:v1" &&
+                    after === 0 &&
+                    initialHigh !== undefined &&
+                    window.matchMedia("(max-width: 760px)").matches
+                    ? saved<string | null>("codex-mobile-opened", null)
+                    : null,
+                  requestSignal,
+                ),
+              requestSignal,
             );
             if (stopped) return;
             if (isEntityResetResponse(result, remoteScope)) {
@@ -746,17 +792,19 @@ async function acquireProjection(
                     (!previous?.payload ||
                       !readTranscriptMeta(previous.payload))
                   ) {
-                    const full = await pull(
-                      scope,
-                      0,
-                      100,
-                      workspaceId,
-                      verifyWorkspace,
-                      undefined,
-                      undefined,
-                      signal && scopes.get(scope)?.foreground === 0
-                        ? signal
-                        : undefined,
+                    const full = await retryRead(
+                      () =>
+                        pull(
+                          scope,
+                          0,
+                          100,
+                          workspaceId,
+                          verifyWorkspace,
+                          undefined,
+                          undefined,
+                          requestSignal,
+                        ),
+                      requestSignal,
                     );
                     if (full.reset === true)
                       throw new Error(
@@ -864,6 +912,11 @@ async function acquireProjection(
             invalidate,
             remoteScope === "state:entities:v1" ? "entities" : "legacy",
           );
+      stopConnection = watchResourceConnection((status) => {
+        connectionStatus = status;
+        if (status === "live" && readFailed && !invalidationBlocked)
+          void refresh().catch(() => {});
+      });
       stopResume = onResume(() => {
         if (readFailed && !invalidationBlocked) void refresh().catch(() => {});
       });
@@ -879,6 +932,7 @@ async function acquireProjection(
       stop: async () => {
         stopped = true;
         stopInvalidation?.();
+        stopConnection?.();
         stopResume?.();
         await pending?.catch(() => {});
       },
@@ -889,7 +943,6 @@ async function acquireProjection(
   if (!background) {
     state.foreground++;
     state.activateInvalidation();
-    void state.refresh().catch(() => {});
   }
   const retained = state;
   const release = () => {
@@ -1058,7 +1111,7 @@ export async function startDraftReplication(
   let stopped = false;
   let pullFailed = false;
   let pullTriggered = false;
-  let releasePullWait: ((ready: boolean) => void) | undefined;
+  let pullReady = false;
   const state = (direction: string, error: unknown | null) => {
     if (stopped) return;
     if (error === null) failures.delete(direction);
@@ -1066,20 +1119,15 @@ export async function startDraftReplication(
     report(failures.size ? failures.values().next().value : null);
   };
   const wakePullRetry = () => {
-    if (pullFailed) pullTriggered = true;
-    const release = releasePullWait;
-    releasePullWait = undefined;
-    release?.(true);
+    pullTriggered = true;
   };
-  const waitForPullTrigger = () => {
-    if (stopped) return Promise.resolve(false);
-    if (!pullFailed || pullTriggered) {
+  const pullAllowed = () => {
+    if (stopped) return false;
+    if (pullReady && (!pullFailed || pullTriggered)) {
       pullTriggered = false;
-      return Promise.resolve(true);
+      return true;
     }
-    return new Promise<boolean>((resolve) => {
-      releasePullWait = resolve;
-    });
+    return false;
   };
   const attempt = async <T>(direction: string, request: () => Promise<T>) => {
     try {
@@ -1101,8 +1149,8 @@ export async function startDraftReplication(
     retryTime: 3000,
     pull: {
       handler: async (checkpoint, batchSize) => {
-        if (!(await waitForPullTrigger()))
-          throw new DOMException("Draft replication stopped.", "AbortError");
+        if (!pullAllowed())
+          return { documents: [], checkpoint: checkpoint || { seq: 0 } };
         return attempt("pull", async () => {
           const result = await pull(
             "drafts",
@@ -1128,13 +1176,15 @@ export async function startDraftReplication(
     },
   });
   const stopInvalidation = watchSyncInvalidations(() => {
+    pullReady = true;
     wakePullRetry();
     replication.reSync();
   }, "drafts");
-  const stopConnection = watchResourceConnection((status) => {
-    if (status === "live") wakePullRetry();
+  const stopResume = onResume(() => {
+    pullReady = true;
+    wakePullRetry();
+    replication.reSync();
   });
-  const stopResume = onResume(wakePullRetry);
   const errors = replication.error$.subscribe((error) => {
     const direction =
       error.code === "RC_PULL"
@@ -1146,11 +1196,7 @@ export async function startDraftReplication(
   });
   return () => {
     stopped = true;
-    const release = releasePullWait;
-    releasePullWait = undefined;
-    release?.(false);
     stopInvalidation();
-    stopConnection();
     stopResume();
     errors.unsubscribe();
     void replication.cancel();

@@ -5,10 +5,12 @@ import {
   watchResourceChanges,
   watchSyncInvalidations,
 } from "../sync/client";
-import { peekTranscript } from "../sync/transcriptCache";
+import { peekTranscript, subscribeTranscript } from "../sync/transcriptCache";
 import { readProgress } from "../components/agents/progressCache";
 import { onResume } from "../sync/resume";
 import type { Snapshot } from "../types";
+
+const MAX_TRANSCRIPT_WATCHES = 12;
 
 // History stays warm only while a targeted transcript notification says it
 // changed. Progress is fetched lazily for an explicit navigation target.
@@ -36,21 +38,37 @@ export function useChatPrefetch(
     const pendingHistory = new Set<string>();
     const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
+    let foregroundId: string | null = null;
+    let foregroundReady = false;
+    let stopForegroundCache: (() => void) | undefined;
 
     const schedule = (delay = 0) => {
       clearTimeout(timer);
       if (!stopped) timer = setTimeout(pump, delay);
     };
+    const watchForegroundTranscript = () => {
+      const snapshot = current.current;
+      const id = snapshot.data?.threads.some(
+        (agent) => agent.id === snapshot.opened,
+      )
+        ? snapshot.opened
+        : null;
+      if (foregroundId === id) return;
+      stopForegroundCache?.();
+      stopForegroundCache = undefined;
+      foregroundId = id;
+      foregroundReady = !id || !!peekTranscript(workspaceId, id);
+      if (!id || foregroundReady) return;
+      stopForegroundCache = subscribeTranscript(workspaceId, id, () => {
+        foregroundReady = true;
+        schedule();
+      });
+    };
     const watchTranscript = (id: string) => {
       if (transcriptStops.has(id)) return;
-      let baseline = true;
       const stop = watchResourceChanges(
         { kind: "transcript", agentId: id },
         () => {
-          if (baseline) {
-            baseline = false;
-            return;
-          }
           checked.delete(id);
           failedHistory.delete(id);
           pendingHistory.add(id);
@@ -82,8 +100,10 @@ export function useChatPrefetch(
               else checked.add(id);
             } else if (!controller.signal.aborted) failedHistory.add(id);
           }
-          if (progress && !controller.signal.aborted)
+          if (progress && !controller.signal.aborted) {
+            pendingProgress.delete(id);
             await readProgress(stateDir, id, controller.signal);
+          }
         } catch {
           if (!controller.signal.aborted && !pendingHistory.has(id))
             failedHistory.add(id);
@@ -98,7 +118,9 @@ export function useChatPrefetch(
       clearTimeout(timer);
       if (stopped || document.hidden || navigator.onLine === false) return;
       const { data, opened } = current.current;
-      if (!data) return;
+      if (!data || (!opened && data.threads.length > 0)) return;
+      watchForegroundTranscript();
+      if (!foregroundReady) return;
       const selected = data.threads.find((agent) => agent.id === opened);
       const root = selected?.isLead ? selected.id : selected?.rootId;
       const pool = data.threads.filter(
@@ -118,7 +140,9 @@ export function useChatPrefetch(
       const mobile = window.matchMedia("(max-width: 760px)").matches;
       const targets = mobile
         ? new Set(ranked.slice(0, 2).map((agent) => agent.id))
-        : new Set(ranked.map((agent) => agent.id));
+        : new Set(
+            ranked.slice(0, MAX_TRANSCRIPT_WATCHES).map((agent) => agent.id),
+          );
       for (const [id, stop] of transcriptStops) {
         if (!targets.has(id)) {
           stop();
@@ -136,7 +160,7 @@ export function useChatPrefetch(
       const candidates = ranked.filter(
         (agent) =>
           targets.has(agent.id) &&
-          !checked.has(agent.id) &&
+          pendingHistory.has(agent.id) &&
           !failedHistory.has(agent.id) &&
           !running.has(agent.id),
       );
@@ -167,13 +191,22 @@ export function useChatPrefetch(
       pendingProgress.add(id);
       schedule();
     };
-    control.current = { request, changed: () => schedule() };
+    control.current = {
+      request,
+      changed: () => {
+        watchForegroundTranscript();
+        schedule();
+      },
+    };
     schedule(1000);
     const stopInvalidations = watchSyncInvalidations("state", () => schedule());
     const stopResume = onResume(() => schedule());
     const stopVisibility = () => {
-      if (document.hidden || navigator.onLine === false)
+      if (document.hidden || navigator.onLine === false) {
         for (const controller of running.values()) controller.abort();
+        for (const stop of transcriptStops.values()) stop();
+        transcriptStops.clear();
+      }
       schedule();
     };
     document.addEventListener("visibilitychange", stopVisibility);
@@ -183,6 +216,7 @@ export function useChatPrefetch(
       stopped = true;
       control.current = null;
       clearTimeout(timer);
+      stopForegroundCache?.();
       for (const controller of running.values()) controller.abort();
       for (const stop of transcriptStops.values()) stop();
       transcriptStops.clear();

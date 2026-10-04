@@ -117,6 +117,7 @@ let lastRevision: number | undefined;
 let lastHeartbeatRevision: number | undefined;
 let lastTokenEpoch: string | undefined;
 let lastTokenRevision: number | undefined;
+let lastTokenEvent: ResourceTokenRatesEvent | undefined;
 let lastLeaderHeartbeatAt = 0;
 let activeQueryKey = "";
 let keepLiveOnReconfigure = false;
@@ -226,13 +227,15 @@ function dispatchEvent(event: ResourceChangeEvent) {
     lastEpoch = event.epoch;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
+    lastTokenEpoch = undefined;
+    lastTokenRevision = undefined;
+    lastTokenEvent = undefined;
     resourceValues.clear();
   }
   if (lastRevision !== undefined && event.revision < lastRevision) return;
   const isDuplicate = event.revision === lastRevision;
   if (!isDuplicate) lastRevision = event.revision;
-  if (!source) return;
-  refreshHeartbeatTimeout();
+  if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
     if (!active.has(resourceKey(resource))) continue;
@@ -241,7 +244,15 @@ function dispatchEvent(event: ResourceChangeEvent) {
       revision: event.revision,
     });
   }
-  if (event.reason !== "change" && !isDuplicate) pendingReset = true;
+  const local = localResources().map(resourceKey);
+  if (
+    event.reason !== "change" &&
+    !isDuplicate &&
+    local.every((key) =>
+      event.resources.some((resource) => resourceKey(resource) === key),
+    )
+  )
+    pendingReset = true;
   setStatus("live");
   if (owner || independent) broadcast({ kind: "resource-event", event });
   scheduleFlush();
@@ -263,10 +274,12 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
   if (lastTokenEpoch !== value.epoch) {
     lastTokenEpoch = value.epoch;
     lastTokenRevision = undefined;
+    lastTokenEvent = undefined;
   }
   if (lastTokenRevision !== undefined && value.revision <= lastTokenRevision)
     return;
   lastTokenRevision = value.revision;
+  lastTokenEvent = value;
   setStatus("live");
   receiveResourceTokenRates(value);
   for (const listener of tokenRateListeners) listener(value);
@@ -366,12 +379,18 @@ function receiveChannelMessage(value: unknown) {
       !record.resources.every(isResourceRef)
     )
       return;
+    const previous = peerSubscriptions.get(record.tabId);
     peerSubscriptions.set(record.tabId, {
       resources: record.resources,
       tokenRates: record.tokenRates === true,
       seenAt: Date.now(),
     });
-    if (owner) updateOwnerStream();
+    if (owner) {
+      updateOwnerStream();
+      replayResourceBaseline(record.resources);
+      if (record.tokenRates === true && !previous?.tokenRates && lastTokenEvent)
+        broadcast({ kind: "token-rates", event: lastTokenEvent });
+    }
   } else if (record.kind === "tab-heartbeat") {
     const peer = peerSubscriptions.get(record.tabId);
     if (peer) peer.seenAt = Date.now();
@@ -390,8 +409,35 @@ function receiveChannelMessage(value: unknown) {
       record.status === "degraded" ||
       record.status === "offline")
   ) {
-    if (!owner && !independent) setStatus(record.status);
+    if (!owner && !independent) {
+      setStatus(record.status);
+      if (record.status === "degraded" || record.status === "offline") {
+        // A failed immediate lock attempt must not postpone failover until
+        // the normal leader timeout after that leader has already left.
+        lastLeaderHeartbeatAt = 0;
+        startAsOwner();
+      }
+    }
   }
+}
+
+function replayResourceBaseline(resources: ResourceRef[]) {
+  if (!lastEpoch || lastRevision === undefined) return;
+  const known = resources.filter((resource) =>
+    resourceValues.has(resourceKey(resource)),
+  );
+  if (!known.length) return;
+  broadcast({
+    kind: "resource-event",
+    event: {
+      protocol: 3,
+      workspaceId: workspaceId!,
+      epoch: lastEpoch,
+      revision: lastRevision,
+      reason: "initial",
+      resources: known,
+    },
+  });
 }
 
 function announceSubscriptions() {
@@ -672,11 +718,13 @@ function resumeTransport() {
     return;
   }
   if (!coordinatorReady) void initialize();
-  else if (!owner && !independent) startAsOwner();
   else {
-    closeSource();
-    openSource();
+    // A resumed follower must keep advertising its subscriptions even when
+    // another tab still holds the stream lock.
+    startPeerHeartbeat();
+    if (!owner && !independent) startAsOwner();
   }
+  if (owner || independent) openSource();
   announceSubscriptions();
 }
 
@@ -704,6 +752,7 @@ function stopCoordinator() {
   lastHeartbeatRevision = undefined;
   lastTokenEpoch = undefined;
   lastTokenRevision = undefined;
+  lastTokenEvent = undefined;
   resourceValues.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
@@ -782,6 +831,8 @@ export function watchTokenRateEvents(
   listener: (event: ResourceTokenRatesEvent) => void,
 ): () => void {
   tokenRateListeners.add(listener);
+  if (lastTokenEvent && lastTokenEvent.workspaceId === workspaceId)
+    listener(lastTokenEvent);
   startCoordinator();
   announceSubscriptions();
   let stopped = false;

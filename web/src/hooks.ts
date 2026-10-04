@@ -23,6 +23,7 @@ import {
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
+import { drainRoomUpdates } from "./hooks/roomUpdates";
 import { snapshotAgentFromMutation } from "./hooks/snapshotAgentFromMutation";
 import type { GetResult } from "./api";
 import type { Message, Agent, Json } from "./types";
@@ -628,6 +629,43 @@ export function useMessages(
         if (kind === "room") {
           const page = roomPages.current.get(scope);
           const cursor = page?.pollAfter ?? null;
+          if (page && cursor !== null) {
+            const result = await drainRoomUpdates(
+              page.items,
+              cursor,
+              (after) =>
+                syncGet("/api/agent-chat", {
+                  query: { room: id, after, limit: 100 },
+                }),
+              current,
+            );
+            if (!current() || !result || result.checkpoint === cursor) return;
+            const bounded = boundTranscriptItems(
+              result.items,
+              sizeOfMessage,
+              "newest",
+              page.anchorId,
+            );
+            const next: RoomPage = {
+              items: bounded.items,
+              size: bounded.bytes,
+              before: bounded.droppedOldest
+                ? (bounded.items[0]?.seq ?? page.before)
+                : page.before,
+              after: bounded.droppedNewest
+                ? (bounded.items.at(-1)?.seq ?? page.after)
+                : page.after,
+              pollAfter: result.checkpoint,
+              anchorId: page.anchorId,
+            };
+            roomPages.current.set(scope, next);
+            trimTranscriptPageCache(roomPages.current, scope);
+            setLoadedId(scope);
+            setBefore(next.before);
+            setAfter(next.after == null ? null : String(next.after));
+            setItems(next.items);
+            return;
+          }
           const d = await syncGet("/api/agent-chat", {
             query: {
               room: id,
