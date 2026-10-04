@@ -260,8 +260,8 @@ class WorkItem(ResponseModel):
     owner: StrictStr | None = None
     dependencies: list[StrictStr] = Field(default_factory=list)
     status: Literal["ready", "blocked", "running", "review", "accepted", "cancelled"]
-    created: int | float
-    updated: int | float
+    created: StrictInt | StrictFloat
+    updated: StrictInt | StrictFloat
     version: StrictInt
     results: list[JsonValue] = Field(default_factory=list)
     decisions: list[JsonValue] = Field(default_factory=list)
@@ -284,11 +284,11 @@ class QueueItem(ContractModel):
     text: StrictStr
     kind: Literal["user", "followup"]
     status: Literal["pending"]
-    created: int | float
+    created: StrictInt | StrictFloat
     assets: list[JsonValue] = Field(default_factory=list)
     delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
     requestedDelivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
-    acceptedAt: int | float | None = None
+    acceptedAt: StrictInt | StrictFloat | None = None
 
 
 class QueueCapabilities(ContractModel):
@@ -307,7 +307,7 @@ class PlanView(ResponseModel):
     rootId: StrictStr
     text: StrictStr
     version: StrictInt
-    updated: int | float | None
+    updated: StrictInt | StrictFloat | None
     steps: list[JsonValue] = Field(default_factory=list)
 
 
@@ -316,8 +316,8 @@ class AgentRequest(ResponseModel):
     agent: StrictStr
     method: StrictStr
     status: Literal["pending", "answered", "answering", "uncertain", "expired"]
-    createdAt: int | float | None = None
-    answeredAt: int | float | None = None
+    createdAt: StrictInt | StrictFloat | None = None
+    answeredAt: StrictInt | StrictFloat | None = None
     answeredBy: StrictStr | None = None
     decision: StrictStr | None = None
     deferred: StrictBool | None = None
@@ -346,7 +346,7 @@ class MessageRecord(ContractModel):
     room: StrictStr
     author: StrictStr
     text: StrictStr
-    at: int | float
+    at: StrictInt | StrictFloat
     deliveries: dict[StrictStr, StrictStr]
     status: Literal["queued", "delivered", "failed", "uncertain"] | None = None
     error: StrictStr | None = None

@@ -238,10 +238,12 @@ class WorkRouterTests(unittest.TestCase):
         schema = client.get("/openapi.json").json()
         workspace_response = schema["paths"]["/api/workspace"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         message_response = schema["paths"]["/api/messages"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        message_parameters = {row["name"] for row in schema["paths"]["/api/messages"]["get"]["parameters"]}
         self.assertIn("WorkspaceView", str(workspace_response))
         message_model = schema["components"]["schemas"]["MessageHistory"]
         self.assertEqual(message_model.get("type"), "array")
         self.assertIn("MessageHistory", str(message_response))
+        self.assertEqual(message_parameters, {"room"})
 
 
 if __name__ == "__main__":
