@@ -31,7 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import { get, post, apiDownload, errorText } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
-import type { Agent, BackgroundTask, Json, Snapshot } from "../../types";
+import type { Agent, BackgroundTask, JsonValue, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { copyText } from "../../clipboard/clipboard";
 import { activeTask } from "../backgroundTaskModel";
@@ -55,6 +55,13 @@ type BackgroundAction = <Path extends PostPath>(
 ) => Promise<boolean>;
 type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
+type PendingRequest = NonNullable<Snapshot["runtime"]>["requests"][number];
+
+function isJsonObject(
+  value: JsonValue | null | undefined,
+): value is Record<string, JsonValue> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 
 export { activeTask, backgroundTasks } from "../backgroundTaskModel";
 const labels: Record<string, string> = {
@@ -424,7 +431,7 @@ function TaskDetail({
   opened: boolean;
   owner?: Agent;
   now: number;
-  requests: Json[];
+  requests: PendingRequest[];
   back: () => void;
   openAgent: () => void;
   refresh: () => Promise<void>;
@@ -488,7 +495,10 @@ function TaskDetail({
     }
   };
   const request = requests.find(
-    (r) => r.method === "monitor/approve" && r.params?.monitorId === task.id,
+    (r) =>
+      r.method === "monitor/approve" &&
+      isJsonObject(r.params) &&
+      r.params.monitorId === task.id,
   );
   const Icon = iconFor(task),
     age = elapsed(task, now);
