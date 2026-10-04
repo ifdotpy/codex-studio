@@ -1068,17 +1068,25 @@ class ProjectFolder(ContractModel):
     parentId: str | None = None
 
 
+class ProjectPeerTeamDto(ContractModel):
+    id: str
+    name: str
+    members: list[str]
+
+
 class ProjectEntityDto(ContractModel):
     id: str
     path: str | None = None
     name: str | None = None
     created: float | None = None
+    updated: float | None = None
     accountKey: str | None = None
     accountRevision: int | None = None
     accountKeys: list[str] | None = None
     organizationRevision: int | None = None
     peerTeamsRevision: int | None = None
     folders: list[ProjectFolder] | None = None
+    peerTeams: list[ProjectPeerTeamDto] | None = None
 
 
 class PeerTeamEntityDto(ContractModel):
@@ -1086,6 +1094,7 @@ class PeerTeamEntityDto(ContractModel):
     name: str | None = None
     projectPath: str | None = None
     members: list[str] | None = None
+    revision: int | None = None
 
 
 class ChatEntityDto(ContractModel):
@@ -1336,6 +1345,8 @@ class SyncGenerations(ContractModel):
 class SyncGenerationState(ResponseModel):
     protocol: Literal[2]
     workspaceId: str
+    syncProtocol: Literal[2]
+    chatState: bool | None = None
     generations: SyncGenerations
     transcriptRevisions: dict[str, int] | None = None
 

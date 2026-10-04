@@ -15,10 +15,11 @@ import unittest
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot
+from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot, SyncGenerationState
 
 
 class StateFixtureResponseTests(unittest.TestCase):
+    fixture_name = "simple-ui-fixture.py"
     process: subprocess.Popen[str] | None = None
     temporary: tempfile.TemporaryDirectory[str] | None = None
     port: int
@@ -33,7 +34,7 @@ class StateFixtureResponseTests(unittest.TestCase):
         environment["PYTHONPATH"] = os.pathsep.join((str(repository / "scripts"), str(repository / "tests")))
         environment["TMPDIR"] = str(cache)
         cls.process = subprocess.Popen(
-            [sys.executable, "-B", str(repository / "tests" / "simple-ui-fixture.py"), state_directory, "0"],
+            [sys.executable, "-B", str(repository / "tests" / cls.fixture_name), state_directory, "0"],
             cwd=repository,
             env=environment,
             stdout=subprocess.PIPE,
@@ -93,6 +94,10 @@ class StateFixtureResponseTests(unittest.TestCase):
         base = f"http://127.0.0.1:{self.port}"
         with urlopen(f"{base}/api/state", timeout=20) as response:
             initial = StateSnapshot.model_validate_json(response.read())
+        with urlopen(f"{base}/api/sync/generations", timeout=20) as response:
+            generations = SyncGenerationState.model_validate_json(response.read())
+        self.assertEqual(generations.syncProtocol, 2)
+        self.assertIs(generations.chatState, True)
         self.assertGreaterEqual(len(initial.threads), 2)
         chat_id = "00000000-0000-4000-8000-000000000001"
         create_chat = Request(
@@ -126,6 +131,32 @@ class StateFixtureResponseTests(unittest.TestCase):
         assert chat_runtime is not None
         self.assertIsNotNone(full_runtime.work)
         self.assertIsNone(chat_runtime.work)
+
+
+class SidebarProjectStateFixtureTests(StateFixtureResponseTests):
+    fixture_name = "sidebar-drag-fixture.py"
+
+    def test_full_and_chat_state_responses_validate_actual_runtime(self) -> None:
+        with urlopen(f"http://127.0.0.1:{self.port}/api/state", timeout=20) as response:
+            snapshot = StateSnapshot.model_validate_json(response.read())
+        self.assertIsNotNone(snapshot.runtime)
+
+    def test_project_and_peer_team_producer_fields_validate_over_http(self) -> None:
+        with urlopen(f"http://127.0.0.1:{self.port}/api/state", timeout=20) as response:
+            snapshot = StateSnapshot.model_validate_json(response.read())
+        runtime = snapshot.runtime
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        project = next((item for item in runtime.projects if item.peerTeams), None)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertIsNotNone(project.updated)
+        assert project.peerTeams is not None
+        self.assertTrue(project.peerTeams)
+        peer_team = next((item for item in runtime.peerTeams if item.id == project.peerTeams[0].id), None)
+        self.assertIsNotNone(peer_team)
+        assert peer_team is not None
+        self.assertEqual(peer_team.revision, 1)
 
 
 if __name__ == "__main__":
