@@ -311,7 +311,13 @@ class RealWorktreeContract(Contract):
             engine.create_workspace = Mock(return_value={
                 'mount': str(restored_repo.parent), 'repoPath': str(restored_repo),
                 'branch': 'codex-agent/worker', 'snapshotCommit': None})
-            restored = self.call('restore')
+            engine.exec_prefix = Mock(return_value=['nsenter', '-t', '42', '-U', '-m', '--'])
+            with patch('codex_agent_management.subprocess.run',
+                       return_value=subprocess.CompletedProcess([], 0)) as path_check:
+                restored = self.call('restore')
+            path_check.assert_called_once_with(
+                ['nsenter', '-t', '42', '-U', '-m', '--', 'test', '-d', str(restored_repo)],
+                capture_output=True, timeout=30)
         self.assertEqual(restored['status'], 'restored')
         engine.create_workspace.assert_called_once_with(
             str(self.repo), 'worker', start_commit=raw_head)
