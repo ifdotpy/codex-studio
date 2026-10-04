@@ -2,7 +2,7 @@
 
 import base64
 import codecs
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import hashlib
 import json
 import os
@@ -14,6 +14,8 @@ import sys
 import threading
 import time
 import uuid
+
+from studio_api.sync.resources.models import ResourceRef, TerminalResource, TerminalsResource
 
 HISTORY_LIMIT = 1024 * 1024
 ARCHIVE_CHUNK = 65536
@@ -32,6 +34,7 @@ class TerminalManager:
         self.native_root = self.root / "terminal-server"
         self.native_root.mkdir(mode=0o700, exist_ok=True)
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+        restarted: list[str] = []
         with self.db() as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL)"
@@ -63,6 +66,7 @@ class TerminalManager:
                         "UPDATE user_terminals SET record=? WHERE id=?",
                         (json.dumps(record), row["id"]),
                     )
+                    restarted.append(row["id"])
                 elif record["status"] == "running":
                     decoder = codecs.getincrementaldecoder("utf-8")("replace")
                     pending = db.execute("SELECT pending FROM user_terminal_decoder_state WHERE terminal=?",
@@ -74,7 +78,23 @@ class TerminalManager:
                         "pid_path": self.native_root / (row["id"] + ".pid"),
                         "decoder": decoder,
                         "eventSequence": 0,
+                        "output_lock": threading.RLock(),
                     }
+        if restarted:
+            self._publish(
+                *(ResourceRef(TerminalResource(kind="terminal", terminalId=key)) for key in restarted),
+                ResourceRef(TerminalsResource(kind="terminals")),
+            )
+
+    def _publish(self, *resources: ResourceRef) -> None:
+        """Publish committed resource invalidations when the sync hub is present."""
+        try:
+            from studio_api.sync.resources.hub import publish_resources
+        except ModuleNotFoundError as error:
+            if error.name != "studio_api.sync.resources.hub":
+                raise
+            return
+        publish_resources(self.root, *resources)
 
     @contextmanager
     def db(self):
@@ -170,9 +190,11 @@ class TerminalManager:
                 "server": server, "connection": self.connection, "pid_path": pid_path,
                 "decoder": codecs.getincrementaldecoder("utf-8")("replace"),
                 "spawn_lock": threading.RLock(),
+                "output_lock": threading.RLock(),
             }
             db.execute("INSERT INTO user_terminals VALUES (?,?,?,?)", (key, json.dumps(record), "", 0))
             self.save_receipt(db, data["id"], signature, record)
+        self._publish(ResourceRef(TerminalsResource(kind="terminals")))
         # Native handles belong to this dedicated connection, independent of
         # account switches. Restore the user's environment inside the shell.
         env = {name: os.environ.get(name) for name in ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY")}
@@ -188,6 +210,8 @@ class TerminalManager:
             from codex_runtime import SubmissionUnknown
             # Close can mark this terminal closed while submission is pending.
             # Its kill waits only for this terminal's write, not its receipt.
+            early_result = None
+            changed = False
             with owned["spawn_lock"]:
                 with self.lock, self.db() as db:
                     row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
@@ -197,27 +221,43 @@ class TerminalManager:
                             current.update(status="exited", error="The terminal server is closing", updated=time.time())
                             self.processes.pop(key, None)
                             db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(current), key))
+                            changed = True
                         db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(current), data["id"]))
-                        return current
-                try:
-                    submitted = server.submit("process/spawn", params,
-                                              operation_id="terminal-spawn:" + key)
-                except SubmissionUnknown as error:
-                    submitted = error.submitted
+                        early_result = current
+                if early_result is None:
+                    try:
+                        submitted = server.submit("process/spawn", params,
+                                                  operation_id="terminal-spawn:" + key)
+                    except SubmissionUnknown as error:
+                        submitted = error.submitted
+            if early_result is not None:
+                if changed:
+                    self._publish(
+                        ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+                        ResourceRef(TerminalsResource(kind="terminals")),
+                    )
+                return early_result
             server.on_result(submitted, lambda future: self.spawn_result(key, data["id"], future, owned))
             server.wait(submitted, timeout=10)
         except Exception as error:
             from codex_runtime import NativeRpcError, SubmissionRejected
             rejected = isinstance(error, (NativeRpcError, SubmissionRejected))
+            changed = False
             with self.lock, self.db() as db:
                 row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
                 record = json.loads(row[0])
                 if record["status"] == "running" and self.processes.get(key) is owned:
                     record.update(error=str(error), status="exited" if rejected else "running")
                     db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
+                    changed = True
                     if rejected:
                         self.processes.pop(key, None)
                 db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(record), data["id"]))
+            if changed:
+                self._publish(
+                    ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+                    ResourceRef(TerminalsResource(kind="terminals")),
+                )
             # A response can arrive between a timeout and its database update.
             # Reconcile that exact future after the update without resubmission.
             if submitted is not None and submitted[2].done():
@@ -234,6 +274,7 @@ class TerminalManager:
             failure = str(error)
         except Exception:
             return  # Disconnect cleanup preserves an unknown outcome.
+        changed = False
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
             if not row:
@@ -244,12 +285,19 @@ class TerminalManager:
                 return
             stop = current if record["status"] == "closed" and not failure else None
             if record["status"] == "running":
+                previous = record.copy()
                 record.pop("error", None)
                 if failure:
                     record.update(status="exited", error=failure, updated=time.time())
                     self.processes.pop(key, None)
+                changed = record != previous
                 db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
             db.execute("UPDATE user_terminal_receipts SET result=? WHERE id=?", (json.dumps(record), request_id))
+        if changed:
+            self._publish(
+                ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+                ResourceRef(TerminalsResource(kind="terminals")),
+            )
         if stop:
             self.stop_process(key, stop)
 
@@ -309,38 +357,46 @@ class TerminalManager:
         key = params.get("processHandle")
         with self.lock:
             owned = self.processes.get(key)
-            if owned is None:
-                return
-            if method == "process/outputDelta":
-                sequence = message.get("_studioSupervisorSequence")
-                decoder = owned["decoder"]
-                text = decoder.decode(base64.b64decode(params["deltaBase64"], validate=True))
-                self.append(key, text, supervisor_sequence=sequence,
-                            decoder_pending=decoder.getstate()[0])
-                return
+        if owned is None:
+            return
+        if method == "process/outputDelta":
+            sequence = message.get("_studioSupervisorSequence")
+            self.output_delta(key, owned, params["deltaBase64"], sequence)
+            return
         if method == "process/exited":
             # Codex kills one process group. Interactive jobs use other groups.
             self.terminate(owned)
             self.finish(key, params["exitCode"])
 
     def finish(self, key, code=None, error=None):
-        with self.lock, self.db() as db:
+        with self.lock:
             owned = self.processes.get(key)
-            if owned is None:
-                return
-            self.append(key, owned["decoder"].decode(b"", final=True))
-            row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
-            record = json.loads(row[0])
-            if record["status"] != "closed":
-                record["status"] = "exited"
-            record.update(exitCode=code, updated=time.time())
-            record.pop("error", None)
-            if error:
-                record["error"] = error
-            db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
-            self.processes.pop(key)
-            owned["pid_path"].unlink(missing_ok=True)
-            owned["pid_path"].with_suffix(".tmp").unlink(missing_ok=True)
+        if owned is None:
+            return
+        with owned.setdefault("output_lock", threading.RLock()):
+            with self.lock:
+                if self.processes.get(key) is not owned:
+                    return
+                final_text = owned["decoder"].decode(b"", final=True)
+            if final_text:
+                self._append_record(key, final_text)
+            with self.lock, self.db() as db:
+                row = db.execute("SELECT record FROM user_terminals WHERE id=?", (key,)).fetchone()
+                record = json.loads(row[0])
+                if record["status"] != "closed":
+                    record["status"] = "exited"
+                record.update(exitCode=code, updated=time.time())
+                record.pop("error", None)
+                if error:
+                    record["error"] = error
+                db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
+                self.processes.pop(key)
+                owned["pid_path"].unlink(missing_ok=True)
+                owned["pid_path"].with_suffix(".tmp").unlink(missing_ok=True)
+        self._publish(
+            ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+            ResourceRef(TerminalsResource(kind="terminals")),
+        )
 
     def disconnected(self, connection=None):
         with self.lock:
@@ -353,11 +409,37 @@ class TerminalManager:
     def append(self, key, text, *, supervisor_sequence=None, decoder_pending=None):
         if not text and supervisor_sequence is None and decoder_pending is None:
             return
+        with self.lock:
+            owned = self.processes.get(key)
+        guard = owned.setdefault("output_lock", threading.RLock()) if owned else nullcontext()
+        with guard:
+            changed = self._append_record(
+                key, text, supervisor_sequence=supervisor_sequence, decoder_pending=decoder_pending
+            )
+        if changed:
+            self._publish(ResourceRef(TerminalResource(kind="terminal", terminalId=key)))
+
+    def output_delta(self, key, owned, delta_base64, supervisor_sequence=None):
+        with owned.setdefault("output_lock", threading.RLock()):
+            with self.lock:
+                if self.processes.get(key) is not owned:
+                    return
+                decoder = owned["decoder"]
+                text = decoder.decode(base64.b64decode(delta_base64, validate=True))
+                pending = decoder.getstate()[0]
+            changed = self._append_record(
+                key, text, supervisor_sequence=supervisor_sequence, decoder_pending=pending
+            )
+        if changed:
+            self._publish(ResourceRef(TerminalResource(kind="terminal", terminalId=key)))
+
+    def _append_record(self, key, text, *, supervisor_sequence=None, decoder_pending=None):
+        """Commit one output delta and report whether visible output changed."""
         with self.lock, self.db() as db:
             if supervisor_sequence is not None:
                 row = db.execute("SELECT sequence FROM user_terminal_event_cursor WHERE terminal=?", (key,)).fetchone()
                 if row and supervisor_sequence <= row[0]:
-                    return
+                    return False
             if not text:
                 if decoder_pending is not None:
                     db.execute("INSERT INTO user_terminal_decoder_state VALUES (?,?) "
@@ -367,7 +449,7 @@ class TerminalManager:
                     db.execute("INSERT INTO user_terminal_event_cursor VALUES (?,?) "
                                "ON CONFLICT(terminal) DO UPDATE SET sequence=excluded.sequence",
                                (key, supervisor_sequence))
-                return
+                return False
             row = db.execute(
                 "SELECT output,offset FROM user_terminals WHERE id=?", (key,)
             ).fetchone()
@@ -388,6 +470,7 @@ class TerminalManager:
                 db.execute("INSERT INTO user_terminal_event_cursor VALUES (?,?) "
                            "ON CONFLICT(terminal) DO UPDATE SET sequence=excluded.sequence",
                            (key, supervisor_sequence))
+        return True
 
     @staticmethod
     def archive_text(db, key, start, text):
@@ -503,6 +586,12 @@ class TerminalManager:
             else:
                 raise ValueError("Unknown terminal action")
             db.execute("UPDATE user_terminals SET record=? WHERE id=?", (json.dumps(record), key))
+        if action == "rename":
+            resources = [
+                ResourceRef(TerminalsResource(kind="terminals")),
+                ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+            ]
+            self._publish(*resources)
         if action == "input":
             server = owned["server"]
             from codex_runtime import SubmissionUnknown
@@ -526,8 +615,15 @@ class TerminalManager:
             return {"ok": True, "delivery": "sent"}
         if action == "resize":
             owned["server"].call("process/resizePty", {"processHandle": key, "size": {"rows": rows, "cols": cols}}, timeout=3)
-        elif action == "close" and owned:
-            self.stop_process(key, owned)
+        elif action == "close":
+            try:
+                if owned:
+                    self.stop_process(key, owned)
+            finally:
+                self._publish(
+                    ResourceRef(TerminalsResource(kind="terminals")),
+                    ResourceRef(TerminalResource(kind="terminal", terminalId=key)),
+                )
         return record
 
     def stop_process(self, key, owned):
