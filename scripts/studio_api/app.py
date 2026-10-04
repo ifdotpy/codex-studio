@@ -36,8 +36,8 @@ def create_app(context: ApiContext) -> FastAPI:
     app.add_middleware(HttpTraceMiddleware)
 
     @app.get("/api/session", response_model=SessionResponse, tags=["core"])
-    def session(request: Request) -> object:
-        return context.send(request, SessionResponse(token=context.token))
+    async def session(request: Request) -> object:
+        return context.send(request, {"token": context.token})
 
     @app.get("/api/state", response_model=StateSnapshot, tags=["core"])
     def state(request: Request, view: str = "full") -> object:

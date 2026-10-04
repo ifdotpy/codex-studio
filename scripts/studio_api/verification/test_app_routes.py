@@ -1,6 +1,7 @@
 """Check the real FastAPI application's route and OpenAPI boundaries."""
 from __future__ import annotations
 
+import inspect
 import unittest
 from collections.abc import Iterable
 from typing import ClassVar, cast
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from studio_api.app import create_app
 from studio_api.context import ApiContext, HeaderCollection
+from studio_api.core_models import SessionResponse
 
 
 GET_PATHS = frozenset(
@@ -247,6 +249,43 @@ class ApplicationRouteContract(unittest.TestCase):
         self.assertIn("view", query_names["/api/state"])
         self.assertTrue({"scope", "after", "limit"}.issubset(query_names["/api/sync/pull"]))
         self.assertTrue({"room", "before", "after", "limit"}.issubset(query_names["/api/agent-chat"]))
+
+    def test_session_keeps_typed_wire_response_without_threadpool_dispatch(self) -> None:
+        context = ApiContext(
+            self.context.canvas,
+            token="session-contract-token",
+            remote=VerifierRemote(),
+            schema_only=True,
+        )
+        app = create_app(context)
+        route = next(
+            route
+            for path, route in application_api_routes(app)
+            if path == "/api/session"
+        )
+
+        self.assertTrue(inspect.iscoroutinefunction(route.endpoint))
+        self.assertIs(route.response_model, SessionResponse)
+        session_paths = cast(dict[str, object], app.openapi()["paths"])
+        session_path = cast(dict[str, object], session_paths["/api/session"])
+        get_session = cast(dict[str, object], session_path["get"])
+        responses = cast(dict[str, object], get_session["responses"])
+        success = cast(dict[str, object], responses["200"])
+        content = cast(dict[str, object], success["content"])
+        media_type = cast(dict[str, object], content["application/json"])
+        self.assertEqual(
+            media_type["schema"],
+            {"$ref": "#/components/schemas/SessionResponse"},
+        )
+
+        with TestClient(app) as client:
+            response = client.get("/api/session")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b'{"token":"session-contract-token"}')
+        self.assertEqual(response.headers["content-type"], "application/json")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
 
     def test_application_has_no_generic_api_catchall(self) -> None:
         dynamic_routes: set[tuple[str, str]] = set()
