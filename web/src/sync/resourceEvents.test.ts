@@ -620,6 +620,96 @@ describe("shared resource event transport", () => {
     stop();
   });
 
+  it("reconciles an unchanged follower baseline once and forgets unsubscribed markers", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: null) => Promise<void>,
+        ) => Promise.resolve().then(() => callback(null)),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-follower" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const a = { kind: "panel", agentId: "follower-resume-a" } as const;
+    const b = { kind: "panel", agentId: "follower-resume-b" } as const;
+    const onA = vi.fn();
+    const onB = vi.fn();
+    let stopA = transport.watchResourceChanges(a, onA);
+    const stopB = transport.watchResourceChanges(b, onB);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(Source.instances).toHaveLength(0);
+    const followerChannel = Channel.instances[0]!;
+    const baseline = {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 7,
+      reason: "initial",
+      resources: [a, b],
+    };
+    const send = (kind: string, value: unknown) =>
+      followerChannel.onmessage?.({
+        data: {
+          kind,
+          workspaceId,
+          tabId: "tab-owner",
+          ...(kind === "resource-event" ? { event: value } : { status: value }),
+        },
+      } as MessageEvent);
+
+    send("resource-event", baseline);
+    await vi.waitFor(() => {
+      expect(onA).toHaveBeenCalledTimes(1);
+      expect(onB).toHaveBeenCalledTimes(1);
+    });
+    send("status", "degraded");
+    send("resource-event", { ...baseline, reason: "reconnect" });
+    await vi.waitFor(() => {
+      expect(onA).toHaveBeenCalledTimes(2);
+      expect(onB).toHaveBeenCalledTimes(2);
+    });
+
+    send("resource-event", { ...baseline, reason: "reconnect" });
+    send("leader-heartbeat", undefined);
+    send("leader-heartbeat", undefined);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(onA).toHaveBeenCalledTimes(2);
+    expect(onB).toHaveBeenCalledTimes(2);
+    expect(Source.instances).toHaveLength(0);
+
+    send("status", "degraded");
+    stopA();
+    const resumedA = vi.fn();
+    stopA = transport.watchResourceChanges(a, resumedA);
+    expect(resumedA).toHaveBeenCalledTimes(1);
+    send("resource-event", { ...baseline, reason: "reconnect" });
+    await vi.waitFor(() => expect(onB).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(resumedA).toHaveBeenCalledTimes(1);
+    expect(Source.instances).toHaveLength(0);
+
+    stopA();
+    stopB();
+  });
+
   it("drops a recovery marker when its last local subscriber leaves", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.useFakeTimers();

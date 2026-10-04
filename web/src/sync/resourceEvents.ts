@@ -162,6 +162,8 @@ function resourceKey(resource: ResourceRef): string {
 function setStatus(status: ResourceConnectionState) {
   if (currentStatus === status) return;
   currentStatus = status;
+  if (status === "degraded" || status === "offline")
+    requireBaselineReconciliation();
   for (const listener of transportStatusListeners) {
     try {
       listener(status);
@@ -290,11 +292,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
     };
     if (active.has(key)) dispatchResource(resource, version);
     else rememberResourceVersion(resource, version);
-    if (
-      source &&
-      event.reason !== "change" &&
-      baselineReconciliations.delete(key)
-    )
+    if (event.reason !== "change" && baselineReconciliations.delete(key))
       pendingResources.add(key);
   }
   pruneResourceVersions(active);
