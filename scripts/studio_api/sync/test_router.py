@@ -134,6 +134,19 @@ def make_client(context: ContextStub) -> TestClient:
 
 
 class SyncRouterTests(unittest.TestCase):
+    def test_stream_openapi_declares_event_stream_without_json_success(self) -> None:
+        app = FastAPI()
+        app.include_router(create_router(cast(ApiContext, ContextStub())))
+        paths = app.openapi()["paths"]
+        for path in ("/api/sync/stream", "/api/transcript/stream"):
+            responses = paths[path]["get"]["responses"]
+            self.assertEqual(
+                responses["200"]["content"],
+                {"text/event-stream": {"schema": {"type": "string"}}},
+            )
+            self.assertIn("400", responses)
+            self.assertIn("application/json", responses["400"]["content"])
+
     def read_stream(self, context: ContextStub, path: str) -> str:
         router = create_router(cast(ApiContext, context))
         route = cast(

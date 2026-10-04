@@ -166,7 +166,17 @@ def create_router(context: ApiContext) -> APIRouter:
     def generations(request: Request) -> object:
         return context.send(request, _sync_store(context).generation_state())
 
-    @router.get("/api/sync/stream", responses=ERROR_RESPONSES)
+    @router.get(
+        "/api/sync/stream",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Server-sent sync updates",
+                "content": {"text/event-stream": {"schema": {"type": "string"}}},
+            },
+            **ERROR_RESPONSES,
+        },
+    )
     async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:
         store = _sync_store(context)
         protocol_value = _first(request, "protocol")
@@ -305,7 +315,17 @@ def create_router(context: ApiContext) -> APIRouter:
 
         return _stream_response(events())
 
-    @router.get("/api/transcript/stream", responses=ERROR_RESPONSES)
+    @router.get(
+        "/api/transcript/stream",
+        response_class=StreamingResponse,
+        responses={
+            200: {
+                "description": "Server-sent transcript updates",
+                "content": {"text/event-stream": {"schema": {"type": "string"}}},
+            },
+            **ERROR_RESPONSES,
+        },
+    )
     async def transcript_stream(request: Request, _query: TranscriptStreamQuery = Depends()) -> StreamingResponse:
         runtime = context.runtime
         if runtime is None:
