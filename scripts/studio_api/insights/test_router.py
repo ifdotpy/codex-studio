@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from fastapi.testclient import TestClient
+import httpx
+import uvicorn
 
 from studio_api.context import ApiContext
 from studio_api.insights.router import _stream_export, create_router
@@ -275,9 +279,16 @@ class InsightsRouterTests(unittest.TestCase):
                 self.context.runtime.export_closed = True
 
         self.context.runtime.export_factory = lambda **_options: late_failure()
-        response = self.client.get("/api/analytics?export=1")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, b"{")
+        chunks = self.context.runtime.analytics_export_chunks()
+        first = next(chunks)
+        body = _stream_export(first, chunks)
+
+        async def consume_failure() -> None:
+            self.assertEqual(await body.__anext__(), b"{")
+            with self.assertRaisesRegex(ValueError, "read failed"):
+                await body.__anext__()
+
+        asyncio.run(consume_failure())
         self.assertTrue(self.context.runtime.export_closed)
 
         class Closable:
@@ -294,9 +305,55 @@ class InsightsRouterTests(unittest.TestCase):
 
         closable = Closable()
         body = _stream_export(b"first", cast(Generator[bytes, None, None], closable))
-        self.assertEqual(asyncio.run(body.__anext__()), b"first")
-        asyncio.run(body.aclose())
+
+        async def cancel_after_first_chunk() -> None:
+            self.assertEqual(await body.__anext__(), b"first")
+            await body.aclose()
+
+        asyncio.run(cancel_after_first_chunk())
         self.assertTrue(closable.closed)
+
+    def test_late_export_failure_breaks_the_http_transfer(self) -> None:
+        context = _Context()
+
+        def late_failure() -> Generator[bytes, None, None]:
+            try:
+                yield b'{"partial":'
+                raise ValueError("read failed")
+            finally:
+                context.runtime.export_closed = True
+
+        context.runtime.export_factory = lambda **_options: late_failure()
+        app = FastAPI()
+        app.include_router(create_router(cast(ApiContext, context)))
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=0, log_level="critical", lifespan="off")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not server.started and thread.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(server.started, "loopback ASGI server did not start")
+            self.assertTrue(server.servers)
+            sockets = server.servers[0].sockets
+            self.assertTrue(sockets)
+            port = sockets[0].getsockname()[1]
+
+            received: list[bytes] = []
+            with httpx.Client(timeout=5) as client:
+                with client.stream("GET", f"http://127.0.0.1:{port}/api/analytics?export=1") as response:
+                    self.assertEqual(response.status_code, 200)
+                    with self.assertRaises(httpx.RemoteProtocolError):
+                        received.extend(response.iter_bytes())
+
+            self.assertEqual(b"".join(received), b'{"partial":')
+            self.assertTrue(context.runtime.export_closed)
+        finally:
+            server.should_exit = True
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(), "loopback ASGI server failed to stop")
 
     def test_export_failure_before_first_chunk_returns_error_before_headers(self) -> None:
         def early_failure() -> Generator[bytes, None, None]:

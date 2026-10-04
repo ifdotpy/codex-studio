@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import math
 import re
 import sqlite3
@@ -115,8 +114,6 @@ async def _stream_export(
             yield cast(bytes, chunk)
     except (BrokenPipeError, ConnectionResetError):
         return
-    except (sqlite3.Error, ValueError, RuntimeError) as error:
-        logging.getLogger(__name__).error("Analytics export interrupted: %s", error)
     finally:
         await anyio.to_thread.run_sync(chunks.close)
 
