@@ -1,4 +1,4 @@
-import createClient, { type Client } from "openapi-fetch";
+import createClient from "openapi-fetch";
 import type { paths } from "./generated/api";
 import type {
   ApiGetOptions,
@@ -183,7 +183,7 @@ export async function get<Path extends PathsFor<"get">>(
   const timeoutMs = requestOptions.timeoutMs ?? 15000;
   const controller = requestController(requestOptions, timeoutMs);
   try {
-    const result = await (client.GET as Client<paths>["GET"])(path, {
+    const result = await client.GET(path, {
       ...(requestOptions.query === undefined
         ? {}
         : { params: { query: requestOptions.query } }),
@@ -221,7 +221,7 @@ export async function post<Path extends PathsFor<"post">>(
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
   try {
-    const result = await (client.POST as Client<paths>["POST"])(path, {
+    const result = await client.POST(path, {
       body,
       ...(controller.signal ? { signal: controller.signal } : {}),
       headers: {
@@ -266,7 +266,7 @@ export async function apiDownload<Path extends PathsFor<"get">>(
   name: string;
   truncated: boolean;
 }> {
-  const result = await (client.GET as Client<paths>["GET"])(path, {
+  const result = await client.GET(path, {
     ...(query === undefined ? {} : { params: { query } }),
     parseAs: "blob",
     headers: {
