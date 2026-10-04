@@ -16,10 +16,12 @@ import time
 import unittest
 from urllib.parse import urlencode
 import zlib
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_canvas import Canvas, make_server
+import codex_sync
 from codex_sync import SCOPE_STRIPES
 from codex_sync_entities import install_bypass_triggers, register_functions
 
@@ -184,6 +186,32 @@ class SyncReadLatencyContract(unittest.TestCase):
             self.assertEqual(response["status"], 200, response)
             self.assertEqual(response["body"]["workspaceId"], "committed-workspace-id")
         self.assertEqual(connections, [])
+
+    def test_unchanged_state_pull_reuses_encoded_snapshot_until_external_commit(self):
+        state = {"threads": [{"id": "before"}]}
+        self.store.snapshot = lambda: state
+        first = self.store.pull("state")
+        cursor = first["checkpoint"]["seq"]
+        # The first projection commits sync_versions, which changes SQLite's
+        # data_version; let the next pull observe that store-owned commit.
+        stabilized = self.store.pull("state", cursor)
+        self.assertEqual(stabilized["documents"], [])
+
+        with patch.object(codex_sync.json, "dumps", wraps=json.dumps) as dumps:
+            unchanged = self.store.pull("state", cursor)
+        self.assertEqual(unchanged["documents"], [])
+        self.assertEqual(unchanged["checkpoint"]["seq"], cursor)
+        dumps.assert_not_called()
+
+        state["threads"] = [{"id": "after"}]
+        with self.connect() as db:
+            db.execute("UPDATE sync_identity SET id=id")
+        with patch.object(codex_sync.json, "dumps", wraps=json.dumps) as dumps:
+            changed = self.store.pull("state", cursor)
+        dumps.assert_called_once()
+        self.assertEqual(len(changed["documents"]), 1)
+        self.assertEqual(json.loads(changed["documents"][0]["payload"]), state)
+        self.assertGreater(changed["checkpoint"]["seq"], cursor)
 
     def test_writer_conflicts_do_not_serialize_two_entity_http_deadlines(self):
         changed = {**self.monitor, "tail": "The final output", "status": "completed"}

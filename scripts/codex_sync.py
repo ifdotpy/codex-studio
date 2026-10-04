@@ -530,7 +530,7 @@ class SyncStore:
             return self.entity_pull(after, limit, fresh, initial_high, reset_support, priority_id)
         with self.scope_lock(scope):
             if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
-                payload = self.shared_snapshot(scope)
+                encoded, digest = self.shared_snapshot(scope)
                 deleted = False
             elif scope.startswith('transcript:') and len(scope) < 300:
                 revision = self.transcript_revision(scope.split(':', 1)[1])
@@ -555,8 +555,6 @@ class SyncStore:
                                       (scope, after, limit)).fetchall()
                     documents = [self.document(row) for row in rows]
                 else:
-                    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-                    digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
                     current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
                     if current is None or current[1] != digest or bool(current[2]) != deleted:
                         # Different scope stripes can update simultaneously.
@@ -593,13 +591,17 @@ class SyncStore:
         generation = self.generation()
         cached = self.snapshots.get(scope)
         if cached and cached[0] == generation and time.monotonic() - cached[1] < SNAPSHOT_REUSE_SECONDS:
-            return cached[2]
+            return cached[2], cached[3]
         payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
         payload.pop('token', None)
         payload.pop('at', None)
+        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
         # A write during the snapshot changes the generation; the next pull rebuilds.
-        self.snapshots[scope] = (generation, time.monotonic(), payload)
-        return payload
+        # Retain the wire representation in the existing cache. The raw object
+        # has no caller after this point and would otherwise be kept as well.
+        self.snapshots[scope] = (generation, time.monotonic(), encoded, digest)
+        return encoded, digest
 
     def push_drafts(self, rows):
         if not isinstance(rows, list) or len(rows) > 100:
