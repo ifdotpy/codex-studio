@@ -398,7 +398,7 @@ class TerminalsContract(unittest.TestCase):
             request("/api/terminals/close", {"id": task["id"]}, headers)
             with self.assertRaises(urllib.error.HTTPError) as removed:
                 request(
-                    "/api/monitor",
+                    "/api/monitor/start",
                     {"agent": self.agent["id"], "command": "must-not-run"},
                     headers,
                 )

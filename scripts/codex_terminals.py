@@ -87,13 +87,9 @@ class TerminalManager:
             )
 
     def _publish(self, *resources: ResourceRef) -> None:
-        """Publish committed resource invalidations when the sync hub is present."""
-        try:
-            from studio_api.sync.resources.hub import publish_resources
-        except ModuleNotFoundError as error:
-            if error.name != "studio_api.sync.resources.hub":
-                raise
-            return
+        """Publish committed resource invalidations through the sync hub."""
+        from studio_api.sync.resources.hub import publish_resources
+
         publish_resources(self.root, *resources)
 
     @contextmanager
@@ -424,14 +420,28 @@ class TerminalManager:
             with self.lock:
                 if self.processes.get(key) is not owned:
                     return
-                decoder = owned["decoder"]
-                text = decoder.decode(base64.b64decode(delta_base64, validate=True))
-                pending = decoder.getstate()[0]
-            changed = self._append_record(
-                key, text, supervisor_sequence=supervisor_sequence, decoder_pending=pending
-            )
+            if supervisor_sequence is not None and self._has_seen_sequence(key, supervisor_sequence):
+                return
+            decoder = owned["decoder"]
+            previous_state = decoder.getstate()
+            text = decoder.decode(base64.b64decode(delta_base64, validate=True))
+            pending = decoder.getstate()[0]
+            try:
+                changed = self._append_record(
+                    key, text, supervisor_sequence=supervisor_sequence, decoder_pending=pending
+                )
+            except Exception:
+                decoder.setstate(previous_state)
+                raise
         if changed:
             self._publish(ResourceRef(TerminalResource(kind="terminal", terminalId=key)))
+
+    def _has_seen_sequence(self, key, supervisor_sequence):
+        with self.lock, self.db() as db:
+            row = db.execute(
+                "SELECT sequence FROM user_terminal_event_cursor WHERE terminal=?", (key,)
+            ).fetchone()
+            return row is not None and supervisor_sequence <= row[0]
 
     def _append_record(self, key, text, *, supervisor_sequence=None, decoder_pending=None):
         """Commit one output delta and report whether visible output changed."""

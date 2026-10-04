@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """Terminal output and lifecycle changes publish committed typed resources."""
-from test_isolation import isolate_supervisor_environment
-isolate_supervisor_environment()
 
 import base64
 import codecs
@@ -12,6 +10,11 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -74,6 +77,10 @@ class TerminalResourceEvents(unittest.TestCase):
             self.assertTrue(acquired, "resource publication ran while the terminal lock was held")
             if acquired:
                 self.manager.lock.release()
+            output_lock_acquired = self.owned["output_lock"].acquire(blocking=False)
+            self.assertTrue(output_lock_acquired, "output publication ran while its terminal lock was held")
+            if output_lock_acquired:
+                self.owned["output_lock"].release()
             observed.append(self.client.get(
                 "/api/terminals/output", params={"id": self.key, "offset": "0"}
             ).json())
@@ -130,17 +137,82 @@ class TerminalResourceEvents(unittest.TestCase):
         self.assertTrue(any(isinstance(resource.root, TerminalsResource) for resource in observed[1]))
 
     def test_duplicate_supervisor_sequence_does_not_publish_again(self):
-        with self.manager.db() as db:
-            db.execute("INSERT INTO user_terminal_event_cursor VALUES (?,?)", (self.key, 7))
+        first = base64.b64encode(b"\xe2").decode()
+        continuation = base64.b64encode(b"\x82\xac").decode()
+        self.manager.output_delta(self.key, self.owned, first, 7)
+        self.assertEqual(self.owned["decoder"].getstate()[0], b"\xe2")
         with patch.object(self.manager, "_publish") as publish:
             self.manager.notification({
                 "method": "process/outputDelta",
-                "params": {"processHandle": self.key,
-                           "deltaBase64": base64.b64encode(b"duplicate").decode()},
+                "params": {"processHandle": self.key, "deltaBase64": first},
                 "_studioSupervisorSequence": 7,
             })
-        publish.assert_not_called()
-        self.assertEqual(self.manager.output(self.key)["text"], "")
+            self.assertEqual(self.owned["decoder"].getstate()[0], b"\xe2")
+            self.manager.output_delta(self.key, self.owned, continuation, 8)
+        self.assertEqual(self.manager.output(self.key)["text"], "€")
+        publish.assert_called_once()
+
+    def test_output_and_exit_race_preserves_output_and_publishes_final_state(self):
+        decode_started = threading.Event()
+        continue_decode = threading.Event()
+        output_thread_done = threading.Event()
+        exit_thread_started = threading.Event()
+        events = []
+
+        class BlockingDecoder:
+            def __init__(self):
+                self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+            def decode(self, value, final=False):
+                if value:
+                    decode_started.set()
+                    if not continue_decode.wait(2):
+                        raise TimeoutError("Output decode was not released")
+                return self.decoder.decode(value, final=final)
+
+            def getstate(self):
+                return self.decoder.getstate()
+
+            def setstate(self, state):
+                self.decoder.setstate(state)
+
+        self.owned["decoder"] = BlockingDecoder()
+
+        def publish(*resources):
+            output = self.client.get(
+                "/api/terminals/output", params={"id": self.key}
+            ).json()
+            events.append((output, resources))
+
+        def output_delta():
+            self.manager.output_delta(
+                self.key, self.owned, base64.b64encode(b"parallel").decode(), 1
+            )
+            output_thread_done.set()
+
+        def finish():
+            exit_thread_started.set()
+            self.manager.finish(self.key, 0)
+
+        with patch.object(self.manager, "_publish", side_effect=publish):
+            output_thread = threading.Thread(target=output_delta)
+            exit_thread = threading.Thread(target=finish)
+            output_thread.start()
+            self.assertTrue(decode_started.wait(2))
+            exit_thread.start()
+            self.assertTrue(exit_thread_started.wait(2))
+            continue_decode.set()
+            output_thread.join(2)
+            exit_thread.join(2)
+
+        self.assertTrue(output_thread_done.is_set())
+        self.assertFalse(output_thread.is_alive())
+        self.assertFalse(exit_thread.is_alive())
+        final = self.client.get("/api/terminals/output", params={"id": self.key}).json()
+        self.assertEqual(final["text"], "parallel")
+        self.assertEqual(final["status"], "exited")
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(isinstance(resources[0].root, TerminalResource) for _, resources in events))
 
     def test_live_view_truncation_keeps_cursor_replay_and_publishes_terminal(self):
         with self.manager.db() as db:
