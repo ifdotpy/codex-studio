@@ -136,31 +136,85 @@ def active_transactions():
 
 
 def _archive_previous(path):
-    """Retain the last nonempty session when the current process starts."""
+    """Retain three past snapshots and the compatible previous-session file."""
+    from hashlib import sha256
+
     global _ARCHIVE_CHECKED
     if _ARCHIVE_CHECKED == str(path):
         return
-    try:
-        with path.open("rb") as source:
-            raw = source.read(JOURNAL_LIMIT + 1)
-    except FileNotFoundError:
+
+    def read_snapshot(source_path):
+        try:
+            with source_path.open("rb") as source:
+                raw = source.read(JOURNAL_LIMIT + 1)
+        except FileNotFoundError:
+            return None
+        if len(raw) > JOURNAL_LIMIT:
+            raise OSError("The previous SQLite journal exceeds its size limit")
+        try:
+            snapshot = json.loads(raw)
+        except (ValueError, UnicodeError) as error:
+            raise OSError("The previous SQLite journal is invalid") from error
+        if not isinstance(snapshot, dict) or snapshot.get("version") != 1:
+            raise OSError("The previous SQLite journal has an unknown version")
+        fields = {"active": ACTIVE_LIMIT, "recent": HISTORY_LIMIT, "longest": LONGEST_LIMIT}
+        for name, limit in fields.items():
+            if not isinstance(snapshot.get(name), list) or len(snapshot[name]) > limit:
+                raise OSError("The previous SQLite journal exceeds its record limit")
+        return raw, snapshot
+
+    current = read_snapshot(path)
+    if current is None:
         _ARCHIVE_CHECKED = str(path)
         return
-    if len(raw) > JOURNAL_LIMIT:
-        raise OSError("The previous SQLite journal exceeds its size limit")
-    try:
-        previous = json.loads(raw)
-    except (ValueError, UnicodeError) as error:
-        raise OSError("The previous SQLite journal is invalid") from error
-    if not isinstance(previous, dict) or previous.get("version") != 1:
-        raise OSError("The previous SQLite journal has an unknown version")
-    fields = {"active": ACTIVE_LIMIT, "recent": HISTORY_LIMIT, "longest": LONGEST_LIMIT}
-    for name, limit in fields.items():
-        if not isinstance(previous.get(name), list) or len(previous[name]) > limit:
-            raise OSError("The previous SQLite journal exceeds its record limit")
+    raw, previous = current
     same_session = previous.get("pid") == os.getpid() and previous.get("coverageStartedAt") == _STARTED_AT
-    if not same_session and any(previous[name] for name in fields):
-        os.replace(path, path.with_name("sqlite-transactions.previous.json"))
+    if not same_session and any(previous[name] for name in ("active", "recent", "longest")):
+        previous_path = path.with_name("sqlite-transactions.previous.json")
+        older = read_snapshot(previous_path)
+        snapshots = ([older] if older is not None else []) + [current]
+        # Validate both originals before changing any file. Copy exact bytes so
+        # owner IDs, process times and frame evidence remain unchanged.
+        for saved_raw, snapshot in snapshots:
+            if not any(snapshot[name] for name in ("active", "recent", "longest")):
+                continue
+            archive = path.with_name("sqlite-transactions.history." + sha256(saved_raw).hexdigest() + ".json")
+            try:
+                with archive.open("rb") as source:
+                    existing = source.read(JOURNAL_LIMIT + 1)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if existing != saved_raw:
+                    raise OSError("The SQLite history archive identity differs")
+                continue
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
+                                                 prefix=".sqlite-transactions-archive-", delete=False) as output:
+                    temporary = output.name
+                    os.fchmod(output.fileno(), 0o600)
+                    output.write(saved_raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, archive)
+                temporary = None
+            finally:
+                if temporary is not None:
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+        archives = []
+        prefix = "sqlite-transactions.history."
+        for archive in path.parent.glob(prefix + "*.json"):
+            identity = archive.name[len(prefix):-5]
+            if len(identity) == 64 and all(character in "0123456789abcdef" for character in identity):
+                archives.append(archive)
+        archives.sort(key=lambda item: (item.stat().st_mtime_ns, item.name), reverse=True)
+        for archive in archives[3:]:
+            archive.unlink()
+        os.replace(path, previous_path)
     _ARCHIVE_CHECKED = str(path)
 
 
