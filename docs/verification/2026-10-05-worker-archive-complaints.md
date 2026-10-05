@@ -14,6 +14,16 @@ saved archive refs and pruned Git metadata. It did not delete their folders.
 The saved worker branches equal their archive refs. The earlier deletion owner
 and time remain unknown. These observations do not prove that Studio deleted them.
 
+Earlier receipts narrow the observation time. Receipt `905b78cc` shows eight
+missing folders on October 4 at 07:35 UTC. The ninth worker is outside that page.
+Receipt `ab07bf45` shows all nine missing at 20:24 UTC. This predates the update.
+These are read-only observations. Separate archive calls keep the workers because of assigned tasks.
+
+The follow-up checks 1227 lead requests and 1466 tool items from 48 hours.
+It also reads one exact rollout. None contains a root-folder removal command for these
+nine workers. Other actors and earlier actions remain outside this search.
+This is a search limit, not proof that no deletion occurred.
+
 Private evidence is in `/private/tmp/studio-complaints16-evidence-20261005`.
 It contains the caller, receipt, saved agents, filesystem checks, Git refs, and
 cleanup entrypoints. No active worker was stopped for this investigation.
@@ -35,6 +45,10 @@ actor, time, path, and saved head. A new archive call can repair the exact Git
 metadata without changing files. Only Git removes the folder. Changed files,
 foreign registration, active work, or a changed original Git link prevent removal.
 A missing original Git link leaves the folder for inspection.
+
+The older complaint about worker `fd4ca809` also has a confirmed partial removal
+receipt on October 5 at 09:05 UTC. Its folder remains; its Git registration is
+absent. This does not prove the reported disappearance near 04:00 UTC.
 
 Private regressions reproduce the old archived record, missing registration,
 matching refs, original Git link, ignored cache, and missing tracked files.
