@@ -352,6 +352,123 @@ class NativeReleaseContract(unittest.TestCase):
         self.assertEqual(result["status"], "released")
         self.assertTrue(self.rt.agent(worker["id"])["nativeRelease"]["resetPending"])
 
+    def test_not_loaded_reset_settles_exact_closed_blocked_inspection(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        old_error = "thread/read response timed out; outcome unknown"
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False, error=old_error)
+            self.rt.put(db, "agents", current)
+            self.rt.put(db, "tool_requests", {"id": "historical-tool", "agent": worker["id"],
+                                               "stage": "failed", "outcome": "unknown"})
+        self.rt.server.closed_threads.add(worker["threadId"])
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": worker["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(worker["id"])["nativeRelease"].get("closedAt"))
+        closed = self.rt.agent(worker["id"])["nativeRelease"]
+        before = len(self.rt.server.calls)
+        result = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset after native closure"},
+            epoch=lead["epoch"])
+        self.assertEqual(result["status"], "not_loaded")
+        settled = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertEqual(settled["id"], saved["id"])
+        for key in ("targetEpoch", "threadId", "accountKey", "connectionId", "at", "closedAt",
+                    "targetRootId", "targetParentId", "resetBy", "resetActorEpoch", "resetActorScope"):
+            self.assertEqual(settled[key], closed[key], key)
+        self.assertEqual(settled["phase"], "released")
+        self.assertEqual(settled["nativeStatus"], "notLoaded")
+        self.assertIsNone(settled["error"])
+        self.assertEqual(settled["inspectionError"], old_error)
+        self.assertFalse(settled["resetPending"])
+        self.assertEqual(self.release_calls(before), [])
+        repeat = release_agent(self.rt, worker["id"], reason="Closure is already known")
+        self.assertEqual(repeat["status"], "not_loaded")
+        self.assertEqual(self.release_calls(before), [])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], settled)
+        with self.rt.read_db() as db:
+            historical = json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id='historical-tool'").fetchone()[0])
+        self.assertEqual(historical["outcome"], "unknown")
+        self.rt.send(worker["id"], "Continue once after closure", "not-loaded-reset-once")
+        fixture.eventually(lambda: self.rt.delivery_receipt("not-loaded-reset-once")["status"] == "delivered")
+        calls = [method for method, params in self.rt.server.calls[before:]
+                 if params.get("threadId") == worker["threadId"]]
+        self.assertEqual(calls.count("thread/unsubscribe"), 0)
+        self.assertEqual(calls.count("thread/resume"), 1)
+        self.assertEqual(calls.count("turn/start"), 1)
+        self.assertIsNone(self.rt.agent(worker["id"])["nativeRelease"]["error"])
+
+    def test_not_loaded_reset_preserves_unproven_or_changed_release(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.waiting_reset(lead, worker)
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False,
+                                            error="Original inspection outcome unknown")
+            self.rt.put(db, "agents", current)
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": worker["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(worker["id"])["nativeRelease"].get("closedAt"))
+        original = self.rt.agent(worker["id"])
+        cases = (("release", "closedAt", None), ("release", "closedAt", True),
+                 ("release", "closedAt", float("inf")),
+                 ("release", "closedAt", original["nativeRelease"]["at"] - 1),
+                 ("release", "at", None), ("release", "id", None),
+                 ("release", "submittedAt", time.time()),
+                 ("release", "submittedAt", 0),
+                 ("release", "resetPending", True), ("release", "targetEpoch", worker["epoch"] + 1),
+                 ("release", "threadId", "another-thread"),
+                 ("release", "accountKey", "another-account"),
+                 ("release", "connectionId", "another-connection"),
+                 ("release", "targetRootId", "another-root"),
+                 ("release", "targetParentId", "another-parent"),
+                 ("agent", "inFlight", True), ("agent", "activeTools", [{"id": "active-tool"}]),
+                 ("agent", "nativeFailureHold", True))
+        before = len(self.rt.server.calls)
+        for scope, field, value in cases:
+            with self.subTest(scope=scope, field=field):
+                current = json.loads(json.dumps(original))
+                (current if scope == "agent" else current["nativeRelease"])[field] = value
+                with self.rt.lock, self.rt.db() as db:
+                    self.rt.put(db, "agents", current)
+                self.assertEqual(release_agent(self.rt, worker["id"], reason="Keep exact proof")["status"], "not_loaded")
+                actual = self.rt.agent(worker["id"])
+                if field == "nativeFailureHold":
+                    self.assertTrue(actual["nativeFailureHold"])
+                else:
+                    self.assertEqual(actual["nativeRelease"], current["nativeRelease"])
+                self.assertEqual(self.release_calls(before), [])
+
+    def test_not_loaded_reset_preserves_stop_and_unknown_input(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.waiting_reset(lead, worker)
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False,
+                                            error="Original inspection outcome unknown")
+            self.rt.put(db, "agents", current)
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": worker["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(worker["id"])["nativeRelease"].get("closedAt"))
+        original = self.rt.agent(worker["id"])
+        with self.rt.lock, self.rt.db() as db:
+            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", (
+                "unsettled-input", worker["id"], "user", "Fixture", "uncertain", time.time(),
+                worker["epoch"], "old-turn", "Original uncertain input"))
+        before = len(self.rt.server.calls)
+        self.assertEqual(release_agent(self.rt, worker["id"], reason="Keep uncertain input")["status"], "not_loaded")
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], original["nativeRelease"])
+        with self.rt.read_db() as db:
+            self.assertEqual(db.execute("SELECT status,error FROM runtime_events WHERE id='unsettled-input'").fetchone()[:],
+                             ("uncertain", "Original uncertain input"))
+        self.rt.stop(worker["id"])
+        stopped = self.rt.agent(worker["id"])
+        self.assertEqual(release_agent(self.rt, worker["id"], reason="Keep explicit stop")["status"], "not_loaded")
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], stopped["nativeRelease"])
+        self.assertFalse(self.rt.agent(worker["id"])["autoWake"])
+        self.assertEqual(self.release_calls(before), [])
+
     def test_read_timeout_retains_reset_and_retries_full_preflight_once(self):
         lead = self.lead()
         worker = self.worker(lead)
