@@ -1431,9 +1431,53 @@ export default function App() {
         ),
       });
   };
+  const schemaMismatchDialog = (
+    <Modal
+      opened={schemaMismatch}
+      onClose={() => {}}
+      title="Studio update required"
+      closeOnEscape={false}
+      closeOnClickOutside={false}
+      withCloseButton={false}
+      role="alertdialog"
+      aria-label="Studio update required"
+    >
+      <p>
+        {schemaMismatchNeedsRebuild
+          ? "The installed renderer build does not match the server. Rebuild Studio before continuing."
+          : "Studio has been updated. Update this tab to continue syncing and sending."}
+      </p>
+      {!schemaMismatchNeedsRebuild && (
+        <>
+          <Button
+            onClick={() => {
+              setSchemaUpdateError("");
+              void updateRendererAndReload().catch((error: unknown) =>
+                setSchemaUpdateError(
+                  error instanceof Error
+                    ? error.message
+                    : "Studio update failed. Try again.",
+                ),
+              );
+            }}
+          >
+            Update
+          </Button>
+          {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
+        </>
+      )}
+    </Modal>
+  );
   if (!data)
-    return (
-      <div className="startup">{error || "Connecting to Codex Studio…"}</div>
+    return schemaMismatch ? (
+      schemaMismatchDialog
+    ) : (
+      <main className="startup" aria-label="Studio startup">
+        <p role={error ? "alert" : "status"}>
+          {error || "Connecting to Codex Studio…"}
+        </p>
+        {error && <a href="/">Reload Studio</a>}
+      </main>
     );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
@@ -2736,41 +2780,7 @@ export default function App() {
           />
         )}
       </Modal>
-      <Modal
-        opened={schemaMismatch}
-        onClose={() => {}}
-        title="Studio update required"
-        closeOnEscape={false}
-        closeOnClickOutside={false}
-        withCloseButton={false}
-        role="alertdialog"
-        aria-label="Studio update required"
-      >
-        <p>
-          {schemaMismatchNeedsRebuild
-            ? "The installed renderer build does not match the server. Rebuild Studio before continuing."
-            : "Studio has been updated. Update this tab to continue syncing and sending."}
-        </p>
-        {!schemaMismatchNeedsRebuild && (
-          <>
-            <Button
-              onClick={() => {
-                setSchemaUpdateError("");
-                void updateRendererAndReload().catch((error: unknown) =>
-                  setSchemaUpdateError(
-                    error instanceof Error
-                      ? error.message
-                      : "Studio update failed. Try again.",
-                  ),
-                );
-              }}
-            >
-              Update
-            </Button>
-            {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
-          </>
-        )}
-      </Modal>
+      {schemaMismatchDialog}
       {toast && (
         <div id="toast" role="status">
           {toast}
