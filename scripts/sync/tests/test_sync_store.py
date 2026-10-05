@@ -5,6 +5,8 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[2]
@@ -75,11 +77,119 @@ class SyncStoreTests(unittest.TestCase):
         self.assertEqual(self.builds, 2)
 
         with self.connect() as db:
+            db.execute("CREATE TABLE runtime_search_pending(id TEXT PRIMARY KEY, version INTEGER, due_at REAL)")
+            db.execute("INSERT INTO runtime_search_pending VALUES ('item',1,1)")
+        index_only = self.store.pull("state", checkpoint)
+        self.assertEqual(index_only["documents"], [])
+        self.assertEqual(self.builds, 3)
+
+        with self.connect() as db:
             db.execute("INSERT INTO groups VALUES ('g','team','[]')")
         updated = self.store.pull("state", checkpoint)
         self.assertEqual(json.loads(updated["documents"][0]["payload"])["groups"], 1)
         self.assertGreater(updated["checkpoint"]["seq"], checkpoint)
-        self.assertEqual(self.builds, 3)
+        self.assertEqual(self.builds, 4)
+
+    def test_late_created_state_source_invalidates_cached_snapshot(self):
+        def late_snapshot():
+            self.builds += 1
+            with self.connect() as db:
+                exists = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='late_state'"
+                ).fetchone()
+                rows = ([row[0] for row in db.execute("SELECT id FROM late_state ORDER BY id")]
+                        if exists else [])
+            return {"late": rows}
+
+        store = SyncStore(self.connect, late_snapshot, self.store.transcript)
+        initial = store.pull("state")
+        checkpoint = initial["checkpoint"]["seq"]
+        with self.connect() as db:
+            db.execute("CREATE TABLE late_state(id TEXT PRIMARY KEY)")
+            db.execute("INSERT INTO late_state VALUES ('offline-row')")
+
+        updated = store.pull("state", checkpoint)
+        self.assertEqual(json.loads(updated["documents"][0]["payload"]), {"late": ["offline-row"]})
+        self.assertGreater(updated["checkpoint"]["seq"], checkpoint)
+        self.assertEqual(self.builds, 2)
+
+    def test_lazy_version_schema_initialization_is_idempotent(self):
+        self.store._ensure_versions()
+        with self.connect() as db:
+            first = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'sync_transcript_revision_%'"
+            )}
+            self.assertEqual(len(first), 6)
+            self.assertIsNotNone(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_versions'"
+            ).fetchone())
+
+        self.store._ensure_versions()
+
+        with self.connect() as db:
+            second = {row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'sync_transcript_revision_%'"
+            )}
+        self.assertEqual(second, first)
+
+    def test_runtime_item_churn_advances_shared_generation_and_agent_revision(self):
+        with self.connect() as db:
+            db.execute("INSERT INTO runtime_agents VALUES ('chat','{}')")
+        before = self.store.generation_state()
+        with self.connect() as db:
+            db.execute("INSERT INTO runtime_items VALUES ('item','chat','{}',1)")
+
+        after = self.store.generation_state()
+        self.assertGreater(after["generations"]["state"], before["generations"]["state"])
+        self.assertEqual(after["generations"]["state"], after["generations"]["transcripts"])
+        self.assertEqual(after["transcriptRevisions"]["chat"], 1)
+
+    def test_external_state_signature_invalidates_shared_generations(self):
+        signature = [{"connected": False, "rateLimits": {}, "connectionIds": {}}]
+        store = SyncStore(
+            self.connect,
+            lambda: signature[0],
+            self.store.transcript,
+            state_signature=lambda: json.dumps(signature[0], sort_keys=True),
+        )
+        before = store.generation_state()
+        for key, value in (
+            ("connected", True),
+            ("rateLimits", {"default": {"remaining": 3}}),
+            ("connectionIds", {"default": "connection-2"}),
+        ):
+            prior = store.generation_state()
+            signature[0][key] = value
+            current = store.generation_state()
+            self.assertGreater(current["generations"]["state"], prior["generations"]["state"])
+            self.assertEqual(current["generations"]["state"], current["generations"]["transcripts"])
+        self.assertIn("transcriptRevisions", before)
+
+    def test_unavailable_state_signature_is_deferred_without_blocking(self):
+        lock = threading.Lock()
+        signature = [0]
+
+        def read_signature():
+            if not lock.acquire(blocking=False):
+                return None
+            try:
+                return signature[0]
+            finally:
+                lock.release()
+
+        store = SyncStore(self.connect, lambda: {}, self.store.transcript, state_signature=read_signature)
+        before = store.generation_state()["generations"]["state"]
+        signature[0] = 1
+        lock.acquire()
+        try:
+            started = time.monotonic()
+            self.assertEqual(store.generation_state()["generations"]["state"], before)
+            self.assertLess(time.monotonic() - started, 0.2)
+        finally:
+            lock.release()
+        self.assertGreater(store.generation_state()["generations"]["state"], before)
 
     def test_transcript_pull_produces_full_then_sparse_delta(self):
         first = self.store.pull("transcript:chat")
@@ -136,6 +246,13 @@ class SyncStoreTests(unittest.TestCase):
                 self.store.push_drafts([{
                     "newDocumentState": {"id": key, "payload": json.dumps(value)},
                 }])
+
+    @unittest.expectedFailure
+    def test_fresh_store_first_draft_push_reproduces_lazy_schema_lock(self):
+        value = {"device": "phone", "session": "chat", "text": "draft"}
+        self.assertEqual(self.store.push_drafts([{
+            "newDocumentState": {"id": "phone:chat", "payload": json.dumps(value)},
+        }]), [])
 
 
 if __name__ == "__main__":
