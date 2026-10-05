@@ -384,6 +384,59 @@ describe("shared resource event transport", () => {
     stopStatus();
   });
 
+  it("keeps reconnecting after three silent opens when matching API headers were seen", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(JSON.stringify({ token: "session-token" }), {
+          headers: {
+            "Content-Type": "application/json",
+            "X-Studio-API-Schema": API_SCHEMA_HASH,
+          },
+        }),
+    );
+    Source.skipNextAutoHandshake = true;
+    const api = await import("../api");
+    const transport = await import("./resourceEvents");
+    const states: string[] = [];
+    const stopStatus = transport.watchResourceConnection((status) =>
+      states.push(status),
+    );
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    for (let strike = 0; strike < 3; strike++) {
+      const current = Source.instances.at(-1)!;
+      current.open();
+      await api.get("/api/session");
+      current.onerror?.();
+      expect(api.isApiSchemaMismatch()).toBe(false);
+      expect(states).not.toContain("schema-mismatch");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(Source.instances.length).toBeGreaterThan(strike);
+    }
+    expect(states).toContain("degraded");
+    expect(states).not.toContain("schema-mismatch");
+    stop();
+    stopStatus();
+  });
+
   it("resets the consecutive pre-handshake failure count on a matching handshake", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.5);

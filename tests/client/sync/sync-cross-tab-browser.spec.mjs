@@ -110,7 +110,6 @@ test("sync-cross-tab-browser @performance", async ({
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      res.write(apiSchemaHandshakeSse());
       streams.add(res);
       streamWorkspaces.set(res, currentWorkspace);
       const resources = JSON.parse(

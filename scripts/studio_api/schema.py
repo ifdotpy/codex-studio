@@ -61,7 +61,7 @@ def openapi_document() -> dict[str, JsonValue]:
 _NAME_KEYED_MAPS = frozenset({
     "properties", "$defs", "definitions", "patternProperties", "dependentSchemas",
     "paths", "schemas", "parameters", "responses", "requestBodies", "headers",
-    "links", "callbacks", "securitySchemes", "content", "encoding",
+    "links", "callbacks", "securitySchemes", "content", "encoding", "mapping",
     "webhooks",
 })
 
@@ -76,16 +76,31 @@ def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
             for key, item in value.items():
                 if key in {"description", "summary", "examples", "externalDocs"}:
                     continue
-                if key in _NAME_KEYED_MAPS or key == "components":
+                if key == "default":
+                    # A default is arbitrary JSON data, not OpenAPI metadata.
+                    canonical[key] = item
+                elif key in _NAME_KEYED_MAPS:
                     if isinstance(item, dict):
-                        # These object keys are wire names (for example property
-                        # names), while documentation annotations live below them.
                         canonical[key] = {
                             name: strip_documentation(child)
                             for name, child in item.items()
                         }
                     else:
                         canonical[key] = strip_documentation(item)
+                elif key == "components" and isinstance(item, dict):
+                    # Both component categories and component names are named
+                    # maps. Preserve them at each level, then clean schema bodies.
+                    canonical[key] = {
+                        category: (
+                            {
+                                name: strip_documentation(component)
+                                for name, component in collection.items()
+                            }
+                            if category in _NAME_KEYED_MAPS and isinstance(collection, dict)
+                            else strip_documentation(collection)
+                        )
+                        for category, collection in item.items()
+                    }
                 else:
                     canonical[key] = strip_documentation(item)
             return canonical

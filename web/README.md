@@ -121,8 +121,9 @@ An older list cannot remove that confirmed chat while synchronization catches up
 The client retains the confirmed chat across reloads until the list includes it.
 
 The renderer sends its generated OpenAPI schema hash with API requests and
-protocol-3 stream connections. API responses carry the server hash. A
-hash-bearing protocol-3 stream starts with an `api-schema` handshake; a
+protocol-3 stream connections. Once the server hash is ready, API responses
+carry it; ordinary reads during startup remain available without the header.
+A hash-bearing protocol-3 stream starts with an `api-schema` handshake; a
 mismatching stream closes after that event without a subscription. Hashless
 non-renderer clients retain the earlier protocol-3 event sequence. If hashes
 differ, the page keeps the loaded transcript and local composer draft visible,
@@ -132,6 +133,12 @@ Protocol-3 event payloads no longer use generated per-event runtime validators;
 workspace, epoch, revision, and ordering semantics remain enforced.
 Desktop windows skip service workers, so Update reloads the renderer directly;
 a mismatch that remains after reload requires rebuilding Studio.
+The server caches its computed API schema hash outside the checkout at
+`$XDG_CACHE_HOME/codex-studio-api-schema/hash-v1.json` (by default
+`~/.cache/codex-studio-api-schema/hash-v1.json` on Linux and
+`~/Library/Caches/codex-studio-api-schema/hash-v1.json` on macOS). Deleting this
+file is safe; Studio recomputes it on the next start. A background verification
+also repairs a valid but incorrect cached value.
 
 Managed conversations use the workspace sync projection. One tab holds the
 exclusive browser lock and owns `/api/sync/stream?protocol=3`, sharing

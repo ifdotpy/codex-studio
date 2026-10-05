@@ -15,10 +15,14 @@ import secrets
 import sqlite3
 import tempfile
 import threading
+import subprocess
+import sys
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol, cast, get_args, get_origin
+
+from codex_backend_identity import BACKEND_BUILD
 
 from pydantic import BaseModel, RootModel, TypeAdapter
 
@@ -63,16 +67,17 @@ CONTENT_SECURITY_POLICY = (
 )
 API_SCHEMA_CACHE_DIRECTORY = "codex-studio-api-schema"
 API_SCHEMA_CACHE_FILE = "hash-v1.json"
+API_SCHEMA_CANONICALIZER_VERSION = "2"
+API_SCHEMA_CACHE_VERIFY_DELAY_SECONDS = 60.0
 
 
 def api_schema_cache_key(backend_build: str | None = None) -> dict[str, str]:
     """Key the persistent hash cache by every runtime input to OpenAPI."""
     if backend_build is None:
-        from codex_backend_identity import BACKEND_BUILD
-
         backend_build = BACKEND_BUILD
     return {
         "backendBuild": backend_build,
+        "canonicalizer": API_SCHEMA_CANONICALIZER_VERSION,
         "python": platform.python_version(),
         "fastapi": importlib.metadata.version("fastapi"),
         "pydantic": importlib.metadata.version("pydantic"),
@@ -90,26 +95,11 @@ def _valid_schema_hash(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def read_cached_or_compute_api_schema_hash(
-    key: dict[str, str], compute: Callable[[], str],
-) -> str:
-    """Return a matching disk cache or compute and atomically cache the hash."""
-    cache_path = _api_schema_cache_path()
-    try:
-        entry = json.loads(cache_path.read_text(encoding="utf-8"))
-        if (
-            isinstance(entry, dict)
-            and entry.get("key") == key
-            and _valid_schema_hash(entry.get("hash"))
-        ):
-            return cast(str, entry["hash"])
-    except (OSError, ValueError, TypeError):
-        pass
-
-    value = compute()
+def _write_cached_api_schema_hash(key: dict[str, str], value: str) -> None:
     if not _valid_schema_hash(value):
         raise RuntimeError("API schema hash computation returned an invalid value")
     try:
+        cache_path = _api_schema_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix="hash-", suffix=".tmp", dir=cache_path.parent,
@@ -126,10 +116,61 @@ def read_cached_or_compute_api_schema_hash(
                 os.unlink(temporary_name)
             except FileNotFoundError:
                 pass
-    except OSError:
+    except Exception:
         logging.getLogger(__name__).warning(
             "Could not write the API schema identity cache", exc_info=True,
         )
+
+
+def read_cached_or_compute_api_schema_hash(
+    key: dict[str, str], compute: Callable[[], str],
+    on_cache_hit: Callable[[str], None] | None = None,
+) -> str:
+    """Return a matching disk cache or compute and atomically cache the hash."""
+    cache_path: Path | None = None
+    try:
+        cache_path = _api_schema_cache_path()
+        entry = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            isinstance(entry, dict)
+            and entry.get("key") == key
+            and _valid_schema_hash(entry.get("hash"))
+        ):
+            value = cast(str, entry["hash"])
+            if on_cache_hit is not None:
+                on_cache_hit(value)
+            return value
+    except Exception:
+        # Every cache/path/parse problem is a miss. Only compute() failures
+        # are allowed to make schema identity unavailable.
+        pass
+
+    value = compute()
+    if not _valid_schema_hash(value):
+        raise RuntimeError("API schema hash computation returned an invalid value")
+    _write_cached_api_schema_hash(key, value)
+    return value
+
+
+def compute_api_schema_hash_in_subprocess(*, low_priority: bool = False) -> str:
+    """Build the canonical OpenAPI hash in a process isolated from serving GIL."""
+    scripts = Path(__file__).resolve().parents[1]
+    lower_priority = "import os; os.nice(10); " if low_priority and os.name == "posix" else ""
+    code = lower_priority + (
+        "from studio_api.schema import openapi_document, api_schema_hash; "
+        "print(api_schema_hash(openapi_document()))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=scripts,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    value = result.stdout.strip()
+    if not _valid_schema_hash(value):
+        raise RuntimeError("schema verification subprocess returned an invalid hash")
     return value
 
 
@@ -145,6 +186,7 @@ class ApiContext:
         server_port: int = 0,
         unix_socket: bool = False,
         schema_only: bool = False,
+        backend_build: str | None = None,
     ) -> None:
         self.canvas = canvas
         self.token = token if token is not None else secrets.token_urlsafe(32)
@@ -152,9 +194,11 @@ class ApiContext:
         self.server_port = server_port
         self.unix_socket = unix_socket
         self.schema_only = schema_only
+        self.backend_build = backend_build if backend_build is not None else BACKEND_BUILD
         self._api_schema_hash: str | None = None
         self._api_schema_hash_future: Future[str] | None = None
         self._api_schema_hash_future_lock = threading.Lock()
+        self._api_schema_cache_verification_started = False
         self._lock = threading.RLock()
         self._maintenance_lock = threading.Lock()
         self._maintenance_last = 0.0
@@ -194,13 +238,47 @@ class ApiContext:
         self._api_schema_hash = value
 
     def _compute_api_schema_hash(self) -> str:
-        from studio_api.schema import api_schema_hash
-
-        key = api_schema_cache_key()
-        value = read_cached_or_compute_api_schema_hash(key, api_schema_hash)
+        key = api_schema_cache_key(self.backend_build)
+        value = read_cached_or_compute_api_schema_hash(
+            key,
+            compute_api_schema_hash_in_subprocess,
+            on_cache_hit=lambda cached: self._schedule_api_schema_cache_verification(key, cached),
+        )
         if not value:
             raise RuntimeError("API schema hash computation returned an empty value")
         return value
+
+    def _schedule_api_schema_cache_verification(
+        self, key: dict[str, str], cached_value: str,
+    ) -> None:
+        with self._api_schema_hash_future_lock:
+            if self._api_schema_cache_verification_started:
+                return
+            self._api_schema_cache_verification_started = True
+
+        def verify_later() -> None:
+            # The subprocess owns Python's CPU-heavy OpenAPI build, so it
+            # cannot hold the serving process's GIL during busy page loads.
+            threading.Event().wait(API_SCHEMA_CACHE_VERIFY_DELAY_SECONDS)
+            try:
+                verified = compute_api_schema_hash_in_subprocess(low_priority=True)
+                if verified == cached_value:
+                    return
+                logging.getLogger(__name__).error(
+                    "Cached Studio API schema identity was wrong; replacing it"
+                )
+                _write_cached_api_schema_hash(key, verified)
+                self._api_schema_hash = verified
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not verify cached Studio API schema identity"
+                )
+
+        threading.Thread(
+            target=verify_later,
+            name="studio-api-schema-cache-verification",
+            daemon=True,
+        ).start()
 
     def start_api_schema_hash(self) -> Future[str]:
         """Start one background schema-hash computation and share its result."""

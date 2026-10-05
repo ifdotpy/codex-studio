@@ -29,6 +29,7 @@ ASSET_BODY_LIMIT = 28 * 1024 * 1024
 VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
 FEDERATION_BODY_LIMIT = 256 * 1024
 REQUEST_READ_TIMEOUT_SECONDS = 10.0
+API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
 
 
 class HeaderView:
@@ -174,15 +175,28 @@ class RequestBoundary:
             needs_hash = (write and renderer_hash is not None) or stream_hash is not None
             try:
                 if needs_hash:
-                    schema_hash = await self.context.get_api_schema_hash()
+                    schema_hash = await asyncio.wait_for(
+                        self.context.get_api_schema_hash(),
+                        timeout=API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS,
+                    )
                 else:
                     schema_hash = self.context.peek_api_schema_hash()
             except Exception:
                 import logging
 
-                logging.getLogger(__name__).exception("Studio API schema identity is unavailable")
-                await _reject(send, 503, "Studio API schema identity is unavailable; restart Studio.")
-                return
+                if needs_hash or renderer_hash is not None:
+                    logging.getLogger(__name__).exception(
+                        "Studio API schema identity is unavailable"
+                    )
+                    await _reject(
+                        send,
+                        503,
+                        "Studio API schema identity is unavailable; restart Studio.",
+                    )
+                    return
+                # Hashless callers continue exactly as during warm-up even if
+                # the optional identity task has failed.
+                schema_hash = None
 
             if schema_hash is not None:
                 raw_send = send

@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, cast
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+# Snapshot disk identity before importing the application modules whose loaded
+# Python code defines the OpenAPI document.
+import codex_backend_identity
+
 from studio_api.app import create_app
 from studio_api.context import ApiContext, RemoteAccessContract
 
@@ -224,7 +228,12 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
     from codex_remote import RemoteAccess
 
     remote = cast(RemoteAccessContract, RemoteAccess(canvas.root, public_origin))  # type: ignore[no-untyped-call]
-    context = ApiContext(canvas, remote=remote, unix_socket=unix_socket)
+    context = ApiContext(
+        canvas,
+        remote=remote,
+        unix_socket=unix_socket,
+        backend_build=codex_backend_identity.BACKEND_BUILD,
+    )
     app = create_app(context)
     tcp_socket = _bind_tcp(port)
     context.server_port = int(tcp_socket.getsockname()[1])

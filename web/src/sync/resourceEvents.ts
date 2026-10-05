@@ -7,6 +7,7 @@ import {
 import {
   clearSchemaUpdateAttemptAfterMatch,
   isApiSchemaMismatch,
+  matchingApiSchemaResponseGeneration,
   markApiSchemaMismatch,
   onApiSchemaMismatch,
 } from "../api";
@@ -141,6 +142,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
+let preHandshakeResponseGeneration: number | undefined;
 let lastEpoch: string | undefined;
 let lastRevision: number | undefined;
 let lastHeartbeatRevision: number | undefined;
@@ -641,9 +643,16 @@ function openSource() {
       if (source !== connected || schemaHandshakeReceived) return;
       requireBaselineReconciliation();
       closeSource();
+      if (preHandshakeFailures === 0)
+        preHandshakeResponseGeneration = matchingApiSchemaResponseGeneration();
       preHandshakeFailures++;
       if (preHandshakeFailures >= SCHEMA_HANDSHAKE_FAILURE_LIMIT) {
-        markApiSchemaMismatch();
+        if (
+          preHandshakeResponseGeneration !== undefined &&
+          matchingApiSchemaResponseGeneration() > preHandshakeResponseGeneration
+        ) {
+          scheduleReconnect();
+        } else markApiSchemaMismatch();
       } else scheduleReconnect();
     };
     connected.onopen = () => {
@@ -691,6 +700,7 @@ function openSource() {
         }
         schemaHandshakeReceived = true;
         preHandshakeFailures = 0;
+        preHandshakeResponseGeneration = undefined;
         clearSchemaUpdateAttemptAfterMatch();
         clearTimeout(schemaHandshakeTimeout);
         schemaHandshakeTimeout = undefined;

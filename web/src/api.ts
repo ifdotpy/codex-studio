@@ -112,6 +112,7 @@ let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
 let schemaMismatch = false;
+let matchingSchemaResponseGeneration = 0;
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
 const SERVICE_WORKER_UPDATE_TIMEOUT_MS = 20_000;
 
@@ -136,6 +137,10 @@ async function withUpdateTimeout<T>(work: Promise<T>) {
 
 export function isApiSchemaMismatch() {
   return schemaMismatch;
+}
+
+export function matchingApiSchemaResponseGeneration() {
+  return matchingSchemaResponseGeneration;
 }
 
 export function onApiSchemaMismatch(listener: () => void) {
@@ -237,8 +242,10 @@ export const client = createClient<paths, "application/json">({
       (serverHash && serverHash !== API_SCHEMA_HASH)
     )
       markApiSchemaMismatch();
-    else if (serverHash === API_SCHEMA_HASH)
+    else if (serverHash === API_SCHEMA_HASH) {
+      matchingSchemaResponseGeneration++;
       clearSchemaUpdateAttemptAfterMatch();
+    }
     return response;
   },
 });

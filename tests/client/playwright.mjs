@@ -1,7 +1,20 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+if (!process.env.CODEX_STUDIO_TEST_CACHE_ROOT) {
+  const cacheRoot = mkdtempSync(
+    join(tmpdir(), "codex-studio-playwright-cache-"),
+  );
+  process.env.CODEX_STUDIO_TEST_CACHE_ROOT = cacheRoot;
+  process.env.XDG_CACHE_HOME = cacheRoot;
+  process.once("exit", () =>
+    rmSync(cacheRoot, { recursive: true, force: true }),
+  );
+}
 
 const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),

@@ -36,8 +36,8 @@
     !document.querySelector('meta[name="studio-build"]')
   )
     return;
-  // The Update action activates the waiting worker with skipWaiting. Other
-  // tabs stay on their current controller until they navigate or close.
+  // The Update action activates the waiting worker with skipWaiting, which
+  // also claims existing tabs. The worker keeps the previous shell available.
   window.addEventListener(
     "load",
     () => {
