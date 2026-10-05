@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -63,7 +63,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
         contentType: "text/event-stream",
-        body: ": heartbeat\n\n",
+        body: apiSchemaHandshakeSse(),
       }),
     );
     await page.route("**/api/sync/drafts", (route) =>

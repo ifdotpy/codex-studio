@@ -1,7 +1,7 @@
 // A partial first page keeps its original baseline across a browser restart.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 
 test("sync initial resume browser", async ({ page }) => {
   const { createServer } = await import(
@@ -42,7 +42,7 @@ test("sync initial resume browser", async ({ page }) => {
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
         contentType: "text/event-stream",
-        body: "data: 601\n\n",
+        body: apiSchemaHandshakeSse(),
       }),
     );
     await page.route("**/api/sync/pull?*", (route) => {

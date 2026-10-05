@@ -227,6 +227,7 @@ export default function Conversation(p: {
   onNewChat?: () => void;
   onChooseChat?: () => void;
   sending: boolean;
+  schemaMismatch?: boolean;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
   limits: Json | null;
@@ -1000,7 +1001,10 @@ export default function Conversation(p: {
       (!mobileClient && team.some((a) => a.id === r.agent)),
   );
   const first = p.room?.members?.[0] || items.find((m) => m.sender)?.sender;
-  const canSend = !threadBlock && (!!agent?.canSend || !!p.legacy || !p.id);
+  const canSend =
+    !p.schemaMismatch &&
+    !threadBlock &&
+    (!!agent?.canSend || !!p.legacy || !p.id);
   const lastAssistantByTurn = useMemo(() => {
     const last = new Map<string, string>();
     for (const item of items)

@@ -1,10 +1,16 @@
-import {
-  isResourceChangeEvent,
-  isResourceHeartbeatEvent,
-  isResourceRef,
-  isResourceTokenRatesEvent,
-} from "../generated/stream-validators.js";
 import type { components } from "../generated/api";
+import {
+  API_SCHEMA_HASH,
+  API_SCHEMA_HASH_PARAM,
+  API_SCHEMA_MISMATCH_FIELD,
+} from "../generated/apiSchema";
+import {
+  clearSchemaUpdateAttemptAfterMatch,
+  isApiSchemaMismatch,
+  matchingApiSchemaResponseGeneration,
+  markApiSchemaMismatch,
+  onApiSchemaMismatch,
+} from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
 import { retryableReadError } from "./readRetry";
@@ -26,7 +32,8 @@ export type ResourceConnectionState =
   | "connecting"
   | "live"
   | "degraded"
-  | "offline";
+  | "offline"
+  | "schema-mismatch";
 type Listener = (version?: ResourceVersion) => void;
 type TabSubscriptions = {
   kind: "subscriptions";
@@ -69,14 +76,15 @@ type TabSubscriptionDiscovery = {
   workspaceId: string;
   tabId: string;
 };
-type TabMessage =
+type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
   | TabHeartbeat
   | LeaderHeartbeat
   | TabStatus
-  | TabSubscriptionDiscovery;
+  | TabSubscriptionDiscovery
+) & { apiSchemaHash: string };
 type OutgoingMessage =
   | {
       kind: "subscriptions";
@@ -92,6 +100,8 @@ type OutgoingMessage =
   | { kind: "status"; status: ResourceConnectionState };
 
 const HEARTBEAT_TIMEOUT_MS = 45_000;
+const SCHEMA_HANDSHAKE_TIMEOUT_MS = 15_000;
+const SCHEMA_HANDSHAKE_FAILURE_LIMIT = 3;
 const PEER_HEARTBEAT_MS = 3_000;
 const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
@@ -127,9 +137,12 @@ let ownerRequestController: AbortController | undefined;
 let releaseOwner: (() => void) | undefined;
 let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
+let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
+let preHandshakeFailures = 0;
+let preHandshakeResponseGeneration: number | undefined;
 let lastEpoch: string | undefined;
 let lastRevision: number | undefined;
 let lastHeartbeatRevision: number | undefined;
@@ -181,6 +194,7 @@ function broadcast(message: OutgoingMessage) {
   try {
     channel.postMessage({
       ...message,
+      apiSchemaHash: API_SCHEMA_HASH,
       workspaceId,
       tabId,
     } satisfies TabMessage);
@@ -314,86 +328,83 @@ function dispatchEvent(event: ResourceChangeEvent) {
 }
 
 function receiveTokenRateEvent(value: unknown, fromPeer = false) {
-  if (!isResourceTokenRatesEvent(value)) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
-  if (value.workspaceId !== workspaceId) {
+  if (!hasRevisionFrame(value)) throw new TypeError("Invalid token-rate frame");
+  const event = value as ResourceTokenRatesEvent;
+  if (event.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
   if (fromPeer && (owner || independent)) return;
   if (!fromPeer) refreshHeartbeatTimeout();
-  if (lastTokenEpoch !== value.epoch) {
-    lastTokenEpoch = value.epoch;
+  if (lastTokenEpoch !== event.epoch) {
+    lastTokenEpoch = event.epoch;
     lastTokenRevision = undefined;
     lastTokenEvent = undefined;
   }
-  if (lastTokenRevision !== undefined && value.revision <= lastTokenRevision)
+  if (lastTokenRevision !== undefined && event.revision <= lastTokenRevision)
     return;
-  lastTokenRevision = value.revision;
-  lastTokenEvent = value;
+  lastTokenRevision = event.revision;
+  lastTokenEvent = event;
   setStatus("live");
-  receiveResourceTokenRates(value);
-  for (const listener of tokenRateListeners) listener(value);
-  if (owner || independent) broadcast({ kind: "token-rates", event: value });
+  receiveResourceTokenRates(event);
+  for (const listener of tokenRateListeners) listener(event);
+  if (owner || independent) broadcast({ kind: "token-rates", event });
 }
 
 function scheduleFlush() {
   if (flushTimer !== undefined) return;
   flushTimer = setTimeout(function flushResourceChanges() {
     flushTimer = undefined;
-    if (pendingReset) {
-      pendingReset = false;
-      const subscribed = new Set(aggregateResources().map(resourceKey));
-      for (const [key, listeners] of subscribers) {
-        if (subscribed.has(key)) {
-          const version = resourceValues.get(key);
-          for (const listener of listeners) listener(version);
+    try {
+      if (pendingReset) {
+        pendingReset = false;
+        const subscribed = new Set(aggregateResources().map(resourceKey));
+        for (const [key, listeners] of subscribers) {
+          if (subscribed.has(key)) {
+            const version = resourceValues.get(key);
+            for (const listener of listeners) listener(version);
+          }
         }
+        pendingResources = new Set();
+      } else {
+        for (const key of pendingResources) {
+          const version = resourceValues.get(key);
+          if (!version) continue;
+          for (const listener of subscribers.get(key) || []) listener(version);
+        }
+        pendingResources = new Set();
       }
-      pendingResources = new Set();
-      return;
+      retryCount = 0;
+    } catch (error) {
+      frameFailed(error);
     }
-    for (const key of pendingResources) {
-      const version = resourceValues.get(key);
-      if (!version) continue;
-      for (const listener of subscribers.get(key) || []) listener(version);
-    }
-    pendingResources = new Set();
   }, RESOURCE_FLUSH_MS);
 }
 
 function receiveResourceEvent(value: unknown, fromPeer = false) {
-  if (!isResourceChangeEvent(value)) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
+  if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
+    throw new TypeError("Invalid resource frame");
+  const event = value as ResourceChangeEvent;
   if (fromPeer && (owner || independent)) return;
-  if (!workspaceId || value.workspaceId !== workspaceId) {
+  if (!workspaceId || event.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
-  dispatchEvent(value);
+  dispatchEvent(event);
   scheduleFlush();
 }
 
 function acceptHeartbeat(value: unknown, fromPeer = false) {
-  if (!isResourceHeartbeatEvent(value)) {
+  if (!hasRevisionFrame(value)) throw new TypeError("Invalid heartbeat frame");
+  const heartbeat = value as ResourceHeartbeatEvent;
+  if (heartbeat.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
-  if (value.workspaceId !== workspaceId) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
-  if (lastEpoch && value.epoch !== lastEpoch) {
+  if (lastEpoch && heartbeat.epoch !== lastEpoch) {
     lastEpoch = undefined;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
@@ -401,18 +412,35 @@ function acceptHeartbeat(value: unknown, fromPeer = false) {
     return;
   }
   if (
-    (lastRevision !== undefined && value.revision < lastRevision) ||
+    (lastRevision !== undefined && heartbeat.revision < lastRevision) ||
     (lastHeartbeatRevision !== undefined &&
-      value.revision < lastHeartbeatRevision)
+      heartbeat.revision < lastHeartbeatRevision)
   ) {
     reconnectNow();
     return;
   }
   if (fromPeer) return;
-  lastHeartbeatRevision = value.revision;
+  lastHeartbeatRevision = heartbeat.revision;
   refreshHeartbeatTimeout();
   setStatus("live");
   if (owner) broadcast({ kind: "leader-heartbeat" });
+}
+
+function hasRevisionFrame(value: unknown): value is Record<string, unknown> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Record<string, unknown>).revision === "number" &&
+    Number.isFinite((value as Record<string, unknown>).revision)
+  );
+}
+
+function frameFailed(error?: unknown) {
+  if (error !== undefined)
+    console.error("Sync stream frame could not be applied", error);
+  setStatus("degraded");
+  reconnectNow();
 }
 
 function refreshHeartbeatTimeout() {
@@ -425,6 +453,7 @@ function receiveChannelMessage(value: unknown) {
   const record = value as Record<string, unknown>;
   if (
     record.workspaceId !== workspaceId ||
+    record.apiSchemaHash !== API_SCHEMA_HASH ||
     typeof record.tabId !== "string" ||
     !record.tabId ||
     record.tabId === tabId ||
@@ -432,11 +461,7 @@ function receiveChannelMessage(value: unknown) {
   )
     return;
   if (record.kind === "subscriptions") {
-    if (
-      !Array.isArray(record.resources) ||
-      !record.resources.every(isResourceRef)
-    )
-      return;
+    if (!Array.isArray(record.resources)) return;
     const previous = peerSubscriptions.get(record.tabId);
     const priorResources = new Set(
       (previous?.resources || []).map(resourceKey),
@@ -487,7 +512,8 @@ function receiveChannelMessage(value: unknown) {
     (record.status === "connecting" ||
       record.status === "live" ||
       record.status === "degraded" ||
-      record.status === "offline")
+      record.status === "offline" ||
+      record.status === "schema-mismatch")
   ) {
     if (!owner && !independent) {
       setStatus(record.status);
@@ -543,6 +569,8 @@ function announceSubscriptions(reset = false) {
 function closeSource() {
   clearTimeout(heartbeatTimeout);
   heartbeatTimeout = undefined;
+  clearTimeout(schemaHandshakeTimeout);
+  schemaHandshakeTimeout = undefined;
   source?.close();
   source = undefined;
   activeQueryKey = "";
@@ -578,6 +606,7 @@ function reconnectNow() {
 
 function openSource() {
   if (
+    isApiSchemaMismatch() ||
     !coordinatorActive ||
     (!owner && !independent) ||
     document.hidden ||
@@ -604,47 +633,104 @@ function openSource() {
     const query = new URLSearchParams({
       protocol: "3",
       resources: JSON.stringify(resources),
+      [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
     const connected = new EventSource(`/api/sync/stream?${query}`);
     source = connected;
-    connected.addEventListener("resources", (message: Event) => {
+    let schemaHandshakeReceived = false;
+    let connectionOpened = false;
+    const failHandshake = () => {
+      if (source !== connected || schemaHandshakeReceived) return;
+      requireBaselineReconciliation();
+      closeSource();
+      if (preHandshakeFailures === 0)
+        preHandshakeResponseGeneration = matchingApiSchemaResponseGeneration();
+      preHandshakeFailures++;
+      if (preHandshakeFailures >= SCHEMA_HANDSHAKE_FAILURE_LIMIT) {
+        if (
+          preHandshakeResponseGeneration !== undefined &&
+          matchingApiSchemaResponseGeneration() > preHandshakeResponseGeneration
+        ) {
+          scheduleReconnect();
+        } else markApiSchemaMismatch();
+      } else scheduleReconnect();
+    };
+    connected.onopen = () => {
       if (source !== connected) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse((message as MessageEvent<string>).data) as unknown;
-      } catch {
-        setStatus("degraded");
-        reconnectNow();
+      connectionOpened = true;
+      clearTimeout(schemaHandshakeTimeout);
+      if (!schemaHandshakeReceived)
+        schemaHandshakeTimeout = setTimeout(
+          failHandshake,
+          SCHEMA_HANDSHAKE_TIMEOUT_MS,
+        );
+    };
+    const applyFrame = (
+      message: Event,
+      apply: (parsed: unknown) => void,
+      resetRetryOnSuccess = true,
+    ) => {
+      if (source !== connected) return;
+      if (!schemaHandshakeReceived) {
+        markApiSchemaMismatch();
         return;
       }
-      retryCount = 0;
-      receiveResourceEvent(parsed);
+      try {
+        apply(JSON.parse((message as MessageEvent<string>).data) as unknown);
+        if (resetRetryOnSuccess) retryCount = 0;
+      } catch (error) {
+        frameFailed(error);
+      }
+    };
+    connected.addEventListener("api-schema", (message: Event) => {
+      if (source !== connected) return;
+      try {
+        const payload: unknown = JSON.parse(
+          (message as MessageEvent<string>).data,
+        );
+        if (
+          !payload ||
+          typeof payload !== "object" ||
+          (payload as { hash?: unknown }).hash !== API_SCHEMA_HASH ||
+          (payload as Record<string, unknown>)[API_SCHEMA_MISMATCH_FIELD] ===
+            true
+        ) {
+          markApiSchemaMismatch();
+          return;
+        }
+        schemaHandshakeReceived = true;
+        preHandshakeFailures = 0;
+        preHandshakeResponseGeneration = undefined;
+        clearSchemaUpdateAttemptAfterMatch();
+        clearTimeout(schemaHandshakeTimeout);
+        schemaHandshakeTimeout = undefined;
+      } catch {
+        markApiSchemaMismatch();
+      }
+    });
+    connected.addEventListener("resources", (message: Event) => {
+      applyFrame(
+        message,
+        (parsed) => {
+          if (!hasRevisionFrame(parsed) || !Array.isArray(parsed.resources))
+            throw new TypeError("Invalid resource frame");
+          receiveResourceEvent(parsed);
+        },
+        false,
+      );
     });
     connected.addEventListener("heartbeat", (message: Event) => {
-      if (source !== connected) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse((message as MessageEvent<string>).data) as unknown;
-      } catch {
-        reconnectNow();
-        return;
-      }
-      acceptHeartbeat(parsed);
+      applyFrame(message, acceptHeartbeat);
     });
     connected.addEventListener("token-rates", (message: Event) => {
-      if (source !== connected) return;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse((message as MessageEvent<string>).data) as unknown;
-      } catch {
-        setStatus("degraded");
-        reconnectNow();
-        return;
-      }
-      receiveTokenRateEvent(parsed);
+      applyFrame(message, receiveTokenRateEvent);
     });
     connected.onerror = () => {
       if (source !== connected) return;
+      if (connectionOpened && !schemaHandshakeReceived) {
+        failHandshake();
+        return;
+      }
       requireBaselineReconciliation();
       closeSource();
       scheduleReconnect();
@@ -807,8 +893,13 @@ async function initialize() {
         channel = new BroadcastChannel(
           `codex-sync-${location.origin}-${workspaceId}`,
         );
-        channel.onmessage = (event: MessageEvent<unknown>) =>
-          receiveChannelMessage(event.data);
+        channel.onmessage = (event: MessageEvent<unknown>) => {
+          try {
+            receiveChannelMessage(event.data);
+          } catch (error) {
+            frameFailed(error);
+          }
+        };
       }
     } catch {
       channel = undefined;
@@ -874,11 +965,11 @@ function stopCoordinator() {
   baselineReconciliations.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
-  setStatus("connecting");
+  setStatus(isApiSchemaMismatch() ? "schema-mismatch" : "connecting");
 }
 
 function startCoordinator() {
-  if (coordinatorActive) return;
+  if (coordinatorActive || isApiSchemaMismatch()) return;
   coordinatorActive = true;
   coordinatorGeneration++;
   stopResume = onResume(resumeTransport);
@@ -973,3 +1064,4 @@ export function watchTokenRateEvents(
 }
 
 configureTokenRateStream(watchTokenRateEvents);
+onApiSchemaMismatch(stopCoordinator);

@@ -17,6 +17,7 @@ if (self.STUDIO_SHELL) {
     const complete = [];
     for (const name of names) {
       const cache = await caches.open(name);
+      // oxfmt-ignore
       const manifest = await (await cache.match(manifestPath))
         ?.json()
         .catch(() => null);
@@ -121,10 +122,18 @@ if (self.STUDIO_SHELL) {
     );
   });
 
+  self.addEventListener("message", (event) => {
+    if (event.data?.type === "STUDIO_SKIP_WAITING") void self.skipWaiting();
+  });
+
   self.addEventListener("fetch", (event) => {
     const request = event.request;
     const url = new URL(request.url);
     if (request.method !== "GET" || url.origin !== self.location.origin) return;
+    if (request.mode === "navigate" && url.searchParams.has("studio-update")) {
+      event.respondWith(fetch(new Request(request, { cache: "reload" })));
+      return;
+    }
     if (
       request.mode === "navigate" &&
       (url.pathname === "/" || url.pathname === "/index.html")

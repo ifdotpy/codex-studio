@@ -5,7 +5,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { saved, save } from "../api";
+import { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } from "../api";
 import { startDraftReplication, syncDatabase } from "./client";
 
 import { encodeDraftPayload } from "./draftPayload";
@@ -22,9 +22,7 @@ import { activeDraftVersions } from "./draftVersions";
 import {
   copyLocalDraftScope,
   readLocalDraftRecord,
-  readDraftsWithLegacyFallback,
-  migrateLegacyDrafts,
-  legacyBaselineHash,
+  readLocalDrafts,
   writeLocalDraftRecord,
 } from "./draftStorage";
 
@@ -49,18 +47,10 @@ export function useSyncedDrafts() {
   );
   const localRecovery = useState(() => {
     let error = "";
-    let imported: Record<string, string | null> = {};
-    try {
-      imported = migrateLegacyDrafts(storageKey.current, () => {
-        error = "Some saved drafts could not be read. Keep this chat open.";
-      });
-    } catch {
-      error = "Saved drafts could not be migrated. Keep this chat open.";
-    }
-    const drafts = readDraftsWithLegacyFallback(storageKey.current, () => {
+    const drafts = readLocalDrafts(storageKey.current, () => {
       error = "Some saved drafts could not be read. Keep this chat open.";
     });
-    return { drafts, error, imported };
+    return { drafts, error };
   })[0];
   const [writer] = useState(() => crypto.randomUUID());
   const [recovery] = useState(() => {
@@ -291,113 +281,6 @@ export function useSyncedDrafts() {
       entries().map(({ version }) => [version.session, version.updated]),
     );
   };
-  const queueLegacyUpdates = useCallback(
-    (imported: Record<string, string | null>, scope = storageKey.current) => {
-      for (const [session, text] of Object.entries(imported)) {
-        try {
-          const id = `${device}:${session}`;
-          const key = `${journalPrefix(scope)}legacy:${encodeURIComponent(session)}`;
-          const existing = readLocalDraftRecord(scope, session);
-          if (!existing) {
-            reportLocalError(
-              "A saved draft could not be imported from another tab. Keep this chat open.",
-            );
-            continue;
-          }
-          const prior = journal.current.get(key)?.version;
-          const value = text ?? "";
-          const localVersions = [
-            ...versions.current,
-            ...entries().map((entry) => entry.version),
-          ].filter((item) => item.session === session && item.id !== id);
-          const lastLegacy = Math.max(
-            existing.legacyUpdated || 0,
-            prior?.updated || 0,
-          );
-          const baselineHash =
-            existing.legacyBaselineHash ??
-            (existing.legacyBaseline !== undefined
-              ? legacyBaselineHash(session, existing.legacyBaseline)
-              : undefined);
-          const localIsNewer =
-            localVersions.some((item) => item.updated > lastLegacy) ||
-            (existing.source !== "legacy" &&
-              baselineHash !== undefined &&
-              (existing.deleted
-                ? baselineHash !== legacyBaselineHash(session, null)
-                : legacyBaselineHash(session, existing.text) !== baselineHash));
-          const localUpdated = Math.max(
-            existing.source === "local" ? existing.updated || 0 : 0,
-            ...localVersions.map((item) => item.updated),
-          );
-          let version: DraftVersion;
-          if (prior?.text === value) {
-            version = prior;
-          } else {
-            let updated = Math.max(Date.now(), lastLegacy + 1);
-            if (localIsNewer && localUpdated > lastLegacy + 1)
-              updated = Math.min(updated, localUpdated - 1);
-            if (updated <= lastLegacy) updated = lastLegacy + 1;
-            version = {
-              id,
-              session,
-              device,
-              text: value,
-              updated,
-              ...(prior?.text && prior.text !== value
-                ? {
-                    alternatives: [
-                      ...new Set([...(prior.alternatives || []), prior.text]),
-                    ],
-                  }
-                : {}),
-            };
-          }
-          const entry = { key, version };
-          if (!localIsNewer) {
-            const previous = current.current;
-            const next = { ...previous };
-            if (text === null) delete next[session];
-            else next[session] = text;
-            current.current = next;
-            update(next);
-            publishDraftChanges(previous, next);
-          }
-          // The journal is the retry boundary: persist it before advancing the
-          // legacy checkpoint, so failed storage writes remain discoverable.
-          writeDraftJournal(entry);
-          journal.current.set(key, entry);
-          pendingEdits.current.set(session, version.updated);
-          if (!localIsNewer) {
-            writeLocalDraftRecord(scope, session, text, "local", {
-              legacyBaselineHash: legacyBaselineHash(session, text),
-              legacyPending: false,
-              legacyUpdated: version.updated,
-              updated: version.updated,
-            });
-          } else {
-            writeLocalDraftRecord(
-              scope,
-              session,
-              existing.deleted ? null : existing.text,
-              existing.source,
-              {
-                legacyBaselineHash: legacyBaselineHash(session, text),
-                legacyPending: false,
-                legacyUpdated: version.updated,
-                updated: existing.updated,
-              },
-            );
-          }
-        } catch {
-          reportLocalError(
-            "A saved draft could not be imported from another tab. Keep this chat open.",
-          );
-        }
-      }
-    },
-    [reportLocalError],
-  );
   const adoptScope = useCallback(
     (workspaceId: string) => {
       const targetKey = `codex-drafts:${workspaceId}`;
@@ -418,21 +301,7 @@ export function useSyncedDrafts() {
           throw error;
         }
       }
-      try {
-        queueLegacyUpdates(
-          migrateLegacyDrafts(targetKey, () =>
-            reportLocalError(
-              "Some saved drafts could not be read. Keep this chat open.",
-            ),
-          ),
-          targetKey,
-        );
-      } catch {
-        reportLocalError(
-          "Saved drafts could not be migrated. Keep this chat open.",
-        );
-      }
-      let next: Drafts = readDraftsWithLegacyFallback(targetKey, () =>
+      let next: Drafts = readLocalDrafts(targetKey, () =>
         reportLocalError(
           "Some saved drafts could not be read. Keep this chat open.",
         ),
@@ -468,9 +337,10 @@ export function useSyncedDrafts() {
       update(next);
       publishDraftChanges(previous, next);
     },
-    [reportLocalError, queueLegacyUpdates],
+    [reportLocalError],
   );
   const flushDrafts = useCallback(() => {
+    if (isApiSchemaMismatch()) return Promise.resolve();
     if (flushing.current) return flushing.current;
     flushing.current = (async () => {
       let connecting = false;
@@ -642,7 +512,7 @@ export function useSyncedDrafts() {
       start();
     };
     const start = () => {
-      if (stopped || starting || started) return;
+      if (stopped || isApiSchemaMismatch() || starting || started) return;
       clearTimeout(retry);
       starting = true;
       void syncDatabase()
@@ -650,9 +520,16 @@ export function useSyncedDrafts() {
           if (stopped) return;
           adoptScope(workspaceId);
           await flushDrafts();
-          cancel = await startDraftReplication((e) => {
-            if (!stopped) reportSyncFailure(e !== null);
-          });
+          const testOnly =
+            typeof window !== "undefined"
+              ? (window as any).__codexDraftReplicationTestOnly
+              : undefined;
+          cancel = await startDraftReplication(
+            (e) => {
+              if (!stopped) reportSyncFailure(e !== null);
+            },
+            testOnly ? { testOnly } : undefined,
+          );
           if (stopped) {
             cancel();
             return;
@@ -701,50 +578,33 @@ export function useSyncedDrafts() {
         });
     };
     retryDraftBootstrap.current = recoverBootstrap;
-    queueLegacyUpdates(localRecovery.imported);
     start();
-    const scanLegacyStorage = () => {
-      try {
-        const imported = migrateLegacyDrafts(
-          storageKey.current,
-          () =>
-            reportLocalError(
-              "Some saved drafts could not be read. Keep this chat open.",
-            ),
-          { includeNewLegacyChats: true },
-        );
-        queueLegacyUpdates(imported);
-        void flushDrafts();
-      } catch {
-        reportLocalError(
-          "A saved draft could not be imported from another tab. Keep this chat open.",
-        );
-      }
-    };
     const stopResume = onResume(() => {
       recoverBootstrap();
-      scanLegacyStorage();
       void flushDrafts();
     });
-    const onOnline = () => recoverBootstrap();
-    window.addEventListener("online", onOnline);
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== storageKey.current) return;
+    const onOnline = () => {
       recoverBootstrap();
-      scanLegacyStorage();
     };
-    window.addEventListener("storage", onStorage);
+    window.addEventListener("online", onOnline);
     const writeTimer = setInterval(() => {
-      scanLegacyStorage();
+      if (isApiSchemaMismatch()) return;
       void flushDrafts();
     }, 3000);
+    const stopForSchemaMismatch = onApiSchemaMismatch(() => {
+      stopped = true;
+      clearTimeout(retry);
+      clearInterval(writeTimer);
+      unsubscribe();
+      cancel();
+    });
     return () => {
       stopped = true;
       clearTimeout(retry);
       clearInterval(writeTimer);
       stopResume();
+      stopForSchemaMismatch();
       window.removeEventListener("online", onOnline);
-      window.removeEventListener("storage", onStorage);
       retryDraftBootstrap.current = () => {};
       unsubscribe();
       cancel();
@@ -755,9 +615,7 @@ export function useSyncedDrafts() {
     flushDrafts,
     decodeDrafts,
     reportSyncFailure,
-    reportLocalError,
     setDrafts,
-    queueLegacyUpdates,
   ]);
   return {
     get drafts() {

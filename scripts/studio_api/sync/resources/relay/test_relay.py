@@ -59,6 +59,15 @@ class _Context:
     def resource_hub(self) -> ResourceHub:
         return self.hub
 
+    async def get_api_schema_hash(self) -> str:
+        return "relay-test-schema"
+
+    def peek_api_schema_hash(self) -> str:
+        return "relay-test-schema"
+
+    def start_api_schema_hash(self) -> None:
+        return None
+
     def entity_sequence(self) -> int:
         return 0
 

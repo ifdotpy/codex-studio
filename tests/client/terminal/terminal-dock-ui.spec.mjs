@@ -9,11 +9,8 @@ import {
   test,
   browserExecutablePath,
   spawnFixture as spawn,
+  apiSchemaHandshakeSse,
 } from "../playwright.mjs";
-import {
-  isResourceChangeEvent,
-  isResourceHeartbeatEvent,
-} from "../../../web/src/generated/stream-validators.js";
 
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
@@ -34,7 +31,9 @@ test("Terminal dock", async () => {
       reason,
       resources,
     };
-    assert.ok(isResourceChangeEvent(event));
+    assert.ok(
+      Array.isArray(event.resources) && Number.isFinite(event.revision),
+    );
     stream.response.write(
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
@@ -73,6 +72,7 @@ test("Terminal dock", async () => {
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
+        res.write(apiSchemaHandshakeSse());
         resourceStreams.add(stream);
         writeResourceEvent(stream, "initial");
         const heartbeat = setInterval(() => {
@@ -82,7 +82,7 @@ test("Terminal dock", async () => {
             epoch,
             revision: resourceRevision,
           };
-          assert.ok(isResourceHeartbeatEvent(value));
+          assert.ok(Number.isFinite(value.revision));
           res.write(`event: heartbeat\ndata: ${JSON.stringify(value)}\n\n`);
         }, 1000);
         res.on("close", () => {

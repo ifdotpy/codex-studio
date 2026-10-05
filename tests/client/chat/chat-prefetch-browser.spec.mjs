@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 // Real RxDB projection persistence and two browser tabs, with an isolated API.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,7 @@ test("Chat prefetch browser", async ({
         configureServer(server) {
           server.middlewares.use("/api/sync/stream", (_request, response) => {
             response.setHeader("Content-Type", "text/event-stream");
+            response.write(apiSchemaHandshakeSse());
             response.flushHeaders();
             streams.add(response);
             response.on("close", () => streams.delete(response));

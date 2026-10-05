@@ -76,6 +76,8 @@ class WorkspaceMixin:
             operation["id"]: operation
             for operation in self._workspace_operations(db)
         }
+        # Startup recovery runs once; scanning the roster here also catches legacy
+        # reservations that have no workspace-operation row to name their agent.
         for a in self.records(db, "agents"):
             operations = [operation for operation in active.values() if operation.get("agent") == a["id"]]
             if operations:
@@ -271,8 +273,7 @@ class WorkspaceMixin:
             Path(agent["cwd"]).resolve() == Path(cwd).resolve()
             for operation in self._workspace_operations(db)
             if operation["id"] != exclude_operation
-            for agent in self.records(db, "agents")
-            if operation.get("agent") == agent["id"]
+            for agent in self.named_agents(db, (operation.get("agent"),)).values()
         )
 
     @staticmethod
@@ -360,6 +361,7 @@ class WorkspaceMixin:
                 if removed:
                     from codex_sync_entities import put as sync_entity_put
                     sync_entity_put(connection, "project", path, {}, deleted=True)
+                    self.sync_agent_rooms(connection, self.project_room_ids(connection, path))
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
             project = json.loads(existing[0]) if existing else None

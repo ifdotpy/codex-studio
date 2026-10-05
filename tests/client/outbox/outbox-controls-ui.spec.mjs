@@ -130,24 +130,6 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     // Serve its later transcript materialization to the reloaded page.
     await context.route("**/api/transcript?*", deliverTranscriptOutbox);
     await context.route("**/api/transcript/page?*", deliverTranscriptOutbox);
-    await context.route("**/api/transcript/stream?*", async (route) => {
-      if (!showDeliveredOutbox) return route.fallback();
-      const id = new URL(route.request().url()).searchParams.get("id");
-      const response = await fetch(
-        `${target}/api/transcript?id=${encodeURIComponent(id)}`,
-      );
-      const transcript = await response.json();
-      transcript.items = markOutboxDelivered(transcript.items);
-      const data = {
-        ...transcript,
-        replace: true,
-        order: transcript.items.map((item) => item.id),
-      };
-      await route.fulfill({
-        contentType: "text/event-stream",
-        body: `data: ${JSON.stringify(data)}\n\n`,
-      });
-    });
     await context.route("**/api/queue?*", async (route) => {
       if (!showDeliveredOutbox || route.request().method() !== "GET")
         return route.fallback();

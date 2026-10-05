@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
 
 test("Sync Push Lifecycle Browser", async ({
   browser: _testBrowser,
@@ -56,7 +56,7 @@ test("Sync Push Lifecycle Browser", async ({
       } else if (url.pathname === "/api/sync/stream") {
         opened++;
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(": connected\n\n");
+        res.write(apiSchemaHandshakeSse());
         streams.add(res);
         res.on("close", () => streams.delete(res));
       } else next();

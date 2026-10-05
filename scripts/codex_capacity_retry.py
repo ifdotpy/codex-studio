@@ -151,7 +151,7 @@ class CapacityRetryMixin:
         if any(r.get('agent') == a['id'] and r['status'] in {'pending', 'answering', 'uncertain'}
                for r in self.records(db, 'requests')):
             raise ValueError('Resolve the pending request before retry.')
-        agents = self.records(db, 'agents')
+        agents = self.team_agents(db, a['rootId'], include_deleted=True)
         root = self.agent(a['rootId'], db)
         if a['id'] != root['id']:
             from codex_agent_modes import assert_delegation

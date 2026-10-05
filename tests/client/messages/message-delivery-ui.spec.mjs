@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeEvent,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -99,53 +103,71 @@ test("message delivery ui", async ({ browser: _browser }) => {
       });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.addInitScript((workspaceId) => {
-        window.deliveryStreams = [];
-        window.EventSource = class extends EventTarget {
-          constructor(url) {
-            super();
-            this.url = url;
-            window.deliveryStreams.push(this);
-          }
-          close() {
-            window.deliveryStreams = window.deliveryStreams.filter(
-              (stream) => stream !== this,
-            );
-          }
-        };
-        let generation = Date.now();
-        window.publishDelivery = (_id, _revision) => {
-          const revision = ++generation;
-          for (const stream of window.deliveryStreams) {
-            const url = new URL(stream.url, location.href);
-            const scope = url.searchParams.get("scope");
-            if (scope?.startsWith("transcript:"))
-              stream.dispatchEvent(
-                new MessageEvent("changes", {
-                  data: JSON.stringify({
-                    protocolVersion: 1,
-                    scope,
-                    workspaceId,
-                    documents: [],
-                    cursor: 0,
+      await page.addInitScript(
+        ({ workspaceId, schemaHandshake }) => {
+          window.deliveryStreams = [];
+          window.EventSource = class extends EventTarget {
+            constructor(url) {
+              super();
+              this.url = url;
+              window.deliveryStreams.push(this);
+              queueMicrotask(() => {
+                this.dispatchEvent(
+                  new MessageEvent("api-schema", {
+                    data: JSON.stringify(schemaHandshake),
                   }),
-                }),
-              );
-            if (url.pathname === "/api/sync/stream" && !scope)
-              stream.onmessage?.({
-                data: JSON.stringify({
-                  protocol: 2,
-                  workspaceId,
-                  generations: {
-                    state: revision,
-                    transcripts: revision,
-                    drafts: 0,
-                  },
-                }),
+                );
               });
-          }
-        };
-      }, identity.workspaceId);
+            }
+            close() {
+              window.deliveryStreams = window.deliveryStreams.filter(
+                (stream) => stream !== this,
+              );
+            }
+          };
+          let generation = Date.now();
+          window.publishDelivery = (_id, _revision) => {
+            const revision = ++generation;
+            for (const stream of window.deliveryStreams) {
+              const url = new URL(stream.url, location.href);
+              const scope = url.searchParams.get("scope");
+              if (scope?.startsWith("transcript:"))
+                stream.dispatchEvent(
+                  new MessageEvent("changes", {
+                    data: JSON.stringify({
+                      protocolVersion: 1,
+                      scope,
+                      workspaceId,
+                      documents: [],
+                      cursor: 0,
+                    }),
+                  }),
+                );
+              if (url.pathname === "/api/sync/stream" && !scope) {
+                const resources = JSON.parse(
+                  url.searchParams.get("resources") || "[]",
+                );
+                stream.dispatchEvent(
+                  new MessageEvent("resources", {
+                    data: JSON.stringify({
+                      protocol: 3,
+                      workspaceId,
+                      epoch: "fixture-epoch",
+                      revision,
+                      reason: "change",
+                      resources,
+                    }),
+                  }),
+                );
+              }
+            }
+          };
+        },
+        {
+          workspaceId: identity.workspaceId,
+          schemaHandshake: apiSchemaHandshakeEvent(),
+        },
+      );
       const history = new Map(
         [a, b].map((agent) => [
           agent.id,

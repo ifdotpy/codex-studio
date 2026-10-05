@@ -6,8 +6,9 @@ import sys
 import os
 import threading
 
-from test_isolation import isolate_supervisor_environment
+from test_isolation import isolate_api_schema_cache, isolate_supervisor_environment
 isolate_supervisor_environment()
+isolate_api_schema_cache()
 
 sys.dont_write_bytecode = True
 skill = Path(__file__).resolve().parents[1]
