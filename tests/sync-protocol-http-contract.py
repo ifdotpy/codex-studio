@@ -3,6 +3,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import http.client
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import stat
+import socket
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
@@ -37,6 +39,38 @@ with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
         assert protocol["maxStreamBytes"] > 0
         socket_path = Path(directory) / "canvas.sock"
         assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
+
+        def get_unix(path, read_lines=0):
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                connection.settimeout(10)
+                connection.connect(str(socket_path))
+                connection.sendall(
+                    f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
+                    "Connection: close\r\n\r\n".encode()
+                )
+                response = http.client.HTTPResponse(connection)
+                response.begin()
+                body = (
+                    b"".join(response.fp.readline() for _ in range(read_lines))
+                    if read_lines
+                    else response.read()
+                )
+                return response.status, dict(response.getheaders()), body
+            finally:
+                connection.close()
+
+        unix_status, unix_headers, unix_body = get_unix("/api/sync/protocol")
+        assert unix_status == 200
+        assert json.loads(unix_body)["supportedVersions"] == [3]
+        unix_schema = unix_headers.get("X-Studio-API-Schema")
+        unix_parameters = {"protocol": 3, "resources": json.dumps([{"kind": "state"}], separators=(",", ":"))}
+        if unix_schema:
+            unix_parameters["apiSchema"] = unix_schema
+        unix_query = urllib.parse.urlencode(unix_parameters)
+        unix_status, _, unix_body = get_unix("/api/sync/stream?" + unix_query, read_lines=10)
+        assert unix_status == 200
+        assert b"event: resources" in unix_body
 
         resources = json.dumps([{"kind": "state"}], separators=(",", ":"))
         parameters = {"protocol": 3, "resources": resources}

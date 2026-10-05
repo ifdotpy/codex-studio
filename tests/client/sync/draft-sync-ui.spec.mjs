@@ -195,6 +195,15 @@ test("Draft sync ui", async ({
     );
     await phone.locator("#message").fill("Current draft");
     await waitText(desktop, "Current draft");
+    assert.equal(
+      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
+      0,
+      "Current draft edits and synchronization never access the retired aggregate map",
+    );
+    assert.equal(
+      await desktop.evaluate(() => window.__retiredDraftMap.read()),
+      JSON.stringify({ [session]: "Retired aggregate-map draft" }),
+    );
     // A temporary pull error must not leave an error banner after recovery.
     let failPull = false,
       failPush = false,

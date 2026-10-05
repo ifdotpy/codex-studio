@@ -235,13 +235,6 @@ def create_router(context: ApiContext) -> APIRouter:
             )
             return cast(StreamingResponse, response)
 
-        if protocol_value and header_version and protocol_value != header_version:
-            return cast(StreamingResponse, context.send(
-                request,
-                {"error": "Conflicting sync protocol versions", "supportedVersions": [3]},
-                status=426,
-            ))
-
         if protocol_value == "3" or header_version == "3":
             resources_json = _first(request, "resources", "") or ""
             if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:

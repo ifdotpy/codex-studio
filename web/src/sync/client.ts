@@ -236,13 +236,15 @@ function watchTranscriptInvalidations(id: string, resync: () => void) {
 export async function persistProjection(
   collection: RxCollection<SyncDocument>,
   incoming: SyncDocument,
+  replaceObsoleteTranscript = false,
 ) {
   for (;;) {
     const [previous] = await collection.storageInstance.findDocumentsById(
       [incoming.id],
       true,
     );
-    if (previous && previous.seq >= incoming.seq) return;
+    if (previous && previous.seq >= incoming.seq && !replaceObsoleteTranscript)
+      return;
     const document: RxDocumentData<SyncDocument> = {
       ...incoming,
       _deleted: incoming._deleted === true,
@@ -517,7 +519,11 @@ async function persistTranscriptProjection(
     seq: document.seq,
     _deleted: document._deleted,
   };
-  await persistProjection(collection, metaDocument);
+  await persistProjection(
+    collection,
+    metaDocument,
+    !document._deleted && !isDelta && !!previous && !base,
+  );
   if (!document._deleted && !isDelta) {
     cacheTranscriptValue(
       workspaceId,
@@ -686,7 +692,10 @@ async function acquireProjection(
                 [checkpointId],
                 true,
               );
-            const after = previous?.seq ?? 0;
+            const hasTranscriptBase =
+              !scope.startsWith("transcript:") ||
+              (!!previous && !!readTranscriptMeta(previous.payload));
+            const after = hasTranscriptBase ? (previous?.seq ?? 0) : 0;
             if (initialHigh !== undefined && previous?.payload) {
               try {
                 initialHigh =

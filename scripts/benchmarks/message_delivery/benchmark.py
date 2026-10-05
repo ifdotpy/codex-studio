@@ -178,18 +178,18 @@ class SyncClient(threading.Thread):
             list(pool.map(self.pull, agents))
 
     def run(self):
-        with urllib.request.urlopen(
-            self.base + "/api/sync/protocol",
-            timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline)),
-        ) as protocol_response:
-            api_schema = protocol_response.headers.get("X-Studio-API-Schema")
-        parameters = {"protocol": 3, "resources": self.resources}
-        if api_schema:
-            parameters["apiSchema"] = api_schema
-        query = urllib.parse.urlencode(parameters)
-        request = urllib.request.Request(self.base + "/api/sync/stream?" + query,
-                                         headers={"Accept": "text/event-stream"})
         try:
+            with urllib.request.urlopen(
+                self.base + "/api/sync/protocol",
+                timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline)),
+            ) as protocol_response:
+                api_schema = protocol_response.headers.get("X-Studio-API-Schema")
+            parameters = {"protocol": 3, "resources": self.resources}
+            if api_schema:
+                parameters["apiSchema"] = api_schema
+            query = urllib.parse.urlencode(parameters)
+            request = urllib.request.Request(self.base + "/api/sync/stream?" + query,
+                                             headers={"Accept": "text/event-stream"})
             with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
                 if response.status != 200:
                     raise RuntimeError(f"sync stream returned HTTP {response.status}")

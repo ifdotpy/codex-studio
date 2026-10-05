@@ -577,7 +577,6 @@ export function useSyncedDrafts() {
     });
     const onOnline = () => {
       recoverBootstrap();
-      void flushDrafts();
     };
     window.addEventListener("online", onOnline);
     const writeTimer = setInterval(() => {

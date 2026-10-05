@@ -33,7 +33,9 @@ function parseRecord(
     value.session !== session ||
     typeof value.text !== "string" ||
     typeof value.deleted !== "boolean" ||
-    (value.source !== "local" && value.source !== "remote") ||
+    (value.source !== "local" &&
+      value.source !== "remote" &&
+      value.source !== "legacy") ||
     (value.updated !== undefined && !Number.isFinite(value.updated))
   )
     throw new Error("A saved draft could not be read. Keep this chat open.");
@@ -43,7 +45,7 @@ function parseRecord(
     session,
     text: value.text,
     deleted: value.deleted,
-    source: value.source,
+    source: value.source === "legacy" ? "local" : value.source,
     ...(value.updated !== undefined
       ? { updated: value.updated as number }
       : {}),
@@ -90,7 +92,18 @@ export function writeLocalDraftRecord(
   const key = localDraftKey(scope, session);
   const previousRaw = localStorage.getItem(key);
   const previous = previousRaw
-    ? parseRecord(previousRaw, workspaceOf(scope), session)
+    ? (() => {
+        const parsed = parseRecord(previousRaw, workspaceOf(scope), session);
+        const raw = JSON.parse(previousRaw) as Record<string, unknown>;
+        return {
+          ...Object.fromEntries(
+            Object.entries(raw).filter(
+              ([field]) => !field.startsWith("legacy"),
+            ),
+          ),
+          ...parsed,
+        };
+      })()
     : null;
   const record: LocalDraftRecord = {
     ...previous,

@@ -47,6 +47,18 @@ typed transcript subscriptions. `--transport sync` measures concurrent
 transcript` measures concurrent current transcript reads from `/api/transcript`.
 The reports label the pull paths separately.
 
+### Measurement change from the legacy benchmark
+
+Protocol 3 uses one shared resource stream and then pulls transcript state. The
+previous benchmark opened one direct transcript stream per subscriber and
+measured incremental append/prefix handling. This version no longer measures
+direct per-subscriber delivery, incremental SSE payload behavior, or the cost
+of N concurrent streams. `--check` now exercises the protocol-3 sync-pull
+transport; previous `--check` transcript-stream timings are not comparable.
+The report configuration fields `primaryPath` and `fallbackPath` were replaced
+by `invalidationPath`, `syncPullPath`, and `transcriptPullPath`. Compare results
+only when transport, workload, host, and report schema match.
+
 The 1/8/32 counts stress increasing numbers of subscribed chats. They do not
 mean a normal foreground view opens 32 streams: the application shares one
 protocol-3 invalidation stream across projection subscribers. This benchmark measures

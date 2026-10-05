@@ -62,16 +62,14 @@ table therefore does not rebuild the scoped trigger set. When it discovers a
 new source table, it also invalidates the affected scope if rows were committed
 before its triggers could be installed. Startup does the same when it repairs a
 missing or changed scoped trigger for a populated source, covering rows added
-while Studio was stopped. Version 2 SSE carries the workspace
-identity and generation map. A new client subscribes by projection scope; every stream
-connection first sends the complete map, which reconciles missed events after
-sleep or network loss. It also polls the compact map as a scoped fallback. Invalid
-or unknown event data, a changed workspace identity, a counter rollback, and
-explicit resume/reconnect trigger a full refresh. The unversioned stream retains
-legacy broad `RESYNC` invalidation semantics. Scope notifications arriving in
-the same debounce window are combined, so a transcript update cannot hide a
-simultaneous state update. EventSource reconnect `open` also requests a broad
-refresh, even when the generation map has not changed.
+while Studio was stopped.
+
+The browser receives typed protocol-3 resource notifications over
+`/api/sync/stream` and pulls affected projections through `/api/sync/pull`.
+Each connection sends an initial resource baseline, then only changed references.
+Reconnect and explicit resume reconcile active subscriptions. The server has no
+generation polling route or legacy unversioned/transcript stream. These resource
+events are transient invalidations, not durable projection cursors.
 
 ## Checks
 

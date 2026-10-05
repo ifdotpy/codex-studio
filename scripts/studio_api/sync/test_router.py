@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
 import threading
@@ -32,6 +33,7 @@ from studio_api.sync.resources.models import (
     TranscriptResource,
 )
 from codex_runtime import Runtime
+from codex_sync import SyncStore
 
 
 class StoreStub:
@@ -298,6 +300,19 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"reason":"reconnect"', body)
         self.assertIn('"kind":"panel","agentId":"agent-a"', body)
 
+    def test_protocol_three_entity_invalidation_keeps_tombstone_floor_reset_pull(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "state"}], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn('"kind":"state"', body)
+        context.store.reset_pull = True
+        response = make_client(context).get(
+            "/api/sync/pull?scope=state:entities:v1&after=2&reset=1"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["floor"], 4)
+        self.assertTrue(response.json()["reset"])
+
     def test_missing_panel_agent_does_not_block_or_watch_other_resources(self) -> None:
         context = ContextStub()
         resources = json.dumps([
@@ -315,6 +330,41 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+
+    def test_real_sync_store_returns_unchanged_transcript_for_full_pull(self) -> None:
+        context = ContextStub()
+        unchanged_transcript = {
+            "items": [{"id": "item-a", "text": "unchanged chat"}],
+            "title": "Existing chat",
+        }
+        context.runtime.transcript_responses = [unchanged_transcript, unchanged_transcript]
+        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(
+            connect,
+            snapshot=lambda: {},
+            transcript=context.runtime.transcript,
+        )
+        context.sync = lambda: store
+        client = make_client(context)
+        full = client.get("/api/sync/pull?scope=transcript:agent-a&after=0")
+        self.assertEqual(full.status_code, 200)
+        full_document = full.json()["documents"][0]
+        self.assertIn("unchanged chat", full_document["payload"])
+        checkpoint = full.json()["checkpoint"]["seq"]
+        self.assertEqual(full_document["seq"], checkpoint)
+        unchanged = client.get(f"/api/sync/pull?scope=transcript:agent-a&after={checkpoint}")
+        self.assertEqual(unchanged.status_code, 200)
+        self.assertEqual(unchanged.json()["documents"], [])
+        self.assertEqual(unchanged.json()["checkpoint"]["seq"], checkpoint)
 
     def test_pull_keeps_query_parameter_openapi_schema(self) -> None:
         app = FastAPI()
