@@ -1,0 +1,400 @@
+{
+  "cwd": [
+    [
+      "broadcast:all",
+      {
+        "collection": "room",
+        "id": "broadcast:all",
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-0",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-0",
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-1",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-1",
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "private:lead-0:a-worker",
+      {
+        "collection": "room",
+        "id": "private:lead-0:a-worker",
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "shared-a",
+      {
+        "collection": "room",
+        "id": "shared-a",
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ]
+  ],
+  "rename": [
+    [
+      "broadcast:all",
+      {
+        "collection": "room",
+        "id": "broadcast:all",
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-0",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-0",
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-1",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-1",
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "private:lead-0:a-worker",
+      {
+        "collection": "room",
+        "id": "private:lead-0:a-worker",
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker renamed ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "shared-a",
+      {
+        "collection": "room",
+        "id": "shared-a",
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ]
+  ],
+  "single-delete": [
+    [
+      "broadcast:all",
+      {
+        "collection": "room",
+        "id": "broadcast:all",
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1", "lead-2", "b-worker"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-0",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-0",
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-1",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-1",
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "private:lead-0:a-worker",
+      {
+        "collection": "room",
+        "id": "private:lead-0:a-worker",
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "shared-a",
+      {
+        "collection": "room",
+        "id": "shared-a",
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ]
+  ],
+  "tree-delete": [
+    [
+      "broadcast:all",
+      {
+        "collection": "room",
+        "id": "broadcast:all",
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "lead-2", "b-worker"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-0",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-0",
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "broadcast:lead-1",
+      {
+        "collection": "room",
+        "id": "broadcast:lead-1",
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "private:lead-0:a-worker",
+      {
+        "collection": "room",
+        "id": "private:lead-0:a-worker",
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ],
+    [
+      "shared-a",
+      {
+        "collection": "room",
+        "id": "shared-a",
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      },
+      0
+    ]
+  ]
+}

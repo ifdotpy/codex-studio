@@ -306,7 +306,10 @@ class AnalyticsHistoryMixin:
                 ids = getattr(self, "_analytics_history_ids", None)
                 if not ids or self._analytics_history_cursor % len(ids) == 0:
                     ids = self._analytics_history_ids = [
-                        a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                        row[0] for row in db.execute(
+                            "SELECT id FROM runtime_agents WHERE "
+                            "json_type(record,'$.threadId')='text' AND "
+                            "json_extract(record,'$.threadId')>'' ORDER BY rowid")]
                 if not ids:
                     return False
                 self._analytics_history_cursor %= len(ids)

@@ -76,7 +76,7 @@ class WorkspaceMixin:
             operation["id"]: operation
             for operation in self._workspace_operations(db)
         }
-        for a in self.records(db, "agents"):
+        for a in self.named_agents(db, (operation.get("agent") for operation in active.values())).values():
             operations = [operation for operation in active.values() if operation.get("agent") == a["id"]]
             if operations:
                 operation = operations[0]
@@ -271,8 +271,7 @@ class WorkspaceMixin:
             Path(agent["cwd"]).resolve() == Path(cwd).resolve()
             for operation in self._workspace_operations(db)
             if operation["id"] != exclude_operation
-            for agent in self.records(db, "agents")
-            if operation.get("agent") == agent["id"]
+            for agent in self.named_agents(db, (operation.get("agent"),)).values()
         )
 
     @staticmethod

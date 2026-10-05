@@ -195,7 +195,9 @@ class FederationService:
             return identity
         keys = _crypto("generate")
         state_id = str(uuid.uuid4())
-        lead = next((a for a in self.runtime.records(db, "agents") if a.get("isLead") and not a.get("deletedAt")), None)
+        lead_row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 "
+                              "AND json_extract(record,'$.deletedAt') IS NULL ORDER BY rowid LIMIT 1").fetchone()
+        lead = json.loads(lead_row[0]) if lead_row else None
         identity = {"stateId": state_id, "privateKey": keys["privateKey"],
                     "publicKey": keys["publicKey"], "label": "Studio server",
                     "leadName": lead.get("name", "Lead") if lead else "Lead",
@@ -633,7 +635,8 @@ class FederationService:
             unique_members = sorted(set(local_members))
             if len(unique_members) != len(local_members):
                 raise ValueError("Room members must be unique")
-            agents = {a["id"]: a for a in self.runtime.records(db, "agents") if not a.get("deletedAt")}
+            agents = {key: agent for key, agent in self.runtime.named_agents(db, unique_members).items()
+                      if not agent.get("deletedAt")}
             roots = set()
             members = []
             for agent_id in unique_members:
@@ -690,14 +693,16 @@ class FederationService:
             members = sorted(set(local_members))
             if len(members) != len(local_members):
                 raise ValueError("Room members must be unique")
-            agents = {a["id"]: a for a in self.runtime.records(db, "agents") if not a.get("deletedAt")}
+            agents = {key: agent for key, agent in self.runtime.named_agents(db, members).items()
+                      if not agent.get("deletedAt")}
             if not all(agent in agents for agent in members):
                 raise ValueError("Select live local agents only")
-            lead_ids = [a["id"] for a in agents.values() if a.get("isLead")]
-            if not any(agent in lead_ids for agent in members):
+            if not any(agents[agent].get("isLead") for agent in members):
                 raise ValueError("Include the local lead in a shared room")
             roots = {agents[agent].get("rootId") for agent in members}
-            if len(roots) != 1 or next(iter(roots)) not in lead_ids:
+            root_id = next(iter(roots)) if len(roots) == 1 else None
+            team_root = self.runtime.agent(root_id, db) if isinstance(root_id, str) else None
+            if len(roots) != 1 or not team_root or not team_root.get("isLead") or team_root.get("deletedAt"):
                 raise ValueError("Room members must belong to one local team")
             local = self.ensure_identity(db)
             share_names = body.get("share_names", False)
@@ -829,8 +834,9 @@ class FederationService:
             room = _record(db.execute("SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)).fetchone())
             if not room or room.get("status") != "approved":
                 raise ValueError("Shared room is unavailable")
-            leads = [a["id"] for a in self.runtime.records(db, "agents")
-                     if a.get("isLead") and not a.get("deletedAt") and a["id"] in room.get("localMembers", [])]
+            leads = [a["id"] for a in self.runtime.named_agents(
+                db, room.get("localMembers", [])).values()
+                     if a.get("isLead") and not a.get("deletedAt")]
             if not leads:
                 raise ValueError("The local lead is not a room participant")
             sender = leads[0]

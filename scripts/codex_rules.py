@@ -383,8 +383,8 @@ class RulesMixin:
 
     def low_workers_tick(self, db, rule, lead, now):
         from codex_workspace import active_monitors
-        workers = [a for a in self.records(db, "agents")
-                   if a["rootId"] == lead["id"] and not a.get("isLead") and not a.get("deletedAt")]
+        workers = [a for a in self.team_agents(db, lead["id"])
+                   if not a.get("isLead")]
         commands = {m["agent"] for m in active_monitors(db)
                     if m.get("status") == "running" and not m.get("cancelRequested")}
         count = sum(a["status"] in {"starting", "running"} or a["id"] in commands for a in workers)
