@@ -440,6 +440,196 @@ class NativeReleaseContract(unittest.TestCase):
                     self.assertEqual(actual["nativeRelease"], current["nativeRelease"])
                 self.assertEqual(self.release_calls(before), [])
 
+    def test_not_loaded_reset_retires_unsubmitted_inspection_without_claiming_closure(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        old_error = "thread/read response timed out; outcome unknown"
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False, error=old_error)
+            current.update(status="failed", error="Keep the current native failure", nativeFailureHold=True)
+            self.rt.put(db, "agents", current)
+            self.rt.loaded.discard(worker["id"])
+            self.rt.put(db, "tool_requests", {"id": "old-command-unknown", "agent": worker["id"],
+                "stage": "failed", "outcome": "unknown"})
+        before = len(self.rt.server.calls)
+        result = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Retire the old inspection"},
+            epoch=lead["epoch"])
+        self.assertEqual(result["status"], "not_loaded")
+        settled = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertIsNone(settled["phase"])
+        self.assertEqual(settled["inspectionPhase"], "superseded")
+        self.assertIsNone(settled["error"])
+        self.assertEqual(settled["inspectionError"], old_error)
+        self.assertEqual(self.rt.agent(worker["id"])["error"], "Keep the current native failure")
+        self.assertTrue(self.rt.agent(worker["id"])["nativeFailureHold"])
+        self.assertEqual(self.rt.agent(worker["id"])["status"], "failed")
+        for name in ("id", "at", "targetEpoch", "targetRootId", "targetParentId", "threadId",
+                     "accountKey", "connectionId", "resetBy", "resetActorEpoch", "resetActorScope"):
+            self.assertEqual(settled[name], saved[name], name)
+        for name in ("submittedAt", "closedAt", "releasedAt", "nativeStatus"):
+            self.assertNotIn(name, settled, name)
+        self.assertEqual(self.release_calls(before), [])
+        with self.rt.read_db() as db:
+            unknown = json.loads(db.execute("SELECT record FROM runtime_tool_requests WHERE id=?",
+                ("old-command-unknown",)).fetchone()[0])
+        self.assertEqual(unknown["outcome"], "unknown")
+        self.assertEqual(release_agent(self.rt, worker["id"], reason="Repeat inspection retirement"),
+                         {"status": "not_loaded"})
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], settled)
+        self.rt.send(worker["id"], "Continue after inspection retirement", "superseded-inspection-once")
+        fixture.eventually(lambda: self.rt.delivery_receipt("superseded-inspection-once")["status"] == "delivered")
+        resumed = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertEqual(resumed["phase"], "resumed")
+        self.assertIsNone(resumed["error"])
+        self.assertEqual(resumed["id"], saved["id"])
+        self.assertEqual(resumed["inspectionError"], old_error)
+        for name in ("submittedAt", "closedAt", "releasedAt", "nativeStatus"):
+            self.assertNotIn(name, resumed, name)
+        calls = [method for method, params in self.rt.server.calls[before:]
+                 if params.get("threadId") == worker["threadId"]]
+        self.assertEqual(calls.count("thread/resume"), 1)
+        self.assertEqual(calls.count("turn/start"), 1)
+        self.assertEqual(calls.count("thread/unsubscribe"), 0)
+
+    def test_confirmed_resume_retires_unsubmitted_inspection_error_without_claiming_closure(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        old_error = "thread/read response timed out; outcome unknown"
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False, error=old_error)
+            self.rt.put(db, "agents", current)
+            self.rt.loaded.discard(worker["id"])
+        before = len(self.rt.server.calls)
+        self.rt.send(worker["id"], "Continue current work", "resume-unsubmitted-inspection")
+        fixture.eventually(lambda: self.rt.delivery_receipt("resume-unsubmitted-inspection")["status"] == "delivered")
+        resumed = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertEqual(resumed["phase"], "resumed")
+        self.assertIsNone(resumed["error"])
+        self.assertEqual(resumed["inspectionError"], old_error)
+        self.assertEqual(resumed["id"], saved["id"])
+        for name in ("submittedAt", "closedAt", "releasedAt", "nativeStatus"):
+            self.assertNotIn(name, resumed, name)
+        calls = [method for method, params in self.rt.server.calls[before:]
+                 if params.get("threadId") == worker["threadId"]]
+        self.assertEqual(calls.count("thread/resume"), 1)
+        self.assertEqual(calls.count("turn/start"), 1)
+        self.assertEqual(calls.count("thread/unsubscribe"), 0)
+
+    def test_unsubmitted_inspection_retirement_preserves_missing_or_unsafe_scope(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.waiting_reset(lead, worker)
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False,
+                                           error="Keep the original inspection error")
+            self.rt.put(db, "agents", current)
+            self.rt.loaded.discard(worker["id"])
+        original = self.rt.agent(worker["id"])
+        missing = object()
+        cases = [("release", field, missing) for field in
+                 ("id", "at", "targetEpoch", "targetRootId", "targetParentId", "threadId",
+                  "accountKey", "connectionId")]
+        cases += [("release", "targetEpoch", False), ("release", "targetEpoch", 1),
+                  ("release", "threadId", "another-thread"),
+                  ("release", "accountKey", "another-account"),
+                  ("release", "connectionId", "another-connection"),
+                  ("release", "targetRootId", "another-root"),
+                  ("release", "targetParentId", "another-parent"),
+                  ("release", "at", float("inf")), ("release", "at", True),
+                  ("release", "closedAt", 0), ("release", "submittedAt", 0),
+                  ("release", "resetPending", True), ("release", "phase", "unknown"),
+                  ("release", "phase", "unsubscribing"),
+                  ("agent", "autoWake", False), ("agent", "deletedAt", time.time())]
+        before = len(self.rt.server.calls)
+        for scope, field, value in cases:
+            with self.subTest(scope=scope, field=field):
+                current = json.loads(json.dumps(original))
+                target = current if scope == "agent" else current["nativeRelease"]
+                if value is missing:
+                    target.pop(field)
+                else:
+                    target[field] = value
+                with self.rt.lock, self.rt.db() as db:
+                    self.rt.put(db, "agents", current)
+                result = release_agent(self.rt, worker["id"], reason="Only the current inspection")
+                self.assertIn(result["status"], {"not_loaded", "unknown"})
+                self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], current["nativeRelease"])
+                self.assertEqual(self.release_calls(before), [])
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, "agents", original)
+        server = self.rt.servers.pop("default")
+        try:
+            self.assertEqual(release_agent(self.rt, worker["id"], reason="Offline keeps history"),
+                             {"status": "not_loaded"})
+            self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], original["nativeRelease"])
+        finally:
+            self.rt.servers["default"] = server
+
+    def test_resume_does_not_retire_a_different_or_submitted_release(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.waiting_reset(lead, worker)
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False,
+                                           error="Another operation still has its error")
+            current["error"] = "Keep the current agent failure separately"
+            self.rt.put(db, "agents", current)
+        original = self.rt.agent(worker["id"])
+        for field, value in (("targetEpoch", 1), ("threadId", "another-thread"),
+                             ("connectionId", "another-connection"), ("submittedAt", time.time())):
+            with self.subTest(field=field):
+                current = json.loads(json.dumps(original))
+                current["nativeRelease"][field] = value
+                with self.rt.lock, self.rt.db() as db:
+                    self.rt.put(db, "agents", current)
+                    self.rt.loaded.discard(worker["id"])
+                event_id = "different-inspection-" + field
+                self.rt.send(worker["id"], "Continue with one new input", event_id)
+                fixture.eventually(lambda: self.rt.delivery_receipt(event_id)["status"] == "delivered")
+                actual = self.rt.agent(worker["id"])
+                self.assertEqual(actual["nativeRelease"], current["nativeRelease"])
+                self.idle(worker)
+
+    def test_stop_before_resume_receipt_keeps_inspection_and_does_not_submit_input(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.waiting_reset(lead, worker)
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(phase="blocked", resetPending=False,
+                                           error="Keep the stopped inspection")
+            self.rt.put(db, "agents", current)
+            self.rt.loaded.discard(worker["id"])
+        saved = self.rt.agent(worker["id"])["nativeRelease"]
+        resume = concurrent.futures.Future()
+        submit = self.rt.server.submit
+        def gated(method, params):
+            if method == "thread/resume" and params.get("threadId") == worker["threadId"]:
+                self.rt.server.calls.append((method, params))
+                return resume
+            return submit(method, params)
+        with patch.object(self.rt.server, "submit", gated):
+            self.rt.send(worker["id"], "This input must remain cancelled", "stopped-inspection-resume")
+            fixture.eventually(lambda: worker["id"] in self.rt.preparations)
+            operation = self.rt.preparations[worker["id"]]
+            self.rt.stop(worker["id"])
+            resume.set_result({"thread": {"id": worker["threadId"]}, "model": worker["model"]})
+            fixture.eventually(lambda: operation["future"].done())
+        actual = self.rt.agent(worker["id"])
+        self.assertEqual(actual["nativeRelease"], saved)
+        self.assertFalse(actual["autoWake"])
+        self.assertEqual(actual["epoch"], worker["epoch"] + 1)
+        self.assertNotIn("closedAt", actual["nativeRelease"])
+        self.assertFalse(any(method == "turn/start" and params.get("clientUserMessageId") == "stopped-inspection-resume"
+                             for method, params in self.rt.server.calls))
+
     def test_not_loaded_reset_preserves_stop_and_unknown_input(self):
         lead = self.lead()
         worker = self.worker(lead)
