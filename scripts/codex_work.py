@@ -37,7 +37,8 @@ def work_tools(tool, text):
             "Manage team assignments and review decisions. list returns brief items with nextCursor; get reads one task; history pages earlier evidence. "
             "create and update notify the assigned worker when an assignment becomes ready; title and description edits alone do not wake it. "
             "claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. "
-            "Only the lead reviews results. accept records approval and releases dependent work. "
+            "Only the lead reviews results. accept and reject require the review decision in result. "
+            "accept records approval and releases dependent work. "
             "reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. "
             "cancel closes a task without requiring a submit; give a reason. Only the lead or task creator can cancel. "
             "Cancellation releases the assignment and sends work_decision to a live owner. "
@@ -68,7 +69,8 @@ def work_tools(tool, text):
                 "owner": text,
                 "dependencies": {"type": "array", "items": text},
                 "status": {"type": "string", "enum": ["ready", "blocked"]},
-                "result": text,
+                "result": {**text, "description": "Required for submit, accept, and reject. "
+                           "For accept or reject, put the review decision in result."},
                 "reason": {"type": "string", "minLength": 1, "maxLength": 32000},
                 "checks": text,
                 "revision": text,
@@ -101,8 +103,11 @@ class WorkMixin:
         with self.lock, self.db() as db:
             stored = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
             prior = json.loads(stored[0]).get('archive') if stored else None
+        legacy_main_check = (prior and prior.get('status') == 'kept'
+                             and prior.get('reason') == 'The result commit is not reachable from main'
+                             and not prior.get('mainEvidence'))
         try:
-            archive = (prior if prior and not prior.get('retryable')
+            archive = (prior if prior and not prior.get('retryable') and not legacy_main_check
                        else self._archive_accepted_owner(agent_id, result, epoch))
         except Exception as error:
             archive = {'status': 'kept', 'reason': 'The archive check failed: ' + str(error)[:180]}
@@ -113,7 +118,8 @@ class WorkMixin:
             work = json.loads(row[0])
             if work['status'] != 'accepted':
                 raise ValueError('Accepted work item changed during archive check')
-            if not work.get('archive') or work['archive'].get('retryable'):
+            if (not work.get('archive') or work['archive'].get('retryable')
+                    or legacy_main_check and work.get('archive') == prior):
                 work['archive'] = archive
             if archive.get('retryable'):
                 intent = work.get('archiveIntent') or {}
@@ -367,9 +373,15 @@ class WorkMixin:
             return {'status': 'kept', 'reason': 'The owner was archived for another reason'}
         if owner.get('deletedAt'):
             return {'status': 'kept', 'reason': 'The owner is already removed'}
+        if work.get('owner') != owner_id or work.get('status') != 'accepted':
+            return {'status': 'kept', 'reason': 'The accepted task owner changed'}
         revision = work['results'][-1].get('revision', '')
         if not re.fullmatch(r'[0-9a-fA-F]{7,64}', revision):
             return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
+        deadline = time.monotonic() + 8
+        reference = None
+        fetched = None
+        main_evidence = None
         try:
             prefix = []
             if owner.get('imageWorkspaceReady'):
@@ -382,42 +394,125 @@ class WorkMixin:
                 if worktree_root is None:
                     raise ValueError('The saved worker path is outside its Studio worktree')
                 repo_path = worktree_root.parent.parent.parent
-            repo = subprocess.run([*prefix, 'git', '-C', str(repo_path), 'rev-parse', '--show-toplevel'],
-                                  check=True, capture_output=True, timeout=30).stdout.decode().strip()
-            submitted = subprocess.run([*prefix, 'git', '-C', repo, 'rev-parse', '--verify',
-                                        revision + '^{commit}'], check=True, capture_output=True,
-                                       timeout=30).stdout.decode().strip()
-            main = subprocess.run([*prefix, 'git', '-C', repo, 'rev-parse', '--verify',
-                                   'refs/heads/main^{commit}'], check=True, capture_output=True,
-                                  timeout=30).stdout.decode().strip()
-            reached = subprocess.run([*prefix, 'git', '-C', repo, 'merge-base', '--is-ancestor', submitted, main],
-                                     capture_output=True, timeout=30)
-        except (KeyError, OSError, subprocess.SubprocessError, UnicodeError):
+            def git(*args, check=True):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired('accepted main check', 8)
+                return subprocess.run([*prefix, 'git', '-C', str(repo_path), *args],
+                                      check=check, capture_output=True, text=True, timeout=remaining)
+
+            def scope():
+                common = git('rev-parse', '--path-format=absolute', '--git-common-dir').stdout.strip()
+                remotes = git('remote').stdout.splitlines()
+                raw_urls = git('config', '--get-all', 'remote.origin.url').stdout.splitlines() if 'origin' in remotes else []
+                urls = git('remote', 'get-url', '--all', 'origin').stdout.splitlines() if 'origin' in remotes else []
+                return common, remotes, raw_urls, urls
+
+            git('rev-parse', '--show-toplevel')
+            submitted = git('rev-parse', '--verify', '--end-of-options', revision + '^{commit}').stdout.strip()
+            common, remotes, raw_urls, urls = scope()
+            if remotes and (len(raw_urls) != 1 or len(urls) != 1
+                            or not raw_urls[0] or len(raw_urls[0]) > 4096 or not urls[0]):
+                return {'status': 'kept', 'reason': 'A single origin URL is required to check fresh origin/main'}
+            candidates = []
+            if remotes:
+                # Use the original URL in a command-only remote. Git applies insteadOf
+                # once, as for origin, without rewriting an already expanded URL again.
+                identifier = uuid.uuid4().hex
+                reference = 'refs/studio/archive-check/' + identifier
+                remote = 'studio-archive-check-' + identifier
+                if (remote in remotes
+                        or git('show-ref', '--verify', '--quiet', reference, check=False).returncode == 0):
+                    return {'status': 'kept', 'reason': 'The private main check identity is already in use'}
+
+                def fetch_receipt(output):
+                    if not isinstance(output, str):
+                        return None
+                    updates = [line.split() for line in output.splitlines()
+                               if line.split() and line.split()[-1] == reference]
+                    if (len(updates) == 1 and len(updates[0]) == 4
+                            and updates[0][0] == '*'
+                            and re.fullmatch(r'(?:0{40}|0{64})', updates[0][1])
+                            and re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', updates[0][2])):
+                        return updates[0][2]
+                    return None
+
+                from codex_worktree_creation import _run_checkout
+                try:
+                    receipt = _run_checkout([*prefix, 'env', 'GIT_TERMINAL_PROMPT=0', 'git', '-C', str(repo_path),
+                                            '-c', 'core.askPass=', '-c', 'credential.interactive=false',
+                                            '-c', 'gc.auto=0', '-c', 'remote.' + remote + '.url=' + raw_urls[0],
+                                            'fetch', '--porcelain', '--no-tags', '--no-recurse-submodules',
+                                            '--no-write-fetch-head', '--refmap=', '--', remote,
+                                            '+refs/heads/main:' + reference], check=True, capture_output=True,
+                                           text=True, timeout=min(5, deadline - time.monotonic()))
+                    fetched = fetch_receipt(receipt.stdout)
+                except (OSError, subprocess.SubprocessError) as error:
+                    fetched = fetch_receipt(getattr(error, 'stdout', None))
+                    return {'status': 'kept', 'reason': 'Fresh origin/main could not be refreshed; archive outcome is unconfirmed',
+                            'retryable': True}
+                if (not fetched or scope() != (common, remotes, raw_urls, urls)
+                        or git('rev-parse', '--verify', reference + '^{commit}').stdout.strip() != fetched):
+                    return {'status': 'kept', 'reason': 'The repository, origin, or fetched ref changed during the main check'}
+                candidates.append(('origin/main', reference, fetched))
+            local = git('rev-parse', '--verify', 'refs/heads/main^{commit}', check=False)
+            if local.returncode == 0:
+                candidates.append(('local main', 'refs/heads/main', local.stdout.strip()))
+            if not candidates:
+                return {'status': 'kept', 'reason': 'The result commit or main branch cannot be checked'}
+            for source, checked_ref, main in candidates:
+                if git('merge-base', '--is-ancestor', submitted, main, check=False).returncode == 0:
+                    main_evidence = {'source': source, 'commit': main}
+                    break
+            if main_evidence is None:
+                target = 'fresh origin/main or local main' if remotes else 'local main'
+                return {'status': 'kept', 'reason': 'The result commit is not reachable from ' + target}
+            if owner.get('worktreeReady'):
+                _, reason = _worktree_check(self, agent_id, owner_id, epoch)
+                if reason:
+                    retryable = any(value in reason for value in (
+                        'active_turn', 'workspace_operation', 'thread_preparation', 'descendants',
+                        'input_delivery', 'monitors', 'background_tasks', 'questions',
+                        'assigned_work', 'tool_requests'))
+                    return {'status': 'kept', 'reason': reason, 'retryable': retryable}
+            if (scope() != (common, remotes, raw_urls, urls)
+                    or git('rev-parse', '--verify', checked_ref + '^{commit}').stdout.strip() != main
+                    or git('rev-parse', '--verify', '--end-of-options', revision + '^{commit}').stdout.strip() != submitted):
+                return {'status': 'kept', 'reason': 'The repository or main ref changed during the archive check'}
+            with self.lock, self.db() as db:
+                current = self.agent(owner_id, db)
+                latest = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
+                                               (work['id'],)).fetchone()[0])
+                identity = ('epoch', 'cwd', 'worktreeReady', 'imageWorkspaceReady', 'imageWorkspaceRepo', 'deletedAt')
+                if (any(current.get(name) != owner.get(name) for name in identity)
+                        or latest.get('owner') != owner_id or latest.get('status') != 'accepted'
+                        or latest.get('results') != work.get('results')):
+                    return {'status': 'kept', 'reason': 'The accepted task or owner changed during the archive check'}
+            try:
+                archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
+                                                          'reason': 'Accepted task result is on main'}, epoch)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                return {'status': 'kept', 'reason': str(error)[:180]}
+        except (KeyError, OSError, ValueError, subprocess.SubprocessError, UnicodeError):
             return {'status': 'kept', 'reason': 'The result commit or main branch cannot be checked'}
-        if reached.returncode != 0:
-            return {'status': 'kept', 'reason': 'The result commit is not reachable from main'}
-        if owner.get('worktreeReady'):
-            _, reason = _worktree_check(self, agent_id, owner_id, epoch)
-            if reason:
-                retryable = any(value in reason for value in (
-                    'active_turn', 'workspace_operation', 'thread_preparation', 'descendants',
-                    'input_delivery', 'monitors', 'background_tasks', 'questions',
-                    'assigned_work', 'tool_requests'))
-                return {'status': 'kept', 'reason': reason, 'retryable': retryable}
-        try:
-            archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
-                                                      'reason': 'Accepted task result is on main'}, epoch)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
-            return {'status': 'kept', 'reason': str(error)[:180]}
+        finally:
+            if reference and fetched:
+                try:
+                    # Delete only the exact private value this call observed, even if
+                    # archive has removed the worker directory. Never delete a changed ref.
+                    subprocess.run([*prefix, 'git', '--git-dir=' + common, 'update-ref', '-d', reference, fetched],
+                                   check=False, capture_output=True, timeout=2)
+                except (OSError, subprocess.SubprocessError):
+                    pass
         if archived['status'] != 'archived':
             blockers = archived.get('blockers') or []
             return {'status': 'kept', 'reason': ', '.join(item['kind'] for item in blockers) or archived['status'],
                     'retryable': bool(blockers)}
         cleanup = archived.get('worktree') or {}
         if cleanup.get('state') == 'kept':
-            return {'status': 'archived', 'worktree': cleanup,
+            return {'status': 'archived', 'worktree': cleanup, 'mainEvidence': main_evidence,
                     'reason': cleanup.get('reason', 'The worktree was kept')}
-        return {'status': 'archived', 'worktree': cleanup}
+        return {'status': 'archived', 'worktree': cleanup, 'mainEvidence': main_evidence}
 
     def setup_work(self, db):
         db.executescript("""
@@ -964,7 +1059,10 @@ class WorkMixin:
                 if action == "reject" and w.get("owner") and w["owner"] != a["rootId"]:
                     from codex_agent_modes import assert_delegation
                     assert_delegation(self.agent(a["rootId"], db))
-                reason = text_field(data.get("result"), "a review decision")
+                try:
+                    reason = text_field(data.get("result"), "result")
+                except ValueError:
+                    raise ValueError("Supply result with 1 to 32000 characters for accept or reject") from None
                 w["decisions"].append(
                     {
                         "resultId": w["results"][-1]["id"],

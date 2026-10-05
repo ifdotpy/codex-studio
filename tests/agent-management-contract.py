@@ -287,6 +287,133 @@ class Contract(unittest.TestCase):
         self.assertEqual(self.call('restore')['status'],'restored')
 
 
+class ArchiveBacklogContract(Contract):
+    def task(self, key, status='running', **values):
+        record = {'id': key, 'rootId': 'lead', 'owner': 'worker', 'status': status,
+                  'version': 7, 'title': key, 'description': 'Keep this task',
+                  'dependencies': ['dependency'], 'results': [{'id': 'evidence'}],
+                  'decisions': [{'resultId': 'evidence', 'decision': 'reject'}],
+                  'labels': ['keep'], **values}
+        self.update('work', record)
+        return record
+
+    def rows(self):
+        with self.rt.db() as db:
+            return {row['id']: row for row in self.rt.records(db, 'work')}
+
+    def test_default_keeps_assigned_work_and_opt_in_returns_open_tasks_once(self):
+        originals = {status: self.task(status, status) for status in
+                     ('ready', 'running', 'blocked', 'review', 'accepted', 'cancelled')}
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'], 'assigned_work')
+        self.assertEqual(self.rows(), originals)
+        archived = self.call('archive', unassign_work=True)
+        self.assertEqual(archived['status'], 'archived')
+        self.assertEqual(archived['unassignedWork'], ['ready', 'running', 'blocked', 'review'])
+        rows = self.rows()
+        for status in ('ready', 'running', 'blocked', 'review'):
+            self.assertIsNone(rows[status]['owner'])
+            self.assertEqual(rows[status]['status'], 'ready')
+            self.assertEqual(rows[status]['version'], 8)
+            for field in ('title', 'description', 'dependencies', 'results', 'decisions', 'labels'):
+                self.assertEqual(rows[status][field], originals[status][field])
+        for status in ('accepted', 'cancelled'):
+            self.assertEqual(rows[status], originals[status])
+        replay = self.call('archive', unassign_work=True)
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(replay['unassignedWork'], archived['unassignedWork'])
+        self.assertEqual(self.rows(), rows)
+        self.assertEqual(self.rt.calls, [('thread/read', 'worker')])
+
+    def test_archive_and_task_updates_roll_back_together(self):
+        original = self.task('open')
+        put = self.rt.put
+        def fail(db, table, row):
+            if table == 'agents' and row['id'] == 'worker' and row.get('agentArchive'):
+                raise ValueError('fixture storage failure')
+            return put(db, table, row)
+        self.rt.put = fail
+        with self.assertRaisesRegex(ValueError, 'fixture storage failure'):
+            self.call('archive', unassign_work=True)
+        self.assertEqual(self.rows()['open'], original)
+        with self.rt.db() as db:
+            self.assertNotIn('agentArchive', self.rt.agent('worker', db))
+
+    def test_opt_in_checks_all_tasks_scope_before_first_update(self):
+        good = self.task('good')
+        bad = self.task('foreign', rootId='peer')
+        with self.assertRaisesRegex(ValueError, 'another team'):
+            self.call('archive', unassign_work=True)
+        self.assertEqual(self.rows(), {'good': good, 'foreign': bad})
+
+    def test_opt_in_does_not_stop_active_or_unknown_work(self):
+        original = self.task('open')
+        for table, record in [('monitors', {'id': 'm', 'agent': 'worker', 'status': 'running'}),
+                              ('tasks', {'id': 't', 'agent': 'worker', 'status': 'unknown'}),
+                              ('tool_requests', {'id': 'r', 'agent': 'worker', 'stage': 'running', 'outcome': 'unknown'})]:
+            with self.subTest(table=table):
+                self.update(table, record)
+                self.assertEqual(self.call('archive', unassign_work=True)['status'], 'blocked')
+                self.assertEqual(self.rows()['open'], original)
+                with self.rt.db() as db:
+                    self.assertEqual(self.rt.records(db, table), [record])
+                    db.execute('DELETE FROM runtime_' + table)
+        self.rt.native_state = 'active'
+        self.assertEqual(self.call('archive', unassign_work=True)['status'], 'blocked')
+        self.assertEqual(self.rows()['open'], original)
+
+    def test_opt_in_rechecks_stop_connection_monitor_and_assignment_after_native_read(self):
+        original = self.task('open')
+        native = self.rt.servers['default']
+        call = native.call
+        for race in ('stop', 'connection', 'server', 'monitor'):
+            with self.subTest(race=race):
+                self.worker(epoch=1, status='completed', autoWake=True)
+                self.rt.connection_ids['default'] = 'connection'
+                self.rt.servers['default'] = native
+                def inspect(method, params, timeout):
+                    result = call(method, params, timeout)
+                    if race == 'stop': self.worker(epoch=2, autoWake=False, status='paused')
+                    elif race == 'connection': self.rt.connection_ids['default'] = 'new'
+                    elif race == 'server': self.rt.servers['default'] = object()
+                    else: self.update('monitors', {'id': 'new', 'agent': 'worker', 'status': 'running'})
+                    return result
+                native.call = inspect
+                if race == 'monitor':
+                    self.assertEqual(self.call('archive', unassign_work=True)['status'], 'blocked')
+                else:
+                    with self.assertRaisesRegex(ValueError, 'changed during native inspection'):
+                        self.call('archive', unassign_work=True)
+                self.assertEqual(self.rows()['open'], original)
+                with self.rt.db() as db: db.execute('DELETE FROM runtime_monitors')
+        self.worker(epoch=1, status='completed', autoWake=True)
+        self.rt.connection_ids['default'] = 'connection'
+        self.rt.servers['default'] = native
+        def reassign(method, params, timeout):
+            result = call(method, params, timeout)
+            self.task('open', owner='peer')
+            self.task('new')
+            return result
+        native.call = reassign
+        result = self.call('archive', unassign_work=True)
+        self.assertEqual(result['unassignedWork'], ['new'])
+        self.assertEqual(self.rows()['open']['owner'], 'peer')
+
+    def test_opt_in_requires_a_boolean_and_supported_action(self):
+        with self.assertRaisesRegex(ValueError, 'boolean'):
+            self.call('archive', unassign_work='true')
+        with self.assertRaisesRegex(ValueError, 'only to archive'):
+            self.call('inspect', unassign_work=True)
+
+    def test_opt_in_no_thread_fast_path_is_atomic_and_preserves_other_tasks(self):
+        original = self.task('other', owner='peer')
+        self.task('open')
+        self.worker(threadId=None)
+        result = self.call('archive', unassign_work=True)
+        self.assertEqual(result['unassignedWork'], ['open'])
+        self.assertEqual(self.rows()['other'], original)
+        self.assertEqual(self.rt.calls, [])
+
+
 class RealWorktreeContract(Contract):
     def setUp(self):
         super().setUp()
@@ -318,6 +445,275 @@ class RealWorktreeContract(Contract):
                      worktreeReady=True, status=status)
             self.rt.put(db, 'agents', a)
         return path
+
+    def partial_removal(self, change=None):
+        import codex_agent_management as management
+        root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        cache = root / 'build' / 'cache.bin'
+        cache.parent.mkdir()
+        cache.write_bytes(b'saved cache')
+        git = management._git
+        def remove(repo, *args):
+            if args[:3] == ('worktree', 'remove', '--force'):
+                admin = Path((root / '.git').read_text().strip().split(': ', 1)[1])
+                (root / 'tracked.txt').unlink()
+                shutil.rmtree(admin)
+                if change: change(root, cache)
+                raise subprocess.CalledProcessError(1, ['git', *args])
+            return git(repo, *args)
+        with patch.object(management, '_git', side_effect=remove):
+            result = self.call('archive')
+        self.assertEqual(result['status'], 'archived')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertTrue(root.exists())
+        self.assertNotIn(str(root), self.git('worktree', 'list', '--porcelain'))
+        return root, cache
+
+    def test_git_removal_failure_saves_bounded_stderr_errno_actor_time_and_identity(self):
+        import codex_agent_management as management
+        root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        head = self.git('rev-parse', 'HEAD', cwd=root)
+        git = management._git
+        for failure in (subprocess.CalledProcessError(128, ['git', 'worktree', 'remove'],
+                        stderr=b'Permission denied while removing worktree\n' + b'x' * 5000),
+                        PermissionError(13, 'Permission denied')):
+            with self.subTest(failure=type(failure).__name__):
+                def refuse(repo, *args):
+                    if args[:3] == ('worktree', 'remove', '--force'):
+                        raise failure
+                    return git(repo, *args)
+                before = management.time.time()
+                with patch.object(management, '_git', side_effect=refuse):
+                    result = self.call('archive')
+                after = management.time.time()
+                self.assertEqual(result['worktree']['state'], 'kept')
+                self.assertIn('Permission denied', result['worktree']['reason'])
+                with self.rt.db() as db:
+                    agent = self.rt.agent('worker', db)
+                saved = agent['worktreeCleanup']
+                self.assertEqual(saved['root'], str(root.resolve()))
+                self.assertEqual(saved['head'], head)
+                self.assertEqual(saved['branch'], 'codex-agent/worker')
+                self.assertTrue(agent['agentArchive']['cleanupPending'])
+                self.assertEqual(saved['error']['by'], 'lead')
+                self.assertLessEqual(before, saved['error']['at'])
+                self.assertLessEqual(saved['error']['at'], after)
+                if isinstance(failure, subprocess.CalledProcessError):
+                    self.assertEqual(saved['error']['returncode'], 128)
+                    self.assertEqual(len(saved['error']['stderr']), 4096)
+                else:
+                    self.assertEqual(saved['error']['errno'], 13)
+                self.assertEqual((root / 'tracked.txt').read_text(), 'initial\n')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'removed')
+
+    def test_partial_removal_preserves_proof_and_recovers_exact_remaining_files(self):
+        root, cache = self.partial_removal()
+        head = self.git('rev-parse', 'codex-agent/worker')
+        with self.rt.db() as db:
+            saved = self.rt.agent('worker', db)['worktreeCleanup']
+        self.assertEqual(saved['head'], head)
+        self.assertEqual(saved['root'], str(root.resolve()))
+        self.assertIn('gitFile', saved)
+        self.assertTrue(saved.get('error'))
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'removed')
+        self.assertFalse(root.exists())
+        self.assertEqual(self.git('rev-parse', 'refs/codex-agents/archive/worker'), head)
+        self.assertTrue(self.call('archive')['replayed'])
+        self.assertEqual(self.call('restore')['status'], 'restored')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=root), head)
+        self.assertFalse(cache.exists())
+
+    def test_partial_removal_keeps_changed_new_and_replaced_entries(self):
+        root, cache = self.partial_removal()
+        changed = root / '.gitignore'
+        saved = changed.read_bytes()
+        changed.write_bytes(b'changed tracked file')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertEqual(changed.read_bytes(), b'changed tracked file')
+        self.assertEqual(cache.read_bytes(), b'saved cache')
+
+    def test_partial_removal_keeps_new_file_before_any_unlink(self):
+        root, cache = self.partial_removal()
+        (root / 'new-user-file').write_text('Keep me')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.assertEqual(cache.read_bytes(), b'saved cache')
+        self.assertEqual((root / 'new-user-file').read_text(), 'Keep me')
+        self.assertTrue((root / '.gitignore').exists())
+
+    def test_partial_removal_keeps_replaced_root_and_does_not_follow_symlinks(self):
+        root, cache = self.partial_removal()
+        moved = root.with_name('saved-leftovers')
+        root.rename(moved)
+        root.mkdir()
+        (root / 'important').write_text('Keep me')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.assertEqual((root / 'important').read_text(), 'Keep me')
+        shutil.rmtree(root)
+        root.symlink_to(moved, target_is_directory=True)
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.assertEqual((moved / 'build' / 'cache.bin').read_bytes(), b'saved cache')
+
+    def test_partial_removal_requires_exact_ref_epoch_saved_proof_and_no_new_monitor(self):
+        root, cache = self.partial_removal()
+        with self.rt.db() as db:
+            agent = self.rt.agent('worker', db)
+        self.worker(epoch=agent['epoch'] + 1)
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.worker(epoch=agent['epoch'])
+        self.update('monitors', {'id': 'm', 'agent': 'worker', 'status': 'running'})
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        with self.rt.db() as db: db.execute('DELETE FROM runtime_monitors')
+        head = self.git('rev-parse', 'refs/codex-agents/archive/worker')
+        self.git('commit', '--allow-empty', '-qm', 'different head')
+        self.git('update-ref', 'refs/codex-agents/archive/worker', self.git('rev-parse', 'HEAD'))
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.git('update-ref', 'refs/codex-agents/archive/worker', head)
+        with self.rt.db() as db:
+            a = self.rt.agent('worker', db)
+            (root / '.git').unlink()
+            self.rt.put(db, 'agents', a)
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.assertEqual(cache.read_bytes(), b'saved cache')
+
+    def legacy_partial_removal(self):
+        root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        cache = root / 'build' / 'cache.bin'
+        cache.parent.mkdir()
+        cache.write_bytes(b'old cache')
+        admin = Path((root / '.git').read_text().strip().split(': ', 1)[1])
+        (root / 'tracked.txt').unlink()
+        shutil.rmtree(admin)
+        head = self.git('rev-parse', 'codex-agent/worker')
+        self.git('update-ref', 'refs/codex-agents/archive/worker', head)
+        self.worker(epoch=2, deletedAt=123, autoWake=False, status='paused',
+                    agentArchive={'at': 123, 'by': 'lead', 'reason': 'Finished worker cleanup',
+                                  'epoch': 2, 'cleanupPending': False})
+        return root, cache, head
+
+    def test_legacy_half_removed_worktree_repairs_registration_before_git_removal(self):
+        root, cache, head = self.legacy_partial_removal()
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'removed', result)
+        self.assertFalse(root.exists())
+        self.assertEqual(self.git('rev-parse', 'refs/codex-agents/archive/worker'), head)
+        self.assertEqual(self.git('rev-parse', 'codex-agent/worker'), head)
+        self.assertEqual(self.call('restore')['status'], 'restored')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=root), head)
+        self.assertFalse(cache.exists())
+        self.assertEqual(list(root.parent.glob('.studio-archive-repair-*')), [])
+
+    def test_legacy_registration_repair_preserves_modified_and_untracked_files(self):
+        root, cache, head = self.legacy_partial_removal()
+        (root / '.gitignore').write_text('changed tracked file')
+        (root / 'new-user-file').write_text('Keep me')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertEqual((root / '.gitignore').read_text(), 'changed tracked file')
+        self.assertEqual((root / 'new-user-file').read_text(), 'Keep me')
+        self.assertEqual(cache.read_bytes(), b'old cache')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=root), head)
+        self.assertIn(str(root.resolve()), self.git('worktree', 'list', '--porcelain'))
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+
+    def test_legacy_git_link_fifo_rejects_without_blocking_the_runner(self):
+        code = """
+import importlib.util, json, os, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location('management_fixture', path)
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+case = fixture.RealWorktreeContract()
+case.setUp()
+try:
+    root, cache, head = case.legacy_partial_removal()
+    (root / '.git').unlink()
+    os.mkfifo(root / '.git')
+    result = case.call('archive')
+    assert result['worktree']['state'] == 'kept', result
+    assert 'regular file' in result['worktree']['reason'], result
+    assert cache.read_bytes() == b'old cache'
+    print('special Git link kept')
+finally:
+    case.tearDown()
+"""
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(Path(__file__).resolve())],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('special Git link kept', result.stdout)
+
+    def test_legacy_repair_requires_original_git_link_archive_and_branch_identity(self):
+        root, cache, head = self.legacy_partial_removal()
+        link = (root / '.git').read_text()
+        (root / '.git').write_text('gitdir: /unrelated/path\n')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        (root / '.git').write_text(link)
+        self.worker(branch='different')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.worker(branch='codex-agent/worker')
+        self.worker(agentArchive={'at': 456, 'epoch': 2, 'cleanupPending': False})
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+        self.assertEqual(cache.read_bytes(), b'old cache')
+        self.assertNotIn(str(root.resolve()), self.git('worktree', 'list', '--porcelain'))
+
+    def test_tracked_change_during_slow_size_check_never_reaches_git_remove(self):
+        import codex_agent_management as management
+        root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        run = management.subprocess.run
+        def gated(command, **kwargs):
+            if command[:2] == ['du', '-sk']:
+                (root / 'tracked.txt').write_text('new user data')
+            return run(command, **kwargs)
+        with patch.object(management.subprocess, 'run', side_effect=gated):
+            result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertEqual((root / 'tracked.txt').read_text(), 'new user data')
+        self.assertEqual(self.call('archive')['worktree']['state'], 'kept')
+
+    def test_unverified_dirty_files_remain_after_registration_disappears(self):
+        import codex_agent_management as management
+        root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
+        admin = Path((root / '.git').read_text().strip().split(': ', 1)[1])
+        run = management.subprocess.run
+        def gated(command, **kwargs):
+            if command[:2] == ['du', '-sk']:
+                (root / 'tracked.txt').write_text('new user data')
+                shutil.rmtree(admin)
+            return run(command, **kwargs)
+        with patch.object(management.subprocess, 'run', side_effect=gated):
+            first = self.call('archive')
+        self.assertEqual(first['worktree']['state'], 'kept')
+        second = self.call('archive')
+        self.assertEqual(second['worktree']['state'], 'kept')
+        self.assertEqual((root / 'tracked.txt').read_text(), 'new user data')
+
+    def test_legacy_repair_keeps_another_registered_branch_checkout(self):
+        root, cache, head = self.legacy_partial_removal()
+        other = self.repo / '.worktrees' / 'codex-agents' / 'other'
+        self.git('worktree', 'add', '-q', str(other), 'codex-agent/worker')
+        result = self.call('archive')
+        self.assertEqual(result['worktree']['state'], 'kept')
+        self.assertIn('another registered worktree', result['worktree']['reason'])
+        self.assertEqual(cache.read_bytes(), b'old cache')
+        self.assertEqual(self.git('rev-parse', 'HEAD', cwd=other), head)
+
+    def test_bulk_opt_in_returns_tasks_to_backlog_before_worktree_cleanup(self):
+        task = {'id': 'open', 'rootId': 'lead', 'owner': 'worker', 'status': 'review',
+                'version': 1, 'results': [{'id': 'result'}]}
+        self.update('work', task)
+        self.assertEqual(self.call('archive_finished')['archived'], 0)
+        result = self.call('archive_finished', unassign_work=True)
+        self.assertEqual(result['archived'], 1)
+        self.assertEqual(result['unassignedWork'], ['open'])
+        with self.rt.db() as db:
+            work = self.rt.records(db, 'work')[0]
+            self.assertEqual(work['results'], task['results'])
+            self.assertIsNone(work['owner'])
+            self.assertEqual(work['status'], 'ready')
+        self.assertFalse((self.repo / '.worktrees' / 'codex-agents' / 'worker').exists())
 
     def image_workspace(self):
         from types import ModuleType
@@ -648,6 +1044,52 @@ class RuntimeRouteContract(unittest.TestCase):
             self.assertIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])
             self.assertFalse(rt.agent(worker['id'])['autoWake'])
         finally:case.tearDown()
+
+    def test_native_opt_in_archive_receipt_does_not_repeat_task_release_after_restore(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('runtime_fixture', Path(__file__).with_name('runtime-contract.py'))
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        case = fixture.RuntimeContract()
+        case.setUp()
+        try:
+            rt = case.runtime
+            lead = case.lead()
+            rt.resource_action = lambda: {'state': {'claims': {}, 'queue': {}}}
+            worker = rt.create({'name': 'Archive backlog', 'prompt': 'Inspect', 'role': 'reviewer'},
+                               lead['id'], defer=True)
+            task = rt.work_action(lead['id'], {'action': 'create', 'title': 'Keep task',
+                                              'owner': worker['id']}, actor=lead['id'])
+            with rt.lock, rt.db() as db:
+                current = rt.agent(worker['id'], db)
+                current.update(status='completed', inFlight=False, autoWake=False)
+                rt.put(db, 'agents', current)
+                db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (worker['id'],))
+            args = {'action': 'archive', 'agent_id': worker['id'], 'reason': 'Keep the backlog',
+                    'unassign_work': True, 'request_id': 'archive-backlog-once'}
+            def invoke(number):
+                rt.dynamic({'id': number, 'params': {'threadId': lead['threadId'], 'callId': str(number),
+                    'tool': 'orchestration_agent_manage', 'arguments': args}})
+                response = next(r for r in reversed(rt.server.responses) if r['id'] == number)['result']
+                self.assertTrue(response['success'], response)
+                return response
+            first = invoke(9300)
+            archived_epoch = rt.agent(worker['id'])['epoch']
+            self.assertEqual(invoke(9300), first)
+            self.assertEqual(rt.agent(worker['id'])['epoch'], archived_epoch)
+            result = manage_agent(rt, lead['id'], {'action': 'restore', 'agent_id': worker['id']}, lead['epoch'])
+            self.assertEqual(result['status'], 'restored')
+            rt.work_action(lead['id'], {'action': 'update', 'task_id': task['id'],
+                'owner': lead['id']}, actor=lead['id'])
+            with rt.db() as db:
+                before = dict(db.execute('SELECT * FROM runtime_work WHERE id=?', (task['id'],)).fetchone())
+            self.assertEqual(invoke(9300), first)
+            self.assertFalse(rt.agent(worker['id']).get('deletedAt'))
+            with rt.db() as db:
+                after = dict(db.execute('SELECT * FROM runtime_work WHERE id=?', (task['id'],)).fetchone())
+            self.assertEqual(after, before)
+        finally:
+            case.tearDown()
 
     def test_lead_reminder_starts_at_three_and_deduplicates_same_set(self):
         import importlib.util

@@ -5118,7 +5118,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
                                             "versions": operation.get("contextVersions", {})}
                 if a.get("nativeRelease"):
-                    a["nativeRelease"].update(phase="resumed", resumedAt=time.time(), resetPending=False)
+                    from codex_native_release import _retire_unsubmitted_inspection
+                    resumed_at = time.time()
+                    retired = _retire_unsubmitted_inspection(self, a, "resumed", resumed_at)
+                    if not retired and a["nativeRelease"].get("phase") in {"released", "resumed"}:
+                        a["nativeRelease"].update(phase="resumed", resumedAt=resumed_at, resetPending=False)
                 if operation["method"] == "thread/start" and operation.get("toolCatalog") is not None:
                     from codex_native_tools import mark_current
                     mark_current(a, operation["toolCatalog"])

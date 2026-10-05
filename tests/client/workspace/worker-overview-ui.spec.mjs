@@ -99,7 +99,6 @@ test("Worker Overview Ui", async ({
     let workerStopError = stopReason;
     let pending = true;
     let deferred = false;
-    let transcriptRequests = 0;
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
@@ -107,14 +106,6 @@ test("Worker Overview Ui", async ({
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error("Browser error:", error.message);
-    });
-    page.on("request", (request) => {
-      if (
-        /\/api\/(thread|conversation|messages|transcript)/.test(
-          new URL(request.url()).pathname,
-        )
-      )
-        transcriptRequests++;
     });
     // Keep the status fixture on HTTP snapshots; sync has separate coverage.
     await page.route("**/api/sync/**", (route) =>
@@ -327,43 +318,9 @@ test("Worker Overview Ui", async ({
         1,
       );
     assert.match(await card(0).innerText(), /Needs your answer/);
-    const excerpt = card(1).locator(".worker-excerpt");
-    assert.equal(
-      await excerpt.locator(".worker-excerpt-preview").innerText(),
-      task,
-    );
-    assert.equal(await excerpt.getAttribute("open"), null);
-    const closedLayout = await excerpt
-      .locator(".worker-excerpt-preview")
-      .evaluate((node) => ({
-        height: node.clientHeight,
-        line: parseFloat(getComputedStyle(node).lineHeight),
-      }));
-    assert.ok(
-      closedLayout.height <= closedLayout.line * 2 + 1,
-      "the preview stays compact",
-    );
-    const beforeDisclosure = transcriptRequests;
-    await excerpt.locator("summary").click();
-    assert.equal(
-      await excerpt.locator(".worker-excerpt-full p").innerText(),
-      task,
-    );
-    assert.equal(
-      await page.locator("#conversation-title").innerText(),
-      "Release lead",
-      "disclosure does not navigate",
-    );
-    assert.equal(
-      transcriptRequests,
-      beforeDisclosure,
-      "card disclosure does not fetch a transcript",
-    );
-    assert.equal(
-      await excerpt.evaluate((node) => node.scrollWidth <= node.clientWidth),
-      true,
-    );
-    await excerpt.locator("summary").click();
+    // The orchestrator sidebar does not repeat a worker's task text.
+    assert.equal(await card(1).getByText(task).count(), 0);
+    assert.doesNotMatch(await card(1).innerText(), /Task details unavailable/);
     const search = team.getByRole("searchbox", { name: "Find a subagent" });
     await search.fill("Verified receipt recovery");
     await card(25).waitFor({ state: "visible" });

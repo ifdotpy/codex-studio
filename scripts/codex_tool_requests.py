@@ -86,7 +86,8 @@ def request_result_outcome(record, result):
         return "not_applied"
     # Exact pre-write guards. Committed operation receipts still take precedence.
     rejections = {
-        "orchestration_task": {"Supply a review decision with 1 to 32000 characters"},
+        "orchestration_task": {"Supply a review decision with 1 to 32000 characters",
+                               "Supply result with 1 to 32000 characters for accept or reject"},
         "orchestration_message": {"This record belongs to another team"},
         "orchestration_agent_manage": {"You can manage only your own descendant workers", "Unknown managed agent"},
         "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters",
