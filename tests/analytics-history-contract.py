@@ -210,7 +210,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(self.f.state()["deletedAt"], 1)
         self.assertEqual(len(self.f.captured()), 1)
 
-    def test_agent_ids_are_selected_without_decoding_full_records(self):
+    def test_agent_list_is_decoded_once_per_round(self):
         self.f.path.write_bytes(self.header)
         with self.f.db() as db:
             for key in ("second", "third"):
@@ -233,9 +233,9 @@ class ImportTests(unittest.TestCase):
         with self.f.db() as db:
             db.execute("DELETE FROM runtime_agents WHERE id='third'")
         self.assertFalse(self.f.analytics_history_step())
-        self.assertEqual((decoded, seen), ([], ["second"]))
+        self.assertEqual((decoded, seen), (["agents"], ["second"]))
         self.f.analytics_history_step()
-        self.assertEqual(decoded, [])
+        self.assertEqual(decoded, ["agents", "agents"])
         self.f.analytics_history_step()
         self.assertEqual(seen, ["second", "second"])
 

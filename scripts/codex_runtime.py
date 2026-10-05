@@ -1531,10 +1531,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          ELSE json_extract(record,'$.accountKey') END);
                 CREATE INDEX IF NOT EXISTS runtime_agent_root ON runtime_agents(
                     json_extract(record,'$.rootId'));
-                CREATE INDEX IF NOT EXISTS runtime_agent_restart_stage ON runtime_agents(
-                    json_extract(record,'$.restartRecovery.stage'));
-                CREATE INDEX IF NOT EXISTS runtime_agent_live_lead ON runtime_agents(
-                    json_extract(record,'$.isLead'), json_extract(record,'$.deletedAt'));
+                CREATE INDEX IF NOT EXISTS runtime_agent_parent ON runtime_agents(
+                    json_extract(record,'$.parentId'));
                 CREATE INDEX IF NOT EXISTS runtime_agent_global_active ON runtime_agents(
                     json_extract(record,'$.status')) WHERE json_extract(record,'$.status') IN
                     ('running','starting','approval');
@@ -2493,12 +2491,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
-    def team_agents(self, db, root_id, *, include_deleted=False):
+    def team_agents(self, db, root_id, *, include_deleted=False, include_id=None):
         """Decode one team's agents without loading unrelated workspace records."""
         from codex_agent_modes import mode_fields
         live = "" if include_deleted else f"AND {LIVE_AGENT_SQL}"
+        if include_id is not None:
+            return [mode_fields(json.loads(row[0])) for row in db.execute(
+                f"SELECT record FROM runtime_agents WHERE "
+                f"(json_extract(record,'$.rootId')=? OR id=?) {live} ORDER BY rowid",
+                (root_id, include_id))]
         return [mode_fields(json.loads(row[0])) for row in db.execute(
-            f"SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? {live}",
+            f"SELECT record FROM runtime_agents WHERE json_extract(record,'$.rootId')=? {live} ORDER BY rowid",
             (root_id,))]
 
     @staticmethod
@@ -2508,7 +2511,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return [mode_fields(json.loads(row[0])) for row in db.execute(
             "SELECT record FROM runtime_agents WHERE "
             "CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
-            "ELSE json_extract(record,'$.accountKey') END=?", (account_key,))]
+            "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid", (account_key,))]
 
     @staticmethod
     def thread_agents(db, account_key, thread_id):
@@ -2518,7 +2521,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                               "ELSE json_extract(record,'$.accountKey') END")
         return [mode_fields(json.loads(row[0])) for row in db.execute(
             "SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
-            f"AND {account_expression}=?", (thread_id, account_key))]
+            f"AND {account_expression}=? ORDER BY rowid", (thread_id, account_key))]
 
     @staticmethod
     def pending_restart_agents(db):
@@ -2526,7 +2529,37 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
             "SELECT record FROM runtime_agents WHERE "
-            "json_extract(record,'$.restartRecovery.stage')='pending'")]
+            "json_extract(record,'$.restartRecovery.stage')='pending' ORDER BY rowid")]
+
+    @staticmethod
+    def descendant_agents(db, root_id):
+        """Load a parentId subtree, including inconsistent cross-root children."""
+        from codex_agent_modes import mode_fields
+        seen = {root_id}
+        frontier = [root_id]
+        while frontier:
+            marks = ",".join("?" * len(frontier))
+            rows = db.execute(
+                "SELECT json_extract(record,'$.id') FROM runtime_agents "
+                f"WHERE json_extract(record,'$.parentId') IN ({marks}) ORDER BY rowid", frontier)
+            children = [row[0] for row in rows if row[0] not in seen]
+            seen.update(children)
+            frontier = children
+        if not seen:
+            return []
+        marks = ",".join("?" * len(seen))
+        return [mode_fields(json.loads(row[0])) for row in db.execute(
+            f"SELECT record FROM runtime_agents WHERE id IN ({marks}) ORDER BY rowid", tuple(seen))]
+
+    @staticmethod
+    def release_work_agents(db):
+        """Select current failed/deleted owners with releasable work, bypassing caches."""
+        from codex_agent_modes import mode_fields
+        return [mode_fields(json.loads(row[0])) for row in db.execute(
+            "SELECT record FROM runtime_agents WHERE json_extract(record,'$.parentId') IS NOT NULL "
+            "AND (json_extract(record,'$.deletedAt') IS NOT NULL OR json_extract(record,'$.status')='failed') "
+            "AND json_extract(record,'$.id') IN (SELECT json_extract(record,'$.owner') FROM runtime_work "
+            "WHERE json_extract(record,'$.status') IN ('ready','running','blocked')) ORDER BY rowid")]
 
     @staticmethod
     def named_agents(db, agent_ids):
@@ -2666,7 +2699,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         rows = db.execute(
             "SELECT json_extract(record,'$.id'), json_extract(record,'$.name') "
             f"FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
-            f"AND {LIVE_AGENT_SQL}", (room["rootId"],)).fetchall()
+            f"AND {LIVE_AGENT_SQL} ORDER BY rowid", (room["rootId"],)).fetchall()
         agents = {row[0]: row[1] for row in rows}
         root_name = agents.get(room["rootId"])
         if room["rootId"] not in agents:
@@ -2700,7 +2733,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='broadcast' "
                 "AND (json_extract(record,'$.rootId') IN (" +
                 (",".join("?" * len(roots)) if roots else "NULL") + ") "
-                + ("OR json_extract(record,'$.rootId')='all'" if "deletedAt" in changed else "")
+                + ("OR json_extract(record,'$.rootId')='all'"
+                   if changed.intersection({"deletedAt", "rootId"}) else "")
                 + ")", sorted(roots)))
         ids.update(row[0] for row in db.execute(
             "SELECT r.id FROM runtime_rooms r WHERE json_extract(r.record,'$.kind')='private' "
@@ -2729,6 +2763,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_entity_put(db, "room", room_id, room)
             elif fallback and room_id in fallback:
                 sync_entity_put(db, "room", room_id, fallback[room_id])
+
+    @staticmethod
+    def new_agent_room_ids(db, record):
+        if record.get("deletedAt"):
+            return set()
+        root_id = record.get("rootId")
+        if not isinstance(root_id, str) or not root_id:
+            return set()
+        return {row[0] for row in db.execute(
+            "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='broadcast' "
+            "AND json_extract(record,'$.rootId') IN (?, 'all')", (root_id,))}
+
+    @staticmethod
+    def project_room_ids(db, project_path):
+        return {row[0] for row in db.execute(
+            "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' "
+            "AND json_extract(record,'$.projectPath')=?", (project_path,))}
 
     def agent_entity_view(self, db, record):
         # Match the renderer-facing fields added by snapshot(), so later
@@ -2760,7 +2811,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         return view
 
-    def put(self, db, table, record, *, sync_rooms=True):
+    def put(self, db, table, record, *, sync_rooms=True, include_last_message=False):
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
@@ -2785,7 +2836,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and record.get("rootId") != "all" else None)
                 if room is None:
                     room = next(iter(self.chat_rooms(db, room_id=record["id"],
-                                                     include_last_message=False)), None)
+                                                     include_last_message=include_last_message)), None)
                 sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
@@ -2808,9 +2859,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_task_agent_change(db, record["id"], bool(record.get("deletedAt")))
                 from codex_sync_entities import sync_monitor_agent_change
                 sync_monitor_agent_change(db)
-        if sync_rooms and table == "agents" and previous:
-            room_ids = self.affected_agent_room_ids(db, previous, record)
+        if sync_rooms and table == "agents":
+            room_ids = (self.affected_agent_room_ids(db, previous, record) if previous is not None
+                        else self.new_agent_room_ids(db, record))
             self.sync_agent_rooms(db, room_ids)
+        elif (sync_rooms and table == "projects"
+              and (previous or {}).get("peerTeams") != record.get("peerTeams")):
+            self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
             self.touch_ui(record["id"], db, publish_resource=False)
@@ -4059,13 +4114,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Keep tombstones so late callbacks cannot recreate deleted work.
         with self.lock, self.db() as db:
             a = self.agent(key, db)
-            agents = self.team_agents(db, a["rootId"], include_deleted=True)
-            ids = {key}
-            while True:
-                expanded = ids | {a["id"] for a in agents if a.get("parentId") in ids}
-                if expanded == ids:
-                    break
-                ids = expanded
+            agents = self.descendant_agents(db, key)
+            ids = {agent["id"] for agent in agents}
             children = {}
             for agent in agents:
                 parent_id = agent.get("parentId")
@@ -4087,22 +4137,28 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 after.update(deletedAt=before.get("deletedAt") or True, autoWake=False)
                 affected_rooms.update(self.affected_agent_room_ids(db, before, after))
             fallback_rooms = {}
-            if key == a["rootId"]:
-                broadcast_id = "broadcast:" + key
-                if broadcast_id in affected_rooms:
-                    view = next(iter(self.chat_rooms(
-                        db, room_id=broadcast_id, include_last_message=True,
-                        include_peer_teams=True)), None)
-                    if view:
-                        view["members"] = [key]
-                        fallback_rooms[broadcast_id] = view
+            broadcast_rows = db.execute(
+                "SELECT id,record FROM runtime_rooms WHERE id IN (" +
+                ",".join("?" * len(affected_rooms)) + ") "
+                "AND json_extract(record,'$.kind')='broadcast'", sorted(affected_rooms)
+            ).fetchall() if affected_rooms else []
+            for row in broadcast_rows:
+                room_record = json.loads(row[1])
+                root_id = room_record.get("rootId")
+                if root_id not in ids:
+                    continue
+                view = self.broadcast_room(db, room_record)
+                if view:
+                    view["members"] = [member for member in view["members"]
+                                       if member not in ids or member == root_id]
+                    fallback_rooms[row[0]] = view
             for agent_id in reversed(ordered_ids):
                 a = by_id[agent_id]
                 if a["id"] in ids:
                     a.update(deletedAt=a.get("deletedAt") or time.time(), autoWake=False)
                     self.put(db, "agents", a, sync_rooms=False)
             self.sync_agent_rooms(db, affected_rooms, fallback_rooms)
-            self.release_failed_work(db, self.scheduler_agents(db), force=True)
+            self.release_failed_work(db, self.release_work_agents(db), force=True)
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
         self.stop(key, True, "Conversation deleted")
@@ -6048,7 +6104,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def parent_event(self, db, a, event_id, text, *, recovery=False):
         if a.get("parentId") and (a["autoWake"] or recovery):
             if a.get("deletedAt") or a.get("status") == "failed":
-                self.release_failed_work(db, self.scheduler_agents(db), force=True)
+                self.release_failed_work(db, self.release_work_agents(db), force=True)
             parent = self.agent(a["parentId"], db)
             key = "child:" + a["id"] + ":" + event_id
             self.enqueue_recovery_event(db, parent, "child_result", json.dumps({"agent_id": a["id"],
@@ -6062,7 +6118,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return None
         if status == "failed" and hasattr(self, "release_failed_work"):
             # Task release and the terminal lead event share this transaction.
-            self.release_failed_work(db, self.scheduler_agents(db), force=True)
+            self.release_failed_work(db, self.release_work_agents(db), force=True)
         task_rows = db.execute(
             "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
@@ -9001,8 +9057,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
             self.agent(key, db)
-            agents = (self.team_agents(db, self.agent(key, db)["rootId"], include_deleted=True)
-                      if descendants else [self.agent(key, db)])
+            agents = self.descendant_agents(db, key) if descendants else [self.agent(key, db)]
             ids = {key}
             if descendants:
                 while True:

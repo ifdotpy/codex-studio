@@ -103,6 +103,24 @@ def capacity(runtime):
     return {"active": active, "finished": finished}
 
 
+def subtree_read(runtime):
+    with runtime.lock, runtime.db() as db:
+        if hasattr(runtime, "descendant_agents"):
+            agents = runtime.descendant_agents(db, "lead-00")
+        else:
+            agents = runtime.records(db, "agents")
+            ids = {"lead-00"}
+            while True:
+                expanded = ids | {a["id"] for a in agents if a.get("parentId") in ids}
+                if expanded == ids:
+                    break
+                ids = expanded
+            agents = [agent for agent in agents if agent["id"] in ids]
+        if len(agents) != 50:
+            raise AssertionError(f"subtree read returned {len(agents)} agents, expected 50")
+        return {"agents": len(agents)}
+
+
 def settings(runtime):
     result = runtime.configure("lead-01", {"maxAgents": 99, "tokenBudget": None})
     return {"team": result["id"], "maxAgents": result["maxAgents"]}
@@ -114,6 +132,7 @@ def main():
     rows = [measure(name, operation) for name, operation in (
         ("delete-50-agent-tree", delete_tree),
         ("disconnect-50-account-agents", disconnect),
+        ("read-50-agent-subtree", subtree_read),
         ("team-capacity-50-agents", capacity),
         ("team-settings-50-agents", settings),
     )]

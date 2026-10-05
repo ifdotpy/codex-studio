@@ -845,7 +845,7 @@ class AnalyticsMixin:
                     'SELECT record FROM analytics_turns' + clause + ' ORDER BY at DESC,id DESC LIMIT ? OFFSET ?',
                     args + [limit, offset])]
             else:
-                runtime_agents = self.named_agents(db, (a['id'] for a in agents))
+                runtime_agents = {a['id']: a for a in self.records(db, 'agents')}
                 for entry in agents:
                     if entry['id'] in runtime_agents:
                         current = runtime_agents[entry['id']]

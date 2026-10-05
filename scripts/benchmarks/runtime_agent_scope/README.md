@@ -1,8 +1,10 @@
 # Runtime agent scope benchmark
 
-Measures four production paths with 1,500 synthetic agents in 30 teams of 50:
+Measures five production paths with 1,500 synthetic agents in 30 teams of 50:
 deleting one 50-agent tree, disconnecting an account's 50 agents, checking team
-capacity, and updating team storage settings. Each measurement uses a fresh
+capacity, updating team storage settings, and reading one 50-agent parentId
+subtree. The subtree row compares the scoped read with the base roster scan.
+Each measurement uses a fresh
 SQLite state directory under `TMPDIR`. No provider is connected. Setup is
 outside the timed region. Wall time covers the public runtime method or capacity
 query; lock hold is the `Runtime.lock` total attributed during that operation

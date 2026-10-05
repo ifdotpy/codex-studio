@@ -227,7 +227,7 @@ def retire_idle_bridge(rt, key, account, server):
             queue = getattr(server, name, None)
             if queue is not None and not queue.empty():
                 return False
-        agents = rt.account_agents(db, key)
+        agents = [a for a in rt.records(db, 'agents') if a.get('accountKey', 'default') == key]
         if any(a.get('inFlight') or a.get('status') in {'running', 'starting', 'approval'} or a.get('activeTools') or a.get('workspaceOperation') for a in agents):
             return False
         if any(p.get('accountKey', 'default') == key and not p['future'].done() for p in rt.preparations.values()):

@@ -359,6 +359,7 @@ class WorkspaceMixin:
                 if removed:
                     from codex_sync_entities import put as sync_entity_put
                     sync_entity_put(connection, "project", path, {}, deleted=True)
+                    self.sync_agent_rooms(connection, self.project_room_ids(connection, path))
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
             project = json.loads(existing[0]) if existing else None

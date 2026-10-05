@@ -195,8 +195,9 @@ class FederationService:
             return identity
         keys = _crypto("generate")
         state_id = str(uuid.uuid4())
+        from codex_runtime import LIVE_AGENT_SQL
         lead_row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 "
-                              "AND json_extract(record,'$.deletedAt') IS NULL ORDER BY rowid LIMIT 1").fetchone()
+                              f"AND {LIVE_AGENT_SQL} ORDER BY rowid LIMIT 1").fetchone()
         lead = json.loads(lead_row[0]) if lead_row else None
         identity = {"stateId": state_id, "privateKey": keys["privateKey"],
                     "publicKey": keys["publicKey"], "label": "Studio server",
@@ -701,7 +702,7 @@ class FederationService:
                 raise ValueError("Include the local lead in a shared room")
             roots = {agents[agent].get("rootId") for agent in members}
             root_id = next(iter(roots)) if len(roots) == 1 else None
-            team_root = self.runtime.agent(root_id, db) if isinstance(root_id, str) else None
+            team_root = self.runtime.named_agents(db, [root_id]).get(root_id) if root_id else None
             if len(roots) != 1 or not team_root or not team_root.get("isLead") or team_root.get("deletedAt"):
                 raise ValueError("Room members must belong to one local team")
             local = self.ensure_identity(db)
@@ -806,11 +807,12 @@ class FederationService:
                 deliveries = json.loads(existing["deliveries"])
                 status = "delivered" if deliveries and all(value == "delivered" for value in deliveries.values()) else "queued"
                 return {"id": message_id, "room": room_id, "deliveries": deliveries, "status": status}
-            self.runtime.put(db, "rooms", {"id": room_id, "kind": "federated",
-                "members": room["localMembers"], "updated": created, "name": room["name"],
-                "federation": True, "peerId": room["peerId"], "peerLabel": room["peerLabel"]})
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
                        (message_id, room_id, sender_id, text, created, _json({"remote:" + room["peerId"]: "queued"})))
+            self.runtime.put(db, "rooms", {"id": room_id, "kind": "federated",
+                "members": room["localMembers"], "updated": created, "name": room["name"],
+                "federation": True, "peerId": room["peerId"], "peerLabel": room["peerLabel"]},
+                include_last_message=True)
             event_text = _json({"room": room_id, "message_id": message_id,
                                 "sender": sender_id, "sender_name": name,
                                 "text": text, "untrusted_remote": False,
@@ -1029,7 +1031,7 @@ class FederationService:
         standard = {"id": room_id, "kind": "federated", "members": room["localMembers"],
                     "updated": room["updated"], "name": room["name"], "federation": True,
                     "peerId": peer["stateId"], "peerLabel": peer["label"]}
-        self.runtime.put(db, "rooms", standard)
+        self.runtime.put(db, "rooms", standard, include_last_message=True)
         # Remote text is explicitly labeled as untrusted data before entering a model turn.
         event_text = _json({"room": room_id, "message_id": envelope["id"],
                             "sender": display_sender, "sender_name": expected_name or peer["label"],

@@ -1,216 +1,13 @@
 {
-  "cwd": [
-    [
-      "broadcast:all",
-      {
-        "collection": "room",
-        "id": "broadcast:all",
-        "value": {
-          "id": "broadcast:all",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": [
-            "lead-0",
-            "lead-1",
-            "lead-2",
-            "a-worker",
-            "a-grandchild",
-            "b-worker"
-          ],
-          "name": "All agents",
-          "rootId": "all",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "broadcast:lead-0",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-0",
-        "value": {
-          "id": "broadcast:lead-0",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": ["lead-0", "a-worker", "a-grandchild"],
-          "name": "A · Broadcast",
-          "rootId": "lead-0",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "broadcast:lead-1",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-1",
-        "value": {
-          "id": "broadcast:lead-1",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": ["lead-1", "b-worker"],
-          "name": "B · Broadcast",
-          "rootId": "lead-1",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "private:lead-0:a-worker",
-      {
-        "collection": "room",
-        "id": "private:lead-0:a-worker",
-        "value": {
-          "id": "private:lead-0:a-worker",
-          "kind": "private",
-          "lastMessage": null,
-          "members": ["a-worker", "lead-0"],
-          "name": "A worker ↔ A",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "shared-a",
-      {
-        "collection": "room",
-        "id": "shared-a",
-        "value": {
-          "id": "shared-a",
-          "kind": "private",
-          "lastMessage": null,
-          "members": ["lead-0", "lead-1"],
-          "name": "A ↔ B",
-          "projectPath": "/fixture/project",
-          "radio": {
-            "active": null,
-            "direct": true,
-            "error": null,
-            "next": [],
-            "revision": 0,
-            "speaker": null,
-            "status": "idle",
-            "teamId": "radio-a"
-          },
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ]
-  ],
-  "rename": [
-    [
-      "broadcast:all",
-      {
-        "collection": "room",
-        "id": "broadcast:all",
-        "value": {
-          "id": "broadcast:all",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": [
-            "lead-0",
-            "lead-1",
-            "lead-2",
-            "a-worker",
-            "a-grandchild",
-            "b-worker"
-          ],
-          "name": "All agents",
-          "rootId": "all",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "broadcast:lead-0",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-0",
-        "value": {
-          "id": "broadcast:lead-0",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": ["lead-0", "a-worker", "a-grandchild"],
-          "name": "A · Broadcast",
-          "rootId": "lead-0",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "broadcast:lead-1",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-1",
-        "value": {
-          "id": "broadcast:lead-1",
-          "kind": "broadcast",
-          "lastMessage": null,
-          "members": ["lead-1", "b-worker"],
-          "name": "B · Broadcast",
-          "rootId": "lead-1",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "private:lead-0:a-worker",
-      {
-        "collection": "room",
-        "id": "private:lead-0:a-worker",
-        "value": {
-          "id": "private:lead-0:a-worker",
-          "kind": "private",
-          "lastMessage": null,
-          "members": ["a-worker", "lead-0"],
-          "name": "A worker renamed ↔ A",
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ],
-    [
-      "shared-a",
-      {
-        "collection": "room",
-        "id": "shared-a",
-        "value": {
-          "id": "shared-a",
-          "kind": "private",
-          "lastMessage": null,
-          "members": ["lead-0", "lead-1"],
-          "name": "A ↔ B",
-          "projectPath": "/fixture/project",
-          "radio": {
-            "active": null,
-            "direct": true,
-            "error": null,
-            "next": [],
-            "revision": 0,
-            "speaker": null,
-            "status": "idle",
-            "teamId": "radio-a"
-          },
-          "updated": 1700000000.0
-        }
-      },
-      0
-    ]
-  ],
-  "single-delete": [
-    [
-      "broadcast:all",
-      {
-        "collection": "room",
-        "id": "broadcast:all",
+  "cross-root-child": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker", "x-child"],
+    "result": {
+      "deleted": ["a-grandchild", "a-worker", "x-child"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:all",
           "kind": "broadcast",
@@ -221,13 +18,8 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "broadcast:lead-0",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-0",
+      "broadcast:lead-0": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:lead-0",
           "kind": "broadcast",
@@ -238,13 +30,8 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "broadcast:lead-1",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-1",
+      "broadcast:lead-1": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:lead-1",
           "kind": "broadcast",
@@ -255,13 +42,49 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "private:lead-0:a-worker",
-      {
-        "collection": "room",
-        "id": "private:lead-0:a-worker",
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
         "value": {
           "id": "private:lead-0:a-worker",
           "kind": "private",
@@ -271,13 +94,592 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "shared-a",
-      {
-        "collection": "room",
-        "id": "shared-a",
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "cross-root-child"
+  },
+  "direct-message-then-unrelated-rename": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker renamed ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 3,
+            "text": "direct insert"
+          },
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "direct-message-then-unrelated-rename"
+  },
+  "exception-mid-tree-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "error": "RuntimeError: injected tree-delete failure",
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "exception-mid-tree-delete"
+  },
+  "federated-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker"],
+    "result": {
+      "deleted": ["a-grandchild", "a-worker"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1", "lead-2", "b-worker"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "federated-delete"
+  },
+  "lead-cwd": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
         "value": {
           "id": "shared-a",
           "kind": "private",
@@ -297,16 +699,737 @@
           },
           "updated": 1700000000.0
         }
+      }
+    },
+    "scenario": "lead-cwd"
+  },
+  "lead-rename": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
       },
-      0
-    ]
-  ],
-  "tree-delete": [
-    [
-      "broadcast:all",
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A renamed · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A renamed ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A renamed",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A renamed ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "lead-rename"
+  },
+  "legacy-norootid-budget": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker", "legacy"],
+    "memberCountProbe": 1,
+    "result": {
+      "rootId": "legacy",
+      "tokenBudget": null,
+      "tokensUsed": 0
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "legacy-norootid-budget"
+  },
+  "legacy-norootid-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker", "legacy"],
+    "result": {
+      "deleted": ["legacy"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "legacy-norootid-delete"
+  },
+  "orphan-tree-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker", "lead-0"],
+    "result": {
+      "deleted": ["a-grandchild", "a-worker", "lead-0"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "lead-2", "b-worker", "a-orphan"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-orphan"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "orphan-tree-delete"
+  },
+  "peer-team-then-unrelated-rename": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker renamed ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "peer-team-then-unrelated-rename"
+  },
+  "repeat-tree-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker", "lead-0"],
+    "result": [
       {
-        "collection": "room",
-        "id": "broadcast:all",
+        "deleted": ["a-grandchild", "a-worker", "lead-0"]
+      },
+      {
+        "deleted": ["a-grandchild", "a-worker", "lead-0"]
+      }
+    ],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:all",
           "kind": "broadcast",
@@ -317,13 +1440,8 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "broadcast:lead-0",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-0",
+      "broadcast:lead-0": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:lead-0",
           "kind": "broadcast",
@@ -334,13 +1452,8 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "broadcast:lead-1",
-      {
-        "collection": "room",
-        "id": "broadcast:lead-1",
+      "broadcast:lead-1": {
+        "deleted": 0,
         "value": {
           "id": "broadcast:lead-1",
           "kind": "broadcast",
@@ -351,13 +1464,49 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "private:lead-0:a-worker",
-      {
-        "collection": "room",
-        "id": "private:lead-0:a-worker",
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
         "value": {
           "id": "private:lead-0:a-worker",
           "kind": "private",
@@ -367,19 +1516,32 @@
           "updated": 1700000000.0
         }
       },
-      0
-    ],
-    [
-      "shared-a",
-      {
-        "collection": "room",
-        "id": "shared-a",
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
         "value": {
           "id": "shared-a",
           "kind": "private",
           "lastMessage": null,
           "members": ["lead-0", "lead-1"],
           "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
           "projectPath": "/fixture/project",
           "radio": {
             "active": null,
@@ -393,8 +1555,1138 @@
           },
           "updated": 1700000000.0
         }
+      }
+    },
+    "scenario": "repeat-tree-delete"
+  },
+  "restore": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": [],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker",
+            "c-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
       },
-      0
-    ]
-  ]
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2", "c-worker"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "restore"
+  },
+  "rootid-change": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild", "b-worker"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "rootid-change"
+  },
+  "shared-room-change": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "shared-room-change"
+  },
+  "single-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker"],
+    "result": {
+      "deleted": ["a-grandchild", "a-worker"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1", "lead-2", "b-worker"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "single-delete"
+  },
+  "spawn-then-rename": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker",
+            "b-new"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker", "b-new"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "spawn-then-rename"
+  },
+  "spawn-then-unrelated-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "b-worker",
+            "b-new"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker", "b-new"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "spawn-then-unrelated-delete"
+  },
+  "tree-delete": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["a-grandchild", "a-worker", "c-worker", "lead-0"],
+    "result": {
+      "deleted": ["a-grandchild", "a-worker", "lead-0"]
+    },
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "lead-2", "b-worker"],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "tree-delete"
+  },
+  "worker-rename": {
+    "accountKeys": ["account-2", "default"],
+    "deletedAgents": ["c-worker"],
+    "rooms": {
+      "broadcast:all": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:all",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": [
+            "lead-0",
+            "lead-1",
+            "lead-2",
+            "a-worker",
+            "a-grandchild",
+            "b-worker"
+          ],
+          "name": "All agents",
+          "rootId": "all",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-0": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-0",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-0", "a-worker", "a-grandchild"],
+          "name": "A · Broadcast",
+          "rootId": "lead-0",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-1": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-1",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-1", "b-worker"],
+          "name": "B · Broadcast",
+          "rootId": "lead-1",
+          "updated": 1700000000.0
+        }
+      },
+      "broadcast:lead-2": {
+        "deleted": 0,
+        "value": {
+          "id": "broadcast:lead-2",
+          "kind": "broadcast",
+          "lastMessage": null,
+          "members": ["lead-2"],
+          "name": "C · Broadcast",
+          "rootId": "lead-2",
+          "updated": 1700000000.0
+        }
+      },
+      "federated-a": {
+        "deleted": 0,
+        "value": {
+          "id": "federated-a",
+          "kind": "federated",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-0",
+            "seq": 2,
+            "text": "federated hello"
+          },
+          "members": ["a-worker", "lead-0"],
+          "name": "Federated",
+          "updated": 1700000000.0
+        }
+      },
+      "pair-0-2": {
+        "deleted": 0,
+        "value": {
+          "id": "pair-0-2",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-2"],
+          "name": "A ↔ C",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-0:a-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-0:a-worker",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["a-worker", "lead-0"],
+          "name": "A worker renamed ↔ A",
+          "updated": 1700000000.0
+        }
+      },
+      "private:lead-1:b-worker": {
+        "deleted": 0,
+        "value": {
+          "id": "private:lead-1:b-worker",
+          "kind": "private",
+          "lastMessage": {
+            "created": 1700000000.0,
+            "sender": "lead-1",
+            "seq": 1,
+            "text": "hello"
+          },
+          "members": ["b-worker", "lead-1"],
+          "name": "B worker ↔ B",
+          "updated": 1700000000.0
+        }
+      },
+      "shared-a": {
+        "deleted": 0,
+        "value": {
+          "id": "shared-a",
+          "kind": "private",
+          "lastMessage": null,
+          "members": ["lead-0", "lead-1"],
+          "name": "A ↔ B",
+          "peerTeamId": "team-1",
+          "peerTeamName": "Peers",
+          "projectPath": "/fixture/project",
+          "radio": {
+            "active": null,
+            "direct": true,
+            "error": null,
+            "next": [],
+            "revision": 0,
+            "speaker": null,
+            "status": "idle",
+            "teamId": "radio-a"
+          },
+          "updated": 1700000000.0
+        }
+      }
+    },
+    "scenario": "worker-rename"
+  }
 }
