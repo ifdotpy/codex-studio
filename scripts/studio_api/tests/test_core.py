@@ -32,6 +32,7 @@ from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
 from studio_api.schema import (
+    API_SCHEMA_HASH_HEADER,
     API_SCHEMA_MISMATCH_HEADER,
     api_schema_hash,
 )
@@ -355,6 +356,10 @@ class CoreResponseTests(unittest.TestCase):
         mismatch_post = asyncio.run(invoke("POST", "/api/messages", "foreign-schema"))
         self.assertEqual(mismatch_post[0]["status"], 426)
         self.assertIn(
+            (API_SCHEMA_HASH_HEADER.lower().encode(), b"server-schema"),
+            mismatch_post[0]["headers"],
+        )
+        self.assertIn(
             (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
             mismatch_post[0]["headers"],
         )
@@ -370,15 +375,9 @@ class CoreResponseTests(unittest.TestCase):
         )
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", None))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "server-schema"))[0]["status"], 200)
-        mismatch_stream = asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))
-        self.assertEqual(mismatch_stream[0]["status"], 426)
-        self.assertIn(
-            (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
-            mismatch_stream[0]["headers"],
-        )
-        self.assertIn(b"Reload", mismatch_stream[1]["body"])
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 426)
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, "apiSchema=é".encode("utf-8")))[0]["status"], 426)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, "apiSchema=é".encode("utf-8")))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=server-schema"))[0]["status"], 200)
 

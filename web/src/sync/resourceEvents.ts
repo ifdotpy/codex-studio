@@ -1,5 +1,9 @@
 import type { components } from "../generated/api";
-import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
+import {
+  API_SCHEMA_HASH,
+  API_SCHEMA_HASH_PARAM,
+  API_SCHEMA_MISMATCH_FIELD,
+} from "../generated/apiSchema";
 import {
   isApiSchemaMismatch,
   markApiSchemaMismatch,
@@ -622,10 +626,21 @@ function openSource() {
     const connected = new EventSource(`/api/sync/stream?${query}`);
     source = connected;
     let schemaHandshakeReceived = false;
-    schemaHandshakeTimeout = setTimeout(() => {
+    let connectionOpened = false;
+    const failHandshake = () => {
       if (source === connected && !schemaHandshakeReceived)
         markApiSchemaMismatch();
-    }, SCHEMA_HANDSHAKE_TIMEOUT_MS);
+    };
+    connected.onopen = () => {
+      if (source !== connected) return;
+      connectionOpened = true;
+      clearTimeout(schemaHandshakeTimeout);
+      if (!schemaHandshakeReceived)
+        schemaHandshakeTimeout = setTimeout(
+          failHandshake,
+          SCHEMA_HANDSHAKE_TIMEOUT_MS,
+        );
+    };
     const applyFrame = (message: Event, apply: (parsed: unknown) => void) => {
       if (source !== connected) return;
       if (!schemaHandshakeReceived) {
@@ -647,7 +662,9 @@ function openSource() {
         if (
           !payload ||
           typeof payload !== "object" ||
-          (payload as { hash?: unknown }).hash !== API_SCHEMA_HASH
+          (payload as { hash?: unknown }).hash !== API_SCHEMA_HASH ||
+          (payload as Record<string, unknown>)[API_SCHEMA_MISMATCH_FIELD] ===
+            true
         ) {
           markApiSchemaMismatch();
           return;
@@ -675,7 +692,7 @@ function openSource() {
     });
     connected.onerror = () => {
       if (source !== connected) return;
-      if (!schemaHandshakeReceived) {
+      if (connectionOpened && !schemaHandshakeReceived) {
         markApiSchemaMismatch();
         return;
       }

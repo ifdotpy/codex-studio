@@ -1,5 +1,3 @@
-import type { SyncDocument } from "./client";
-
 export type CachedTranscript = { payload: any | null; seq: number };
 const entries = new Map<
   string,
@@ -44,21 +42,6 @@ export function subscribeTranscript(
     set.delete(accept);
     if (!set.size) listeners.delete(key);
   };
-}
-
-/** Server sequence orders replies and tombstones within one workspace. */
-export function cacheTranscript(
-  workspaceId: string,
-  id: string,
-  doc: SyncDocument,
-) {
-  cacheTranscriptValue(
-    workspaceId,
-    id,
-    doc._deleted ? null : JSON.parse(doc.payload),
-    doc.seq,
-    doc._deleted ? 0 : doc.payload.length * 2,
-  );
 }
 
 /** Cache a decoded transcript without serializing and parsing the page again. */

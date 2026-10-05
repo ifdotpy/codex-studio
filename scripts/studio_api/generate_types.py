@@ -16,6 +16,7 @@ from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
+    API_SCHEMA_MISMATCH_FIELD,
     api_schema_hash,
     entity_schema_names,
     normalize_json_value_schema,
@@ -124,6 +125,7 @@ def render_schema_identity(schema_hash: str) -> str:
         f'export const API_SCHEMA_HASH_HEADER = "{API_SCHEMA_HASH_HEADER}";\n'
         f'export const API_SCHEMA_HASH_PARAM = "{API_SCHEMA_HASH_PARAM}";\n'
         f'export const API_SCHEMA_MISMATCH_HEADER = "{API_SCHEMA_MISMATCH_HEADER}";\n'
+        f'export const API_SCHEMA_MISMATCH_FIELD = "{API_SCHEMA_MISMATCH_FIELD}";\n'
     )
 
 

@@ -73,16 +73,9 @@ function isTaskStatus(value: unknown): value is BackgroundTask["status"] {
 }
 
 export function monitorTask(monitor: MonitorTask): BackgroundTask | null {
-  if (
-    typeof monitor.agent !== "string" ||
-    typeof monitor.created !== "number" ||
-    !isTaskStatus(monitor.status)
-  )
-    return null;
+  if (!isTaskStatus(monitor.status)) return null;
   return {
     ...monitor,
-    agent: monitor.agent,
-    created: monitor.created,
     kind: "monitor",
     status: monitor.status,
   };

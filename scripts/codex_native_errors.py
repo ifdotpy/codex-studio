@@ -214,9 +214,9 @@ def consume_native_notification(runtime, message, account_key, connection_id):
         if not tid and method in NOTICE_METHODS:
             account_notice(runtime, db, method, p, account_key, connection_id)
             return True
-        agents = [a for a in runtime.records(db, 'agents')
-                  if not a.get('deletedAt') and a.get('accountKey', 'default') == account_key
-                  and (a.get('threadId') == tid if tid else a.get('inFlight'))]
+        agents = ([a for a in runtime.thread_agents(db, account_key, tid) if not a.get('deletedAt')]
+                  if tid else [a for a in runtime.account_agents(db, account_key)
+                              if not a.get('deletedAt') and a.get('inFlight')])
         if method == 'serverRequest/resolved':
             # A resolved request is not evidence that permission was granted.
             for a in agents:

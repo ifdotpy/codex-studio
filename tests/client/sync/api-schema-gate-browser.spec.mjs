@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, spawnFixture, test } from "../playwright.mjs";
+import {
+  expect,
+  readApiSchemaHash,
+  spawnFixture,
+  test,
+} from "../playwright.mjs";
 
 test("a response mismatch keeps the loaded transcript and local draft while stopping sync", async ({
   page,
@@ -51,10 +56,12 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       ),
     );
 
+    let totalRequests = 0;
     let apiRequests = 0;
     let mutationRequests = 0;
     const syncRequests = [];
     page.on("request", (request) => {
+      totalRequests++;
       const url = new URL(request.url());
       if (url.pathname.startsWith("/api/")) apiRequests++;
       if (request.method() !== "GET" && url.pathname.startsWith("/api/"))
@@ -95,9 +102,15 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       visibleMessages,
     );
     const settledApiRequests = apiRequests;
+    const settledRequests = totalRequests;
     const settledSyncRequests = syncRequests.length;
     const settledMutations = mutationRequests;
     await page.waitForTimeout(8_000);
+    assert.equal(
+      totalRequests,
+      settledRequests,
+      "No network requests follow the mismatch alert",
+    );
     assert.equal(
       apiRequests,
       settledApiRequests,
@@ -136,7 +149,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       await route.fulfill({
         status: 200,
         headers: { "content-type": "text/event-stream" },
-        body: 'event: api-schema\ndata: {"hash":"foreign-schema"}\n\n',
+        body: `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash(), mismatch: true })}\n\n`,
       });
     });
     await page.reload();

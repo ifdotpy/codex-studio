@@ -44,6 +44,7 @@ SCHEMA_COMBINATORS = ("oneOf", "anyOf", "allOf")
 API_SCHEMA_HASH_HEADER = "X-Studio-API-Schema"
 API_SCHEMA_HASH_PARAM = "apiSchema"
 API_SCHEMA_MISMATCH_HEADER = "X-Studio-API-Schema-Mismatch"
+API_SCHEMA_MISMATCH_FIELD = "mismatch"
 _HASH_LOCK = threading.Lock()
 _CACHED_API_SCHEMA_HASH: str | None = None
 

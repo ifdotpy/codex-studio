@@ -21,7 +21,6 @@ GET_PATHS = frozenset(
         "/api/sync/identity",
         "/api/sync/protocol",
         "/api/sync/pull",
-        "/api/sync/generations",
         "/api/sync/stream",
         "/api/state",
         "/api/worktree-disk",
@@ -49,7 +48,6 @@ GET_PATHS = frozenset(
         "/api/transcript/page",
         "/api/transcript/item",
         "/api/transcript/search",
-        "/api/transcript/stream",
         "/api/search",
         "/api/search/item",
         "/api/checkpoints",
@@ -157,7 +155,6 @@ POST_PATHS = frozenset(
 STREAM_OR_FILE_ROUTES = frozenset(
     {
         ("GET", "/api/sync/stream"),
-        ("GET", "/api/transcript/stream"),
         ("GET", "/api/monitor/log"),
     }
 )
@@ -315,9 +312,15 @@ class ApplicationRouteContract(unittest.TestCase):
         )
         http_app = create_app(http_context)
         with TestClient(http_app) as client:
-            response = client.get("/api/migration-contract-unknown")
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json(), {"error": "Not found"})
+            for path in (
+                "/api/migration-contract-unknown",
+                "/api/sync/generations",
+                "/api/transcript/stream",
+            ):
+                with self.subTest(path=path):
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 404)
+                    self.assertEqual(response.json(), {"error": "Not found"})
 
 
 if __name__ == "__main__":

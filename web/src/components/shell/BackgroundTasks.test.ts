@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { monitorTask } from "./BackgroundTasks";
 
 describe("monitorTask", () => {
-  it("narrows a complete API monitor while preserving its task details", () => {
+  it("adds the task kind while preserving its typed monitor details", () => {
     expect(
       monitorTask({
         id: "monitor-1",
@@ -12,7 +12,7 @@ describe("monitorTask", () => {
         command: "npm run check",
         cancelRequested: false,
       }),
-    ).toMatchObject({
+    ).toEqual({
       id: "monitor-1",
       agent: "agent-1",
       created: 123,
@@ -23,21 +23,13 @@ describe("monitorTask", () => {
     });
   });
 
-  it("omits monitors whose nullable identity fields cannot form a task row", () => {
+  it("drops statuses without a background task meaning", () => {
     expect(
       monitorTask({
-        id: "monitor-2",
-        agent: null,
-        created: 123,
-        status: "running",
-      }),
-    ).toBeNull();
-    expect(
-      monitorTask({
-        id: "monitor-3",
+        id: "monitor-1",
         agent: "agent-1",
-        created: null,
-        status: "running",
+        created: 123,
+        status: "unknown",
       }),
     ).toBeNull();
   });
