@@ -39,9 +39,8 @@
       navigator.serviceWorker
         .register("/studio-sw.js", { scope: "/", updateViaCache: "none" })
         .then((registration) => {
-          window.addEventListener("studio-update-service-worker", () => {
-            void registration.update().catch(() => {});
-          });
+          // The in-app Update action gets this registration, waits for worker
+          // activation, and only then navigates to the network-fetched shell.
           let checked = Date.now();
           const update = () => {
             if (
