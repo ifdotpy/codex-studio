@@ -86,6 +86,40 @@ def _actor_scope(rt, actor):
             "connectionId": rt.connection_ids.get(account)}
 
 
+def _retire_unsubmitted_inspection(rt, agent, phase, now):
+    """Retire a failed read inspection without claiming native closure."""
+    saved = agent.get("nativeRelease") or {}
+    account = agent.get("accountKey", "default")
+    identity = (agent["epoch"], agent.get("threadId"), account, rt.connection_ids.get(account))
+    began = saved.get("at")
+    superseded = saved.get("phase") is None and saved.get("inspectionPhase") == "superseded"
+    if (phase not in {"superseded", "resumed"} or rt.closed or agent.get("deletedAt")
+            or agent.get("provider", "codex") != "codex" or not agent.get("autoWake")
+            or rt.servers.get(account) is None
+            or (saved.get("phase") != "blocked" and not (phase == "resumed" and superseded))
+            or saved.get("resetPending") is not False
+            or "submittedAt" in saved or "closedAt" in saved
+            or not isinstance(saved.get("id"), str) or not saved["id"]
+            or any(name not in saved for name in ("targetEpoch", "targetRootId", "targetParentId",
+                                                  "threadId", "accountKey", "connectionId"))
+            or type(saved.get("targetEpoch")) is not int
+            or not all(isinstance(value, str) and value for value in identity[1:])
+            or (saved.get("targetEpoch"), saved.get("threadId"), saved.get("accountKey"),
+                saved.get("connectionId")) != identity
+            or saved.get("targetRootId") != agent.get("rootId")
+            or saved.get("targetParentId") != agent.get("parentId")
+            or not isinstance(began, (int, float)) or isinstance(began, bool)
+            or not 0 <= began <= now):
+        return False
+    if saved.get("error") is not None:
+        saved.setdefault("inspectionError", saved["error"])
+    saved.update(phase="resumed" if phase == "resumed" else None, error=None, resetPending=False)
+    if phase == "superseded":
+        saved["inspectionPhase"] = "superseded"
+    saved["supersededAt" if phase == "superseded" else "resumedAt"] = now
+    return True
+
+
 def _inspection_current(rt, db, agent, release):
     saved = agent.get("nativeRelease") or {}
     identity = (release["targetEpoch"], release["threadId"], release["accountKey"],
@@ -226,6 +260,10 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
                         previous.setdefault("inspectionError", previous["error"])
                     previous.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at,
                                     resetPending=False, error=None)
+                    rt.put(db, "agents", agent)
+                elif (reason is not None and agent_id not in rt.loaded
+                        and not _local_blocker(rt, db, agent)
+                        and _retire_unsubmitted_inspection(rt, agent, "superseded", now)):
                     rt.put(db, "agents", agent)
                 return {"status": "not_loaded"}
             blocker = _local_blocker(rt, db, agent)
