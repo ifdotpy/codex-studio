@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_accounts import AccountStore
 from codex_workspace import WorkspaceMixin
+from runtime_scoped_agent_fixture import install_scoped_agent_reads
 from codex_sync_entities import ensure_tables
 
 
@@ -29,6 +30,7 @@ class Store(WorkspaceMixin):
         self.accounts = AccountStore(root)
         with self.db() as db:
             db.execute("CREATE TABLE IF NOT EXISTS runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS runtime_rooms (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             ensure_tables(db)
             self.setup_workspace(db)
 
@@ -48,6 +50,9 @@ class Store(WorkspaceMixin):
     @staticmethod
     def put(db, table, record):
         db.execute(f"INSERT OR REPLACE INTO runtime_{table} VALUES (?, ?)", (record["id"], json.dumps(record)))
+
+
+install_scoped_agent_reads(Store)
 
 
 class ProjectAccountsContract(unittest.TestCase):

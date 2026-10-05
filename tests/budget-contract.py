@@ -14,6 +14,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_budget import budget_admission, budget_capture, budget_status
 from codex_analytics import AnalyticsMixin
+from runtime_scoped_agent_fixture import install_scoped_agent_reads
 from analytics.rollout_parser import rollout_actions
 from codex_analytics_history import inherited_usage_threads, repair_terminal_errors
 
@@ -31,6 +32,9 @@ class Runtime(AnalyticsMixin):
 
     def records(self, db, table):
         return [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_' + table)]
+
+
+install_scoped_agent_reads(Runtime)
 
 
 class BudgetTests(unittest.TestCase):

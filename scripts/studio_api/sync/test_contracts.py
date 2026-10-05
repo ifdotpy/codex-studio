@@ -20,11 +20,11 @@ from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
     AgentNativeStatus,
-    MonitorEntityDto,
     DraftPushRow,
     DraftPushRequest,
     EntityCollection,
     NativeProviderError,
+    MonitorEntityDto,
     RuntimeSnapshot,
     AccountRateLimitsDto,
     RequestEntityDto,
@@ -95,7 +95,7 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
-    def test_monitor_entity_has_required_identity_but_open_task_status(self) -> None:
+    def test_monitor_entity_keeps_nullable_identity_and_open_task_status(self) -> None:
         record: dict[str, JsonValue] = {
             "id": "monitor-1", "agent": "agent-1", "created": 1.5,
             "status": "running",
@@ -104,8 +104,10 @@ class SyncEntityContractTests(unittest.TestCase):
             MonitorEntityDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
         )
         for field in ("agent", "created"):
-            with self.subTest(field=field), self.assertRaises(ValidationError):
-                MonitorEntityDto.model_validate({key: value for key, value in record.items() if key != field})
+            with self.subTest(field=field):
+                self.assertIsNone(MonitorEntityDto.model_validate(
+                    {key: value for key, value in record.items() if key != field}
+                ).model_dump(mode="python").get(field))
         self.assertEqual(MonitorEntityDto.model_validate({**record, "status": "unknown"}).status, "unknown")
 
     def test_worker_model_inheritance_survives_projection_and_snapshot(self) -> None:

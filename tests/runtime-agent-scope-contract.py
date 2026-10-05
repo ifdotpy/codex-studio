@@ -20,13 +20,16 @@ SCENARIOS = (
     "spawn-then-rename", "spawn-then-unrelated-delete", "peer-team-then-unrelated-rename",
     "direct-message-then-unrelated-rename", "orphan-tree-delete", "cross-root-child",
     "legacy-norootid-delete", "legacy-norootid-budget", "federated-delete",
-    "exception-mid-tree-delete",
+    "exception-mid-tree-delete", "legacy-workspace-operation-recovery",
 )
 
 
 class RuntimeAgentRoomScope(unittest.TestCase):
     def test_scenarios_match_real_base_snapshots(self):
         expected = json.loads((Path(__file__).parent / "fixtures/runtime-agent-room-entities.json").read_text())
+        expected_workspace_recovery = json.loads(
+            (Path(__file__).parent / "fixtures/runtime-agent-workspace-recovery.json").read_text()
+        )
         with tempfile.TemporaryDirectory(prefix="runtime-agent-scope-test-",
                                          dir=os.environ.get("TMPDIR")) as scratch:
             env = dict(os.environ, TMPDIR=scratch, PYTHONDONTWRITEBYTECODE="1")
@@ -36,7 +39,10 @@ class RuntimeAgentRoomScope(unittest.TestCase):
                         [sys.executable, str(RUNNER), str(ROOT), scenario],
                         cwd=ROOT, env=env, capture_output=True, text=True, check=True, timeout=60)
                     actual = json.loads(result.stdout.strip().splitlines()[-1])
-                    self.assertEqual(actual, expected[scenario])
+                    if scenario == "legacy-workspace-operation-recovery":
+                        self.assertEqual(actual["result"], expected_workspace_recovery)
+                    else:
+                        self.assertEqual(actual, expected[scenario])
                     self.assertEqual(actual["accountKeys"], ["account-2", "default"])
                     self.assertIsNotNone(actual["rooms"]["federated-a"]["value"]["lastMessage"])
                     if scenario == "exception-mid-tree-delete":
