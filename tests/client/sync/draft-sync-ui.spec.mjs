@@ -41,6 +41,44 @@ test("Draft sync ui", async ({
     const session = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     ).id;
+    const retiredDraftMapKey = `codex-drafts:${workspaceId}`;
+    await runnerPage.addInitScript(
+      ({ workspaceId, session, key }) => {
+        localStorage.setItem(
+          "codex-sync-workspace",
+          JSON.stringify(workspaceId),
+        );
+        const originalSetItem = Storage.prototype.setItem;
+        const originalGetItem = Storage.prototype.getItem;
+        const originalRemoveItem = Storage.prototype.removeItem;
+        originalSetItem.call(
+          localStorage,
+          key,
+          JSON.stringify({ [session]: "Retired aggregate-map draft" }),
+        );
+        window.__retiredDraftMap = {
+          key,
+          original: JSON.stringify({
+            [session]: "Retired aggregate-map draft",
+          }),
+          accesses: 0,
+          read: () => originalGetItem.call(localStorage, key),
+        };
+        Storage.prototype.getItem = function (candidate) {
+          if (candidate === key) window.__retiredDraftMap.accesses++;
+          return originalGetItem.call(this, candidate);
+        };
+        Storage.prototype.setItem = function (candidate, value) {
+          if (candidate === key) window.__retiredDraftMap.accesses++;
+          return originalSetItem.call(this, candidate, value);
+        };
+        Storage.prototype.removeItem = function (candidate) {
+          if (candidate === key) window.__retiredDraftMap.accesses++;
+          return originalRemoveItem.call(this, candidate);
+        };
+      },
+      { workspaceId, session, key: retiredDraftMapKey },
+    );
     const documents = async () =>
       (
         await (
@@ -95,10 +133,26 @@ test("Draft sync ui", async ({
     for (const page of [desktop, phone])
       page.on("pageerror", (error) => errors.push(error.message));
     await desktop.goto(origin);
+    await desktop.waitForFunction(() => window.__retiredDraftMap);
+    assert.equal(
+      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
+      0,
+      "App startup must not access the retired aggregate draft map",
+    );
     await desktop
       .getByRole("button", { name: /^Other project/ })
       .first()
       .click();
+    assert.notEqual(
+      await desktop.locator("#message").inputValue(),
+      "Retired aggregate-map draft",
+      "A draft from the retired aggregate map must not appear",
+    );
+    assert.equal(
+      await desktop.evaluate(() => window.__retiredDraftMap.read()),
+      JSON.stringify({ [session]: "Retired aggregate-map draft" }),
+      "The aggregate map must remain byte-identical",
+    );
     await desktop.locator("#message").fill("Draft from desktop");
     const waitText = (page, text) =>
       page.waitForFunction(

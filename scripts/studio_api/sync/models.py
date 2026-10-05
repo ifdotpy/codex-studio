@@ -1359,8 +1359,8 @@ class StateSnapshot(ResponseModel):
 
 
 class SyncProtocolResponse(ResponseModel):
-    protocolVersion: Literal[1]
-    supportedVersions: list[Literal[1, 2, 3]]
+    protocolVersion: Literal[3]
+    supportedVersions: list[Literal[3]]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]
@@ -1387,25 +1387,6 @@ class SyncStreamQuery(ContractModel):
         default=None,
         description="Protocol 3 JSON-encoded array of ResourceRef values",
     )
-
-
-class TranscriptStreamQuery(ContractModel):
-    id: str | None = None
-
-
-class SyncGenerations(ContractModel):
-    state: int
-    transcripts: int
-    drafts: int
-
-
-class SyncGenerationState(ResponseModel):
-    protocol: Literal[2]
-    workspaceId: str
-    syncProtocol: Literal[2]
-    chatState: bool | None = None
-    generations: SyncGenerations
-    transcriptRevisions: dict[str, int] | None = None
 
 
 class SyncCheckpoint(ContractModel):

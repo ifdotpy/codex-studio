@@ -16,7 +16,6 @@ import {
 import { onResume } from "./resume";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
-  cacheTranscript,
   cacheTranscriptValue,
   peekTranscript,
   patchTranscriptValue,
@@ -406,7 +405,7 @@ function readTranscriptMeta(payload: string): TranscriptProjectionMeta | null {
     )
       return value as TranscriptProjectionMeta;
   } catch {
-    /* An older client stored the full page at this key. */
+    return null;
   }
   return null;
 }
@@ -422,18 +421,8 @@ async function cacheStoredTranscript(
     return;
   }
   if ((peekTranscript(workspaceId, id)?.seq || 0) >= doc.seq) return;
-  let raw: Record<string, any>;
-  try {
-    raw = JSON.parse(doc.payload);
-  } catch {
-    return;
-  }
   const meta = readTranscriptMeta(doc.payload);
-  if (!meta) {
-    // Read and migrate a pre-item-projection cache once.
-    if (Array.isArray(raw.items)) cacheTranscript(workspaceId, id, doc);
-    return;
-  }
+  if (!meta) return;
   const rows = meta.order.length
     ? await collection.storageInstance.findDocumentsById(
         meta.order.map((itemId) => transcriptItemId(scope, itemId)),
@@ -461,21 +450,10 @@ async function persistTranscriptProjection(
 ) {
   const id = scope.slice("transcript:".length);
   const base = previous?.payload ? readTranscriptMeta(previous.payload) : null;
-  const legacyBase =
-    previous?.payload && !base ? JSON.parse(previous.payload) : null;
   const incoming = document._deleted ? {} : JSON.parse(document.payload);
-  const startingItems = base
-    ? []
-    : Array.isArray(legacyBase?.items)
-      ? legacyBase.items
-      : [];
-  const oldOrder: string[] =
-    base?.order ||
-    startingItems
-      .map((item: any) => item.id)
-      .filter((key: unknown): key is string => typeof key === "string");
+  const oldOrder: string[] = base?.order || [];
   const isDelta = !document._deleted && incoming.delta === true;
-  if (isDelta && !base && !legacyBase?.items)
+  if (isDelta && !base)
     throw new Error("Transcript delta has no local item base.");
 
   const changedItems = document._deleted
@@ -505,8 +483,7 @@ async function persistTranscriptProjection(
         : changedItems.map((item: any) => item.id);
   if (!document._deleted && !isDelta)
     removed.push(...oldOrder.filter((key) => !order.includes(key)));
-  const previousMetadata =
-    base?.metadata || transcriptMetadata(legacyBase || {});
+  const previousMetadata = base?.metadata || {};
   const metadata = document._deleted
     ? {}
     : { ...previousMetadata, ...transcriptMetadata(incoming) };

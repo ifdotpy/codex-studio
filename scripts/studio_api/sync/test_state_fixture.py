@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import cast
 from urllib.request import Request, urlopen
 
-from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot, SyncGenerationState
+from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot
 
 
 class StateFixtureResponseTests(unittest.TestCase):
@@ -98,10 +98,9 @@ class StateFixtureResponseTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
         with urlopen(f"{base}/api/state", timeout=20) as response:
             initial = StateSnapshot.model_validate_json(response.read())
-        with urlopen(f"{base}/api/sync/generations", timeout=20) as response:
-            generations = SyncGenerationState.model_validate_json(response.read())
-        self.assertEqual(generations.syncProtocol, 2)
-        self.assertIs(generations.chatState, True)
+        with urlopen(f"{base}/api/sync/protocol", timeout=20) as response:
+            protocol = json.loads(response.read())
+        self.assertEqual(protocol["supportedVersions"], [3])
         self.assertIsNotNone(initial.runtime)
         assert initial.runtime is not None
         self.assertIsNotNone(initial.runtime.rateLimits.readAt)

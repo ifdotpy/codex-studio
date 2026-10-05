@@ -56,10 +56,6 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.server = make_server(self.canvas)
         self.addCleanup(self.server.server_close)
         self.server.handle_error = self.record_server_error
-        # No long-lived private stream is needed to verify the actual route's
-        # tracking boundary. Return one valid event through the real handler.
-        self.server.RequestHandlerClass.stream_sync = lambda handler: handler.send(
-            b'data: "RESYNC"\n\n', content_type="text/event-stream")
         self.server_thread = threading.Thread(target=self.server.serve_forever,
                                               kwargs={"poll_interval": .01}, daemon=True)
         self.server_thread.start()
@@ -82,7 +78,7 @@ class HttpRequestTracesContract(unittest.TestCase):
             raise RuntimeError("The private HTTP barrier did not release")
         return {"id": agent, "items": []}
 
-    def request(self, path, method="GET", token=None):
+    def request(self, path, method="GET", token=None, read_limit=None, include_headers=False):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=1)
         try:
             headers = {"X-Canvas-Token": token} if token else {}
@@ -91,7 +87,11 @@ class HttpRequestTracesContract(unittest.TestCase):
             connection.request(method, path, body=b"{}" if method == "POST" else None,
                                headers=headers)
             response = connection.getresponse()
-            return {"status": response.status, "body": response.read()}
+            result = {"status": response.status,
+                      "body": response.read(read_limit) if read_limit else response.read()}
+            if include_headers:
+                result["headers"] = dict(response.getheaders())
+            return result
         except http.client.RemoteDisconnected:
             return {"disconnected": True}
         finally:
@@ -150,8 +150,15 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertTrue(self.finished.wait(.5))
         token = json.loads(response["body"])["token"]
         self.assertEqual(self.request("/api/session", "POST", token)["status"], 404)
-        stream = self.request("/api/sync/stream?protocol=2&token=private-stream-token")
-        self.assertEqual(stream, {"status": 200, "body": b'data: "RESYNC"\n\n'})
+        protocol = self.request("/api/sync/protocol", include_headers=True)
+        query = "protocol=3&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D"
+        schema_hash = protocol["headers"].get("X-Studio-API-Schema")
+        if schema_hash:
+            query += "&apiSchema=" + schema_hash
+        stream = self.request("/api/sync/stream?" + query, read_limit=128)
+        self.assertEqual(stream["status"], 200)
+        self.assertTrue(b"event: api-schema" in stream["body"]
+                        or b"event: resources" in stream["body"])
         self.assertEqual(traces._ACTIVE, {})
         self.assertEqual(traces._RECENT, [])
         self.assertEqual(traces._SEQUENCE, 1, "POST and SSE must not create tracking identities")
