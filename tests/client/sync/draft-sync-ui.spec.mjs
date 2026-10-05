@@ -47,7 +47,7 @@ test("Draft sync ui", async ({
     await runnerPage.addInitScript(
       ({ workspaceId, session, key }) => {
         window.__draftReplicationCreations = 0;
-        window.__codexDraftReplicationTestObserver = {
+        window.__codexDraftReplicationTestOnly = {
           onCreate: () => window.__draftReplicationCreations++,
         };
         localStorage.setItem(
@@ -450,7 +450,14 @@ test("Draft sync ui", async ({
       .map((time) => time - stormStartedAt);
     const maxRestartsAtMinimumInterval =
       Math.floor(stormDuration / draftTiming.restartMinInterval) + 1;
-    assert.ok(stormRestarts >= 1, "the storm creates a replacement state");
+    const minExpectedRestarts = Math.max(
+      1,
+      Math.floor(stormDuration / draftTiming.restartMinInterval) - 1,
+    );
+    assert.ok(
+      stormRestarts >= minExpectedRestarts,
+      `100 ms invalidations made only ${stormRestarts} restarts in ${stormDuration} ms; the minimum interval is ${draftTiming.restartMinInterval} ms`,
+    );
     assert.ok(
       stormRestarts <= maxRestartsAtMinimumInterval,
       `100 ms invalidations made ${stormRestarts} restarts in ${stormDuration} ms; max at the ${draftTiming.restartMinInterval} ms restart interval is ${maxRestartsAtMinimumInterval}`,

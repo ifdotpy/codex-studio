@@ -93,16 +93,28 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       const client = await import("/src/sync/client.ts");
       window.replicationErrors = [];
       window.rejectCancelOnce = false;
+      window.cancelRejections = 0;
       window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
       window.stopDrafts = await client.startDraftReplication(
-        (error) => window.replicationErrors.push(error ? String(error) : null),
+        (error) =>
+          window.replicationErrors.push(
+            error
+              ? {
+                  code: typeof error === "object" ? error.code : undefined,
+                  message: String(error),
+                }
+              : null,
+          ),
         {
-          cancel: async (cancel) => {
-            await cancel();
-            if (window.rejectCancelOnce) {
-              window.rejectCancelOnce = false;
-              throw new Error("injected cancel rejection");
-            }
+          testOnly: {
+            cancel: async (cancel) => {
+              await cancel();
+              if (window.rejectCancelOnce) {
+                window.rejectCancelOnce = false;
+                window.cancelRejections++;
+                throw new Error("injected cancel rejection");
+              }
+            },
           },
         },
       );
@@ -179,6 +191,9 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     pullSucceeds = true;
     failPush = true;
     const pushBeforeRestart = pushes;
+    const errorsBeforePush = await page.evaluate(
+      () => window.replicationErrors.length,
+    );
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.drafts.insert({
@@ -194,10 +209,11 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     )
       await new Promise((resolve) => setTimeout(resolve, 20));
     assert.ok(pushes > pushBeforeRestart, "A push failure is observed");
-    const beforeRestartPull = pulls;
-    const reportsBeforeCancelFailure = await page.evaluate(
-      () => window.replicationErrors.length,
+    await page.waitForFunction(
+      (count) => window.replicationErrors.slice(count).some(Boolean),
+      errorsBeforePush,
     );
+    const beforeRestartPull = pulls;
     await page.evaluate(() => {
       window.rejectCancelOnce = true;
       window.dispatchEvent(new Event("online"));
@@ -212,21 +228,9 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       pulls > beforeRestartPull,
       "A replacement starts after cancel rejects",
     );
-    await page.waitForFunction(
-      (count) => window.replicationErrors.length > count,
-      reportsBeforeCancelFailure,
-    );
     assert.ok(
-      await page.evaluate(
-        (count) =>
-          window.replicationErrors
-            .slice(count)
-            .some((error) =>
-              String(error).includes("injected cancel rejection"),
-            ),
-        reportsBeforeCancelFailure,
-      ),
-      "A cancel rejection is reported through the existing status callback",
+      await page.evaluate(() => window.cancelRejections > 0),
+      "the cancel seam rejected and the replacement still started",
     );
     failPush = false;
     const postsBeforeRetry = pushes;
@@ -244,7 +248,9 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     assert.ok(
       await page.evaluate(() =>
         window.replicationErrors.some((error) =>
-          String(error).includes("injected cancel rejection"),
+          (error?.message || String(error)).includes(
+            "injected cancel rejection",
+          ),
         ),
       ),
       "A stop cancellation rejection is reported through replication status",
