@@ -213,6 +213,7 @@ export function useWorkerModels(
           error: pending ? "" : errorText(error),
           pending,
         }));
+        if (!pending) throw error;
       }
     };
     const stop = watchResourceReads({ kind: "models" }, load, (error) => {

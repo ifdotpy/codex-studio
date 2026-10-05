@@ -7,6 +7,7 @@ import {
 import type { components } from "../generated/api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
+import { retryableReadError } from "./readRetry";
 import {
   configureTokenRateStream,
   receiveResourceTokenRates,
@@ -564,7 +565,8 @@ function scheduleReconnect() {
   setStatus("degraded");
   reconnectTimer = setTimeout(() => {
     reconnectTimer = undefined;
-    if (owner || independent) openSource();
+    if (!coordinatorReady) void initialize();
+    else if (owner || independent) openSource();
   }, retryDelay());
 }
 
@@ -815,9 +817,11 @@ async function initialize() {
     announceSubscriptions();
     if (!channel || !navigator.locks) startIndependent();
     else startAsOwner();
-  } catch {
-    if (generation === coordinatorGeneration)
+  } catch (error) {
+    if (generation === coordinatorGeneration) {
       setStatus(navigator.onLine === false ? "offline" : "degraded");
+      if (retryableReadError(error)) scheduleReconnect();
+    }
   } finally {
     if (generation === coordinatorGeneration) initializing = false;
   }
