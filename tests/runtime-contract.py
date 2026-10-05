@@ -225,6 +225,23 @@ class RuntimeContract(unittest.TestCase):
     def snapshot(self):
         return self.runtime.snapshot()
 
+    def delete_client(self):
+        from fastapi.testclient import TestClient
+        from codex_canvas import Canvas
+        from studio_api.app import create_app
+        from studio_api.context import ApiContext
+
+        class FixtureRemote:
+            def request_origin(self, _headers, _peer, _port):
+                return 'http://testserver'
+
+        canvas = Canvas(self.root)
+        canvas.runtime = self.runtime
+        context = ApiContext(canvas, token='delete-fixture-token', remote=FixtureRemote())
+        client = TestClient(create_app(context))
+        self.addCleanup(client.close)
+        return client, {'Origin': 'http://testserver', 'X-Canvas-Token': context.token}
+
     def complete(self, a):
         self.runtime.server.complete(a['threadId'], a['turnId'])
 
@@ -438,6 +455,124 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.snapshot()['agents'], [])
+
+    def test_delete_route_handles_broadcast_root_tombstone_order(self):
+        lead = self.lead()
+        child = self.runtime.create(
+            {'name': 'Delete route worker', 'prompt': 'Review', 'role': 'reviewer'},
+            lead['id'],
+        )
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        child = self.runtime.agent(child['id'])
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'rooms', {
+                'id': 'broadcast:' + lead['id'],
+                'kind': 'broadcast',
+                'rootId': lead['id'],
+                'updated': time.time(),
+            })
+
+        client, headers = self.delete_client()
+        response = client.post(
+            '/api/conversation/delete',
+            json={'id': lead['id']},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['deleted'], sorted([lead['id'], child['id']]))
+        replay = client.post('/api/conversation/delete', json={'id': lead['id']}, headers=headers)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()['deleted'], response.json()['deleted'])
+        self.assertFalse(self.runtime.agent(lead['id'])['autoWake'])
+        self.assertFalse(self.runtime.agent(child['id'])['autoWake'])
+
+    def test_delete_route_handles_unknown_no_thread_voice_and_work(self):
+        lead = self.lead(name='Delete route lead')
+        child = self.runtime.create(
+            {'name': 'No thread worker', 'prompt': 'Review', 'role': 'reviewer'},
+            lead['id'],
+        )
+        eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
+        child = self.runtime.agent(child['id'])
+        no_thread = self.runtime.create(
+            {'name': 'No native thread', 'cwd': str(self.root), 'prompt': 'Fixture task'}, defer=True
+        )
+        self.assertIsNone(self.runtime.agent(no_thread['id']).get('threadId'))
+        voice = self.runtime.voice()
+        session = 'delete-voice-session'
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute(
+                'INSERT INTO voice_sessions(id,agent,created,state) VALUES(?,?,?,?)',
+                (session, lead['id'], time.time(), 'ready'),
+            )
+        voice.record(lead['id'], session, 'delete-voice-record', 'user', 'fixture transcript')
+        work = self.runtime.work_action(lead['id'], {'action': 'create', 'title': 'Delete work'})
+        self.runtime.work_action(
+            lead['id'], {'action': 'update', 'task_id': work['id'], 'owner': child['id']}
+        )
+        self.runtime.work_action(child['id'], {'action': 'claim', 'task_id': work['id']}, actor=child['id'])
+
+        client, headers = self.delete_client()
+        unknown = client.post(
+            '/api/conversation/delete', json={'id': 'unknown-delete-agent'}, headers=headers
+        )
+        self.assertEqual(unknown.status_code, 400, unknown.text)
+        self.assertIsNone(self.runtime.agent(lead['id']).get('deletedAt'))
+
+        no_thread_response = client.post(
+            '/api/conversation/delete', json={'id': no_thread['id']}, headers=headers
+        )
+        self.assertEqual(no_thread_response.status_code, 200, no_thread_response.text)
+        self.assertEqual(no_thread_response.json()['deleted'], [no_thread['id']])
+
+        response = client.post('/api/conversation/delete', json={'id': lead['id']}, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['deleted'], sorted([lead['id'], child['id']]))
+        with self.runtime.db() as db:
+            released = next(item for item in self.runtime.work_records(db, lead['id']) if item['id'] == work['id'])
+        self.assertIsNone(released['owner'])
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM voice_sessions WHERE agent=?', (lead['id'],)).fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM voice_records WHERE agent=?', (lead['id'],)).fetchone()[0], 0)
+
+    def test_delete_route_tolerates_orphaned_room_roots_and_members(self):
+        orphan_root = self.lead(name='Removed root')
+        orphan_member = self.runtime.create(
+            {'name': 'Surviving member', 'prompt': 'Review', 'role': 'reviewer'},
+            orphan_root['id'],
+            defer=True,
+        )
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'rooms', {
+                'id': 'broadcast:' + orphan_root['id'],
+                'kind': 'broadcast',
+                'rootId': orphan_root['id'],
+                'updated': time.time(),
+            })
+            self.runtime.put(db, 'rooms', {
+                'id': 'private:orphan-member',
+                'kind': 'private',
+                'members': ['missing-room-member'],
+                'updated': time.time(),
+            })
+            db.execute('DELETE FROM runtime_agents WHERE id=?', (orphan_root['id'],))
+        target = self.runtime.create(
+            {'name': 'Delete target', 'cwd': str(self.root), 'prompt': 'Fixture task'}, defer=True
+        )
+
+        client, headers = self.delete_client()
+        response = client.post(
+            '/api/conversation/delete', json={'id': target['id']}, headers=headers
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['deleted'], [target['id']])
+        with self.runtime.db() as db:
+            visible = self.runtime.chat_rooms(db)
+        self.assertNotIn('broadcast:' + orphan_root['id'], [room['id'] for room in visible])
+        self.assertNotIn('private:orphan-member', [room['id'] for room in visible])
+        self.assertIsNone(self.runtime.agent(orphan_member['id']).get('deletedAt'))
 
     def test_complaint_message_allows_direct_response_then_notifies_reporter(self):
         lead = self.lead()

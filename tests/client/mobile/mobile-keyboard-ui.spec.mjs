@@ -33,6 +33,8 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
       viewport: { width: 390, height: 844 },
       isMobile: true,
       hasTouch: true,
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
     });
     const page = await context.newPage();
     await page.addInitScript(() => {
@@ -66,6 +68,19 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
         retainedScroll = value;
         window.dispatchEvent(new Event("scroll"));
       };
+      const focusCalls = { focus: 0, selection: 0 };
+      const focus = HTMLElement.prototype.focus;
+      HTMLElement.prototype.focus = function (...args) {
+        focusCalls.focus++;
+        return focus.apply(this, args);
+      };
+      const setSelectionRange = HTMLTextAreaElement.prototype.setSelectionRange;
+      HTMLTextAreaElement.prototype.setSelectionRange = function (...args) {
+        focusCalls.selection++;
+        return setSelectionRange.apply(this, args);
+      };
+      window.composerFocusCalls = focusCalls;
+      window.composerBlurCount = 0;
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -101,7 +116,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
           ),
         };
       });
-    const settle = async (height, top) => {
+    const settle = async (height, top, expectedScrollY = 0) => {
       await page.waitForFunction(
         ({ height, top }) => {
           const box = document.querySelector("#root").getBoundingClientRect();
@@ -112,7 +127,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
         { height, top },
       );
       const box = await geometry();
-      assert.equal(box.scrollY, 0);
+      assert.equal(box.scrollY, expectedScrollY);
       assert.equal(box.scrollTop, 0);
       assert.equal(box.bodyOverflow, "hidden");
       assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
@@ -155,19 +170,72 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
       (await page.locator(".workspace-header").boundingBox()).y >= 59,
       "A partial viewport shift must not move the header under the status bar",
     );
-    await page.locator("#message").fill("Keyboard geometry fixture");
+    const composer = page.locator("#message");
+    await composer.fill("Keyboard geometry fixture");
+    await composer.evaluate((element) => {
+      element.setSelectionRange(8, 8);
+      element.addEventListener("blur", () => window.composerBlurCount++);
+      window.composerTextarea = element;
+      window.composerFocusCalls.focus = 0;
+      window.composerFocusCalls.selection = 0;
+    });
     await page.evaluate(() =>
       window.setTestViewport({ height: 390, offsetTop: 54 }),
     );
     assert.equal((await settle(390, 54)).bottomInset, "0px");
     await page.evaluate(() => {
       window.retainTestScroll(150);
-      window.setTestViewport({ offsetTop: 72 }, "scroll");
+      const messages = document.querySelector("#messages");
+      window.composerScrollBefore = {
+        page: window.scrollY,
+        document: document.scrollingElement.scrollTop,
+        transcript: messages.scrollTop,
+      };
+      window.setTestViewport({ height: 330, offsetTop: 64 }, "scroll");
     });
-    await settle(390, 72);
+    await settle(330, 64, 150);
+    await page.evaluate(() =>
+      window.setTestViewport({ height: 390, offsetTop: 54 }),
+    );
+    await settle(390, 54, 150);
+    const composerState = await page.evaluate(() => {
+      const element = document.querySelector("#message");
+      const messages = document.querySelector("#messages");
+      return {
+        sameNode: element === window.composerTextarea,
+        focused: document.activeElement === window.composerTextarea,
+        blurCount: window.composerBlurCount,
+        calls: { ...window.composerFocusCalls },
+        value: element.value,
+        selectionStart: element.selectionStart,
+        selectionEnd: element.selectionEnd,
+        transcriptScrollTop: messages.scrollTop,
+        scrollBefore: window.composerScrollBefore,
+        pageScrollY: window.scrollY,
+        documentScrollTop: document.scrollingElement.scrollTop,
+      };
+    });
+    assert.equal(composerState.sameNode, true, "textarea node stays mounted");
+    assert.equal(composerState.focused, true, "composer remains focused");
+    assert.equal(composerState.blurCount, 0, "viewport changes do not blur");
+    assert.deepEqual(composerState.calls, { focus: 0, selection: 0 });
+    assert.equal(composerState.value, "Keyboard geometry fixture");
+    assert.equal(composerState.selectionStart, 8);
+    assert.equal(composerState.selectionEnd, 8);
+    assert.equal(composerState.pageScrollY, composerState.scrollBefore.page);
+    assert.equal(
+      composerState.documentScrollTop,
+      composerState.scrollBefore.document,
+    );
+    assert.equal(
+      composerState.transcriptScrollTop,
+      composerState.scrollBefore.transcript,
+    );
+    await page.evaluate(() => window.composerTextarea.blur());
+    await page.evaluate(() => window.retainTestScroll(150));
     await page.screenshot({
       path: join(state, "keyboard-open.png"),
-      clip: { x: 0, y: 72, width: 390, height: 390 },
+      clip: { x: 0, y: 54, width: 390, height: 390 },
     });
     // Pinch zoom must not collapse the application to the magnified viewport.
     await page.evaluate(() =>
@@ -181,7 +249,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
     );
     const zoomed = await geometry();
     assert.equal(zoomed.height, 390);
-    assert.equal(zoomed.top, 72);
+    assert.equal(zoomed.top, 54);
     await page.evaluate(() =>
       window.setTestViewport({ scale: 1, height: 844, offsetTop: 0 }),
     );
@@ -220,7 +288,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
     );
     assert.equal(errors.length, 0, errors.join("\n"));
     console.log(
-      `mobile-keyboard-ui: PASS (keyboard, offset, scroll reset, close, rotation, pinch, desktop). Screenshot: ${join(state, "keyboard-open.png")}`,
+      `mobile-keyboard-ui: PASS (keyboard picker stability, offset, scroll reset, close, rotation, pinch, desktop). Screenshot: ${join(state, "keyboard-open.png")}`,
     );
   } catch (error) {
     console.error(log);

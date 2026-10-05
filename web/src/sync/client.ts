@@ -24,6 +24,8 @@ import {
 } from "./transcriptCache";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
+const DRAFT_PUSH_QUIET_WAIT_MS = 300;
+const DRAFT_PUSH_MAX_WAIT_MS = 2_000;
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -1129,6 +1131,43 @@ export async function startDraftReplication(
     }
     return false;
   };
+  let pendingPushWait:
+    | {
+        promise: Promise<void>;
+        resolve: () => void;
+        quietTimer?: ReturnType<typeof setTimeout>;
+        maxTimer?: ReturnType<typeof setTimeout>;
+      }
+    | undefined;
+  const settlePushWait = (wait = pendingPushWait) => {
+    if (!wait || pendingPushWait !== wait) return;
+    pendingPushWait = undefined;
+    clearTimeout(wait.quietTimer);
+    clearTimeout(wait.maxTimer);
+    wait.resolve();
+  };
+  const waitBeforePersist = () => {
+    let wait = pendingPushWait;
+    if (!wait) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      wait = { promise, resolve };
+      pendingPushWait = wait;
+      wait.maxTimer = setTimeout(
+        () => settlePushWait(wait),
+        DRAFT_PUSH_MAX_WAIT_MS,
+      );
+    } else {
+      clearTimeout(wait.quietTimer);
+    }
+    wait.quietTimer = setTimeout(
+      () => settlePushWait(wait),
+      DRAFT_PUSH_QUIET_WAIT_MS,
+    );
+    return wait.promise;
+  };
   const attempt = async <T>(direction: string, request: () => Promise<T>) => {
     try {
       const result = await request();
@@ -1167,6 +1206,7 @@ export async function startDraftReplication(
       batchSize: 100,
     },
     push: {
+      waitBeforePersist,
       handler: (rows) =>
         attempt("push", async () => {
           await verifyWorkspace();
@@ -1199,7 +1239,10 @@ export async function startDraftReplication(
     stopInvalidation();
     stopResume();
     errors.unsubscribe();
-    void replication.cancel();
+    void replication.cancel().then(
+      () => settlePushWait(),
+      () => settlePushWait(),
+    );
   };
 }
 

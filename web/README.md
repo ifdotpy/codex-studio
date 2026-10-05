@@ -130,6 +130,11 @@ unavailable. Managed transcript views use `transcript:<id>` pulls;
 the legacy `/api/transcript/stream` route remains available to older clients.
 These UI updates do not call the model.
 
+Draft recovery journal and local record writes happen synchronously on each
+edit. RxDB coalesces upstream draft pushes according to the wait policy in
+[`src/sync/client.ts`](src/sync/client.ts), while resume and the journal rescan
+continue to recover pending local changes.
+
 The client shows bounded cached history when a managed chat is reopened.
 Fresh scoped pulls replace it. If no local projection is available after 200 ms,
 the client makes one transcript read to show the missing or unavailable result.
