@@ -876,6 +876,11 @@ Codex terminates any unified-exec process missed by the native terminal check;
 its result stays unknown. Native background commands and unknown receipts block
 reset. The worker transcript and Studio receipts remain.
 
+A failed read inspection can become obsolete without proof of native closure.
+An explicit reset on an unloaded worker retires only an exact, unsubmitted
+inspection. A confirmed resume clears its old inspection error. Studio preserves
+submitted or unknown releases and their request identities.
+
 Archive requires a reason. It hides a worker through the existing tombstone filter
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
@@ -892,6 +897,23 @@ the archive receipt. Repeated calls keep the same request result.
 descendants. It archives workers with safe workspaces or no workspace. The result reports
 the archive count, measured freed bytes, and a reason for each worker kept.
 The lead sees one reminder when three or more finished workers hold workspaces.
+Set `unassign_work=true` on `archive` or `archive_finished` to return open assigned
+tasks to the unassigned ready backlog. The archive and task changes commit in one
+transaction. Task results and decisions remain. The default keeps the
+`assigned_work` blocker. Active work and all other blockers still prevent archive.
+
+After partial Git removal, make a new `archive` call to retry cleanup. Studio
+preserves the failed cleanup record and Git error. It can repair the exact saved
+Git registration without changing worktree files. Modified or untracked files
+stay. A missing or changed original `.git` file leaves the folder for inspection.
+
+Task acceptance checks fresh `origin/main` when the repository has a remote.
+It also accepts local main after a successful remote check. A repository without
+remotes uses local main. The result identifies the checked commit in `mainEvidence`.
+A failed remote check keeps the worker. An exact retry of an old stale-main
+accept receipt repeats only the archive check, not the task decision.
+For `orchestration_task` actions `accept` and `reject`, supply the decision text
+in the `result` field.
 `maintenance_report` lists old image workspaces, bases, and Git worktrees without
 removing them. Disk reports include workspace and base sizes.
 
