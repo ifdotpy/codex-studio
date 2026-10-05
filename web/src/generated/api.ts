@@ -5894,7 +5894,7 @@ export interface components {
     /** MonitorEntityDto */
     MonitorEntityDto: {
       /** Agent */
-      agent: string;
+      agent?: string | null;
       /** Bytes */
       bytes?: number | null;
       /** Cancelrequested */
@@ -5902,7 +5902,7 @@ export interface components {
       /** Command */
       command?: string | null;
       /** Created */
-      created: number;
+      created?: number | null;
       /** Cwd */
       cwd?: string | null;
       /** Durationms */

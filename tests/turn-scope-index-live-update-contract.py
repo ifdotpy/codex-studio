@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import codex_runtime
 import codex_turn_scope_index_update as update
+from runtime_scoped_agent_fixture import install_scoped_agent_reads
 
 spec = importlib.util.spec_from_file_location('index_update_fixture',
     Path(__file__).with_name('runtime-contract.py'))
@@ -40,6 +41,7 @@ def reviewed_runtime():
               patch.dict(globals(), {'codex_runtime': module}),
               patch.object(update, '__file__', str(helper))):
             exec(compile(REVIEWED_RUNTIME, str(source), 'exec'), vars(module))
+            install_scoped_agent_reads(module.Runtime)
             module.Runtime.image_workspace_support = staticmethod(fixture.Runtime.image_workspace_support)
             with patch.object(fixture, 'Runtime', module.Runtime):
                 yield module

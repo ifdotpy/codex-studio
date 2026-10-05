@@ -76,7 +76,9 @@ class WorkspaceMixin:
             operation["id"]: operation
             for operation in self._workspace_operations(db)
         }
-        for a in self.named_agents(db, (operation.get("agent") for operation in active.values())).values():
+        # Startup recovery runs once; scanning the roster here also catches legacy
+        # reservations that have no workspace-operation row to name their agent.
+        for a in self.records(db, "agents"):
             operations = [operation for operation in active.values() if operation.get("agent") == a["id"]]
             if operations:
                 operation = operations[0]
