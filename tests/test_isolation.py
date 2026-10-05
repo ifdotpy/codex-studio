@@ -33,4 +33,11 @@ def isolate_supervisor_environment():
         os.environ.pop(name, None)
 
 
+def isolate_api_schema_cache():
+    """Keep runtime schema cache writes inside this test server process."""
+    cache_root = tempfile.mkdtemp(prefix="studio-test-api-cache-")
+    os.environ["XDG_CACHE_HOME"] = cache_root
+    atexit.register(shutil.rmtree, cache_root, ignore_errors=True)
+
+
 isolate_supervisor_environment()

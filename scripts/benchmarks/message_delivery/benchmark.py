@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,12 @@ import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
+
+# Benchmarks create an in-process Studio API server; keep its runtime schema
+# cache outside the user's normal cache even when invoked directly.
+_TEST_API_CACHE_ROOT = tempfile.mkdtemp(prefix="codex-studio-benchmark-cache-")
+os.environ["XDG_CACHE_HOME"] = _TEST_API_CACHE_ROOT
+atexit.register(shutil.rmtree, _TEST_API_CACHE_ROOT, ignore_errors=True)
 
 DEFAULT_AGENT_COUNTS = (1, 8, 32)
 DEFAULT_MESSAGES_PER_AGENT = 8

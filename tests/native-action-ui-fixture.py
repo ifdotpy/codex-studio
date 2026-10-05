@@ -7,6 +7,9 @@ import sys
 
 sys.dont_write_bytecode = True
 repo = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(repo / 'tests'))
+from test_isolation import isolate_api_schema_cache
+isolate_api_schema_cache()
 sys.path.insert(0, str(repo / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
