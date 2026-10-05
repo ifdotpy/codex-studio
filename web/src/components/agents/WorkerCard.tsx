@@ -209,17 +209,6 @@ export default function WorkerCard({
           <pre>{errorView.details || errorView.message}</pre>
         </details>
       )}
-      {overview?.task ? (
-        <WorkerExcerpt
-          agentId={agent.id}
-          label="Task"
-          text={overview.task}
-          truncated={overview.taskTruncated ?? undefined}
-          open={open}
-        />
-      ) : (
-        <p className="worker-missing">Task details unavailable</p>
-      )}
       {overview?.result ? (
         <WorkerExcerpt
           agentId={agent.id}

@@ -90,16 +90,19 @@ test("Team Motion Ui", async ({
       for (const a of data.threads)
         if (a.rootId === lead.id && !a.isLead) {
           a.status = "running";
-          a.overview = { task: "Independent worker task", result: "" };
+          a.overview = {
+            task: "Independent worker task",
+            result: "Independent worker report",
+          };
           if (a.id === target.id) {
             a.status = phase === 0 ? "queued" : "running";
             a.overview = {
-              task:
-                "Verify the exact response receipt. " +
+              task: "Verify the exact response receipt.",
+              result:
+                "Verified the exact response receipt. " +
                 "Keep this explanation open while the worker starts. ".repeat(
                   10,
                 ),
-              result: "",
             };
           } else if (a.name === "Worker 01") {
             // Keep the waiting summary row present in both phases so this
@@ -170,7 +173,7 @@ test("Team Motion Ui", async ({
     assert.equal(
       result.expandedAfter,
       true,
-      "A worker task stays expanded when its status changes",
+      "A worker report stays expanded when its status changes",
     );
     assert.ok(
       Math.abs(result.before.searchY - result.after.searchY) <= 1,
