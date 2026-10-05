@@ -1,10 +1,11 @@
-import {
-  isResourceChangeEvent,
-  isResourceHeartbeatEvent,
-  isResourceRef,
-  isResourceTokenRatesEvent,
-} from "../generated/stream-validators.js";
 import type { components } from "../generated/api";
+import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
+import {
+  get,
+  isApiSchemaMismatch,
+  markApiSchemaMismatch,
+  onApiSchemaMismatch,
+} from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
 import { retryableReadError } from "./readRetry";
@@ -69,14 +70,15 @@ type TabSubscriptionDiscovery = {
   workspaceId: string;
   tabId: string;
 };
-type TabMessage =
+type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
   | TabHeartbeat
   | LeaderHeartbeat
   | TabStatus
-  | TabSubscriptionDiscovery;
+  | TabSubscriptionDiscovery
+) & { apiSchemaHash: string };
 type OutgoingMessage =
   | {
       kind: "subscriptions";
@@ -98,6 +100,8 @@ const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
 const RESOURCE_FLUSH_MS = 20;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
+const MAX_STREAM_RESOURCE_COUNT = 256;
+const MAX_STREAM_RESOURCE_KEY_LENGTH = 2048;
 
 const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
@@ -181,6 +185,7 @@ function broadcast(message: OutgoingMessage) {
   try {
     channel.postMessage({
       ...message,
+      apiSchemaHash: API_SCHEMA_HASH,
       workspaceId,
       tabId,
     } satisfies TabMessage);
@@ -314,31 +319,27 @@ function dispatchEvent(event: ResourceChangeEvent) {
 }
 
 function receiveTokenRateEvent(value: unknown, fromPeer = false) {
-  if (!isResourceTokenRatesEvent(value)) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
-  if (value.workspaceId !== workspaceId) {
+  const event = value as ResourceTokenRatesEvent;
+  if (event.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
   if (fromPeer && (owner || independent)) return;
   if (!fromPeer) refreshHeartbeatTimeout();
-  if (lastTokenEpoch !== value.epoch) {
-    lastTokenEpoch = value.epoch;
+  if (lastTokenEpoch !== event.epoch) {
+    lastTokenEpoch = event.epoch;
     lastTokenRevision = undefined;
     lastTokenEvent = undefined;
   }
-  if (lastTokenRevision !== undefined && value.revision <= lastTokenRevision)
+  if (lastTokenRevision !== undefined && event.revision <= lastTokenRevision)
     return;
-  lastTokenRevision = value.revision;
-  lastTokenEvent = value;
+  lastTokenRevision = event.revision;
+  lastTokenEvent = event;
   setStatus("live");
-  receiveResourceTokenRates(value);
-  for (const listener of tokenRateListeners) listener(value);
-  if (owner || independent) broadcast({ kind: "token-rates", event: value });
+  receiveResourceTokenRates(event);
+  for (const listener of tokenRateListeners) listener(event);
+  if (owner || independent) broadcast({ kind: "token-rates", event });
 }
 
 function scheduleFlush() {
@@ -367,33 +368,33 @@ function scheduleFlush() {
 }
 
 function receiveResourceEvent(value: unknown, fromPeer = false) {
-  if (!isResourceChangeEvent(value)) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
+  const event = value as ResourceChangeEvent;
   if (fromPeer && (owner || independent)) return;
-  if (!workspaceId || value.workspaceId !== workspaceId) {
+  if (!workspaceId || event.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
-  dispatchEvent(value);
+  if (
+    event.resources.length > MAX_STREAM_RESOURCE_COUNT ||
+    event.resources.some(
+      (resource) =>
+        resourceKey(resource).length > MAX_STREAM_RESOURCE_KEY_LENGTH,
+    )
+  )
+    return;
+  dispatchEvent(event);
   scheduleFlush();
 }
 
 function acceptHeartbeat(value: unknown, fromPeer = false) {
-  if (!isResourceHeartbeatEvent(value)) {
+  const heartbeat = value as ResourceHeartbeatEvent;
+  if (heartbeat.workspaceId !== workspaceId) {
     setStatus("degraded");
     if (!fromPeer) reconnectNow();
     return;
   }
-  if (value.workspaceId !== workspaceId) {
-    setStatus("degraded");
-    if (!fromPeer) reconnectNow();
-    return;
-  }
-  if (lastEpoch && value.epoch !== lastEpoch) {
+  if (lastEpoch && heartbeat.epoch !== lastEpoch) {
     lastEpoch = undefined;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
@@ -401,15 +402,15 @@ function acceptHeartbeat(value: unknown, fromPeer = false) {
     return;
   }
   if (
-    (lastRevision !== undefined && value.revision < lastRevision) ||
+    (lastRevision !== undefined && heartbeat.revision < lastRevision) ||
     (lastHeartbeatRevision !== undefined &&
-      value.revision < lastHeartbeatRevision)
+      heartbeat.revision < lastHeartbeatRevision)
   ) {
     reconnectNow();
     return;
   }
   if (fromPeer) return;
-  lastHeartbeatRevision = value.revision;
+  lastHeartbeatRevision = heartbeat.revision;
   refreshHeartbeatTimeout();
   setStatus("live");
   if (owner) broadcast({ kind: "leader-heartbeat" });
@@ -425,6 +426,8 @@ function receiveChannelMessage(value: unknown) {
   const record = value as Record<string, unknown>;
   if (
     record.workspaceId !== workspaceId ||
+    (record.apiSchemaHash !== undefined &&
+      record.apiSchemaHash !== API_SCHEMA_HASH) ||
     typeof record.tabId !== "string" ||
     !record.tabId ||
     record.tabId === tabId ||
@@ -434,7 +437,11 @@ function receiveChannelMessage(value: unknown) {
   if (record.kind === "subscriptions") {
     if (
       !Array.isArray(record.resources) ||
-      !record.resources.every(isResourceRef)
+      record.resources.length > MAX_STREAM_RESOURCE_COUNT ||
+      record.resources.some(
+        (resource) =>
+          JSON.stringify(resource).length > MAX_STREAM_RESOURCE_KEY_LENGTH,
+      )
     )
       return;
     const previous = peerSubscriptions.get(record.tabId);
@@ -578,6 +585,7 @@ function reconnectNow() {
 
 function openSource() {
   if (
+    isApiSchemaMismatch() ||
     !coordinatorActive ||
     (!owner && !independent) ||
     document.hidden ||
@@ -604,9 +612,28 @@ function openSource() {
     const query = new URLSearchParams({
       protocol: "3",
       resources: JSON.stringify(resources),
+      [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
     const connected = new EventSource(`/api/sync/stream?${query}`);
     source = connected;
+    let schemaHandshakeReceived = false;
+    connected.addEventListener("api-schema", (message: Event) => {
+      if (source !== connected) return;
+      schemaHandshakeReceived = true;
+      try {
+        const payload: unknown = JSON.parse(
+          (message as MessageEvent<string>).data,
+        );
+        if (
+          !payload ||
+          typeof payload !== "object" ||
+          (payload as { hash?: unknown }).hash !== API_SCHEMA_HASH
+        )
+          markApiSchemaMismatch();
+      } catch {
+        markApiSchemaMismatch();
+      }
+    });
     connected.addEventListener("resources", (message: Event) => {
       if (source !== connected) return;
       let parsed: unknown;
@@ -645,6 +672,7 @@ function openSource() {
     });
     connected.onerror = () => {
       if (source !== connected) return;
+      if (!schemaHandshakeReceived) void get("/api/session").catch(() => {});
       requireBaselineReconciliation();
       closeSource();
       scheduleReconnect();
@@ -878,7 +906,7 @@ function stopCoordinator() {
 }
 
 function startCoordinator() {
-  if (coordinatorActive) return;
+  if (coordinatorActive || isApiSchemaMismatch()) return;
   coordinatorActive = true;
   coordinatorGeneration++;
   stopResume = onResume(resumeTransport);
@@ -973,3 +1001,4 @@ export function watchTokenRateEvents(
 }
 
 configureTokenRateStream(watchTokenRateEvents);
+onApiSchemaMismatch(stopCoordinator);

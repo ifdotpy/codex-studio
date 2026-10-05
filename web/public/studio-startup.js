@@ -39,6 +39,9 @@
       navigator.serviceWorker
         .register("/studio-sw.js", { scope: "/", updateViaCache: "none" })
         .then((registration) => {
+          window.addEventListener("studio-update-service-worker", () => {
+            void registration.update().catch(() => {});
+          });
           let checked = Date.now();
           const update = () => {
             if (

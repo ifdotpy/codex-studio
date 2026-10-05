@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
-import { intentionResult, matchesMessageDelivery } from "./send.ts";
+import {
+  intentionResult,
+  matchesMessageDelivery,
+  retainQueuedSchemaMismatch,
+} from "./send.ts";
 
 it("accepts only receipts matching the immutable message identity", () => {
   for (const status of [
@@ -69,4 +73,26 @@ it("distinguishes durable local queue state from a server delivery receipt", () 
       queued: false,
     },
   );
+});
+
+it("keeps a schema-blocked outbox request queued with its original identity and body", () => {
+  const stored = {
+    body: {
+      id: "stable-message-id",
+      room: "chat",
+      text: "hello",
+      delivery: "after_tool" as const,
+    },
+    status: "queued" as const,
+    attempted: true,
+    created: 1,
+  };
+  const blocked = retainQueuedSchemaMismatch(
+    stored,
+    new Error("Reload Studio"),
+  );
+  assert.equal(blocked.status, "queued");
+  assert.equal(blocked.body.id, stored.body.id);
+  assert.deepEqual(blocked.body, stored.body);
+  assert.equal(blocked.attempted, true);
 });

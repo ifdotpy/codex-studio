@@ -30,6 +30,7 @@ from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
+from studio_api.schema import API_SCHEMA_MISMATCH_HEADER
 
 
 class MessageRecord(ContractModel):
@@ -303,6 +304,63 @@ class CoreResponseTests(unittest.TestCase):
             asyncio.run(exercise())
         self.assertEqual(sent[0]["status"], 408)
         self.assertEqual(delegated, [])
+
+    def test_schema_hash_gate_only_rejects_present_mismatches(self) -> None:
+        context = ApiContext.for_schema()
+        context.api_schema_hash = "server-schema"
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://local")
+        delegated: list[str] = []
+
+        async def delegate(scope: object, _receive: object, send: object) -> None:
+            delegated.append(str(scope["path"]))  # type: ignore[index]
+            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+            await send({"type": "http.response.body", "body": b"{}"})  # type: ignore[operator]
+
+        boundary = RequestBoundary(delegate, context)
+
+        async def invoke(method: str, path: str, schema_hash: str | None, query: bytes = b"") -> list[dict[str, object]]:
+            body = b"{}" if method == "POST" else b""
+            raw_headers = [(b"x-canvas-token", context.token.encode())]
+            if schema_hash is not None:
+                raw_headers.append((b"x-studio-api-schema", schema_hash.encode()))
+            if body:
+                raw_headers.extend(((b"content-type", b"application/json"), (b"content-length", b"2")))
+            sent: list[dict[str, object]] = []
+
+            async def receive() -> dict[str, object]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            async def send(message: dict[str, object]) -> None:
+                sent.append(message)
+
+            scope = {
+                "type": "http", "method": method, "path": path, "query_string": query,
+                "headers": raw_headers, "client": ("127.0.0.1", 1), "server": ("127.0.0.1", 2),
+            }
+            await boundary(scope, receive, send)  # type: ignore[arg-type]
+            return sent
+
+        mismatch_post = asyncio.run(invoke("POST", "/api/messages", "foreign-schema"))
+        self.assertEqual(mismatch_post[0]["status"], 426)
+        self.assertIn(
+            (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
+            mismatch_post[0]["headers"],
+        )
+        self.assertIn(b"Reload", mismatch_post[1]["body"])
+        self.assertNotIn("/api/messages", delegated)
+        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", ""))[0]["status"], 426)
+        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", None))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "server-schema"))[0]["status"], 200)
+        mismatch_stream = asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))
+        self.assertEqual(mismatch_stream[0]["status"], 426)
+        self.assertIn(
+            (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
+            mismatch_stream[0]["headers"],
+        )
+        self.assertIn(b"Reload", mismatch_stream[1]["body"])
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 426)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=server-schema"))[0]["status"], 200)
 
     def test_hourly_maintenance_runs_once_for_shared_listener_context(self) -> None:
         context = ApiContext.for_schema()

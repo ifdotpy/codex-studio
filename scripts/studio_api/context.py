@@ -74,6 +74,12 @@ class ApiContext:
         self.server_port = server_port
         self.unix_socket = unix_socket
         self.schema_only = schema_only
+        if schema_only:
+            self.api_schema_hash = ""
+        else:
+            from studio_api.schema import api_schema_hash
+
+            self.api_schema_hash = api_schema_hash()
         self._lock = threading.RLock()
         self._maintenance_lock = threading.Lock()
         self._maintenance_last = 0.0

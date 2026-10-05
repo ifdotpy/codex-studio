@@ -6,12 +6,18 @@ import json
 import secrets
 import sqlite3
 import time
+from urllib.parse import parse_qs
 from collections.abc import Awaitable, Callable
 from typing import TypeAlias
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
+from studio_api.schema import (
+    API_SCHEMA_HASH_HEADER,
+    API_SCHEMA_HASH_PARAM,
+    API_SCHEMA_MISMATCH_HEADER,
+)
 
 ASGIHandler: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
 FEDERATION_PATHS = frozenset({
@@ -111,8 +117,15 @@ def _error_response(status: int, error: str) -> tuple[Message, Message]:
     return start, {"type": "http.response.body", "body": body}
 
 
-async def _reject(send: Send, status: int, error: str) -> None:
+async def _reject(
+    send: Send,
+    status: int,
+    error: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> None:
     start, body = _error_response(status, error)
+    if headers:
+        start["headers"].extend(headers)
     await send(start)
     await send(body)
 
@@ -144,6 +157,42 @@ class RequestBoundary:
         headers = HeaderView(scope.get("headers", []))
         federation = method == "POST" and path in FEDERATION_PATHS
         write = method not in {"GET", "HEAD", "OPTIONS"}
+        if path.startswith("/api/"):
+            raw_send = send
+
+            async def send_with_schema_hash(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    response_headers = [
+                        (name, value)
+                        for name, value in message.get("headers", [])
+                        if name.lower() != API_SCHEMA_HASH_HEADER.lower().encode()
+                    ]
+                    response_headers.append(
+                        (API_SCHEMA_HASH_HEADER.lower().encode(), self.context.api_schema_hash.encode())
+                    )
+                    message = {**message, "headers": response_headers}
+                await raw_send(message)
+
+            send = send_with_schema_hash
+        stream_connect = method == "GET" and path == "/api/sync/stream"
+        renderer_hash = headers.get(API_SCHEMA_HASH_HEADER)
+        if stream_connect and renderer_hash is None:
+            query = parse_qs(
+                scope.get("query_string", b"").decode("latin-1"),
+                keep_blank_values=True,
+            )
+            values = query.get(API_SCHEMA_HASH_PARAM)
+            renderer_hash = values[0] if values else None
+        if (write or stream_connect) and renderer_hash is not None and not secrets.compare_digest(
+            renderer_hash, self.context.api_schema_hash
+        ):
+            await _reject(
+                send,
+                426,
+                "Studio was updated. Reload this tab to continue.",
+                [(API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1")],
+            )
+            return
         if not self._trusted(scope, headers, write=write, federation=federation):
             error = "Local origin and session token required" if write else "Local origin required"
             await _reject(send, 403, error)

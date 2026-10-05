@@ -120,6 +120,13 @@ The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
 
+The renderer and server compare the generated OpenAPI schema hash in API
+responses and the protocol-3 stream handshake. If they differ, the page keeps
+the loaded transcript and local composer draft visible, then pauses stream,
+draft replication, outbox delivery, and send actions until the renderer updates.
+Protocol-3 event payloads no longer use generated per-event runtime validators;
+workspace and revision semantics and bounded resource counts remain enforced.
+
 Managed conversations use the workspace sync projection. One tab holds the
 exclusive browser lock and owns `/api/sync/stream?protocol=2`, then shares its
 scoped generation notices with other tabs in the same browser profile. Each tab

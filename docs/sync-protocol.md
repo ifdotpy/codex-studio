@@ -19,15 +19,18 @@ an already accepted write retain their own request identities and lifecycles.
 
 [Python resource models](../scripts/studio_api/sync/resources/models.py) own the
 closed resource union and named event envelopes. OpenAPI publishes those models;
-`npm run api:generate` emits both TypeScript declarations and standalone runtime
-validators. `npm run api:check` rejects stale output. Renderer handlers validate
-incoming JSON as unknown before using it. Do not maintain a second handwritten
-wire schema or cast incoming JSON to a generated type.
+`npm run api:generate` emits TypeScript declarations and the SHA-256 identity of
+the canonical OpenAPI JSON. `npm run api:check` rejects stale output. API
+responses include the server identity, and the first protocol-3 event carries it
+as well. A mismatch stops resource and draft synchronization and message delivery
+until the renderer updates. Stream payloads are not walked against generated
+runtime validators; handlers retain workspace, epoch, revision, ordering, and
+bounded count/key checks.
 
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI
-owns SSE framing; Ajv compiles the Python/OpenAPI schemas at build time so the
-browser needs no schema compiler or dynamic code evaluation.
+owns SSE framing; the renderer and server compare the same generated schema
+identity before continuing with live updates.
 
 ### Subscription and notification
 

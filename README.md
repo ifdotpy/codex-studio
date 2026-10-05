@@ -296,6 +296,9 @@ is not guaranteed. Keep the page open for voice.
 The chat snapshot excludes work result histories. The work view loads those
 histories through its existing API. One shared event stream tells visible windows
 when entity state, drafts, or open transcripts need an update.
+The renderer compares its generated API schema hash with the server on API
+responses and the sync stream. A mismatch keeps the loaded chat visible, saves
+composer text locally, and pauses sending and sync until you update the tab.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
 The current chat loads first. One background history loads at a time.

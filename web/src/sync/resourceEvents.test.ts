@@ -102,6 +102,87 @@ describe("shared resource event transport", () => {
     expect(Source.instances[0]!.closed).toBe(true);
   });
 
+  it("ignores resource-channel messages sent by another schema version", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: null) => Promise<void>,
+        ) => Promise.resolve().then(() => callback(null)),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-local" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const transport = await import("./resourceEvents");
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(
+      { kind: "queue", agentId: "agent-one" },
+      onChange,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    Channel.instances[0]!.onmessage?.({
+      data: {
+        kind: "resource-event",
+        workspaceId,
+        tabId: "tab-foreign",
+        apiSchemaHash: "foreign-schema",
+        event: {
+          protocol: 3,
+          workspaceId,
+          epoch: "epoch-one",
+          revision: 1,
+          reason: "initial",
+          resources: [{ kind: "queue", agentId: "agent-one" }],
+        },
+      },
+    } as MessageEvent);
+    expect(onChange).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("stops the live resource stream when its first schema event mismatches", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges(
+      { kind: "queue", agentId: "agent-one" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const source = Source.instances[0]!;
+    source.emit("api-schema", { hash: "foreign-schema" });
+    expect(source.closed).toBe(true);
+    stop();
+  });
+
   it("notifies only the matching resource once per revision and preserves liveness on reconfigure", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
@@ -580,7 +661,7 @@ describe("shared resource event transport", () => {
 
     const transport = await import("./resourceEvents");
     const local = { kind: "state" } as const;
-    const bulkRefs = Array.from({ length: 5_000 }, (_, index) => ({
+    const bulkRefs = Array.from({ length: 255 }, (_, index) => ({
       kind: "panel" as const,
       agentId: `inactive-${index}`,
     }));

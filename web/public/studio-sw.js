@@ -17,7 +17,9 @@ if (self.STUDIO_SHELL) {
     const complete = [];
     for (const name of names) {
       const cache = await caches.open(name);
-      const manifest = await (await cache.match(manifestPath))
+      const manifest = await (
+        await cache.match(manifestPath)
+      )
         ?.json()
         .catch(() => null);
       if (
@@ -117,8 +119,13 @@ if (self.STUDIO_SHELL) {
             .filter((name) => name !== cacheName && !previous.includes(name))
             .map((name) => caches.delete(name)),
         );
+        await self.clients.claim();
       })(),
     );
+  });
+
+  self.addEventListener("message", (event) => {
+    if (event.data?.type === "STUDIO_SKIP_WAITING") void self.skipWaiting();
   });
 
   self.addEventListener("fetch", (event) => {

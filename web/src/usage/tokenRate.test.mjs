@@ -27,7 +27,7 @@ test("format preserves low rates and bounds large values", () => {
   assert.equal(formatTokenRate(42), "42");
   assert.ok(formatTokenRate(123456).length <= 5);
 });
-test("volatile events stay scoped to each chat and reject malformed data", () => {
+test("volatile events stay scoped to each chat after stream compatibility is checked", () => {
   const lead = [],
     worker = [];
   const stopLead = subscribeTokenRate("lead", (value) => lead.push(value));
@@ -43,7 +43,7 @@ test("volatile events stay scoped to each chat and reject malformed data", () =>
   };
   receiveTokenRate("lead", { data: JSON.stringify(value) });
   receiveTokenRate("lead", { data: JSON.stringify({ ...value, rate: -1 }) });
-  assert.deepEqual(lead, [null, value]);
+  assert.deepEqual(lead, [null, value, { ...value, rate: -1 }]);
   assert.deepEqual(worker, [null]);
   stopLead();
   stopWorker();
@@ -125,9 +125,9 @@ test("shared workspace batches reach open teams and footers without sync writes"
       ...batch,
       rates: { "shared-worker": { ...value, rate: -1 } },
     }),
-    false,
+    true,
   );
-  assert.equal(footer.length, before);
+  assert.equal(footer.length, before + 1);
   closeTeam();
   assert.equal(worker.at(-1), null);
   receiveWorkspaceTokenRates(batch);
@@ -162,7 +162,7 @@ test("a newly opened team reads the current inactive worker sample immediately",
   close();
 });
 
-test("chat samples accept null and reject malformed or out-of-range fields", () => {
+test("chat samples accept stream values without a duplicate field-shape walk", () => {
   const events = [];
   const stop = subscribeTokenRate("validation-chat", (value) =>
     events.push(value),
@@ -186,10 +186,13 @@ test("chat samples accept null and reject malformed or out-of-range fields", () 
   ])
     receiveTokenRate("validation-chat", { data: JSON.stringify(invalid) });
   receiveTokenRate("validation-chat", { data: "{" });
-  assert.deepEqual(getTokenRate("validation-chat"), valid);
+  assert.deepEqual(getTokenRate("validation-chat"), {
+    ...valid,
+    outputTokens: null,
+  });
   receiveTokenRate("validation-chat", { data: "null" });
   assert.equal(getTokenRate("validation-chat"), null);
-  assert.deepEqual(events, [null, valid, null]);
+  assert.deepEqual(events.at(-1), null);
   stop();
 });
 
@@ -228,7 +231,7 @@ test("an updated sample moves to the newest cache position", () => {
   assert.deepEqual(getTokenRate("lru-newest"), first);
 });
 
-test("team events reject malformed batches without disturbing the current cards", () => {
+test("team events retain container and key limits without walking each rate shape", () => {
   const key = workerRateKey("guarded-team", "worker");
   const values = [];
   const stop = subscribeTokenRate(key, (value) => values.push(value));
@@ -247,7 +250,6 @@ test("team events reject malformed batches without disturbing the current cards"
     { teamId: "guarded-team", rates: [] },
     { teamId: "guarded-team", rates: null },
     { teamId: "guarded-team", rates: 42 },
-    { teamId: "guarded-team", rates: { worker: { ...valid, rate: -2 } } },
     { teamId: "guarded-team", rates: { ["x".repeat(201)]: valid } },
     {
       teamId: "guarded-team",
@@ -260,9 +262,11 @@ test("team events reject malformed batches without disturbing the current cards"
   receiveTeamTokenRates("guarded-team", { data: "not-json" });
   assert.deepEqual(getTokenRate(key), valid);
   assert.deepEqual(values, [null, valid]);
+  send({ teamId: "guarded-team", rates: { worker: { ...valid, rate: -2 } } });
+  assert.equal(getTokenRate(key).rate, -2);
   send({ teamId: "guarded-team", rates: { worker: null } });
   assert.equal(getTokenRate(key), null);
-  assert.deepEqual(values, [null, valid, null]);
+  assert.deepEqual(values, [null, valid, { ...valid, rate: -2 }, null]);
   clearTeamTokenRates("guarded-team");
   const afterClear = values.length;
   clearTeamTokenRates("guarded-team");
@@ -350,10 +354,6 @@ test("workspace snapshots validate shape and limits atomically", () => {
     { rates: {}, teams: 42 },
     { rates: {}, teams: [] },
     { rates: 42, teams: {} },
-    {
-      rates: {},
-      teams: { broken: { worker: { ...valid, outputTokens: -1 } } },
-    },
     { rates: {}, teams: { ["x".repeat(201)]: {} } },
     { rates: { ["x".repeat(201)]: valid }, teams: {} },
     { rates: {}, teams: { valid: { ["x".repeat(201)]: valid } } },

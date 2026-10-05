@@ -1,6 +1,7 @@
 """Offline OpenAPI construction and strict schema coverage checks."""
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import cast
 
@@ -39,6 +40,9 @@ SCHEMA_SHAPE_KEYS = frozenset(
     }
 )
 SCHEMA_COMBINATORS = ("oneOf", "anyOf", "allOf")
+API_SCHEMA_HASH_HEADER = "X-Studio-API-Schema"
+API_SCHEMA_HASH_PARAM = "apiSchema"
+API_SCHEMA_MISMATCH_HEADER = "X-Studio-API-Schema-Mismatch"
 
 
 def openapi_document() -> dict[str, JsonValue]:
@@ -48,6 +52,20 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+
+
+def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
+    """Serialize OpenAPI deterministically for renderer/server schema identity."""
+    return json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def api_schema_hash(document: dict[str, JsonValue] | None = None) -> str:
+    """Hash the canonical OpenAPI document shared by codegen and the server."""
+    return hashlib.sha256(
+        canonical_openapi_json(openapi_document() if document is None else document)
+    ).hexdigest()
 
 
 def _object(value: JsonValue) -> dict[str, JsonValue] | None:

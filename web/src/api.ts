@@ -1,6 +1,11 @@
 import createClient from "openapi-fetch";
 import type { FetchResponse } from "openapi-fetch";
 import type { components, paths } from "./generated/api";
+import {
+  API_SCHEMA_HASH,
+  API_SCHEMA_HASH_HEADER,
+  API_SCHEMA_MISMATCH_HEADER,
+} from "./generated/apiSchema";
 import type {
   ApiGetOptions,
   ApiPathsFor,
@@ -105,10 +110,114 @@ const pendingSessions = new Set<number>();
 let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
+const schemaMismatchListeners = new Set<() => void>();
+let schemaMismatch = false;
+const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
+
+export function isApiSchemaMismatch() {
+  return schemaMismatch;
+}
+
+export function onApiSchemaMismatch(listener: () => void) {
+  schemaMismatchListeners.add(listener);
+  if (schemaMismatch) listener();
+  return () => {
+    schemaMismatchListeners.delete(listener);
+  };
+}
+
+export function markApiSchemaMismatch() {
+  if (schemaMismatch) return;
+  schemaMismatch = true;
+  for (const listener of schemaMismatchListeners) listener();
+  if (typeof document !== "undefined" && document.documentElement)
+    document.documentElement.dataset.studioApiSchemaMismatch = "true";
+  window.dispatchEvent(new Event("studio-api-schema-mismatch"));
+}
+
+export function schemaUpdateFailedAfterReload() {
+  try {
+    const attempted = sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === "1";
+    sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+    return attempted;
+  } catch {
+    return false;
+  }
+}
+
+export async function updateRendererAndReload() {
+  try {
+    window.dispatchEvent(new Event("studio-update-service-worker"));
+    sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
+    const registration = await navigator.serviceWorker?.getRegistration("/");
+    if (registration) {
+      await registration.update();
+      let worker = registration.waiting;
+      if (!worker && registration.installing) {
+        const installing = registration.installing;
+        await new Promise<void>((resolve) => {
+          const changed = () => {
+            if (
+              installing.state === "installed" ||
+              installing.state === "activated" ||
+              installing.state === "redundant"
+            ) {
+              installing.removeEventListener("statechange", changed);
+              resolve();
+            }
+          };
+          installing.addEventListener("statechange", changed);
+          changed();
+          setTimeout(resolve, 5000);
+        });
+        worker = registration.waiting;
+      }
+      if (worker) {
+        await new Promise<void>((resolve) => {
+          const changed = () => {
+            navigator.serviceWorker.removeEventListener(
+              "controllerchange",
+              changed,
+            );
+            resolve();
+          };
+          navigator.serviceWorker.addEventListener(
+            "controllerchange",
+            changed,
+            { once: true },
+          );
+          worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
+          setTimeout(resolve, 2000);
+        });
+      }
+    }
+  } catch {
+    // Reload still fetches no-store index.html and can recover a new build.
+  }
+  window.location.reload();
+}
 
 export const client = createClient<paths, "application/json">({
   baseUrl: globalThis.location?.origin ?? "http://localhost",
-  fetch: (request) => globalThis.fetch(request),
+  fetch: async (request) => {
+    const headers = new Headers(request.headers);
+    headers.set(API_SCHEMA_HASH_HEADER, API_SCHEMA_HASH);
+    const response = await globalThis.fetch(new Request(request, { headers }));
+    const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
+    if (
+      response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
+      (serverHash && serverHash !== API_SCHEMA_HASH)
+    )
+      markApiSchemaMismatch();
+    else if (serverHash === API_SCHEMA_HASH) {
+      try {
+        sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+      } catch {
+        // Storage may be disabled; the mismatch gate still works in memory.
+      }
+    }
+    return response;
+  },
 });
 
 // The openapi-fetch generic accepts a correlated path/init pair. TypeScript
@@ -292,6 +401,8 @@ export async function post<Path extends PathsFor<"post">>(
   body: PostBody<Path>,
   options: PostOptions = {},
 ): Promise<PostResult<Path>> {
+  if (schemaMismatch)
+    throw new ApiError("Studio must be updated before sending.", 426);
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
   try {
@@ -393,6 +504,10 @@ export function syncGet<Path extends PathsFor<"get">>(
   path: Path,
   options?: SyncGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
+  if (schemaMismatch)
+    return Promise.reject(
+      new ApiError("Studio must be updated before syncing.", 426),
+    );
   return performGet(path, { ...options, timeoutMs: 15000 });
 }
 export const syncPost = <Path extends PathsFor<"post">>(

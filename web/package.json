@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:api-validators": "node --test scripts/api/stream-validators.test.mjs",
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json",
     "test:browser": "npm run build && playwright test --config playwright.config.ts --project=client",

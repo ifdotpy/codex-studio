@@ -332,6 +332,7 @@ def create_router(context: ApiContext) -> APIRouter:
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
                 try:
+                    yield _event("api-schema", {"hash": context.api_schema_hash})
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):
