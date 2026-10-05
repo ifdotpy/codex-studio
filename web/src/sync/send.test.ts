@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
-import { ApiSchemaMismatchError } from "../api";
+import { ApiError, ApiSchemaMismatchError } from "../api";
 const { syncDatabase, syncGet, refreshSession, syncPost } = vi.hoisted(() => ({
   syncDatabase: vi.fn(),
   syncGet: vi.fn(),
@@ -160,4 +160,37 @@ it("deliver keeps a marked-426 message queued without changing its identity", as
   assert.equal(stored.body.id, "stable-message-id");
   assert.equal(stored.attempted, true);
   assert.equal(syncPost.mock.calls.length, 1);
+});
+
+it("deliver preserves the existing failure behavior for an unmarked 426", async () => {
+  vi.stubGlobal("navigator", { onLine: true });
+  vi.stubGlobal("localStorage", { getItem: () => null });
+  syncDatabase.mockResolvedValue({ workspaceId: "workspace-one" });
+  syncGet.mockResolvedValue({ workspaceId: "workspace-one" });
+  refreshSession.mockResolvedValue({ token: "session-token" });
+  syncPost.mockRejectedValue(new ApiError("Unsupported protocol", 426));
+  let record = {
+    id: "stable-message-id",
+    payload: JSON.stringify({
+      body: {
+        id: "stable-message-id",
+        room: "chat",
+        text: "hello",
+        delivery: "queue",
+      },
+      status: "queued",
+      attempted: false,
+      created: 1,
+    }),
+  };
+  const doc = {
+    id: record.id,
+    getLatest: () => record,
+    incrementalModify: async (
+      modify: (value: typeof record) => typeof record,
+    ) => (record = modify(record)),
+  };
+  await assert.rejects(deliver(doc), { status: 426 });
+  assert.equal(JSON.parse(record.payload).status, "failed");
+  assert.equal(JSON.parse(record.payload).body.id, "stable-message-id");
 });

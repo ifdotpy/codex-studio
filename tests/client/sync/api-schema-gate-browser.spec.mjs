@@ -162,3 +162,82 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     fixture.kill();
   }
 });
+
+test("a stream mismatch keeps the transcript and draft while stopping every request", async ({
+  page,
+}) => {
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const state = await mkdtemp(join(tmpdir(), "studio-schema-stream-gate-"));
+  const fixture = spawnFixture(
+    process.env.PYTHON_BIN || "python3",
+    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
+  );
+  let fixtureLog = "";
+  fixture.stderr.on("data", (chunk) => {
+    fixtureLog += chunk;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(fixtureLog)));
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker?.ready;
+    });
+    await page.reload();
+    await page.evaluate(() => {
+      localStorage.setItem("schema-stream-gate-ready", "1");
+    });
+    await page
+      .getByRole("button", { name: /^Release lead/ })
+      .first()
+      .click();
+    await page.waitForFunction(
+      () => document.querySelectorAll("article[data-message]").length > 0,
+    );
+    const visibleMessages = await page.locator("article[data-message]").count();
+    await page.locator("#message").fill("Draft survives a stream mismatch");
+    await page.waitForFunction(() =>
+      Object.keys(localStorage).some((key) =>
+        localStorage.getItem(key)?.includes("Draft survives a stream mismatch"),
+      ),
+    );
+    let totalRequests = 0;
+    page.on("request", () => totalRequests++);
+    await page.route("**/api/sync/stream**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash(), mismatch: true })}\n\n`,
+      });
+    });
+    await page.reload();
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText: "Studio has been updated. Update this tab",
+      }),
+    ).toBeVisible();
+    await expect(page.locator("#message")).toHaveValue(
+      "Draft survives a stream mismatch",
+    );
+    await expect(page.locator("article[data-message]")).toHaveCount(
+      visibleMessages,
+    );
+    await expect(
+      page.getByRole("button", { name: "Send message" }),
+    ).toBeDisabled();
+    const settledRequests = totalRequests;
+    await page.waitForTimeout(8_000);
+    assert.equal(
+      totalRequests,
+      settledRequests,
+      "No requests follow a stream mismatch",
+    );
+  } finally {
+    fixture.kill();
+  }
+});

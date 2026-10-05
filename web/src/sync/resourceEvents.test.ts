@@ -27,6 +27,7 @@ class Source {
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
   onerror: (() => void) | null = null;
   onopen: (() => void) | null = null;
+  status = 200;
   closed = false;
   schemaEmitted = false;
   autoHandshake: boolean;
@@ -286,6 +287,7 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const source = Source.instances[0]!;
+    source.status = 426;
     source.onerror?.();
     expect(source.closed).toBe(true);
     expect(states).not.toContain("schema-mismatch");
