@@ -17,9 +17,8 @@ if (self.STUDIO_SHELL) {
     const complete = [];
     for (const name of names) {
       const cache = await caches.open(name);
-      const manifest = await (
-        await cache.match(manifestPath)
-      )
+      // oxfmt-ignore
+      const manifest = await (await cache.match(manifestPath))
         ?.json()
         .catch(() => null);
       if (
