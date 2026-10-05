@@ -99,7 +99,68 @@ try:
     recs = seed(runtime)
     out["accountKeys"] = sorted({record.get("accountKey", "default") for record in recs.values()})
     try:
-        if scenario == "spawn-then-rename":
+        if scenario == "legacy-workspace-operation-recovery":
+            paused_owner = dict(recs["lead-0"], workspaceOperation="checkpoint",
+                                workspaceReservationId="legacy-paused-capture", status="paused",
+                                autoWake=False)
+            queued_owner = dict(recs["lead-1"], workspaceOperation="checkpoint",
+                                workspaceReservationId="legacy-queued-capture", autoWake=False)
+            with runtime.lock, runtime.db() as db:
+                runtime.put(db, "agents", paused_owner)
+                runtime.put(db, "agents", queued_owner)
+            runtime.send(queued_owner["id"], "Continue after snapshot", "legacy-recovery-input")
+            with runtime.db() as db:
+                sync_before = {
+                    agent_id: db.execute(
+                        "SELECT seq FROM sync_entities WHERE collection='agent' AND id=?", (agent_id,)
+                    ).fetchone()[0]
+                    for agent_id in (paused_owner["id"], queued_owner["id"])
+                }
+                legacy_records = [
+                    {key: record.get(key) for key in (
+                        "id", "rootId", "accountKey", "deletedAt", "status", "autoWake",
+                        "workspaceOperation", "workspaceReservationId")}
+                    for record in runtime.records(db, "agents")
+                    if record.get("workspaceOperation")
+                ]
+                workspace_operation_rows = runtime.records(db, "workspace_operations")
+            runtime.close()
+            runtime = Runtime(Path(temp.name), fixture.FakeServer)
+            runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
+            runtime.stop = lambda *a, **k: None
+            recovered = {agent_id: runtime.agent(agent_id) for agent_id in (
+                paused_owner["id"], queued_owner["id"]
+            )}
+            with runtime.db() as db:
+                pending = db.execute(
+                    "SELECT status,agent FROM runtime_events WHERE id='legacy-recovery-input'"
+                ).fetchone()
+                operation_count = db.execute(
+                    "SELECT COUNT(*) FROM runtime_workspace_operations"
+                ).fetchone()[0]
+                synced = {}
+                sync_sequence_delta = {}
+                for agent_id in recovered:
+                    row = db.execute(
+                        "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (agent_id,),
+                    ).fetchone()
+                    sync_sequence_delta[agent_id] = row[0] - sync_before[agent_id]
+                    value = json.loads(row[1])["value"]
+                    synced[agent_id] = {key: value.get(key) for key in (
+                        "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
+            out["result"] = {
+                "agents": {agent_id: {key: recovered[agent_id].get(key) for key in (
+                    "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
+                    for agent_id in recovered},
+                "syncedAgents": synced,
+                "syncSequenceDelta": sync_sequence_delta,
+                "pendingInput": dict(pending) if pending else None,
+                "workspaceOperationRows": operation_count,
+                "legacyRecordsBeforeRestart": legacy_records,
+                "workspaceOperationRowsBeforeRestart": len(workspace_operation_rows),
+            }
+        elif scenario == "spawn-then-rename":
             with runtime.lock, runtime.db() as db:
                 runtime.put(db, "agents", dict(recs["b-worker"], id="b-new", name="B new"))
             change(runtime, "b-new", name="B new titled")

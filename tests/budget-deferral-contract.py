@@ -16,6 +16,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_budget import budget_admission, defer_budget_start, claim_budget_wait
 from codex_native_action_receipts import find, reserve, outcome
+from runtime_scoped_agent_fixture import install_scoped_agent_reads
 
 
 class Runtime:
@@ -46,6 +47,9 @@ class Runtime:
 
     def put(self, db, table, a):
         db.execute('INSERT OR REPLACE INTO runtime_' + table + ' VALUES (?,?)', (a['id'], json.dumps(a)))
+
+
+install_scoped_agent_reads(Runtime)
 
 
 class DeferralTests(unittest.TestCase):
