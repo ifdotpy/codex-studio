@@ -590,6 +590,233 @@ const makeSnapshot = (threads, runtime = {}) => ({
   },
 });
 
+it("keeps a parent waiting for a child with current command or monitor work", () => {
+  const lead = makeAgent({ status: "waiting", inFlight: false });
+  const child = makeAgent({
+    id: "child",
+    parentId: lead.id,
+    rootId: lead.id,
+    isLead: false,
+    status: "waiting",
+    inFlight: false,
+  });
+  for (const kind of ["monitors", "tasks"]) {
+    const work = {
+      id: "work",
+      agent: child.id,
+      epoch: child.epoch,
+      status: "running",
+      command: "watch build",
+    };
+    for (const status of ["starting", "running", "approval"]) {
+      const snapshot = makeSnapshot([lead, child], {
+        [kind]: [{ ...work, status }],
+      });
+      assert.deepEqual(chatIndicators(snapshot).get(lead.id), {
+        kind: "working",
+        label: "Waiting for 1 agent",
+      });
+      const wait = chatWaitState(snapshot, lead);
+      assert.deepEqual(
+        wait.agents.map(({ id }) => id),
+        [child.id],
+      );
+      assert.deepEqual(wait.monitors, []);
+      assert.deepEqual(wait.commands, []);
+      assert.equal(chatWaitState(snapshot, child).live, true);
+    }
+    for (const change of [
+      { status: "completed" },
+      { status: "failed" },
+      { status: "cancelled" },
+      { status: "lost" },
+      { epoch: child.epoch - 1 },
+      { epoch: "2" },
+      { agent: "unknown" },
+    ]) {
+      const snapshot = makeSnapshot([lead, child], {
+        [kind]: [{ ...work, ...change }],
+      });
+      assert.deepEqual(chatIndicators(snapshot).get(lead.id), {
+        kind: "none",
+        label: endedWaitLabel,
+      });
+    }
+    for (const change of [
+      { status: "paused", autoWake: false },
+      { status: "failed" },
+      { status: "interrupted" },
+      { status: "completed" },
+      { status: "idle" },
+      { archived: true },
+      { autoWake: false },
+      { source: "local" },
+    ]) {
+      const snapshot = makeSnapshot([lead, { ...child, ...change }], {
+        [kind]: [work],
+      });
+      assert.equal(chatWaitState(snapshot, lead).live, false);
+    }
+    const snapshot = makeSnapshot([lead, child], {
+      [kind]: [work],
+      requests: [{ agent: child.id, epoch: child.epoch, status: "pending" }],
+    });
+    assert.equal(chatIndicators(snapshot).get(lead.id).kind, "answer");
+  }
+  assert.equal(
+    chatWaitState(
+      makeSnapshot([lead, child], {
+        tasks: [{ id: "tool", agent: child.id, status: "running" }],
+      }),
+      lead,
+    ).live,
+    false,
+    "an unfinished generic tool record does not promise another child turn",
+  );
+});
+
+it("counts active work through waiting descendants without crossing stopped branches", () => {
+  const lead = makeAgent({ status: "waiting", inFlight: false });
+  const middle = makeAgent({
+    id: "middle",
+    parentId: lead.id,
+    rootId: lead.id,
+    isLead: false,
+    status: "waiting",
+    inFlight: false,
+  });
+  const child = { ...middle, id: "child", parentId: middle.id };
+  const monitor = {
+    id: "watch",
+    agent: child.id,
+    status: "running",
+    epoch: child.epoch,
+  };
+  const snapshot = makeSnapshot([lead, middle, child], { monitors: [monitor] });
+  const indicators = chatIndicators(snapshot);
+  for (const agent of [lead, middle]) {
+    assert.deepEqual(indicators.get(agent.id), {
+      kind: "working",
+      label: "Waiting for 1 agent",
+    });
+    assert.equal(chatWaitState(snapshot, agent).agents[0].parentId, agent.id);
+  }
+  assert.deepEqual(indicators.get(child.id), {
+    kind: "working",
+    label: "Waiting for 1 monitor",
+  });
+  for (const change of [
+    { status: "paused", autoWake: false },
+    { status: "failed" },
+    { archived: true },
+    { autoWake: false },
+    { source: "local" },
+    { parentId: "other-root" },
+  ]) {
+    const snapshot = makeSnapshot([lead, { ...middle, ...change }, child], {
+      monitors: [monitor],
+    });
+    assert.equal(chatWaitState(snapshot, lead).live, false);
+  }
+  for (const runtime of [
+    {},
+    { monitors: [{ ...monitor, status: "completed" }] },
+  ]) {
+    const snapshot = makeSnapshot([lead, middle, child], runtime);
+    for (const agent of [lead, middle, child])
+      assert.equal(chatWaitState(snapshot, agent).live, false);
+  }
+  const sibling = { ...child, id: "sibling", parentId: lead.id };
+  assert.equal(
+    chatWaitState(
+      makeSnapshot([lead, middle, child, sibling], {
+        monitors: [{ ...monitor, agent: sibling.id }],
+      }),
+      middle,
+    ).live,
+    false,
+    "a root activity does not become work owned by a sibling branch",
+  );
+  assert.equal(
+    chatWaitState(
+      makeSnapshot([lead, { ...middle, parentId: child.id }, child], {
+        monitors: [monitor],
+      }),
+      middle,
+    ).agents.length,
+    1,
+    "a parent cycle cannot include the requesting agent again",
+  );
+});
+
+it("keeps the parent waiting for a parked child's saved event", () => {
+  const lead = makeAgent({ status: "waiting", inFlight: false });
+  const child = makeAgent({
+    id: "child",
+    parentId: lead.id,
+    rootId: lead.id,
+    status: "parked",
+    inFlight: false,
+    autoWake: false,
+    parkedEvent: "build-ready",
+  });
+  const monitor = { id: "watch", agent: child.id, status: "running", epoch: 2 };
+  for (const monitors of [[], [monitor]]) {
+    const snapshot = makeSnapshot([lead, child], { monitors });
+    assert.deepEqual(chatIndicators(snapshot).get(lead.id), {
+      kind: "working",
+      label: "Waiting for 1 agent",
+    });
+    assert.equal(chatWaitState(snapshot, child).event, "build-ready");
+  }
+  for (const change of [
+    { parkedEvent: null },
+    { parkedEvent: "" },
+    { status: "waiting" },
+    { status: "paused" },
+    { status: "failed" },
+    { status: "interrupted" },
+    { archived: true },
+  ])
+    assert.equal(
+      chatWaitState(
+        makeSnapshot([lead, { ...child, ...change }], { monitors: [monitor] }),
+        lead,
+      ).live,
+      false,
+    );
+});
+
+it("indexes one wide team's children once for all chat indicators", () => {
+  const lead = makeAgent({ status: "waiting", inFlight: false });
+  const children = Array.from({ length: 1024 }, (_, index) =>
+    makeAgent({
+      id: `child-${index}`,
+      parentId: lead.id,
+      rootId: lead.id,
+      status: "waiting",
+      inFlight: false,
+    }),
+  );
+  const snapshot = makeSnapshot([lead, ...children], {
+    monitors: [
+      { id: "watch", agent: children[0].id, status: "running", epoch: 2 },
+    ],
+  });
+  const threads = snapshot.threads;
+  let reads = 0;
+  Object.defineProperty(snapshot, "threads", {
+    get() {
+      reads++;
+      return threads;
+    },
+  });
+  const indicators = chatIndicators(snapshot);
+  assert.equal(indicators.size, 1025);
+  assert.equal(indicators.get(lead.id).label, "Waiting for 1 agent");
+  assert(reads <= 3, `the team roster was read ${reads} times`);
+});
+
 it("rejects malformed epochs while preserving absent, null and numeric epoch rules", () => {
   const failed = makeAgent({ status: "failed", epoch: 4 });
   const waiting = makeAgent({ status: "waiting", epoch: 4 });
