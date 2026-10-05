@@ -125,7 +125,9 @@ responses and the protocol-3 stream handshake. If they differ, the page keeps
 the loaded transcript and local composer draft visible, then pauses stream,
 draft replication, outbox delivery, and send actions until the renderer updates.
 Protocol-3 event payloads no longer use generated per-event runtime validators;
-workspace and revision semantics and bounded resource counts remain enforced.
+workspace, epoch, revision, and ordering semantics remain enforced.
+Desktop windows skip service workers, so Update reloads the renderer directly;
+a mismatch that remains after reload requires rebuilding Studio.
 
 Managed conversations use the workspace sync projection. One tab holds the
 exclusive browser lock and owns `/api/sync/stream?protocol=2`, then shares its

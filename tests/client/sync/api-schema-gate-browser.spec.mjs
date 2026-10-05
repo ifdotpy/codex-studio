@@ -28,6 +28,14 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker?.ready;
+    });
+    await page.reload();
+    await expect
+      .poll(() => page.evaluate(() => !!navigator.serviceWorker?.controller))
+      .toBe(true);
     await page
       .getByRole("button", { name: /^Release lead/ })
       .first()
@@ -43,39 +51,23 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       ),
     );
 
+    let apiRequests = 0;
     let mutationRequests = 0;
     const syncRequests = [];
-    let seenSchemaHeader;
-    await page.evaluate(() => {
-      window.__schemaMismatchEvent = false;
-      window.addEventListener("studio-api-schema-mismatch", () => {
-        window.__schemaMismatchEvent = true;
-      });
-    });
     page.on("request", (request) => {
       const url = new URL(request.url());
+      if (url.pathname.startsWith("/api/")) apiRequests++;
       if (request.method() !== "GET" && url.pathname.startsWith("/api/"))
         mutationRequests++;
       if (url.pathname.startsWith("/api/sync/"))
         syncRequests.push(request.url());
     });
-    page.on("response", async (response) => {
-      if (new URL(response.url()).pathname === "/api/session")
-        seenSchemaHeader = (await response.allHeaders())["x-studio-api-schema"];
-    });
-    let schemaStreamRequests = 0;
-    await page.route("**/api/sync/stream**", async (route) => {
-      schemaStreamRequests++;
-      await route.fulfill({
-        status: 503,
-        headers: {
-          "content-type": "application/json",
-        },
-        body: '{"detail":"test stream unavailable"}',
-      });
-    });
+    let mismatchEnabled = true;
     let schemaResponses = 0;
-    await page.route("**/api/session", async (route) => {
+    await page.route("**/api/**", async (route) => {
+      if (new URL(route.request().url()).pathname === "/api/sync/stream")
+        return route.continue();
+      if (!mismatchEnabled) return route.continue();
       const response = await route.fetch();
       schemaResponses++;
       await route.fulfill({
@@ -86,16 +78,8 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
         },
       });
     });
-    await page.evaluate(() => {
-      window.dispatchEvent(new Event("offline"));
-      window.dispatchEvent(new Event("online"));
-    });
-    await expect.poll(() => schemaStreamRequests).toBeGreaterThan(0);
+    await page.reload();
     await expect.poll(() => schemaResponses).toBeGreaterThan(0);
-    await expect.poll(() => seenSchemaHeader).toBe("foreign-schema");
-    await expect
-      .poll(() => page.evaluate(() => window.__schemaMismatchEvent))
-      .toBe(true);
     await expect(
       page.locator('[data-modal-content="true"]').filter({
         hasText: "Studio has been updated. Update this tab",
@@ -110,9 +94,15 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     await expect(page.locator("article[data-message]")).toHaveCount(
       visibleMessages,
     );
+    const settledApiRequests = apiRequests;
     const settledSyncRequests = syncRequests.length;
     const settledMutations = mutationRequests;
-    await page.waitForTimeout(750);
+    await page.waitForTimeout(8_000);
+    assert.equal(
+      apiRequests,
+      settledApiRequests,
+      "No API requests follow the mismatch alert",
+    );
     assert.equal(
       syncRequests.length,
       settledSyncRequests,
@@ -123,6 +113,38 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       settledMutations,
       "No mutations follow the mismatch alert",
     );
+
+    await page.getByRole("button", { name: "Update" }).click();
+    await expect(page).toHaveURL(/studio-update=/, { timeout: 30_000 });
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText: "The installed renderer build does not match the server",
+      }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
+
+    mismatchEnabled = false;
+    await page.reload();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    expect(
+      await page.evaluate(() =>
+        sessionStorage.getItem("studio-api-schema-update-attempted"),
+      ),
+    ).toBeNull();
+
+    await page.route("**/api/sync/stream**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: 'event: api-schema\ndata: {"hash":"foreign-schema"}\n\n',
+      });
+    });
+    await page.reload();
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText: "Studio has been updated. Update this tab",
+      }),
+    ).toBeVisible();
   } finally {
     fixture.kill();
   }

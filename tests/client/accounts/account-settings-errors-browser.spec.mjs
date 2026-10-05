@@ -5,8 +5,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, browserExecutablePath } from "../playwright.mjs";
-import { isResourceChangeEvent } from "../../../web/src/generated/stream-validators.js";
+import {
+  test,
+  browserExecutablePath,
+  readApiSchemaHash,
+} from "../playwright.mjs";
 
 test("Account settings errors", async () => {
   test.setTimeout(45_000);
@@ -36,7 +39,9 @@ test("Account settings errors", async () => {
       reason,
       resources,
     };
-    assert.ok(isResourceChangeEvent(event));
+    assert.ok(
+      Array.isArray(event.resources) && Number.isFinite(event.revision),
+    );
     stream.response.write(
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
@@ -69,6 +74,9 @@ test("Account settings errors", async () => {
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
             });
+            res.write(
+              `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
+            );
             resourceStreams.add(stream);
             writeResourceEvent(stream, "initial");
             res.on("close", () => resourceStreams.delete(stream));

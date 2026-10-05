@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from typing import cast
 
 from studio_api.models import JsonValue
@@ -43,6 +44,8 @@ SCHEMA_COMBINATORS = ("oneOf", "anyOf", "allOf")
 API_SCHEMA_HASH_HEADER = "X-Studio-API-Schema"
 API_SCHEMA_HASH_PARAM = "apiSchema"
 API_SCHEMA_MISMATCH_HEADER = "X-Studio-API-Schema-Mismatch"
+_HASH_LOCK = threading.Lock()
+_CACHED_API_SCHEMA_HASH: str | None = None
 
 
 def openapi_document() -> dict[str, JsonValue]:
@@ -55,17 +58,38 @@ def openapi_document() -> dict[str, JsonValue]:
 
 
 def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
-    """Serialize OpenAPI deterministically for renderer/server schema identity."""
+    """Canonicalize wire-shape OpenAPI fields; ignore documentation-only metadata."""
+    def strip_documentation(value: JsonValue) -> JsonValue:
+        if isinstance(value, list):
+            return [strip_documentation(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: strip_documentation(item)
+                for key, item in value.items()
+                if key not in {"description", "summary", "examples", "externalDocs"}
+            }
+        return value
+
     return json.dumps(
-        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        strip_documentation(document),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
 
 
 def api_schema_hash(document: dict[str, JsonValue] | None = None) -> str:
     """Hash the canonical OpenAPI document shared by codegen and the server."""
-    return hashlib.sha256(
-        canonical_openapi_json(openapi_document() if document is None else document)
-    ).hexdigest()
+    if document is not None:
+        return hashlib.sha256(canonical_openapi_json(document)).hexdigest()
+    global _CACHED_API_SCHEMA_HASH
+    if _CACHED_API_SCHEMA_HASH is None:
+        with _HASH_LOCK:
+            if _CACHED_API_SCHEMA_HASH is None:
+                _CACHED_API_SCHEMA_HASH = hashlib.sha256(
+                    canonical_openapi_json(openapi_document())
+                ).hexdigest()
+    return _CACHED_API_SCHEMA_HASH
 
 
 def _object(value: JsonValue) -> dict[str, JsonValue] | None:

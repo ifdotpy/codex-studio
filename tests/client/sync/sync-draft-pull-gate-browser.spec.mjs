@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import { test, expect, readApiSchemaHash } from "../playwright.mjs";
 
 test("draft pull waits for a real trigger without blocking push recovery", async ({
   page: fixturePage,
@@ -54,6 +54,9 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       else if (url.pathname === "/api/sync/stream") {
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.write(
+          `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
+        );
         res.write(
           `event: resources\ndata: ${JSON.stringify({
             protocol: 3,

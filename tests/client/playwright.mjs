@@ -1,12 +1,23 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
 const { chromium } = require("playwright");
+
+export function readApiSchemaHash() {
+  const source = readFileSync(
+    new URL("../../web/src/generated/apiSchema.ts", import.meta.url),
+    "utf8",
+  );
+  const match = source.match(/API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"/);
+  if (!match) throw new Error("Generated API schema hash is missing.");
+  return match[1];
+}
 
 const fixtureScopes = new WeakMap();
 const childTerminationWaitMs = 1_000;

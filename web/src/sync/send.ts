@@ -5,6 +5,7 @@ import {
   syncGet,
   syncPost,
   ApiError,
+  ApiSchemaMismatchError,
   errorText,
   refreshSession,
 } from "../api";
@@ -112,7 +113,7 @@ export function retainQueuedSchemaMismatch(
 }
 const removalFence = (workspaceId: string, id: string) =>
   `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
-async function deliver(doc: any): Promise<SendResult> {
+export async function deliver(doc: any): Promise<SendResult> {
   let value: Intention = JSON.parse(doc.getLatest().payload);
   if (value.status !== "queued" || !navigator.onLine)
     return intentionResult(value);
@@ -197,7 +198,7 @@ async function deliver(doc: any): Promise<SendResult> {
     });
     return intentionResult(JSON.parse(current.payload));
   } catch (error) {
-    if (error instanceof ApiError && error.status === 426) {
+    if (error instanceof ApiSchemaMismatchError && error.markedResponse) {
       const current = await doc.incrementalModify((record: any) => {
         const stored: Intention = JSON.parse(record.payload);
         if (stored.status !== "queued") return record;
@@ -453,7 +454,7 @@ export function useOutbox() {
     let subscribing = false,
       subscribed = false;
     const subscribe = async () => {
-      if (stop || isApiSchemaMismatch() || subscribing || subscribed) return;
+      if (stop || subscribing || subscribed) return;
       subscribing = true;
       try {
         const { db } = await syncDatabase();
@@ -485,12 +486,11 @@ export function useOutbox() {
       void subscribe();
       void drain();
     };
+    const timer = setInterval(resume, 5000);
     void subscribe();
     const stopForSchemaMismatch = onApiSchemaMismatch(() => {
-      stop = true;
-      unsubscribe();
+      clearInterval(timer);
     });
-    const timer = setInterval(resume, 5000);
     const stopResume = onResume(resume);
     return () => {
       stop = true;

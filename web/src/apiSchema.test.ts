@@ -75,7 +75,33 @@ it("sends the generated schema hash and raises mismatch state from an API respon
   await expect(api.syncGet("/api/state")).rejects.toMatchObject({
     status: 426,
   });
+  await expect(api.get("/api/session")).rejects.toMatchObject({
+    name: "ApiSchemaMismatchError",
+  });
   expect(requests).toHaveLength(1);
+});
+
+it("does not treat an unmarked HTTP 426 as an API schema mismatch", async () => {
+  stubBrowser();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(JSON.stringify({ detail: "Unsupported stream protocol" }), {
+        status: 426,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+  const api = await import("./api");
+  const request = api.post("/api/messages", {
+    id: "m1",
+    room: "r",
+    text: "x",
+  });
+  await expect(request).rejects.toMatchObject({ status: 426 });
+  const error = await request.catch((reason: unknown) => reason);
+  expect(error).toBeInstanceOf(api.ApiError);
+  expect(error).not.toBeInstanceOf(api.ApiSchemaMismatchError);
+  expect(api.isApiSchemaMismatch()).toBe(false);
 });
 
 it("raises mismatch state only for the explicitly marked schema-gated 426", async () => {
@@ -107,7 +133,7 @@ it("raises mismatch state only for the explicitly marked schema-gated 426", asyn
   expect(api.isApiSchemaMismatch()).toBe(true);
 });
 
-it("clears the update attempt after a matching response and reports a persistent mismatch once", async () => {
+it("clears the update attempt only after a matching response on the reloaded page", async () => {
   const storage = new Map<string, string>();
   vi.stubGlobal("sessionStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -131,7 +157,10 @@ it("clears the update attempt after a matching response and reports a persistent
   await api.get("/api/session");
   storage.set("studio-api-schema-update-attempted", "1");
   expect(api.schemaUpdateFailedAfterReload()).toBe(true);
-  await api.get("/api/session");
+  vi.resetModules();
+  responses[0] = API_SCHEMA_HASH;
+  const reloadedApi = await import("./api");
+  await reloadedApi.get("/api/session");
   expect(storage.has("studio-api-schema-update-attempted")).toBe(false);
 });
 

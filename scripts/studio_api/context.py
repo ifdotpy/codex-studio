@@ -74,12 +74,7 @@ class ApiContext:
         self.server_port = server_port
         self.unix_socket = unix_socket
         self.schema_only = schema_only
-        if schema_only:
-            self.api_schema_hash = ""
-        else:
-            from studio_api.schema import api_schema_hash
-
-            self.api_schema_hash = api_schema_hash()
+        self._api_schema_hash: str | None = None
         self._lock = threading.RLock()
         self._maintenance_lock = threading.Lock()
         self._maintenance_last = 0.0
@@ -107,6 +102,18 @@ class ApiContext:
         if runtime is not None and self._sync_store is not None:
             setattr(runtime, "sync_store", self._sync_store)
         return runtime
+
+    @property
+    def api_schema_hash(self) -> str:
+        if self._api_schema_hash is None:
+            from studio_api.schema import api_schema_hash
+
+            self._api_schema_hash = api_schema_hash()
+        return self._api_schema_hash
+
+    @api_schema_hash.setter
+    def api_schema_hash(self, value: str) -> None:
+        self._api_schema_hash = value
 
     def terminals(self) -> TerminalManager:
         self._require_runtime()

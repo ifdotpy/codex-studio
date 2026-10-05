@@ -113,6 +113,26 @@ let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
 let schemaMismatch = false;
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
+const SERVICE_WORKER_UPDATE_TIMEOUT_MS = 20_000;
+
+async function withUpdateTimeout<T>(work: Promise<T>) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Studio update timed out.")),
+      SERVICE_WORKER_UPDATE_TIMEOUT_MS,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function isApiSchemaMismatch() {
   return schemaMismatch;
@@ -132,74 +152,62 @@ export function markApiSchemaMismatch() {
   for (const listener of schemaMismatchListeners) listener();
   if (typeof document !== "undefined" && document.documentElement)
     document.documentElement.dataset.studioApiSchemaMismatch = "true";
-  window.dispatchEvent(new Event("studio-api-schema-mismatch"));
+  if (typeof window?.dispatchEvent === "function")
+    window.dispatchEvent(new Event("studio-api-schema-mismatch"));
 }
 
 export function schemaUpdateFailedAfterReload() {
   try {
-    const attempted = sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === "1";
-    sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
-    return attempted;
+    return sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === "1";
   } catch {
     return false;
   }
 }
 
 export async function updateRendererAndReload() {
-  try {
-    window.dispatchEvent(new Event("studio-update-service-worker"));
-    sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
-    const registration = await navigator.serviceWorker?.getRegistration("/");
-    if (registration) {
-      await registration.update();
-      let worker = registration.waiting;
-      if (!worker && registration.installing) {
-        const installing = registration.installing;
-        await new Promise<void>((resolve) => {
-          const changed = () => {
-            if (
-              installing.state === "installed" ||
-              installing.state === "activated" ||
-              installing.state === "redundant"
-            ) {
-              installing.removeEventListener("statechange", changed);
-              resolve();
-            }
-          };
-          installing.addEventListener("statechange", changed);
-          changed();
-          setTimeout(resolve, 5000);
-        });
-        worker = registration.waiting;
-      }
-      if (worker) {
-        await new Promise<void>((resolve) => {
-          const changed = () => {
-            navigator.serviceWorker.removeEventListener(
-              "controllerchange",
-              changed,
-            );
-            resolve();
-          };
-          navigator.serviceWorker.addEventListener(
-            "controllerchange",
-            changed,
-            { once: true },
-          );
-          worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
-          setTimeout(resolve, 2000);
-        });
-      }
+  sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
+  if (window.codexDesktop || !navigator.serviceWorker)
+    return window.location.reload();
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  if (registration) {
+    await withUpdateTimeout(registration.update());
+    const worker = registration.waiting ?? registration.installing;
+    if (worker) {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => finish(new Error("Studio update timed out.")),
+          SERVICE_WORKER_UPDATE_TIMEOUT_MS,
+        );
+        const finish = (error?: Error) => {
+          clearTimeout(timeout);
+          worker.removeEventListener("statechange", changed);
+          if (error) reject(error);
+          else resolve();
+        };
+        let requestedActivation = false;
+        const changed = () => {
+          if (worker.state === "installed" && !requestedActivation) {
+            requestedActivation = true;
+            worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
+          }
+          if (worker.state === "activated") finish();
+          else if (worker.state === "redundant")
+            finish(new Error("Studio update could not be installed."));
+        };
+        worker.addEventListener("statechange", changed);
+        changed();
+      });
     }
-  } catch {
-    // Reload still fetches no-store index.html and can recover a new build.
   }
-  window.location.reload();
+  const url = new URL(window.location.href);
+  url.searchParams.set("studio-update", String(Date.now()));
+  window.location.assign(url.href);
 }
 
 export const client = createClient<paths, "application/json">({
   baseUrl: globalThis.location?.origin ?? "http://localhost",
   fetch: async (request) => {
+    if (schemaMismatch) throw new ApiSchemaMismatchError();
     const headers = new Headers(request.headers);
     headers.set(API_SCHEMA_HASH_HEADER, API_SCHEMA_HASH);
     const response = await globalThis.fetch(new Request(request, { headers }));
@@ -253,6 +261,13 @@ export class ApiError extends Error {
     public readonly details: unknown = message,
   ) {
     super(displayError(message) || `Request failed (${status})`);
+  }
+}
+
+export class ApiSchemaMismatchError extends ApiError {
+  constructor(public readonly markedResponse = false) {
+    super("Studio must be updated before using this tab.", 426);
+    this.name = "ApiSchemaMismatchError";
   }
 }
 
@@ -401,8 +416,7 @@ export async function post<Path extends PathsFor<"post">>(
   body: PostBody<Path>,
   options: PostOptions = {},
 ): Promise<PostResult<Path>> {
-  if (schemaMismatch)
-    throw new ApiError("Studio must be updated before sending.", 426);
+  if (schemaMismatch) throw new ApiSchemaMismatchError();
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
   try {
@@ -419,6 +433,11 @@ export async function post<Path extends PathsFor<"post">>(
       },
     };
     const result = await requestPost(path, fetchOptions as JsonPostInit<Path>);
+    if (
+      !result.response.ok &&
+      result.response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1"
+    )
+      throw new ApiSchemaMismatchError(true);
     if (!result.response.ok)
       throw errorPayload(result.error, result.response.status);
     if (!("data" in result)) return undefined as PostResult<Path>;
@@ -504,10 +523,7 @@ export function syncGet<Path extends PathsFor<"get">>(
   path: Path,
   options?: SyncGetOptions<Path>,
 ): Promise<GetResult<Path> | undefined> {
-  if (schemaMismatch)
-    return Promise.reject(
-      new ApiError("Studio must be updated before syncing.", 426),
-    );
+  if (schemaMismatch) return Promise.reject(new ApiSchemaMismatchError());
   return performGet(path, { ...options, timeoutMs: 15000 });
 }
 export const syncPost = <Path extends PathsFor<"post">>(
@@ -549,7 +565,10 @@ export async function refreshSession(): Promise<GetResult<"/api/session">> {
   return session;
 }
 
-export const errorText = displayError;
+export function errorText(error: unknown) {
+  if (error instanceof ApiSchemaMismatchError) return "";
+  return displayError(error);
+}
 export function saved<T>(key: string, fallback: T): T {
   try {
     return JSON.parse(localStorage.getItem(key) || "null") ?? fallback;

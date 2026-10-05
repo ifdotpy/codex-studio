@@ -119,7 +119,6 @@ if (self.STUDIO_SHELL) {
             .filter((name) => name !== cacheName && !previous.includes(name))
             .map((name) => caches.delete(name)),
         );
-        await self.clients.claim();
       })(),
     );
   });
@@ -132,6 +131,10 @@ if (self.STUDIO_SHELL) {
     const request = event.request;
     const url = new URL(request.url);
     if (request.method !== "GET" || url.origin !== self.location.origin) return;
+    if (request.mode === "navigate" && url.searchParams.has("studio-update")) {
+      event.respondWith(fetch(new Request(request, { cache: "reload" })));
+      return;
+    }
     if (
       request.mode === "navigate" &&
       (url.pathname === "/" || url.pathname === "/index.html")

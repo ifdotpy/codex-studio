@@ -183,8 +183,13 @@ class RequestBoundary:
             )
             values = query.get(API_SCHEMA_HASH_PARAM)
             renderer_hash = values[0] if values else None
+        if not self._trusted(scope, headers, write=write, federation=federation):
+            error = "Local origin and session token required" if write else "Local origin required"
+            await _reject(send, 403, error)
+            return
+
         if (write or stream_connect) and renderer_hash is not None and not secrets.compare_digest(
-            renderer_hash, self.context.api_schema_hash
+            renderer_hash.encode("utf-8"), self.context.api_schema_hash.encode("utf-8")
         ):
             await _reject(
                 send,
@@ -192,10 +197,6 @@ class RequestBoundary:
                 "Studio was updated. Reload this tab to continue.",
                 [(API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1")],
             )
-            return
-        if not self._trusted(scope, headers, write=write, federation=federation):
-            error = "Local origin and session token required" if write else "Local origin required"
-            await _reject(send, 403, error)
             return
 
         if method not in {"POST", "PUT", "PATCH"}:

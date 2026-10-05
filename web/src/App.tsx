@@ -68,7 +68,6 @@ import {
   saved,
   type PostBody,
   isApiSchemaMismatch,
-  onApiSchemaMismatch,
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
 } from "./api";
@@ -181,17 +180,19 @@ export default function App() {
   const [schemaMismatch, setSchemaMismatch] = useState(false);
   const [schemaMismatchNeedsRebuild, setSchemaMismatchNeedsRebuild] =
     useState(false);
+  const [schemaUpdateError, setSchemaUpdateError] = useState("");
   useEffect(() => {
+    let shown = false;
     const showMismatch = () => {
+      if (shown) return;
+      shown = true;
       setSchemaMismatchNeedsRebuild(schemaUpdateFailedAfterReload());
       setSchemaMismatch(true);
     };
-    const unsubscribe = onApiSchemaMismatch(showMismatch);
     window.addEventListener("studio-api-schema-mismatch", showMismatch);
     if (document.documentElement.dataset.studioApiSchemaMismatch === "true")
       showMismatch();
     return () => {
-      unsubscribe();
       window.removeEventListener("studio-api-schema-mismatch", showMismatch);
     };
   }, []);
@@ -2755,7 +2756,23 @@ export default function App() {
             : "Studio has been updated. Update this tab to continue syncing and sending."}
         </p>
         {!schemaMismatchNeedsRebuild && (
-          <Button onClick={() => void updateRendererAndReload()}>Update</Button>
+          <>
+            <Button
+              onClick={() => {
+                setSchemaUpdateError("");
+                void updateRendererAndReload().catch((error: unknown) =>
+                  setSchemaUpdateError(
+                    error instanceof Error
+                      ? error.message
+                      : "Studio update failed. Try again.",
+                  ),
+                );
+              }}
+            >
+              Update
+            </Button>
+            {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
+          </>
         )}
       </Modal>
       {toast && (

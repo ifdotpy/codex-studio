@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import { test, expect, readApiSchemaHash } from "../playwright.mjs";
 
 test("sync-cross-tab-browser @performance", async ({
   browser: fixtureBrowser,
@@ -110,6 +110,9 @@ test("sync-cross-tab-browser @performance", async ({
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
+      res.write(
+        `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
+      );
       streams.add(res);
       streamWorkspaces.set(res, currentWorkspace);
       const resources = JSON.parse(
@@ -255,6 +258,38 @@ test("sync-cross-tab-browser @performance", async ({
           { timeout: 5000 },
         ),
       ),
+    );
+    const beforeForeignSchemaMessage = await Promise.all(
+      pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+    );
+    await pages[7].evaluate(async (currentWorkspace) => {
+      const { API_SCHEMA_HASH } = await import("/src/generated/apiSchema.ts");
+      const channel = new BroadcastChannel(
+        `codex-sync-${location.origin}-${currentWorkspace}`,
+      );
+      channel.postMessage({
+        kind: "resource-event",
+        workspaceId: currentWorkspace,
+        tabId: "foreign-schema-tab",
+        apiSchemaHash: `${API_SCHEMA_HASH}-stale`,
+        event: {
+          protocol: 3,
+          workspaceId: currentWorkspace,
+          epoch: "foreign-schema-epoch",
+          revision: 9000,
+          reason: "change",
+          resources: [{ kind: "state" }],
+        },
+      });
+      channel.close();
+    }, workspaceId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(
+      await Promise.all(
+        pages.map((page) => page.evaluate(() => ({ ...window.counts }))),
+      ),
+      beforeForeignSchemaMessage,
+      "Tabs ignore channel messages from a different schema hash",
     );
     await new Promise((resolve) => setTimeout(resolve, 1400));
     const before = await Promise.all(

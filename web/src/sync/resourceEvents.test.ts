@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
 const workspaceId = "b".repeat(32);
 const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
@@ -19,21 +20,37 @@ vi.mock("./resume", () => ({
 
 class Source {
   static instances: Source[] = [];
+  static skipNextAutoHandshake = false;
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
   onerror: (() => void) | null = null;
   closed = false;
+  schemaEmitted = false;
+  autoHandshake: boolean;
   constructor(readonly url: string) {
     Source.instances.push(this);
+    this.autoHandshake = !Source.skipNextAutoHandshake;
+    Source.skipNextAutoHandshake = false;
   }
   addEventListener(
     name: string,
     listener: (event: MessageEvent<string>) => void,
   ) {
+    if (name === "api-schema" && this.autoHandshake) {
+      this.schemaEmitted = true;
+      listener({
+        data: JSON.stringify({ hash: API_SCHEMA_HASH }),
+      } as MessageEvent<string>);
+      return;
+    }
     let callbacks = this.listeners.get(name);
     if (!callbacks) this.listeners.set(name, (callbacks = new Set()));
     callbacks.add(listener);
   }
   emit(name: string, value: unknown) {
+    if (name === "api-schema") this.schemaEmitted = true;
+    this.emitRaw(name, value);
+  }
+  emitRaw(name: string, value: unknown) {
     const event = { data: JSON.stringify(value) } as MessageEvent<string>;
     for (const listener of this.listeners.get(name) || []) listener(event);
   }
@@ -62,6 +79,7 @@ describe("shared resource event transport", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     Source.instances = [];
+    Source.skipNextAutoHandshake = false;
     Channel.instances = [];
     syncDatabase.mockClear();
     resumeListeners.clear();
@@ -85,6 +103,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
+    Source.skipNextAutoHandshake = true;
     const transport = await import("./resourceEvents");
     const stop = transport.watchResourceChanges(
       { kind: "queue", agentId: "agent-one" },
@@ -151,6 +170,21 @@ describe("shared resource event transport", () => {
         },
       },
     } as MessageEvent);
+    Channel.instances[0]!.onmessage?.({
+      data: {
+        kind: "resource-event",
+        workspaceId,
+        tabId: "tab-hashless",
+        event: {
+          protocol: 3,
+          workspaceId,
+          epoch: "epoch-one",
+          revision: 1,
+          reason: "initial",
+          resources: [{ kind: "queue", agentId: "agent-one" }],
+        },
+      },
+    } as MessageEvent);
     expect(onChange).not.toHaveBeenCalled();
     stop();
   });
@@ -171,6 +205,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
+    Source.skipNextAutoHandshake = true;
     const transport = await import("./resourceEvents");
     const stop = transport.watchResourceChanges(
       { kind: "queue", agentId: "agent-one" },
@@ -180,6 +215,69 @@ describe("shared resource event transport", () => {
     const source = Source.instances[0]!;
     source.emit("api-schema", { hash: "foreign-schema" });
     expect(source.closed).toBe(true);
+    stop();
+  });
+
+  it("fails closed when a frame arrives before the matching stream handshake", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges({ kind: "state" }, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const source = Source.instances[0]!;
+    source.emitRaw("resources", {
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+    });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(source.closed).toBe(true);
+    stop();
+  });
+
+  it("degrades and reconnects on malformed same-schema frames without throwing", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await import("./resourceEvents");
+    const statuses: string[] = [];
+    transport.watchResourceConnection((status) => statuses.push(status));
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const source = Source.instances[0]!;
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    expect(() => source.emitRaw("resources", null)).not.toThrow();
+    expect(source.closed).toBe(true);
+    expect(statuses).toContain("degraded");
     stop();
   });
 
@@ -249,6 +347,7 @@ describe("shared resource event transport", () => {
     const replacement = Source.instances[1]!;
     expect(states.slice(2).every((state) => state === "live")).toBe(true);
     expect(states.at(-1)).toBe("live");
+    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
     replacement.onerror?.();
     expect(states.at(-1)).toBe("degraded");
     expect(terminalChanges).not.toHaveBeenCalled();
@@ -612,6 +711,7 @@ describe("shared resource event transport", () => {
         kind: "subscriptions",
         workspaceId,
         tabId: "tab-follower",
+        apiSchemaHash: API_SCHEMA_HASH,
         resources: [latePeerRef],
         tokenRates: false,
         reset: true,
@@ -661,7 +761,7 @@ describe("shared resource event transport", () => {
 
     const transport = await import("./resourceEvents");
     const local = { kind: "state" } as const;
-    const bulkRefs = Array.from({ length: 255 }, (_, index) => ({
+    const bulkRefs = Array.from({ length: 5000 }, (_, index) => ({
       kind: "panel" as const,
       agentId: `inactive-${index}`,
     }));
@@ -686,6 +786,7 @@ describe("shared resource event transport", () => {
         kind: "subscriptions",
         workspaceId,
         tabId: "tab-cache-inspection",
+        apiSchemaHash: API_SCHEMA_HASH,
         resources: [local, ...bulkRefs],
         tokenRates: false,
         reset: true,
@@ -706,6 +807,7 @@ describe("shared resource event transport", () => {
         kind: "subscriptions",
         workspaceId,
         tabId: "tab-cache-inspection",
+        apiSchemaHash: API_SCHEMA_HASH,
         resources: [],
         tokenRates: false,
         reset: true,
@@ -719,6 +821,7 @@ describe("shared resource event transport", () => {
         kind: "subscriptions",
         workspaceId,
         tabId: "tab-follower",
+        apiSchemaHash: API_SCHEMA_HASH,
         resources: [evictedRef],
         tokenRates: false,
         reset: true,
@@ -825,6 +928,7 @@ describe("shared resource event transport", () => {
         kind: "resource-event",
         workspaceId,
         tabId: "tab-peer",
+        apiSchemaHash: API_SCHEMA_HASH,
         event: initial,
       },
     } as MessageEvent);
@@ -884,6 +988,7 @@ describe("shared resource event transport", () => {
           kind,
           workspaceId,
           tabId: "tab-owner",
+          apiSchemaHash: API_SCHEMA_HASH,
           ...(kind === "resource-event" ? { event: value } : { status: value }),
         },
       } as MessageEvent);

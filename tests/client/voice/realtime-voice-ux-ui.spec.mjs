@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test } from "../playwright.mjs";
+import { test, readApiSchemaHash } from "../playwright.mjs";
 
 test("Realtime voice ux", async ({ context }, testInfo) => {
   test.setTimeout(180_000);
@@ -65,6 +65,9 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
             });
+            res.write(
+              `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
+            );
             streams.add(stream);
             writeResourceEvent(stream, "initial");
             const heartbeat = setInterval(() => {

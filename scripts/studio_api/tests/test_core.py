@@ -14,6 +14,7 @@ import sys
 import asyncio
 from types import SimpleNamespace
 from types import ModuleType
+from typing import cast
 import threading
 import unittest
 from unittest.mock import patch
@@ -30,7 +31,10 @@ from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
-from studio_api.schema import API_SCHEMA_MISMATCH_HEADER
+from studio_api.schema import (
+    API_SCHEMA_MISMATCH_HEADER,
+    api_schema_hash,
+)
 
 
 class MessageRecord(ContractModel):
@@ -318,9 +322,17 @@ class CoreResponseTests(unittest.TestCase):
 
         boundary = RequestBoundary(delegate, context)
 
-        async def invoke(method: str, path: str, schema_hash: str | None, query: bytes = b"") -> list[dict[str, object]]:
+        async def invoke(
+            method: str,
+            path: str,
+            schema_hash: str | None,
+            query: bytes = b"",
+            include_token: bool = True,
+        ) -> list[dict[str, object]]:
             body = b"{}" if method == "POST" else b""
-            raw_headers = [(b"x-canvas-token", context.token.encode())]
+            raw_headers = (
+                [(b"x-canvas-token", context.token.encode())] if include_token else []
+            )
             if schema_hash is not None:
                 raw_headers.append((b"x-studio-api-schema", schema_hash.encode()))
             if body:
@@ -349,6 +361,13 @@ class CoreResponseTests(unittest.TestCase):
         self.assertIn(b"Reload", mismatch_post[1]["body"])
         self.assertNotIn("/api/messages", delegated)
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", ""))[0]["status"], 426)
+        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "é"))[0]["status"], 426)
+        self.assertEqual(
+            asyncio.run(
+                invoke("POST", "/api/messages", "foreign-schema", include_token=False)
+            )[0]["status"],
+            403,
+        )
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", None))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "server-schema"))[0]["status"], 200)
         mismatch_stream = asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))
@@ -359,8 +378,45 @@ class CoreResponseTests(unittest.TestCase):
         )
         self.assertIn(b"Reload", mismatch_stream[1]["body"])
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 426)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, "apiSchema=é".encode("utf-8")))[0]["status"], 426)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=server-schema"))[0]["status"], 200)
+
+    def test_schema_only_context_computes_a_real_hash_lazily(self) -> None:
+        context = ApiContext.for_schema()
+        self.assertTrue(context.schema_only)
+        self.assertEqual(context.api_schema_hash, api_schema_hash())
+        self.assertTrue(context.api_schema_hash)
+
+    def test_schema_hash_ignores_documentation_but_tracks_wire_shape(self) -> None:
+        document: JsonValue = {
+            "paths": {
+                "/thing": {
+                    "get": {
+                        "summary": "First summary",
+                        "description": "First description",
+                        "externalDocs": {"url": "https://example.test"},
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"type": "string", "title": "Thing"}
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        original = api_schema_hash(cast(dict[str, JsonValue], document))
+        documented = json.loads(json.dumps(document))
+        documented["paths"]["/thing"]["get"]["summary"] = "Changed summary"
+        documented["paths"]["/thing"]["get"]["description"] = "Changed description"
+        documented["paths"]["/thing"]["get"]["externalDocs"]["url"] = "https://other.test"
+        self.assertEqual(original, api_schema_hash(cast(dict[str, JsonValue], documented)))
+        documented["paths"]["/thing"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["type"] = "integer"
+        self.assertNotEqual(original, api_schema_hash(cast(dict[str, JsonValue], documented)))
 
     def test_hourly_maintenance_runs_once_for_shared_listener_context(self) -> None:
         context = ApiContext.for_schema()
