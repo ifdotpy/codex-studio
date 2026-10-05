@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automatic checkpoints release notification locks before path checks."""
+"""Checkpoint path checks release runtime locks before filesystem access."""
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -377,6 +377,185 @@ class CheckpointNotificationLockContract(unittest.TestCase):
             collect.assert_called_once_with(self.agent["id"])
         self.assertEqual(self.operations()[0]["phase"], "completed")
         self.assertEqual(self.runtime.agent(self.agent["id"])["imageWorkspaceCollect"], result)
+
+
+class ManualCheckpointLockContract(unittest.TestCase):
+    tearDown = fixture.WorkspaceContract.tearDown
+    lead = fixture.WorkspaceContract.lead
+    worker = fixture.WorkspaceContract.worker
+    agent_update = fixture.WorkspaceContract.agent_update
+    git = fixture.WorkspaceContract.git
+    git_project = fixture.WorkspaceContract.git_project
+    isolated_worker = fixture.WorkspaceContract.isolated_worker
+
+    def setUp(self):
+        fixture.WorkspaceContract.setUp(self)
+        self.agent, self.path = self.isolated_worker()
+        self.agent = self.agent_update(self.agent, threadId="manual-thread", lastCompletedTurn="manual-turn")
+        self.server = self.runtime.connect()
+        with self.runtime.db() as db:
+            db.execute("CREATE TABLE fixture_manual_probe(id TEXT PRIMARY KEY)")
+
+    def restore_request(self):
+        checkpoint = self.runtime.checkpoint_capture(self.agent["id"])
+        (self.path / "tracked.txt").write_text("fixture edit\n")
+        preview = self.runtime.checkpoint_preview(self.agent["id"], checkpoint["id"])
+        return {"id": "fixture-manual-restore", "checkpoint_id": checkpoint["id"],
+                "expectedTree": preview["expectedTree"]}
+
+    @contextmanager
+    def resolving(self, function, *args):
+        entered, release = threading.Event(), threading.Event()
+        resolve = Path.resolve
+
+        def blocked(path, *args, **kwargs):
+            if str(path) == self.agent["cwd"] and not entered.is_set():
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("The manual path gate expired")
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(Path, "resolve", blocked), ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(function, *args)
+            try:
+                self.assertTrue(entered.wait(3), "The real workspace path check must reach the gate")
+                yield future
+            finally:
+                release.set()
+
+    def assert_other_writer_and_runtime_lock(self):
+        with closing(sqlite3.connect(self.runtime.db_path, timeout=0)) as writer, writer:
+            writer.execute("INSERT INTO fixture_manual_probe VALUES ('other-writer')")
+            writer.commit()
+            self.assertEqual(writer.execute("SELECT id FROM fixture_manual_probe").fetchall(), [("other-writer",)])
+        acquired = self.runtime.lock.acquire(blocking=False)
+        if acquired:
+            self.runtime.lock.release()
+        self.assertTrue(acquired, "The manual Path.resolve must not hold Runtime.lock")
+
+    def test_manual_capture_path_check_releases_lock_and_writer(self):
+        with self.resolving(self.runtime.checkpoint_capture, self.agent["id"]) as future:
+            self.assert_other_writer_and_runtime_lock()
+            receipt = self.runtime.send(self.agent["id"], "A private fixture followup", "manual-followup")
+            self.assertEqual(self.runtime.delivery_receipt(receipt["id"])["status"], "pending")
+        checkpoint = future.result(timeout=3)
+        self.assertEqual(checkpoint["agent"], self.agent["id"])
+        self.assertEqual(checkpoint["tree"], self.git(self.path, "rev-parse", "HEAD^{tree}"))
+        self.assertEqual(self.runtime.delivery_receipt("manual-followup")["status"], "pending")
+
+    def test_new_restore_path_check_releases_lock_and_writer(self):
+        data = self.restore_request()
+        with self.resolving(self.runtime.restore_checkpoint, self.agent["id"], data) as future:
+            self.assert_other_writer_and_runtime_lock()
+        self.assertEqual(future.result(timeout=3), {"status": "restored", "checkpoint": data["checkpoint_id"]})
+        self.assertEqual((self.path / "tracked.txt").read_text(), "base\n")
+        self.assertEqual(sum(method == "thread/fork" for method, _ in self.server.calls), 1)
+
+    def test_manual_preflight_rejects_stop_and_source_changes_before_admission(self):
+        for restore in (False, True):
+            for change in ({"stop": True}, {"threadId": "changed-thread"},
+                           {"accountKey": "changed-account"}, {"cwd": str(self.root)}):
+                with self.subTest(restore=restore, change=change):
+                    original = self.runtime.agent(self.agent["id"])
+                    data = self.restore_request() if restore else None
+                    before = len(self.server.calls)
+                    function = self.runtime.restore_checkpoint if restore else self.runtime.checkpoint_capture
+                    args = (self.agent["id"], data) if restore else (self.agent["id"],)
+                    with self.resolving(function, *args) as future:
+                        if "stop" in change:
+                            self.runtime.stop(self.agent["id"], False)
+                        else:
+                            self.agent_update(self.agent, **change)
+                    with self.assertRaisesRegex(ValueError, "Workspace .* changed"):
+                        future.result(timeout=3)
+                    current = self.runtime.agent(self.agent["id"])
+                    self.assertIsNone(current.get("workspaceOperation"))
+                    self.assertEqual(len(self.server.calls), before)
+                    with self.runtime.db() as db:
+                        self.assertEqual(self.runtime._workspace_operations(db, self.agent["id"]), [])
+                    self.agent = self.agent_update(current, cwd=original["cwd"], threadId=original["threadId"],
+                                                   accountKey=original["accountKey"], autoWake=True, status="idle")
+
+    def test_manual_preflight_rejects_new_monitor_before_admission(self):
+        for restore in (False, True):
+            with self.subTest(restore=restore):
+                data = self.restore_request() if restore else None
+                before = len(self.server.calls)
+                function = self.runtime.restore_checkpoint if restore else self.runtime.checkpoint_capture
+                args = (self.agent["id"], data) if restore else (self.agent["id"],)
+                monitor = {"id": "manual-new-monitor", "agent": self.agent["id"], "cwd": self.agent["cwd"], "status": "running"}
+                with self.resolving(function, *args) as future:
+                    with self.runtime.lock, self.runtime.db() as db:
+                        self.runtime.put(db, "monitors", monitor)
+                with self.assertRaisesRegex(ValueError, "Workspace activity changed"):
+                    future.result(timeout=3)
+                self.assertIsNone(self.runtime.agent(self.agent["id"]).get("workspaceOperation"))
+                self.assertEqual(len(self.server.calls), before)
+                with self.runtime.db() as db:
+                    self.assertEqual(json.loads(db.execute("SELECT record FROM runtime_monitors WHERE id=?",
+                                                          (monitor["id"],)).fetchone()[0]), monitor)
+                    db.execute("DELETE FROM runtime_monitors WHERE id=?", (monitor["id"],))
+
+    def test_manual_preflight_keeps_symlink_peer_busy_guard(self):
+        alias = self.root / "manual-alias"
+        alias.symlink_to(self.path, target_is_directory=True)
+        peer = self.lead("Peer", cwd=alias)
+        self.agent_update(peer, inFlight=True, status="running", autoWake=True)
+        with self.assertRaisesRegex(ValueError, "An agent is using this workspace"):
+            self.runtime.checkpoint_capture(self.agent["id"])
+        self.assertIsNone(self.runtime.agent(self.agent["id"]).get("workspaceOperation"))
+
+    def test_new_restore_preserves_operation_reserved_during_path_check(self):
+        data = self.restore_request()
+        operation = {"id": "new-fork-reservation", "kind": "branch", "agent": self.agent["id"],
+                     "phase": "provider_pending", "source": self.runtime._workspace_source(self.agent)}
+        before = len(self.server.calls)
+        with self.resolving(self.runtime.restore_checkpoint, self.agent["id"], data) as future:
+            with self.runtime.lock, self.runtime.db() as db:
+                self.runtime._put_workspace_operation(db, operation)
+                current = self.runtime.agent(self.agent["id"], db)
+                current.update(workspaceOperation="branch", workspaceReservationId=operation["id"])
+                self.runtime.put(db, "agents", current)
+        with self.assertRaisesRegex(ValueError, "Workspace activity changed"):
+            future.result(timeout=3)
+        with self.runtime.db() as db:
+            self.assertEqual(self.runtime._workspace_operation(db, operation["id"]), operation)
+        self.assertEqual(self.runtime.agent(self.agent["id"])["workspaceReservationId"], operation["id"])
+        self.assertEqual(len(self.server.calls), before)
+
+    def test_completed_restore_retry_does_not_repeat_idle_preflight_or_native_request(self):
+        data = self.restore_request()
+        result = self.runtime.restore_checkpoint(self.agent["id"], data)
+        before = len(self.server.calls)
+        with patch.object(self.runtime, "_resolve_workspace_idle", side_effect=AssertionError("No new idle preflight")):
+            self.assertEqual(self.runtime.restore_checkpoint(self.agent["id"], data), result)
+        self.assertEqual(len(self.server.calls), before)
+
+    def test_recovery_restore_retry_keeps_saved_native_result_without_idle_preflight(self):
+        data = self.restore_request()
+        operation_id = self.runtime._workspace_operation_id("restore", self.agent["id"], data)
+        operation = {"id": operation_id, "kind": "restore", "agent": self.agent["id"],
+                     "checkpoint": data["checkpoint_id"], "expectedTree": data["expectedTree"],
+                     "signature": self.runtime._workspace_restore_signature(self.agent["id"], data),
+                     "source": self.runtime._workspace_source(self.agent), "phase": "recovery_required"}
+        for known_result in (False, True):
+            with self.subTest(known_result=known_result):
+                if known_result:
+                    operation["provider"] = {"thread": {"id": "saved-native-fork"}}
+                with self.runtime.lock, self.runtime.db() as db:
+                    self.runtime._put_workspace_operation(db, operation)
+                    current = self.runtime.agent(self.agent["id"], db)
+                    current.update(workspaceOperation="restore_recovery", autoWake=False, status="interrupted")
+                    self.runtime.put(db, "agents", current)
+                before = len(self.server.calls)
+                with patch.object(self.runtime, "_resolve_workspace_idle", side_effect=AssertionError("No new idle preflight")):
+                    if known_result:
+                        self.assertEqual(self.runtime.restore_checkpoint(self.agent["id"], data)["status"], "restored")
+                    else:
+                        with self.assertRaisesRegex(ValueError, "native result is unknown"):
+                            self.runtime.restore_checkpoint(self.agent["id"], data)
+                self.assertEqual(len(self.server.calls), before)
+        self.assertEqual(self.runtime.agent(self.agent["id"])["threadId"], "saved-native-fork")
 
 
 if __name__ == "__main__":

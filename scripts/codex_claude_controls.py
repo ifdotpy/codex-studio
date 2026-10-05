@@ -82,6 +82,7 @@ def action(rt, body):
     control_source = rt._workspace_source(agent)
     control_server = rt.connect(agent.get('accountKey', 'default')) if agent.get('threadId') else None
     signature = rt._workspace_operation_signature({'agent': key, 'action': kind, 'settings': settings, 'turn': body.get('turn_id')})
+    idle_snapshot = None
     with rt.lock, rt.db() as db:
         agent = _actor(rt, db, key)
         if rt._workspace_source(agent) != control_source:
@@ -92,6 +93,16 @@ def action(rt, body):
         if not isinstance(request, str) or not request:
             raise ValueError('Supply a Claude control request identity')
         operation_id = 'claude-control:' + request
+        if rt._workspace_operation(db, operation_id) is None:
+            if agent.get('accountTransferId') or agent.get('inFlight') or agent.get('status') in {'running', 'starting', 'approval'}:
+                raise ValueError('Pause Claude before changing its session')
+            idle_epoch = agent['epoch']
+            idle_snapshot = rt._workspace_idle_snapshot(db, agent)
+    idle_resolved = rt._resolve_workspace_idle(idle_snapshot, agent) if idle_snapshot is not None else None
+    with rt.lock, rt.db() as db:
+        agent = _actor(rt, db, key)
+        if rt._workspace_source(agent) != control_source:
+            raise ValueError('Claude session changed before the action')
         running = rt.__dict__.setdefault('_claude_control_inflight', set())
         if operation_id in running:
             raise ValueError('This Claude action is still in progress')
@@ -107,7 +118,11 @@ def action(rt, body):
         else:
             if agent.get('accountTransferId') or agent.get('inFlight') or agent.get('status') in {'running', 'starting', 'approval'}:
                 raise ValueError('Pause Claude before changing its session')
-            rt._assert_workspace_idle(db, agent)
+            if idle_snapshot is None or agent['epoch'] != idle_epoch:
+                raise ValueError('Claude session changed before the action')
+            if rt._workspace_idle_snapshot(db, agent) != idle_snapshot:
+                raise ValueError('Workspace activity changed before the Claude action')
+            rt._assert_workspace_idle(db, agent, snapshot=idle_snapshot, resolved=idle_resolved)
             if kind == 'rollback' and _pending(db, key):
                 raise ValueError('Send or remove queued messages before rollback')
             if kind == 'rollback' and not agent.get('threadId'):

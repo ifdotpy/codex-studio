@@ -863,7 +863,16 @@ class WorkspaceMixin:
             return self.capture_checkpoint(agent_id, label, turn_id)
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id)
-            self.assert_workspace_idle(a)
+            scope = (a["epoch"], self._workspace_source(a))
+            snapshot = self._workspace_idle_snapshot(db, a)
+        resolved = self._resolve_workspace_idle(snapshot, a)
+        with self.lock, self.db() as db:
+            a = self.checked_actor(db, agent_id)
+            if (a["epoch"], self._workspace_source(a)) != scope:
+                raise ValueError("Workspace source changed before checkpoint capture")
+            if self._workspace_idle_snapshot(db, a) != snapshot:
+                raise ValueError("Workspace activity changed before checkpoint capture")
+            self._assert_workspace_idle(db, a, snapshot=snapshot, resolved=resolved)
             operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
         return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
@@ -1077,6 +1086,7 @@ class WorkspaceMixin:
         resume_operation = None
         files_already_restored = False
         completed = None
+        idle_snapshot = None
         signature = self._workspace_restore_signature(key, data)
         checkpoint_id = data.get("checkpoint_id") or data.get("checkpoint")
         with self.lock, self.db() as db:
@@ -1121,7 +1131,6 @@ class WorkspaceMixin:
                     raise ValueError("This restore request has different content")
                 operation = resume_operation
             else:
-                self.assert_workspace_idle(a)
                 row = db.execute(
                     "SELECT record FROM runtime_checkpoints WHERE id=?", (checkpoint_id,)
                 ).fetchone()
@@ -1140,10 +1149,23 @@ class WorkspaceMixin:
                     "signature": signature, "source": self._workspace_source(a),
                     "phase": "provider_pending", "created": time.time(),
                 }
+                scope = (a["epoch"], self._workspace_source(a))
+                idle_snapshot = self._workspace_idle_snapshot(db, a)
+            preview = {"checkpoint": checkpoint, "expectedTree": expected_tree if not completed else None}
+
+        if idle_snapshot is not None:
+            resolved = self._resolve_workspace_idle(idle_snapshot, a)
+            with self.lock, self.db() as db:
+                a = self.checked_actor(db, key)
+                if (a["epoch"], self._workspace_source(a)) != scope or not a.get("worktreeReady"):
+                    raise ValueError("Workspace source changed before restore")
+                if (self._workspace_idle_snapshot(db, a) != idle_snapshot
+                        or self._workspace_operation(db, operation_id) != existing):
+                    raise ValueError("Workspace activity changed before restore")
+                self._assert_workspace_idle(db, a, snapshot=idle_snapshot, resolved=resolved)
                 self._put_workspace_operation(db, operation)
                 a["workspaceOperation"] = "restore"
                 self.put(db, "agents", a)
-            preview = {"checkpoint": checkpoint, "expectedTree": expected_tree if not completed else None}
 
         # Git snapshots and diffs can take seconds. Never hold Runtime.lock here.
         if completed:
