@@ -1,0 +1,66 @@
+{
+  "agents": {
+    "lead-0": {
+      "autoWake": false,
+      "checkpointError": "Server restarted before checkpoint capture finished",
+      "status": "paused",
+      "workspaceOperation": null,
+      "workspaceReservationId": null
+    },
+    "lead-1": {
+      "autoWake": true,
+      "checkpointError": "Server restarted before checkpoint capture finished",
+      "status": "queued",
+      "workspaceOperation": null,
+      "workspaceReservationId": null
+    }
+  },
+  "legacyRecordsBeforeRestart": [
+    {
+      "accountKey": "default",
+      "autoWake": false,
+      "deletedAt": null,
+      "id": "lead-0",
+      "rootId": "lead-0",
+      "status": "paused",
+      "workspaceOperation": "checkpoint",
+      "workspaceReservationId": "legacy-paused-capture"
+    },
+    {
+      "accountKey": "account-2",
+      "autoWake": true,
+      "deletedAt": null,
+      "id": "lead-1",
+      "rootId": "lead-1",
+      "status": "queued",
+      "workspaceOperation": "checkpoint",
+      "workspaceReservationId": "legacy-queued-capture"
+    }
+  ],
+  "pendingInput": {
+    "agent": "lead-1",
+    "status": "pending"
+  },
+  "syncSequenceDelta": {
+    "lead-0": 0,
+    "lead-1": 0
+  },
+  "syncedAgents": {
+    "lead-0": {
+      "autoWake": false,
+      "checkpointError": null,
+      "status": "paused",
+      "workspaceOperation": null,
+      "workspaceReservationId": null
+    },
+    "lead-1": {
+      "autoWake": true,
+      "checkpointError": null,
+      "status": "queued",
+      "workspaceOperation": null,
+      "workspaceReservationId": null
+    }
+  },
+  "workspaceOperationRows": 0,
+  "workspaceOperationRowsBeforeRestart": 0
+}

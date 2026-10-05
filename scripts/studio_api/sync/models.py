@@ -973,9 +973,9 @@ class SnapshotTaskDto(TaskEntityDto):
 
 class MonitorEntityDto(ContractModel):
     id: str
-    agent: str
+    agent: str | None = None
     status: TaskStatus | None = None
-    created: float
+    created: float | None = None
     finished: float | None = None
     name: str | None = None
     command: str | None = None
