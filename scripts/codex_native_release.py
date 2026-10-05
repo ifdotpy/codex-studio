@@ -202,10 +202,31 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
                         rt.connection_ids.get(account))
             already_released = (reason is not None and agent_id not in rt.loaded
                                 and (agent.get("nativeRelease") or {}).get("phase") == "released"
-                                and (agent.get("nativeRelease") or {}).get("threadId") == identity[1])
+                                and (agent.get("nativeRelease") or {}).get("threadId") == identity[1]
+                                and not previous.get("closedAt"))
             if (agent.get("provider", "codex") != "codex" or agent.get("deletedAt")
                     or (agent_id not in rt.loaded and not already_released)
                     or not identity[1] or not identity[3]):
+                closed_at, began = previous.get("closedAt"), previous.get("at")
+                if (reason is not None and not rt.closed and agent_id not in rt.loaded
+                        and agent.get("provider", "codex") == "codex" and not agent.get("deletedAt")
+                        and identity[1] and identity[3] and previous.get("phase") == "blocked"
+                        and isinstance(previous.get("id"), str) and previous["id"]
+                        and "submittedAt" not in previous and previous.get("resetPending") is False
+                        and (previous.get("targetEpoch"), previous.get("threadId"),
+                             previous.get("accountKey"), previous.get("connectionId")) == identity
+                        and previous.get("targetRootId") == agent.get("rootId")
+                        and previous.get("targetParentId") == agent.get("parentId")
+                        and isinstance(closed_at, (int, float)) and not isinstance(closed_at, bool)
+                        and isinstance(began, (int, float)) and not isinstance(began, bool)
+                        and 0 <= began <= closed_at <= now and not _local_blocker(rt, db, agent)):
+                    # The current native close settles only this unsubmitted
+                    # inspection. It does not settle a command or input receipt.
+                    if previous.get("error") is not None:
+                        previous.setdefault("inspectionError", previous["error"])
+                    previous.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at,
+                                    resetPending=False, error=None)
+                    rt.put(db, "agents", agent)
                 return {"status": "not_loaded"}
             blocker = _local_blocker(rt, db, agent)
             if blocker:

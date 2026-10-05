@@ -238,9 +238,10 @@ duration, and completion result. Read `sqliteContention.slowTransactions` in
 the diagnostics response. The existing update worker saves this evidence in
 `diagnostics/sqlite-transactions.json` under the state directory. A process
 restart preserves the last nonempty snapshot in
-`diagnostics/sqlite-transactions.previous.json`. These files contain no SQL
-text or message contents. The coverage timestamp identifies when owner records
-start. Earlier transaction totals cannot identify a past owner.
+`diagnostics/sqlite-transactions.previous.json`. Three past snapshots also remain
+in `diagnostics/sqlite-transactions.history.<sha256>.json` files. Each file has a
+64 MiB limit. These files contain no SQL text or message contents. The coverage
+timestamp identifies when owner records start. Earlier transaction totals cannot identify a past owner.
 
 Closing the window preserves the server and its active work. Backend source
 identity remains available to diagnostics without a persistent notice in chats.
@@ -294,8 +295,10 @@ Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. One shared event stream tells visible windows
-when entity state, drafts, or open transcripts need an update.
+histories through its existing API. One shared protocol-3 event stream tells
+visible windows when entity state, drafts, or open transcripts need an update.
+Tabs pull their scoped projections after an invalidation; transcript updates do
+not use generation polling or a separate transcript stream.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
 The current chat loads first. One background history loads at a time.

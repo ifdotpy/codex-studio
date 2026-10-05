@@ -20,6 +20,7 @@ from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
     AgentNativeStatus,
+    MonitorEntityDto,
     DraftPushRow,
     DraftPushRequest,
     EntityCollection,
@@ -30,6 +31,7 @@ from studio_api.sync.models import (
     RoomRadioSeen,
     SnapshotAgentDto,
     SnapshotChatGroupDto,
+    SnapshotRoomDto,
     StateSnapshot,
     SyncDocument,
     SyncEntityPayload,
@@ -93,6 +95,19 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_monitor_entity_has_required_identity_but_open_task_status(self) -> None:
+        record: dict[str, JsonValue] = {
+            "id": "monitor-1", "agent": "agent-1", "created": 1.5,
+            "status": "running",
+        }
+        self.assertEqual(
+            MonitorEntityDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
+        )
+        for field in ("agent", "created"):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                MonitorEntityDto.model_validate({key: value for key, value in record.items() if key != field})
+        self.assertEqual(MonitorEntityDto.model_validate({**record, "status": "unknown"}).status, "unknown")
+
     def test_worker_model_inheritance_survives_projection_and_snapshot(self) -> None:
         for model in (None, "gpt-6-luna"):
             with self.subTest(model=model):

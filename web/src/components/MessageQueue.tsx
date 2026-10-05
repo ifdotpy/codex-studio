@@ -59,6 +59,11 @@ function isQueueAsset(
   );
 }
 
+function displayQueueAssets(item: QueueItem): QueueAsset[] {
+  const assets = item.assets ?? [];
+  return isServerQueueItem(item) ? assets : assets.filter(isQueueAsset);
+}
+
 type Props = {
   items: QueueItem[];
   scope: string;
@@ -554,7 +559,7 @@ function ScopedMessageQueue(p: Props) {
                     )}
                     {!!item.assets?.length && (
                       <div className="message-queue-assets">
-                        {item.assets.filter(isQueueAsset).map((asset) => (
+                        {displayQueueAssets(item).map((asset) => (
                           <span key={asset.id}>
                             <Paperclip size={12} />
                             <span>{asset.name}</span>

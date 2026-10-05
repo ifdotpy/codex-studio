@@ -51,6 +51,15 @@ def _brief(a):
                                  'imageWorkspaceError', 'imageWorkspaceCollect')}
 
 
+def _team_agents(rt, db, root_id, *, include_deleted=False):
+    scoped = getattr(rt, 'team_agents', None)
+    if scoped:
+        return scoped(db, root_id, include_deleted=include_deleted)
+    # Small contract-test runtimes expose only the generic record reader.
+    return [a for a in rt.records(db, 'agents') if a.get('rootId') == root_id
+            and (include_deleted or not a.get('deletedAt'))]
+
+
 def _cleanup_image_workspace(rt, agent_id):
     from codex_workspace_images import (collect, ensure_mounted, exec_prefix,
                                        remove_workspace, workspace_bytes)
@@ -540,8 +549,8 @@ def _park_action(rt, actor_id, args, epoch):
     with rt.lock, rt.db() as db:
         actor = _park_actor(rt, db, actor_id, epoch)
         if action == 'list_parked':
-            rows = [_brief(a) for a in rt.records(db, 'agents')
-                    if a['rootId'] == actor['rootId'] and a.get('parkedEvent')
+            rows = [_brief(a) for a in _team_agents(rt, db, actor['rootId'])
+                    if a.get('parkedEvent')
                     and not a.get('deletedAt')]
             if not actor.get('isLead'):
                 visible = []
@@ -573,7 +582,7 @@ def _park_action(rt, actor_id, args, epoch):
             if fired is not None:
                 return rt.save_receipt(db, request_key, signature, {**fired, 'replayed': True})
             woken = []
-            for target in rt.records(db, 'agents'):
+            for target in _team_agents(rt, db, actor['rootId']):
                 park = target.get('parkReceipt') or {}
                 if (target['rootId'] != actor['rootId'] or target.get('deletedAt')
                         or target.get('parkedEvent') != name
@@ -705,8 +714,8 @@ def _archive_reviewer(rt, lead_id, parent_id, child_id, event_id):
 def _archive_finished(rt, actor_id, epoch):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
-        agents = [a for a in rt.records(db, 'agents') if a['rootId'] == actor['rootId']
-                  and a['id'] != actor_id and not a.get('deletedAt') and _finished(a)]
+        agents = [a for a in _team_agents(rt, db, actor['rootId'])
+                  if a['id'] != actor_id and not a.get('deletedAt') and _finished(a)]
         by_id = {a['id']: a for a in agents}
         def depth(a):
             count = 0
@@ -750,8 +759,8 @@ def _archive_finished(rt, actor_id, epoch):
 def worktree_maintenance_report(rt, actor_id, epoch=None):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
-        team = [a for a in rt.records(db, 'agents') if a['rootId'] == actor['rootId']
-                and a['id'] != actor_id]
+        team = [a for a in _team_agents(rt, db, actor['rootId'], include_deleted=True)
+                if a['id'] != actor_id]
         agents = [a for a in team if a.get('worktreeReady')]
     report = []
     for agent in agents:
@@ -915,8 +924,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
         actor = _authorize(rt, db, actor_id, epoch)
         if action == 'list':
             from codex_worktree_disk import management_view
-            agents = [a for a in rt.records(db, 'agents')
-                      if a['rootId'] == actor['rootId'] and a['id'] != actor_id
+            agents = [a for a in _team_agents(rt, db, actor['rootId'])
+                      if a['id'] != actor_id
                       and not a.get('deletedAt')]
             sizes, disk = management_view(rt, agents, db=db)
             rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
@@ -925,8 +934,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
             return {**page, 'disk': disk}
         if action == 'list_archived':
             from codex_worktree_disk import management_view
-            agents = [a for a in rt.records(db, 'agents')
-                      if a['rootId'] == actor['rootId'] and a.get('agentArchive') and a.get('deletedAt')]
+            agents = [a for a in _team_agents(rt, db, actor['rootId'], include_deleted=True)
+                      if a.get('agentArchive') and a.get('deletedAt')]
             sizes, disk = management_view(rt, agents, db=db)
             rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
             page = rt.model_page(rows, args, [actor['rootId'], 'archived_workers'])
@@ -991,8 +1000,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
             restore_identity = (target['epoch'], target['deletedAt'])
         if action == 'inspect':
             from codex_worktree_disk import management_view
-            team = [a for a in rt.records(db, 'agents')
-                    if a['rootId'] == actor['rootId'] and a['id'] != actor_id
+            team = [a for a in _team_agents(rt, db, actor['rootId'], include_deleted=True)
+                    if a['id'] != actor_id
                     and (not a.get('deletedAt') or a['id'] == target['id'])]
             sizes, disk = management_view(rt, team, db=db)
             blockers = [] if archived else _blockers(rt, db, target)

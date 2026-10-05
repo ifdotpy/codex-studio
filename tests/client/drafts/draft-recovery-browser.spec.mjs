@@ -89,6 +89,42 @@ test("Draft recovery", async ({ context: testContext }) => {
     await stored("Saved version");
     await page.evaluate(() => {
       window.failWrites = true;
+      window.blockDraftJournal = true;
+      window.originalSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (window.blockDraftJournal && key.includes(":pending:"))
+          throw new Error("Injected journal write failure");
+        return window.originalSetItem.call(this, key, value);
+      };
+    });
+    await edit("Journal failure retries from the current draft record");
+    await page.waitForFunction(() => !!window.draft.error);
+    const journalFailure = await page.evaluate(() => ({
+      error: window.draft.error,
+      record: Object.entries(localStorage).find(([key]) =>
+        key.startsWith("codex-chat-draft:"),
+      )?.[1],
+      pending: Object.keys(localStorage).some((key) =>
+        key.includes(":pending:"),
+      ),
+    }));
+    assert.ok(journalFailure.error);
+    assert.ok(journalFailure.record);
+    assert.equal(
+      JSON.parse(journalFailure.record).text,
+      "Journal failure retries from the current draft record",
+    );
+    assert.equal(journalFailure.pending, false);
+    await page.evaluate(() => {
+      window.blockDraftJournal = false;
+      Storage.prototype.setItem = window.originalSetItem;
+      window.failWrites = false;
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    await stored("Journal failure retries from the current draft record");
+    await page.waitForFunction(() => !window.draft.error);
+    await page.evaluate(() => {
+      window.failWrites = true;
     });
     await edit("New draft during a write failure");
     await page.waitForFunction(() => !!window.draft.error);

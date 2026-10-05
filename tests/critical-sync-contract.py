@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_canvas import Canvas
-from sync.sync_store import SyncStore
+from codex_sync import SyncStore
 from codex_runtime import Runtime
 
 

@@ -114,7 +114,7 @@ class LoginManager:
         # No input is queued and no native turn is resumed here.
         key = job['receipt']['accountKey']
         with self.runtime.lock, self.runtime.db() as db:
-            for agent in self.runtime.records(db, 'agents'):
+            for agent in self.runtime.account_agents(db, key):
                 if (agent.get('accountKey') != key or agent.get('provider') != 'claude'
                         or agent.get('deletedAt') or agent.get('status') != 'failed'
                         or agent.get('inFlight') or agent.get('activeTools') or agent.get('workspaceOperation')):
