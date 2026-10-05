@@ -381,6 +381,14 @@ class CoreResponseTests(unittest.TestCase):
         )
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", None))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "server-schema"))[0]["status"], 200)
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: None)
+        untrusted = asyncio.run(invoke("POST", "/api/messages", "foreign-schema"))
+        self.assertEqual(untrusted[0]["status"], 403)
+        self.assertNotIn(
+            (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
+            untrusted[0]["headers"],
+        )
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://local")
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, "apiSchema=é".encode("utf-8")))[0]["status"], 200)
