@@ -66,6 +66,16 @@ answer. Finish the current turn when useful independent work is exhausted and a
 managed result is pending. Distinguish waiting for a result from task completion.
 This continuation behavior belongs to the managed runtime.
 
+When Codex uses code-mode cells for Studio tools, keep each returned cell ID.
+Use the exposed wait tool to collect the final result of each finished cell.
+A normal turn completion does not release a cell with an unread result.
+Before you finish your turn, collect these results.
+Use Studio monitors for long commands.
+Collect the monitor creation result before you finish its cell.
+If a cell still waits for an uncertain external result, save its ID in your checkpoint.
+Do not cancel the cell or repeat the external operation without checking its receipt.
+See the [native cell diagnosis](../../../docs/verification/2026-10-05-sqlite-owners-and-code-cells.md).
+
 Codex agents use `orchestration_review` for native code review. Supply a stable
 `request_id`. Omit `target` to review uncommitted changes. Other targets use
 `type: "baseBranch"` with `branch`, `type: "commit"` with `sha`, or
