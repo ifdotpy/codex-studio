@@ -176,6 +176,9 @@ class ContextStub:
     def sync(self) -> StoreStub:
         return self.store
 
+    async def get_api_schema_hash(self) -> str:
+        return self.api_schema_hash
+
     def resource_hub(self) -> ResourceHub:
         return self.hub
 
@@ -284,6 +287,9 @@ class SyncRouterTests(unittest.TestCase):
         context = ContextStub()
         resources = json.dumps([{"kind": "transcript", "agentId": "agent-a"}], separators=(",", ":"))
         body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        events = [line[7:] for line in body.splitlines() if line.startswith("event: ")]
+        self.assertEqual(events[:2], ["resources", "token-rates"])
+        self.assertNotIn("api-schema", events)
         self.assertIn("event: resources", body)
         self.assertIn('"reason":"initial"', body)
         self.assertIn('"kind":"transcript","agentId":"agent-a"', body)
@@ -298,7 +304,7 @@ class SyncRouterTests(unittest.TestCase):
                 make_client(context).get(
                     f"/api/sync/stream?protocol=3&apiSchema={value}&resources=invalid"
                 )
-                for value in ("foreign", "%C3%A9")
+                for value in ("foreign", "%C3%A9", "")
             ]
         for response in responses:
             self.assertEqual(response.status_code, 200)
@@ -311,21 +317,16 @@ class SyncRouterTests(unittest.TestCase):
             self.assertIs(payload[API_SCHEMA_MISMATCH_FIELD], True)
         subscribe.assert_not_called()
 
-    def test_matching_and_absent_schema_streams_keep_existing_handshake_path(self) -> None:
+    def test_matching_schema_stream_starts_with_handshake(self) -> None:
         context = ContextStub()
         with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
             equal = self.read_stream(
                 context,
                 "/api/sync/stream?protocol=3&apiSchema=server-schema&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D",
             )
-            absent = self.read_stream(
-                context,
-                "/api/sync/stream?protocol=3&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D",
-            )
-        self.assertIn("event: api-schema", equal)
-        self.assertIn("event: resources", equal)
-        self.assertIn("event: resources", absent)
-        self.assertEqual(subscribe.call_count, 2)
+        events = [line[7:] for line in equal.splitlines() if line.startswith("event: ")]
+        self.assertEqual(events[:3], ["api-schema", "resources", "token-rates"])
+        self.assertEqual(subscribe.call_count, 1)
 
     def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
         context = ContextStub()

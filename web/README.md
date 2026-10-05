@@ -120,24 +120,33 @@ The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
 
-The renderer and server compare the generated OpenAPI schema hash in API
-responses and the protocol-3 stream handshake. If they differ, the page keeps
-the loaded transcript and local composer draft visible, then pauses stream,
-draft replication, outbox delivery, and send actions until the renderer updates.
+The renderer sends its generated OpenAPI schema hash with API requests and
+protocol-3 stream connections. API responses carry the server hash. A
+hash-bearing protocol-3 stream starts with an `api-schema` handshake; a
+mismatching stream closes after that event without a subscription. Hashless
+non-renderer clients retain the earlier protocol-3 event sequence. If hashes
+differ, the page keeps the loaded transcript and local composer draft visible,
+then pauses stream, draft replication, outbox delivery, and send actions until
+the renderer updates.
 Protocol-3 event payloads no longer use generated per-event runtime validators;
 workspace, epoch, revision, and ordering semantics remain enforced.
 Desktop windows skip service workers, so Update reloads the renderer directly;
 a mismatch that remains after reload requires rebuilding Studio.
 
 Managed conversations use the workspace sync projection. One tab holds the
-holds the exclusive browser lock and owns `/api/sync/stream?protocol=3`, sharing
+exclusive browser lock and owns `/api/sync/stream?protocol=3`, sharing
 typed resource invalidations with other tabs in the same browser profile. Tabs
 pull only the projections they use. If cross-tab coordination is unavailable,
 each tab can open its own protocol-3 stream. Transcript updates use scoped
 `transcript:<id>` pulls; the server does not expose a transcript stream or a
-generation-poll endpoint. A mismatching stream connection receives one
-`api-schema` handshake marked as mismatched and then closes without subscribing
-to resources; mutating HTTP requests receive the marked reload-required response.
+generation-poll endpoint. Hash-bearing protocol-3 connections begin with an
+`api-schema` event; a mismatching connection receives only that handshake and
+closes without subscribing. Hashless connections keep the prior event sequence.
+During the one-time rollout, a pre-gate tab can hold the stream lock while its
+hashless channel messages are ignored, leaving a new tab degraded until the old
+tab is closed or reloaded.
+Mutating HTTP requests with a hash mismatch receive the marked reload-required
+response.
 These UI updates do not call the model.
 
 Draft recovery journal and local record writes happen synchronously on each

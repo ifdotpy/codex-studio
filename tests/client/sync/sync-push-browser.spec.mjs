@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  test,
+} from "../playwright.mjs";
 
 test("Sync push", async ({ context: testContext }) => {
   test.setTimeout(180_000);
@@ -12,7 +16,7 @@ test("Sync push", async ({ context: testContext }) => {
     )
   );
   const workspaceId = "c".repeat(32);
-  const streams = new Set();
+  const streams = new Map();
   let revision = 1;
   let pulls = 0;
   const server = await createServer({
@@ -30,18 +34,11 @@ test("Sync push", async ({ context: testContext }) => {
       };
       if (url.pathname === "/push-check") res.end("<!doctype html>");
       else if (url.pathname === "/api/sync/identity") json({ workspaceId });
-      else if (url.pathname === "/api/sync/generations")
-        json({
-          protocol: 2,
-          workspaceId,
-          generations: { state: revision, drafts: 1, transcripts: 1 },
-        });
       else if (url.pathname === "/api/sync/stream") {
-        assert.equal(url.searchParams.get("protocol"), "2");
-        assert.equal(url.searchParams.get("scope"), null);
+        assert.equal(url.searchParams.get("protocol"), "3");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(": connected\n\n");
-        streams.add(res);
+        res.write(apiSchemaHandshakeSse());
+        streams.set(res, JSON.parse(url.searchParams.get("resources") || "[]"));
         res.on("close", () => streams.delete(res));
       } else if (url.pathname === "/api/sync/pull") {
         pulls++;
@@ -95,9 +92,16 @@ test("Sync push", async ({ context: testContext }) => {
     await page.waitForFunction(() => window.pushState === "Initial lead");
     const before = pulls;
     revision = 2;
-    for (const res of streams)
+    for (const [res, resources] of streams)
       res.write(
-        `data: ${JSON.stringify({ protocol: 2, workspaceId, generations: { state: 2, drafts: 1, transcripts: 1 } })}\n\n`,
+        protocol3SseEvent("resources", {
+          protocol: 3,
+          workspaceId,
+          epoch: "fixture-epoch",
+          revision: 2,
+          reason: "change",
+          resources,
+        }),
       );
     await page.waitForFunction(() => window.pushState === "Pushed lead");
     assert.ok(
@@ -119,7 +123,7 @@ test("Sync push", async ({ context: testContext }) => {
     await page.evaluate(() => window.stopPush());
     console.log("sync push browser contract passed");
   } finally {
-    for (const res of streams) res.end();
+    for (const res of streams.keys()) res.end();
     await server.close();
   }
 });

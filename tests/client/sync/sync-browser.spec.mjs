@@ -1,6 +1,11 @@
 // Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Sync Browser", async ({
   browser: _testBrowser,
@@ -70,31 +75,33 @@ test("Sync Browser", async ({
       window.EventSource = class extends Native {
         constructor(url, options) {
           super(url, options);
-          if (new URL(url, location.href).searchParams.get("protocol") === "2")
-            window.entityStreams.push(this);
+          const parsed = new URL(url, location.href);
+          if (parsed.searchParams.get("protocol") === "3")
+            window.entityStreams.push({
+              source: this,
+              resources: JSON.parse(
+                parsed.searchParams.get("resources") || "[]",
+              ),
+            });
         }
       };
     });
-    await page.route("**/api/sync/generations", (route) =>
-      route.fulfill({
-        json: {
-          protocol: 2,
-          workspaceId: "a".repeat(32),
-          generations: { state: revision, transcripts: 0, drafts: 0 },
-        },
-      }),
-    );
     await page.route("**/api/sync/stream**", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
       route.fulfill({
         contentType: "text/event-stream",
-        body:
-          "data: " +
-          JSON.stringify({
-            protocol: 2,
+        body: apiSchemaHandshakeSse(
+          protocol3SseEvent("resources", {
+            protocol: 3,
             workspaceId: "a".repeat(32),
-            generations: { state: revision, transcripts: 0, drafts: 0 },
-          }) +
-          "\n\n",
+            epoch: "fixture-epoch",
+            revision,
+            reason: "initial",
+            resources,
+          }),
+        ),
       });
     });
     await page.route("**/api/sync/pull?**", (route) => {
@@ -187,17 +194,21 @@ test("Sync Browser", async ({
     content = "second";
     revision++;
     await page.waitForFunction(() => window.entityStreams.length > 0);
-    await page.evaluate(
-      (seq) =>
-        window.entityStreams[0].onmessage({
+    await page.evaluate((seq) => {
+      const stream = window.entityStreams.at(-1);
+      stream.source.dispatchEvent(
+        new MessageEvent("resources", {
           data: JSON.stringify({
-            protocol: 2,
+            protocol: 3,
             workspaceId: "a".repeat(32),
-            generations: { state: seq, transcripts: 0, drafts: 0 },
+            epoch: "fixture-epoch",
+            revision: seq,
+            reason: "change",
+            resources: stream.resources,
           }),
         }),
-      revision,
-    );
+      );
+    }, revision);
     await page.waitForFunction(() => window.values.includes("second"), null, {
       timeout: 10000,
     });

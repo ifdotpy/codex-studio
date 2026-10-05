@@ -21,11 +21,14 @@ an already accepted write retain their own request identities and lifecycles.
 closed resource union and named event envelopes. OpenAPI publishes those models;
 `npm run api:generate` emits TypeScript declarations and the SHA-256 identity of
 the canonical OpenAPI JSON. `npm run api:check` rejects stale output. API
-responses include the server identity, and the first protocol-3 event carries it
-as well. A mismatch stops resource and draft synchronization and message delivery
-until the renderer updates. Stream payloads are not walked against generated
-runtime validators; handlers retain workspace, epoch, revision, ordering, and
-bounded count/key checks.
+responses include the server identity. Hash-bearing protocol-3 connections begin
+with an `api-schema` event; mismatches get only that handshake before close.
+Hashless non-renderer clients retain the existing event sequence. Mutating
+requests with a present mismatching hash receive a marked 426. A mismatch stops
+resource and draft synchronization and message delivery until the renderer
+updates. Stream payloads are not walked against generated
+runtime validators; handlers retain structural preconditions and workspace,
+epoch, revision, and ordering checks.
 
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI

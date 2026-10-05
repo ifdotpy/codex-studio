@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from types import ModuleType
 from typing import cast
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -388,6 +389,10 @@ class CoreResponseTests(unittest.TestCase):
             (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
             untrusted[0]["headers"],
         )
+        self.assertNotIn(
+            (API_SCHEMA_HASH_HEADER.lower().encode(), b"server-schema"),
+            untrusted[0]["headers"],
+        )
         context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://local")
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 200)
@@ -398,8 +403,72 @@ class CoreResponseTests(unittest.TestCase):
     def test_schema_only_context_computes_a_real_hash_lazily(self) -> None:
         context = ApiContext.for_schema()
         self.assertTrue(context.schema_only)
-        self.assertEqual(context.api_schema_hash, api_schema_hash())
-        self.assertTrue(context.api_schema_hash)
+        value = asyncio.run(context.get_api_schema_hash())
+        self.assertEqual(value, api_schema_hash())
+        self.assertTrue(value)
+
+    def test_schema_hash_failure_is_cached_and_returns_a_visible_503(self) -> None:
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://test")
+        app = RequestBoundary(
+            lambda _scope, _receive, send: send({"type": "http.response.start", "status": 200, "headers": []}),
+            context,
+        )
+        calls = 0
+
+        def fail() -> str:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("schema generation failed")
+
+        context._compute_api_schema_hash = fail
+        client = TestClient(app)
+        for _ in range(2):
+            response = client.get("/api/state")
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("schema identity is unavailable", response.text)
+            self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), response.headers)
+        self.assertEqual(calls, 1)
+
+    def test_schema_hash_wait_does_not_block_the_asgi_event_loop(self) -> None:
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://test")
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed_hash() -> str:
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("test did not release schema hash")
+            return "server-schema"
+
+        context._compute_api_schema_hash = delayed_hash
+        context.start_api_schema_hash()
+
+        async def app(scope: object, _receive: object, send: object) -> None:
+            response = Response(content=b"static")
+            await response(scope, _receive, send)  # type: ignore[arg-type]
+
+        boundary = RequestBoundary(app, context)
+
+        async def exercise() -> None:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=boundary),
+                base_url="http://test",
+            ) as client:
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                before = time.perf_counter()
+                early_get = await client.get("/api/state")
+                early_latency = time.perf_counter() - before
+                self.assertEqual(early_get.status_code, 200)
+                self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), early_get.headers)
+                self.assertLess(early_latency, 0.25)
+                release.set()
+                api_response = await client.get("/api/state")
+                self.assertEqual(api_response.headers[API_SCHEMA_HASH_HEADER.lower()], "server-schema")
+                self.assertEqual(api_response.status_code, 200)
+
+        asyncio.run(exercise())
 
     def test_schema_hash_ignores_documentation_but_tracks_wire_shape(self) -> None:
         document: JsonValue = {
@@ -430,6 +499,24 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(original, api_schema_hash(cast(dict[str, JsonValue], documented)))
         documented["paths"]["/thing"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["type"] = "integer"
         self.assertNotEqual(original, api_schema_hash(cast(dict[str, JsonValue], documented)))
+
+    def test_schema_hash_preserves_real_fields_named_like_documentation(self) -> None:
+        from studio_api.schema import openapi_document
+
+        document = openapi_document()
+        schemas = document["components"]["schemas"]
+        field = schemas["WorkItem"]["properties"]["description"]
+        field["description"] = "Original field documentation"
+        original = api_schema_hash(document)
+        field["description"] = "Edited field documentation"
+        self.assertEqual(original, api_schema_hash(document))
+        field["type"] = "integer"
+        self.assertNotEqual(original, api_schema_hash(document))
+        summary_document = openapi_document()
+        summary_field = summary_document["components"]["schemas"]["AnalyticsResponse"]["properties"]["summary"]
+        summary_hash = api_schema_hash(summary_document)
+        summary_field["type"] = "integer"
+        self.assertNotEqual(summary_hash, api_schema_hash(summary_document))
 
     def test_hourly_maintenance_runs_once_for_shared_listener_context(self) -> None:
         context = ApiContext.for_schema()

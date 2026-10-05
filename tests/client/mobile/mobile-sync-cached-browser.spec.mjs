@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -63,7 +63,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       streamCalls++;
       return route.fulfill({
         contentType: "text/event-stream",
-        body: "data: 2\n\n",
+        body: apiSchemaHandshakeSse(),
       });
     });
     await page.route("**/api/sync/pull?*", (route) => {

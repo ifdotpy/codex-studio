@@ -112,6 +112,9 @@ class FakeContext:
         self.remote_fixture = FakeRemote()
         self.remote = cast("RemoteAccess", self.remote_fixture)
 
+    async def get_api_schema_hash(self) -> str:
+        return "federation-test-schema"
+
     @property
     def runtime(self) -> FakeRuntime:
         return cast(FakeRuntime, self.canvas.runtime)

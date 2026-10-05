@@ -198,7 +198,7 @@ export async function deliver(doc: any): Promise<SendResult> {
     });
     return intentionResult(JSON.parse(current.payload));
   } catch (error) {
-    if (error instanceof ApiSchemaMismatchError && error.markedResponse) {
+    if (error instanceof ApiSchemaMismatchError) {
       const current = await doc.incrementalModify((record: any) => {
         const stored: Intention = JSON.parse(record.payload);
         if (stored.status !== "queued") return record;

@@ -211,3 +211,30 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
   expect(api.schemaUpdateFailedAfterReload()).toBe(true);
   expect(reload).toHaveBeenCalledTimes(1);
 });
+
+it("clears the completed-update marker when service-worker update fails", async () => {
+  const storage = new Map<string, string>();
+  stubBrowser();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
+  vi.stubGlobal("window", {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    location: { href: "http://studio.test/", assign: vi.fn() },
+  });
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    serviceWorker: {
+      getRegistration: vi.fn().mockResolvedValue({
+        update: vi.fn().mockRejectedValue(new Error("offline")),
+      }),
+    },
+  });
+  const api = await import("./api");
+  await expect(api.updateRendererAndReload()).rejects.toThrow("offline");
+  expect(storage.has("studio-api-schema-update-attempted")).toBe(false);
+});

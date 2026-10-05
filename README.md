@@ -297,10 +297,13 @@ is not guaranteed. Keep the page open for voice.
 The chat snapshot excludes work result histories. The work view loads those
 histories through its existing API. One shared protocol-3 event stream tells
 visible windows when entity state, drafts, or open transcripts need an update.
-The renderer compares its generated API schema hash with the server on API
-responses and the protocol-3 stream handshake. A mismatch keeps the loaded chat
-visible, saves composer text locally, and pauses sending and sync until you
-update the tab. Tabs pull their scoped projections after an invalidation;
+The renderer sends its generated API schema hash with API requests and
+protocol-3 stream connections. API responses carry the server hash. A
+hash-bearing protocol-3 stream starts with an `api-schema` handshake; a
+mismatching stream closes after that event without a subscription. Hashless
+non-renderer clients retain the protocol-3 event sequence from before schema
+gating. A renderer mismatch keeps the loaded chat visible, saves composer text
+locally, and pauses sending and sync until you update the tab. Tabs pull their scoped projections after an invalidation;
 transcript updates do not use generation polling or a separate transcript stream.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.

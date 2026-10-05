@@ -1,4 +1,9 @@
 (() => {
+  const updateUrl = new URL(window.location.href);
+  if (updateUrl.searchParams.has("studio-update")) {
+    updateUrl.searchParams.delete("studio-update");
+    window.history.replaceState(null, "", updateUrl);
+  }
   const notice = (text) => {
     const status = document.getElementById("studio-startup-status");
     const help = document.getElementById("studio-startup-help");
@@ -31,8 +36,8 @@
     !document.querySelector('meta[name="studio-build"]')
   )
     return;
-  // Keep the active document and its requests intact. A new worker takes over
-  // only after the browser releases all clients of the previous worker.
+  // The Update action activates the waiting worker with skipWaiting. Other
+  // tabs stay on their current controller until they navigate or close.
   window.addEventListener(
     "load",
     () => {

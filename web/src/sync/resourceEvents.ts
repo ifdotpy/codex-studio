@@ -98,7 +98,8 @@ type OutgoingMessage =
   | { kind: "status"; status: ResourceConnectionState };
 
 const HEARTBEAT_TIMEOUT_MS = 45_000;
-const SCHEMA_HANDSHAKE_TIMEOUT_MS = 5_000;
+const SCHEMA_HANDSHAKE_TIMEOUT_MS = 15_000;
+const SCHEMA_HANDSHAKE_FAILURE_LIMIT = 3;
 const PEER_HEARTBEAT_MS = 3_000;
 const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
@@ -138,6 +139,7 @@ let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
+let preHandshakeFailures = 0;
 let lastEpoch: string | undefined;
 let lastRevision: number | undefined;
 let lastHeartbeatRevision: number | undefined;
@@ -426,7 +428,9 @@ function hasRevisionFrame(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function frameFailed() {
+function frameFailed(error?: unknown) {
+  if (error !== undefined)
+    console.error("Sync stream frame could not be applied", error);
   setStatus("degraded");
   reconnectNow();
 }
@@ -628,8 +632,13 @@ function openSource() {
     let schemaHandshakeReceived = false;
     let connectionOpened = false;
     const failHandshake = () => {
-      if (source === connected && !schemaHandshakeReceived)
+      if (source !== connected || schemaHandshakeReceived) return;
+      requireBaselineReconciliation();
+      closeSource();
+      preHandshakeFailures++;
+      if (preHandshakeFailures >= SCHEMA_HANDSHAKE_FAILURE_LIMIT) {
         markApiSchemaMismatch();
+      } else scheduleReconnect();
     };
     connected.onopen = () => {
       if (source !== connected) return;
@@ -649,8 +658,8 @@ function openSource() {
       }
       try {
         apply(JSON.parse((message as MessageEvent<string>).data) as unknown);
-      } catch {
-        frameFailed();
+      } catch (error) {
+        frameFailed(error);
       }
     };
     connected.addEventListener("api-schema", (message: Event) => {
@@ -670,6 +679,7 @@ function openSource() {
           return;
         }
         schemaHandshakeReceived = true;
+        preHandshakeFailures = 0;
         clearTimeout(schemaHandshakeTimeout);
         schemaHandshakeTimeout = undefined;
       } catch {
@@ -680,8 +690,8 @@ function openSource() {
       applyFrame(message, (parsed) => {
         if (!hasRevisionFrame(parsed) || !Array.isArray(parsed.resources))
           throw new TypeError("Invalid resource frame");
-        retryCount = 0;
         receiveResourceEvent(parsed);
+        retryCount = 0;
       });
     });
     connected.addEventListener("heartbeat", (message: Event) => {
@@ -693,7 +703,7 @@ function openSource() {
     connected.onerror = () => {
       if (source !== connected) return;
       if (connectionOpened && !schemaHandshakeReceived) {
-        markApiSchemaMismatch();
+        failHandshake();
         return;
       }
       requireBaselineReconciliation();
@@ -861,8 +871,8 @@ async function initialize() {
         channel.onmessage = (event: MessageEvent<unknown>) => {
           try {
             receiveChannelMessage(event.data);
-          } catch {
-            frameFailed();
+          } catch (error) {
+            frameFailed(error);
           }
         };
       }

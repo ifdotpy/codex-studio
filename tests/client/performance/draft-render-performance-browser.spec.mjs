@@ -1,6 +1,6 @@
 // Real draft hook, local durability, and consumer commits with 500 saved chats.
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
 
 test("Draft Render Performance Browser @performance", async ({
   browser: testBrowser,
@@ -59,7 +59,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await page.route("**/api/sync/stream*", (r) =>
-        r.fulfill({ contentType: "text/event-stream", body: "" }),
+        r.fulfill({
+          contentType: "text/event-stream",
+          body: apiSchemaHandshakeSse(),
+        }),
       );
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,
@@ -412,7 +415,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await other.route("**/api/sync/stream*", (route) =>
-        route.fulfill({ contentType: "text/event-stream", body: "" }),
+        route.fulfill({
+          contentType: "text/event-stream",
+          body: apiSchemaHandshakeSse(),
+        }),
       );
       await other.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,

@@ -259,10 +259,11 @@ def create_router(context: ApiContext) -> APIRouter:
             renderer_hash = request.headers.get(API_SCHEMA_HASH_HEADER)
             if renderer_hash is None:
                 renderer_hash = request.query_params.get(API_SCHEMA_HASH_PARAM)
-            if renderer_hash is not None and renderer_hash.encode("utf-8") != context.api_schema_hash.encode("utf-8"):
+            server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
+            if renderer_hash is not None and renderer_hash != server_hash:
                 async def schema_mismatch_event() -> AsyncIterator[bytes]:
                     payload = {
-                        "hash": context.api_schema_hash,
+                        "hash": server_hash,
                         API_SCHEMA_MISMATCH_FIELD: True,
                     }
                     yield _schema_event(payload)
@@ -316,7 +317,8 @@ def create_router(context: ApiContext) -> APIRouter:
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
                 try:
-                    yield _schema_event({"hash": context.api_schema_hash})
+                    if renderer_hash is not None:
+                        yield _schema_event({"hash": server_hash})
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):

@@ -58,17 +58,37 @@ def openapi_document() -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
 
 
+_NAME_KEYED_MAPS = frozenset({
+    "properties", "$defs", "definitions", "patternProperties", "dependentSchemas",
+    "paths", "schemas", "parameters", "responses", "requestBodies", "headers",
+    "links", "callbacks", "securitySchemes", "content", "encoding",
+    "webhooks",
+})
+
+
 def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
     """Canonicalize wire-shape OpenAPI fields; ignore documentation-only metadata."""
     def strip_documentation(value: JsonValue) -> JsonValue:
         if isinstance(value, list):
             return [strip_documentation(item) for item in value]
         if isinstance(value, dict):
-            return {
-                key: strip_documentation(item)
-                for key, item in value.items()
-                if key not in {"description", "summary", "examples", "externalDocs"}
-            }
+            canonical: dict[str, JsonValue] = {}
+            for key, item in value.items():
+                if key in {"description", "summary", "examples", "externalDocs"}:
+                    continue
+                if key in _NAME_KEYED_MAPS or key == "components":
+                    if isinstance(item, dict):
+                        # These object keys are wire names (for example property
+                        # names), while documentation annotations live below them.
+                        canonical[key] = {
+                            name: strip_documentation(child)
+                            for name, child in item.items()
+                        }
+                    else:
+                        canonical[key] = strip_documentation(item)
+                else:
+                    canonical[key] = strip_documentation(item)
+            return canonical
         return value
 
     return json.dumps(

@@ -68,6 +68,7 @@ import {
   saved,
   type PostBody,
   isApiSchemaMismatch,
+  onApiSchemaMismatch,
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
 } from "./api";
@@ -189,12 +190,7 @@ export default function App() {
       setSchemaMismatchNeedsRebuild(schemaUpdateFailedAfterReload());
       setSchemaMismatch(true);
     };
-    window.addEventListener("studio-api-schema-mismatch", showMismatch);
-    if (document.documentElement.dataset.studioApiSchemaMismatch === "true")
-      showMismatch();
-    return () => {
-      window.removeEventListener("studio-api-schema-mismatch", showMismatch);
-    };
+    return onApiSchemaMismatch(showMismatch);
   }, []);
   const outbox = useOutbox();
   const [removingAllSending, setRemovingAllSending] = useState(false);

@@ -150,10 +150,6 @@ export function markApiSchemaMismatch() {
   if (schemaMismatch) return;
   schemaMismatch = true;
   for (const listener of schemaMismatchListeners) listener();
-  if (typeof document !== "undefined" && document.documentElement)
-    document.documentElement.dataset.studioApiSchemaMismatch = "true";
-  if (typeof window?.dispatchEvent === "function")
-    window.dispatchEvent(new Event("studio-api-schema-mismatch"));
 }
 
 export function schemaUpdateFailedAfterReload() {
@@ -165,46 +161,59 @@ export function schemaUpdateFailedAfterReload() {
 }
 
 export async function updateRendererAndReload() {
-  sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
-  if (window.codexDesktop || !navigator.serviceWorker)
-    return window.location.reload();
-  const registration =
-    (await navigator.serviceWorker.getRegistration("/")) ??
-    (await navigator.serviceWorker.register("/studio-sw.js", {
-      scope: "/",
-      updateViaCache: "none",
-    }));
-  await withUpdateTimeout(registration.update());
-  const worker = registration.waiting ?? registration.installing;
-  if (worker) {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(
-        () => finish(new Error("Studio update timed out.")),
-        SERVICE_WORKER_UPDATE_TIMEOUT_MS,
+  try {
+    if (
+      (window as Window & { codexDesktop?: unknown }).codexDesktop ||
+      !navigator.serviceWorker
+    ) {
+      sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
+      return window.location.reload();
+    }
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    if (!registration)
+      throw new Error(
+        "Studio's service worker is not registered. Reload Studio and try again.",
       );
-      const finish = (error?: Error) => {
-        clearTimeout(timeout);
-        worker.removeEventListener("statechange", changed);
-        if (error) reject(error);
-        else resolve();
-      };
-      let requestedActivation = false;
-      const changed = () => {
-        if (worker.state === "installed" && !requestedActivation) {
-          requestedActivation = true;
-          worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
-        }
-        if (worker.state === "activated") finish();
-        else if (worker.state === "redundant")
-          finish(new Error("Studio update could not be installed."));
-      };
-      worker.addEventListener("statechange", changed);
-      changed();
-    });
+    await withUpdateTimeout(registration.update());
+    const worker = registration.waiting ?? registration.installing;
+    if (worker) {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => finish(new Error("Studio update timed out.")),
+          SERVICE_WORKER_UPDATE_TIMEOUT_MS,
+        );
+        const finish = (error?: Error) => {
+          clearTimeout(timeout);
+          worker.removeEventListener("statechange", changed);
+          if (error) reject(error);
+          else resolve();
+        };
+        let requestedActivation = false;
+        const changed = () => {
+          if (worker.state === "installed" && !requestedActivation) {
+            requestedActivation = true;
+            worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
+          }
+          if (worker.state === "activated") finish();
+          else if (worker.state === "redundant")
+            finish(new Error("Studio update could not be installed."));
+        };
+        worker.addEventListener("statechange", changed);
+        changed();
+      });
+    }
+    sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
+    const url = new URL(window.location.href);
+    url.searchParams.set("studio-update", String(Date.now()));
+    window.location.assign(url.href);
+  } catch (error) {
+    try {
+      sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+    } catch {
+      // Storage may be unavailable; a failed update remains retryable in memory.
+    }
+    throw error;
   }
-  const url = new URL(window.location.href);
-  url.searchParams.set("studio-update", String(Date.now()));
-  window.location.assign(url.href);
 }
 
 export const client = createClient<paths, "application/json">({

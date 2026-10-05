@@ -19,6 +19,18 @@ export function readApiSchemaHash() {
   return match[1];
 }
 
+export function apiSchemaHandshakeSse(body = "") {
+  return `event: api-schema\ndata: ${JSON.stringify(apiSchemaHandshakeEvent())}\n\n${body}`;
+}
+
+export function apiSchemaHandshakeEvent() {
+  return { hash: readApiSchemaHash() };
+}
+
+export function protocol3SseEvent(name, value) {
+  return `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
+}
+
 const fixtureScopes = new WeakMap();
 const childTerminationWaitMs = 1_000;
 const fixtureCleanupTimeoutMs = 5_000;

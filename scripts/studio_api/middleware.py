@@ -9,13 +9,14 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TypeAlias
 
+from starlette.datastructures import QueryParams
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
+    API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
-    api_schema_hash,
 )
 
 ASGIHandler: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
@@ -28,11 +29,6 @@ ASSET_BODY_LIMIT = 28 * 1024 * 1024
 VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
 FEDERATION_BODY_LIMIT = 256 * 1024
 REQUEST_READ_TIMEOUT_SECONDS = 10.0
-
-
-def _schema_hash(context: ApiContext) -> str:
-    value = getattr(context, "api_schema_hash", None)
-    return value if isinstance(value, str) and value else api_schema_hash()
 
 
 class HeaderView:
@@ -161,32 +157,53 @@ class RequestBoundary:
         headers = HeaderView(scope.get("headers", []))
         federation = method == "POST" and path in FEDERATION_PATHS
         write = method not in {"GET", "HEAD", "OPTIONS"}
-        if path.startswith("/api/"):
-            raw_send = send
-
-            async def send_with_schema_hash(message: Message) -> None:
-                if message["type"] == "http.response.start":
-                    response_headers = [
-                        (name, value)
-                        for name, value in message.get("headers", [])
-                        if name.lower() != API_SCHEMA_HASH_HEADER.lower().encode()
-                    ]
-                    response_headers.append(
-                        (API_SCHEMA_HASH_HEADER.lower().encode(), _schema_hash(self.context).encode())
-                    )
-                    message = {**message, "headers": response_headers}
-                await raw_send(message)
-
-            send = send_with_schema_hash
         renderer_hash = headers.get(API_SCHEMA_HASH_HEADER)
         if not self._trusted(scope, headers, write=write, federation=federation):
             error = "Local origin and session token required" if write else "Local origin required"
             await _reject(send, 403, error)
             return
 
-        if write and renderer_hash is not None and not secrets.compare_digest(
-            renderer_hash.encode("utf-8"), _schema_hash(self.context).encode("utf-8")
-        ):
+        schema_hash: str | None = None
+        if path.startswith("/api/"):
+            stream_hash = None
+            if path == "/api/sync/stream":
+                query = scope.get("query_string", b"").decode("latin-1")
+                stream_hash = QueryParams(query).get(API_SCHEMA_HASH_PARAM)
+                if renderer_hash is not None:
+                    stream_hash = renderer_hash
+            needs_hash = (write and renderer_hash is not None) or stream_hash is not None
+            try:
+                schema_hash = (
+                    await self.context.get_api_schema_hash()
+                    if needs_hash
+                    else self.context.peek_api_schema_hash()
+                )
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception("Studio API schema identity is unavailable")
+                await _reject(send, 503, "Studio API schema identity is unavailable; restart Studio.")
+                return
+
+            if schema_hash is not None:
+                raw_send = send
+
+                async def send_with_schema_hash(message: Message) -> None:
+                    if message["type"] == "http.response.start":
+                        response_headers = [
+                            (name, value)
+                            for name, value in message.get("headers", [])
+                            if name.lower() != API_SCHEMA_HASH_HEADER.lower().encode()
+                        ]
+                        response_headers.append(
+                            (API_SCHEMA_HASH_HEADER.lower().encode(), schema_hash.encode())
+                        )
+                        message = {**message, "headers": response_headers}
+                    await raw_send(message)
+
+                send = send_with_schema_hash
+
+        if write and renderer_hash is not None and renderer_hash != schema_hash:
             await _reject(
                 send,
                 426,

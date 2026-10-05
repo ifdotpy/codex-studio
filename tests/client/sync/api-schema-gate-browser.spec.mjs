@@ -71,6 +71,15 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     });
     let mismatchEnabled = true;
     let schemaResponses = 0;
+    let workerMode = "normal";
+    let workerFetches = 0;
+    await page.route("**/studio-sw.js", async (route) => {
+      workerFetches++;
+      if (workerMode !== "changed") return route.continue();
+      const response = await route.fetch();
+      const body = `${await response.text()}\n// schema-gate-worker-update-probe\n`;
+      await route.fulfill({ response, body });
+    });
     await page.route("**/api/**", async (route) => {
       if (new URL(route.request().url()).pathname === "/api/sync/stream")
         return route.continue();
@@ -127,8 +136,49 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       "No mutations follow the mismatch alert",
     );
 
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      await registration?.unregister();
+    });
+    await page.getByRole("button", { name: "Update" }).click();
+    await expect(
+      page.locator('[data-modal-content="true"]').getByRole("alert"),
+    ).toContainText("not registered", { timeout: 30_000 });
+    expect(
+      await page.evaluate(() =>
+        sessionStorage.getItem("studio-api-schema-update-attempted"),
+      ),
+    ).toBeNull();
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/studio-sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+    });
+    await page.reload();
+    await expect
+      .poll(() => page.evaluate(() => !!navigator.serviceWorker?.controller))
+      .toBe(true);
+    workerMode = "changed";
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      registration?.addEventListener("updatefound", () => {
+        const worker = registration.installing;
+        worker?.addEventListener("statechange", () => {
+          if (worker.state === "activated")
+            sessionStorage.setItem("schema-gate-worker-activated", "1");
+        });
+      });
+    });
     await page.getByRole("button", { name: "Update" }).click();
     await expect(page).toHaveURL(/studio-update=/, { timeout: 30_000 });
+    expect(workerFetches).toBeGreaterThan(0);
+    await expect(page).not.toHaveURL(/studio-update=/, { timeout: 30_000 });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          sessionStorage.getItem("schema-gate-worker-activated"),
+        ),
+      )
+      .toBe("1");
     await expect(
       page.locator('[data-modal-content="true"]').filter({
         hasText: "The installed renderer build does not match the server",

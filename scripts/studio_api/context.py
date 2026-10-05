@@ -1,9 +1,12 @@
 """Per-listener services shared by typed FastAPI routers."""
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
 import gzip
 import hashlib
 import json
+import logging
 import secrets
 import sqlite3
 import threading
@@ -75,6 +78,8 @@ class ApiContext:
         self.unix_socket = unix_socket
         self.schema_only = schema_only
         self._api_schema_hash: str | None = None
+        self._api_schema_hash_future: Future[str] | None = None
+        self._api_schema_hash_future_lock = threading.Lock()
         self._lock = threading.RLock()
         self._maintenance_lock = threading.Lock()
         self._maintenance_last = 0.0
@@ -106,14 +111,65 @@ class ApiContext:
     @property
     def api_schema_hash(self) -> str:
         if self._api_schema_hash is None:
-            from studio_api.schema import api_schema_hash
-
-            self._api_schema_hash = api_schema_hash()
+            raise RuntimeError("API schema hash is not ready; await get_api_schema_hash()")
         return self._api_schema_hash
 
     @api_schema_hash.setter
     def api_schema_hash(self, value: str) -> None:
         self._api_schema_hash = value
+
+    def _compute_api_schema_hash(self) -> str:
+        from studio_api.schema import api_schema_hash
+
+        value = api_schema_hash()
+        if not value:
+            raise RuntimeError("API schema hash computation returned an empty value")
+        return value
+
+    def start_api_schema_hash(self) -> Future[str]:
+        """Start one background schema-hash computation and share its result."""
+        with self._api_schema_hash_future_lock:
+            if self._api_schema_hash_future is not None:
+                return self._api_schema_hash_future
+            future: Future[str] = Future()
+            self._api_schema_hash_future = future
+            if self._api_schema_hash is not None:
+                future.set_result(self._api_schema_hash)
+                return future
+
+            def compute() -> None:
+                try:
+                    value = self._compute_api_schema_hash()
+                except Exception as error:
+                    logging.getLogger(__name__).exception(
+                        "Failed to compute Studio API schema identity"
+                    )
+                    future.set_exception(error)
+                else:
+                    self._api_schema_hash = value
+                    future.set_result(value)
+
+            threading.Thread(
+                target=compute,
+                name="studio-api-schema-hash",
+                daemon=True,
+            ).start()
+            return future
+
+    async def get_api_schema_hash(self) -> str:
+        """Await the shared background computation without blocking the event loop."""
+        if self._api_schema_hash is not None:
+            return self._api_schema_hash
+        return await asyncio.wrap_future(self.start_api_schema_hash())
+
+    def peek_api_schema_hash(self) -> str | None:
+        """Return the cached schema identity only when its background work is done."""
+        if self._api_schema_hash is not None:
+            return self._api_schema_hash
+        future = self._api_schema_hash_future
+        if future is None or not future.done():
+            return None
+        return future.result()
 
     def terminals(self) -> TerminalManager:
         self._require_runtime()

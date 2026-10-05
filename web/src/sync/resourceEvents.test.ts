@@ -297,8 +297,9 @@ describe("shared resource event transport", () => {
     stopStatus();
   });
 
-  it("treats an opened stream without a handshake as a mismatch after the timeout", async () => {
+  it("retries pre-handshake failures three times and ignores a late handshake", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
@@ -322,10 +323,22 @@ describe("shared resource event transport", () => {
     );
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
-    Source.instances[0]!.open();
-    await vi.advanceTimersByTimeAsync(5_000);
+    const first = Source.instances[0]!;
+    first.open();
+    await vi.advanceTimersByTimeAsync(15_000);
+    first.emit("api-schema", { hash: API_SCHEMA_HASH });
+    expect(first.closed).toBe(true);
+    expect(states).not.toContain("schema-mismatch");
+    for (let attempt = 2; attempt <= 3; attempt++) {
+      Source.skipNextAutoHandshake = true;
+      resumeListeners.forEach((resume) => resume());
+      const next = Source.instances.at(-1)!;
+      next.open();
+      next.onerror?.();
+      if (attempt < 3) expect(states).not.toContain("schema-mismatch");
+    }
     expect(states).toContain("schema-mismatch");
-    expect(Source.instances[0]!.closed).toBe(true);
+    expect(Source.instances.at(-1)!.closed).toBe(true);
     stop();
     stopStatus();
   });
