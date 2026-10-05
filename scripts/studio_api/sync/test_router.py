@@ -294,17 +294,21 @@ class SyncRouterTests(unittest.TestCase):
     def test_mismatching_schema_stream_sends_only_handshake_without_subscribing(self) -> None:
         context = ContextStub()
         with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
-            response = make_client(context).get(
-                "/api/sync/stream?protocol=3&apiSchema=foreign&resources=invalid"
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
-        body = response.text
-        self.assertEqual(body.count("event:"), 1)
-        self.assertIn("event: api-schema", body)
-        payload = json.loads(body.split("data: ", 1)[1].split("\n", 1)[0])
-        self.assertEqual(payload["hash"], context.api_schema_hash)
-        self.assertIs(payload[API_SCHEMA_MISMATCH_FIELD], True)
+            responses = [
+                make_client(context).get(
+                    f"/api/sync/stream?protocol=3&apiSchema={value}&resources=invalid"
+                )
+                for value in ("foreign", "%C3%A9")
+            ]
+        for response in responses:
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+            body = response.text
+            self.assertEqual(body.count("event:"), 1)
+            self.assertIn("event: api-schema", body)
+            payload = json.loads(body.split("data: ", 1)[1].split("\n", 1)[0])
+            self.assertEqual(payload["hash"], context.api_schema_hash)
+            self.assertIs(payload[API_SCHEMA_MISMATCH_FIELD], True)
         subscribe.assert_not_called()
 
     def test_matching_and_absent_schema_streams_keep_existing_handshake_path(self) -> None:

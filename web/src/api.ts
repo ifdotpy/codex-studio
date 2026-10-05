@@ -168,36 +168,39 @@ export async function updateRendererAndReload() {
   sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
   if (window.codexDesktop || !navigator.serviceWorker)
     return window.location.reload();
-  const registration = await navigator.serviceWorker.getRegistration("/");
-  if (registration) {
-    await withUpdateTimeout(registration.update());
-    const worker = registration.waiting ?? registration.installing;
-    if (worker) {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () => finish(new Error("Studio update timed out.")),
-          SERVICE_WORKER_UPDATE_TIMEOUT_MS,
-        );
-        const finish = (error?: Error) => {
-          clearTimeout(timeout);
-          worker.removeEventListener("statechange", changed);
-          if (error) reject(error);
-          else resolve();
-        };
-        let requestedActivation = false;
-        const changed = () => {
-          if (worker.state === "installed" && !requestedActivation) {
-            requestedActivation = true;
-            worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
-          }
-          if (worker.state === "activated") finish();
-          else if (worker.state === "redundant")
-            finish(new Error("Studio update could not be installed."));
-        };
-        worker.addEventListener("statechange", changed);
-        changed();
-      });
-    }
+  const registration =
+    (await navigator.serviceWorker.getRegistration("/")) ??
+    (await navigator.serviceWorker.register("/studio-sw.js", {
+      scope: "/",
+      updateViaCache: "none",
+    }));
+  await withUpdateTimeout(registration.update());
+  const worker = registration.waiting ?? registration.installing;
+  if (worker) {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => finish(new Error("Studio update timed out.")),
+        SERVICE_WORKER_UPDATE_TIMEOUT_MS,
+      );
+      const finish = (error?: Error) => {
+        clearTimeout(timeout);
+        worker.removeEventListener("statechange", changed);
+        if (error) reject(error);
+        else resolve();
+      };
+      let requestedActivation = false;
+      const changed = () => {
+        if (worker.state === "installed" && !requestedActivation) {
+          requestedActivation = true;
+          worker.postMessage({ type: "STUDIO_SKIP_WAITING" });
+        }
+        if (worker.state === "activated") finish();
+        else if (worker.state === "redundant")
+          finish(new Error("Studio update could not be installed."));
+      };
+      worker.addEventListener("statechange", changed);
+      changed();
+    });
   }
   const url = new URL(window.location.href);
   url.searchParams.set("studio-update", String(Date.now()));

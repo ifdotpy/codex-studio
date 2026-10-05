@@ -365,8 +365,14 @@ class CoreResponseTests(unittest.TestCase):
         )
         self.assertIn(b"Reload", mismatch_post[1]["body"])
         self.assertNotIn("/api/messages", delegated)
-        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", ""))[0]["status"], 426)
-        self.assertEqual(asyncio.run(invoke("POST", "/api/messages", "é"))[0]["status"], 426)
+        for value in ("", "é"):
+            with self.subTest(schema_hash=value):
+                response = asyncio.run(invoke("POST", "/api/messages", value))
+                self.assertEqual(response[0]["status"], 426)
+                self.assertIn(
+                    (API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1"),
+                    response[0]["headers"],
+                )
         self.assertEqual(
             asyncio.run(
                 invoke("POST", "/api/messages", "foreign-schema", include_token=False)
