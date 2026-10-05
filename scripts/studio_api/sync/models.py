@@ -893,13 +893,20 @@ class RemoteRoomMember(ContractModel):
     status: str | None = None
 
 
+class LocalRoomParticipantDto(ContractModel):
+    id: str
+    role: Literal["lead", "agent"]
+    name: str | None = None
+    status: str | None = None
+
+
 class SnapshotRoomDto(RoomEntityDto):
     federated: bool | None = None
     peerId: str | None = None
     peerLabel: str | None = None
     localMembers: list[str] | None = None
     remoteMembers: list[RemoteRoomMember] | None = None
-    localParticipants: list[JsonValue] | None = None
+    localParticipants: list[LocalRoomParticipantDto] | None = None
     customName: str | None = None
 
 
@@ -915,6 +922,19 @@ class TaskStatus(ContractStrEnum):
     CANCELLED = "cancelled"
     LOST = "lost"
     UNKNOWN = "unknown"
+
+
+class MonitorStatus(ContractStrEnum):
+    RUNNING = "running"
+    STARTING = "starting"
+    APPROVAL = "approval"
+    QUEUED = "queued"
+    WAITING = "waiting"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+    LOST = "lost"
 
 
 class TaskKind(ContractStrEnum):
@@ -966,9 +986,9 @@ class SnapshotTaskDto(TaskEntityDto):
 
 class MonitorEntityDto(ContractModel):
     id: str
-    agent: str | None = None
-    status: TaskStatus | None = None
-    created: float | None = None
+    agent: str
+    status: MonitorStatus
+    created: float
     finished: float | None = None
     name: str | None = None
     command: str | None = None

@@ -55,34 +55,9 @@ type MonitorTask = NonNullable<Snapshot["runtime"]>["monitors"][number];
 type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
 type PendingRequest = NonNullable<Snapshot["runtime"]>["requests"][number];
 
-const taskStatuses: readonly BackgroundTask["status"][] = [
-  "running",
-  "starting",
-  "approval",
-  "queued",
-  "waiting",
-  "completed",
-  "failed",
-  "cancelled",
-  "interrupted",
-  "lost",
-];
-
-function isTaskStatus(value: unknown): value is BackgroundTask["status"] {
-  return taskStatuses.some((status) => status === value);
-}
-
-export function monitorTask(monitor: MonitorTask): BackgroundTask | null {
-  if (
-    typeof monitor.agent !== "string" ||
-    typeof monitor.created !== "number" ||
-    !isTaskStatus(monitor.status)
-  )
-    return null;
+export function monitorTask(monitor: MonitorTask): BackgroundTask {
   return {
     ...monitor,
-    agent: monitor.agent,
-    created: monitor.created,
     kind: "monitor",
     status: monitor.status,
   };
@@ -214,9 +189,7 @@ export default function BackgroundTasks({
   }, [opened]);
   const agents = data.threads,
     tasks = [
-      ...(data.runtime?.monitors ?? [])
-        .map(monitorTask)
-        .filter((task): task is BackgroundTask => task !== null),
+      ...(data.runtime?.monitors ?? []).map(monitorTask),
       ...(taskFeed?.tasks ?? data.runtime?.tasks ?? []).map(workspaceTask),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
