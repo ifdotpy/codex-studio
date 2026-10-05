@@ -262,6 +262,11 @@ Only the orchestrator uses `orchestration_agent_manage`. Inspect a worker before
 recovery or archive. `recover` reconciles native turn state; it never replays input.
 Archive only after reviewing the result or assigning its remaining work elsewhere.
 `archive_finished` checks finished descendants and removes safe workspaces after archive.
+Set `unassign_work=true` on `archive` or `archive_finished` to keep open tasks in the unassigned ready backlog.
+The archive and task changes commit together. Task results and decisions remain.
+The default keeps the assigned-work blocker. Active work and other blockers still prevent archive.
+After partial Git removal, make a new `archive` call to retry cleanup.
+Keep changed files and folders without a verified original Git link for inspection.
 `archive` requires `agent_id` and `reason`. It preserves history and dirty files, and
 refuses active commands, pending or uncertain requests, unfinished
 assignments, or unarchived children. `list_archived` supports `limit` and `cursor`.
