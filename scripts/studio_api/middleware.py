@@ -173,11 +173,10 @@ class RequestBoundary:
                     stream_hash = renderer_hash
             needs_hash = (write and renderer_hash is not None) or stream_hash is not None
             try:
-                schema_hash = (
-                    await self.context.get_api_schema_hash()
-                    if needs_hash
-                    else self.context.peek_api_schema_hash()
-                )
+                if needs_hash:
+                    schema_hash = await self.context.get_api_schema_hash()
+                else:
+                    schema_hash = self.context.peek_api_schema_hash()
             except Exception:
                 import logging
 

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, readApiSchemaHash } from "../playwright.mjs";
+import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
 
 test("sync-cross-tab-browser @performance", async ({
   browser: fixtureBrowser,
@@ -110,9 +110,7 @@ test("sync-cross-tab-browser @performance", async ({
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      res.write(
-        `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-      );
+      res.write(apiSchemaHandshakeSse());
       streams.add(res);
       streamWorkspaces.set(res, currentWorkspace);
       const resources = JSON.parse(
@@ -120,6 +118,12 @@ test("sync-cross-tab-browser @performance", async ({
           "resources",
         ) || "[]",
       );
+      if (
+        new URL(req.url || "/", "http://localhost").searchParams.has(
+          "apiSchema",
+        )
+      )
+        res.write(apiSchemaHandshakeSse());
       streamResources.set(res, resources);
       if (unchangedReconnectBaseline && currentWorkspace === workspaceId) {
         unchangedReconnectBaseline = false;
@@ -143,7 +147,7 @@ test("sync-cross-tab-browser @performance", async ({
   const waitFor = async (predicate, message, timeoutMs = 10000) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      if (predicate()) return;
+      if (await predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
     assert.fail(message);
@@ -493,14 +497,99 @@ test("sync-cross-tab-browser @performance", async ({
       throw error;
     }
     const visibilityFailoverStarted = Date.now();
-    await waitFor(
-      () => streams.size === 1 && streamsOpened > streamsBeforeHidingOwner,
-      "a visible peer did not take ownership after the active owner was hidden",
-      5000,
-    );
+    try {
+      await waitFor(
+        async () =>
+          streams.size === 1 &&
+          (
+            await Promise.all(
+              pages
+                .filter((_, index) => index !== initialOwnerIndex)
+                .map((page) =>
+                  page.evaluate(() =>
+                    window.__syncDiagnostics.sources.some(
+                      (source) => source.readyState === EventSource.OPEN,
+                    ),
+                  ),
+                ),
+            )
+          ).some(Boolean),
+        "a visible peer did not take ownership after the active owner was hidden",
+        5000,
+      );
+    } catch (error) {
+      const diagnostics = await Promise.all(
+        pages.map((page) =>
+          page.evaluate(() => ({
+            hidden: document.hidden,
+            states: window.states,
+            counts: window.counts,
+            sent: window.__syncDiagnostics.sent.slice(-12),
+            received: window.__syncDiagnostics.received.slice(-12),
+            sources: window.__syncDiagnostics.sources.map((source) => ({
+              readyState: source.readyState,
+              url: source.url,
+            })),
+          })),
+        ),
+      );
+      throw new Error(
+        `${error.message}; ${JSON.stringify({
+          streamsOpened,
+          streamsBeforeHidingOwner,
+          streamCount: streams.size,
+          diagnostics: diagnostics.map((entry) => ({
+            hidden: entry.hidden,
+            states: entry.states,
+            openSources: entry.sources.filter(
+              (source) => source.readyState === 1,
+            ).length,
+            sentKinds: entry.sent.map((message) => message.kind || "other"),
+            receivedKinds: entry.received.map(
+              (message) => message.kind || "other",
+            ),
+          })),
+        })}`,
+      );
+    }
     assert.ok(
       Date.now() - visibilityFailoverStarted <= 5000,
       "visible-peer ownership recovery exceeded five seconds",
+    );
+    const openSourcesByPage = await Promise.all(
+      pages.map((page) =>
+        page.evaluate(
+          () =>
+            window.__syncDiagnostics.sources.filter(
+              (source) => source.readyState === EventSource.OPEN,
+            ).length,
+        ),
+      ),
+    );
+    assert.equal(
+      openSourcesByPage.reduce((total, count) => total + count, 0),
+      1,
+      "exactly one EventSource remains open across tabs after takeover",
+    );
+    assert.equal(
+      openSourcesByPage[initialOwnerIndex],
+      0,
+      "the hidden original owner's EventSource is closed",
+    );
+    assert.ok(
+      openSourcesByPage.some(
+        (count, index) => index !== initialOwnerIndex && count === 1,
+      ),
+      "the replacement EventSource belongs to a visible peer",
+    );
+    const takeoverConnectionCount = streamsOpened - streamsBeforeHidingOwner;
+    assert.equal(
+      takeoverConnectionCount,
+      1,
+      "takeover opens exactly one replacement stream request",
+    );
+    process.stdout.write(
+      `PASS ownership accounting: ${streamsBeforeHidingOwner} streams before hide, ${takeoverConnectionCount} requests during takeover, ${streamsOpened} total\n`,
     );
     await waitFor(
       () =>
@@ -903,7 +992,7 @@ test("sync-cross-tab-browser @performance", async ({
     );
     await noCoordination.close();
     process.stdout.write(
-      `PASS: 8 tabs, 1 active SSE, scoped transcript fan-out, failover ${failoverMs}ms\n`,
+      `PASS: 8 tabs, 1 active SSE, ${streamsOpened} total stream requests, scoped transcript fan-out, failover ${failoverMs}ms\n`,
     );
   } finally {
     await noCoordination?.close();

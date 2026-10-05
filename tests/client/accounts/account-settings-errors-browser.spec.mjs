@@ -8,7 +8,7 @@ import { join } from "node:path";
 import {
   test,
   browserExecutablePath,
-  readApiSchemaHash,
+  apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 
 test("Account settings errors", async () => {
@@ -74,9 +74,7 @@ test("Account settings errors", async () => {
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
             });
-            res.write(
-              `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-            );
+            res.write(apiSchemaHandshakeSse());
             resourceStreams.add(stream);
             writeResourceEvent(stream, "initial");
             res.on("close", () => resourceStreams.delete(stream));

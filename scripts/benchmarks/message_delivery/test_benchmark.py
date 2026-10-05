@@ -104,18 +104,14 @@ class BenchmarkTests(unittest.TestCase):
         stream_accepted = threading.Event()
         release = threading.Event()
 
-        def serve_protocol_then_hold_stream():
-            protocol, _ = listener.accept()
-            protocol.recv(4096)
-            protocol.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-            protocol.close()
+        def serve_stream_then_hold():
             stream, _ = listener.accept()
             stream.recv(4096)
             stream_accepted.set()
             release.wait(1)
             stream.close()
 
-        holder = threading.Thread(target=serve_protocol_then_hold_stream, daemon=True)
+        holder = threading.Thread(target=serve_stream_then_hold, daemon=True)
         holder.start()
         errors = queue.Queue()
         receipt_changed = threading.Event()

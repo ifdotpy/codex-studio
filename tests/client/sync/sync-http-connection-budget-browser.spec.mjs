@@ -1,4 +1,4 @@
-import { test, readApiSchemaHash } from "../playwright.mjs";
+import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -121,9 +121,7 @@ test("Sync http connection budget browser", async ({
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
           });
-          res.write(
-            `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-          );
+          res.write(apiSchemaHandshakeSse());
           res.write(": connected\n\n");
           streams.add(res);
           const refs = JSON.parse(url.searchParams.get("resources") || "[]");

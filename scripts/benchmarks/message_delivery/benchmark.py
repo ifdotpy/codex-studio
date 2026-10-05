@@ -179,15 +179,9 @@ class SyncClient(threading.Thread):
 
     def run(self):
         try:
-            with urllib.request.urlopen(
-                self.base + "/api/sync/protocol",
-                timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline)),
-            ) as protocol_response:
-                api_schema = protocol_response.headers.get("X-Studio-API-Schema")
-            parameters = {"protocol": 3, "resources": self.resources}
-            if api_schema:
-                parameters["apiSchema"] = api_schema
-            query = urllib.parse.urlencode(parameters)
+            query = urllib.parse.urlencode(
+                {"protocol": 3, "resources": self.resources}
+            )
             request = urllib.request.Request(self.base + "/api/sync/stream?" + query,
                                              headers={"Accept": "text/event-stream"})
             with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:

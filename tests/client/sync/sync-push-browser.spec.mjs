@@ -36,9 +36,21 @@ test("Sync push", async ({ context: testContext }) => {
       else if (url.pathname === "/api/sync/identity") json({ workspaceId });
       else if (url.pathname === "/api/sync/stream") {
         assert.equal(url.searchParams.get("protocol"), "3");
+        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(apiSchemaHandshakeSse());
-        streams.set(res, JSON.parse(url.searchParams.get("resources") || "[]"));
+        res.write(
+          apiSchemaHandshakeSse(
+            protocol3SseEvent("resources", {
+              protocol: 3,
+              workspaceId,
+              epoch: "fixture-epoch",
+              revision,
+              reason: "initial",
+              resources,
+            }),
+          ),
+        );
+        streams.set(res, resources);
         res.on("close", () => streams.delete(res));
       } else if (url.pathname === "/api/sync/pull") {
         pulls++;

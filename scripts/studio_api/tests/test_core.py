@@ -27,13 +27,21 @@ from pydantic import BaseModel, Field, RootModel, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import Response
 
-from studio_api.context import ApiContext
+from codex_backend_identity import backend_build
+from studio_api.context import (
+    API_SCHEMA_CACHE_DIRECTORY,
+    API_SCHEMA_CACHE_FILE,
+    ApiContext,
+    api_schema_cache_key,
+    read_cached_or_compute_api_schema_hash,
+)
 from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
+    API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
     api_schema_hash,
 )
@@ -336,7 +344,7 @@ class CoreResponseTests(unittest.TestCase):
                 [(b"x-canvas-token", context.token.encode())] if include_token else []
             )
             if schema_hash is not None:
-                raw_headers.append((b"x-studio-api-schema", schema_hash.encode()))
+                raw_headers.append((API_SCHEMA_HASH_HEADER.lower().encode(), schema_hash.encode()))
             if body:
                 raw_headers.extend(((b"content-type", b"application/json"), (b"content-length", b"2")))
             sent: list[dict[str, object]] = []
@@ -394,11 +402,11 @@ class CoreResponseTests(unittest.TestCase):
             untrusted[0]["headers"],
         )
         context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://local")
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=foreign-schema"))[0]["status"], 200)
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema="))[0]["status"], 200)
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, "apiSchema=é".encode("utf-8")))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, f"{API_SCHEMA_HASH_PARAM}=foreign-schema".encode()))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, f"{API_SCHEMA_HASH_PARAM}=".encode()))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, f"{API_SCHEMA_HASH_PARAM}=é".encode("utf-8")))[0]["status"], 200)
         self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None))[0]["status"], 200)
-        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, b"apiSchema=server-schema"))[0]["status"], 200)
+        self.assertEqual(asyncio.run(invoke("GET", "/api/sync/stream", None, f"{API_SCHEMA_HASH_PARAM}=server-schema".encode()))[0]["status"], 200)
 
     def test_schema_only_context_computes_a_real_hash_lazily(self) -> None:
         context = ApiContext.for_schema()
@@ -406,6 +414,56 @@ class CoreResponseTests(unittest.TestCase):
         value = asyncio.run(context.get_api_schema_hash())
         self.assertEqual(value, api_schema_hash())
         self.assertTrue(value)
+
+    def test_api_schema_disk_cache_matches_computation_and_invalidates_on_model_edit(self) -> None:
+        cache_parent = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+        cache_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="schema-hash-cache-", dir=cache_parent) as temp_name:
+            temp = Path(temp_name)
+            scripts = temp / "scripts"
+            package = scripts / "studio_api"
+            package.mkdir(parents=True)
+            (scripts / "codex-canvas").write_text("#!/usr/bin/env python\n", encoding="utf-8")
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            model = package / "models.py"
+            model.write_text("class Example: value: str\n", encoding="utf-8")
+            key_before = api_schema_cache_key(backend_build(scripts))
+            cache_home = temp / "cache-home"
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": str(cache_home)}):
+                expected = api_schema_hash()
+                cached = read_cached_or_compute_api_schema_hash(key_before, api_schema_hash)
+                restarted = read_cached_or_compute_api_schema_hash(
+                    key_before,
+                    lambda: self.fail("warm cache must avoid schema reconstruction"),
+                )
+                self.assertEqual(cached, expected)
+                self.assertEqual(restarted, expected)
+                entry_path = cache_home / API_SCHEMA_CACHE_DIRECTORY / API_SCHEMA_CACHE_FILE
+                entry_path.write_text("{malformed", encoding="utf-8")
+                repaired = read_cached_or_compute_api_schema_hash(key_before, api_schema_hash)
+                self.assertEqual(repaired, expected)
+                model.write_text("class Example: value: int\n", encoding="utf-8")
+                key_after = api_schema_cache_key(backend_build(scripts))
+                self.assertNotEqual(key_before, key_after)
+                recomputations = 0
+
+                edited_schema_hash = hashlib.sha256(b"model-edit-schema").hexdigest()
+
+                def recompute_after_edit() -> str:
+                    nonlocal recomputations
+                    recomputations += 1
+                    return edited_schema_hash
+
+                after_edit = read_cached_or_compute_api_schema_hash(key_after, recompute_after_edit)
+                self.assertEqual(after_edit, edited_schema_hash)
+                self.assertEqual(recomputations, 1)
+                self.assertEqual(
+                    read_cached_or_compute_api_schema_hash(
+                        key_after,
+                        lambda: self.fail("edited model hash should have been cached"),
+                    ),
+                    edited_schema_hash,
+                )
 
     def test_schema_hash_failure_is_cached_and_returns_a_visible_503(self) -> None:
         context = ApiContext.for_schema()
@@ -422,6 +480,8 @@ class CoreResponseTests(unittest.TestCase):
             raise RuntimeError("schema generation failed")
 
         context._compute_api_schema_hash = fail
+        with self.assertRaisesRegex(RuntimeError, "schema generation failed"):
+            context.start_api_schema_hash().result(timeout=2)
         client = TestClient(app)
         for _ in range(2):
             response = client.get("/api/state")
@@ -443,7 +503,7 @@ class CoreResponseTests(unittest.TestCase):
             return "server-schema"
 
         context._compute_api_schema_hash = delayed_hash
-        context.start_api_schema_hash()
+        hash_future = context.start_api_schema_hash()
 
         async def app(scope: object, _receive: object, send: object) -> None:
             response = Response(content=b"static")
@@ -463,10 +523,44 @@ class CoreResponseTests(unittest.TestCase):
                 self.assertEqual(early_get.status_code, 200)
                 self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), early_get.headers)
                 self.assertLess(early_latency, 0.25)
+                post_request = asyncio.create_task(
+                    client.post(
+                        "/api/messages",
+                        headers={
+                            "Origin": "http://test",
+                            "X-Canvas-Token": context.token,
+                            API_SCHEMA_HASH_HEADER: "foreign-schema",
+                        },
+                        json={},
+                    )
+                )
+                stream_request = asyncio.create_task(
+                    client.get(f"/api/sync/stream?{API_SCHEMA_HASH_PARAM}=foreign-schema")
+                )
+                gated_started = time.perf_counter()
+                await asyncio.sleep(0.01)
+                self.assertFalse(post_request.done())
+                self.assertFalse(stream_request.done())
                 release.set()
+                await asyncio.to_thread(hash_future.result, 2)
                 api_response = await client.get("/api/state")
                 self.assertEqual(api_response.headers[API_SCHEMA_HASH_HEADER.lower()], "server-schema")
                 self.assertEqual(api_response.status_code, 200)
+                post_response, stream_response = await asyncio.gather(
+                    post_request, stream_request
+                )
+                self.assertEqual(post_response.status_code, 426)
+                self.assertEqual(
+                    post_response.headers[API_SCHEMA_MISMATCH_HEADER.lower()], "1"
+                )
+                self.assertEqual(stream_response.status_code, 200)
+                if os.environ.get("STUDIO_SCHEMA_TIMING") == "1":
+                    print(
+                        "Schema request timing: "
+                        f"early GET={early_latency * 1000:.2f}ms; "
+                        f"hash-bearing POST/stream with 10ms hash delay="
+                        f"{(time.perf_counter() - gated_started) * 1000:.2f}ms"
+                    )
 
         asyncio.run(exercise())
 

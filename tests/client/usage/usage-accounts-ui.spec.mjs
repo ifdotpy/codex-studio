@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, readApiSchemaHash } from "../playwright.mjs";
+import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -113,9 +113,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
                 "Cache-Control": "no-cache",
                 Connection: "keep-alive",
               });
-              res.write(
-                `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-              );
+              res.write(apiSchemaHandshakeSse());
               streams.add(stream);
               writeResources(stream, "initial");
               const heartbeat = setInterval(() => writeHeartbeat(stream), 1000);

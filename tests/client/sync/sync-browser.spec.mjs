@@ -141,6 +141,7 @@ test("Sync Browser", async ({
                 : [],
             checkpoint: { seq: Math.max(after, revision) },
             maxSeq: revision,
+            initialHigh: revision,
           },
         });
       route.fulfill({

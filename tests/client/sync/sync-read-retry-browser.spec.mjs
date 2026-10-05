@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, readApiSchemaHash } from "../playwright.mjs";
+import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
 
 test("sync-read-retry-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -56,9 +56,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
         json({ protocolVersion: 1, capabilities: ["streamChanges"] });
       else if (url.pathname === "/api/sync/stream") {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        res.write(
-          `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-        );
+        res.write(apiSchemaHandshakeSse());
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.write(
           `event: resources\ndata: ${JSON.stringify({

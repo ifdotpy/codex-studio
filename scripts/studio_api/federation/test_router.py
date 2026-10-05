@@ -115,6 +115,12 @@ class FakeContext:
     async def get_api_schema_hash(self) -> str:
         return "federation-test-schema"
 
+    def peek_api_schema_hash(self) -> str:
+        return "federation-test-schema"
+
+    def start_api_schema_hash(self) -> None:
+        return None
+
     @property
     def runtime(self) -> FakeRuntime:
         return cast(FakeRuntime, self.canvas.runtime)

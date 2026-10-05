@@ -9,7 +9,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
-  readApiSchemaHash,
+  apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 
 test("chat prefetch ui @performance", async ({ browser }) => {
@@ -162,9 +162,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 "Cache-Control": "no-cache",
                 Connection: "keep-alive",
               });
-              response.write(
-                `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-              );
+              response.write(apiSchemaHandshakeSse());
               response.write(
                 `retry: 100\nevent: resources\ndata: ${JSON.stringify({
                   protocol: 3,

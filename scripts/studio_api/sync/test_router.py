@@ -24,7 +24,7 @@ from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery
 from studio_api.responses import install_error_response_docs
-from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
+from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD
 from studio_api.sync.router import create_router
 from studio_api.sync.resources.hub import ResourceHub
 from studio_api.sync.resources.models import (
@@ -179,6 +179,12 @@ class ContextStub:
     async def get_api_schema_hash(self) -> str:
         return self.api_schema_hash
 
+    def peek_api_schema_hash(self) -> str:
+        return self.api_schema_hash
+
+    def start_api_schema_hash(self) -> None:
+        return None
+
     def resource_hub(self) -> ResourceHub:
         return self.hub
 
@@ -302,7 +308,7 @@ class SyncRouterTests(unittest.TestCase):
         with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
             responses = [
                 make_client(context).get(
-                    f"/api/sync/stream?protocol=3&apiSchema={value}&resources=invalid"
+                    f"/api/sync/stream?protocol=3&{API_SCHEMA_HASH_PARAM}={value}&resources=invalid"
                 )
                 for value in ("foreign", "%C3%A9", "")
             ]
@@ -322,7 +328,7 @@ class SyncRouterTests(unittest.TestCase):
         with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
             equal = self.read_stream(
                 context,
-                "/api/sync/stream?protocol=3&apiSchema=server-schema&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D",
+                f"/api/sync/stream?protocol=3&{API_SCHEMA_HASH_PARAM}=server-schema&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D",
             )
         events = [line[7:] for line in equal.splitlines() if line.startswith("event: ")]
         self.assertEqual(events[:3], ["api-schema", "resources", "token-rates"])

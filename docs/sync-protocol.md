@@ -61,7 +61,7 @@ invalidate that projection. Queues and pending references are
 bounded; overflow requires explicit reconciliation rather than silent loss.
 
 Where browser coordination is available, one stream owner combines the active
-subscriptions from tabs and distributes validated events. Without that
+subscriptions from tabs and distributes stream events. Without that
 coordination, a tab may open its own stream. Neither case enables HTTP polling.
 Unused subscriptions and their source watchers are released. A new owner requests
 peer subscriptions again. Peer heartbeats do not replay unchanged resource

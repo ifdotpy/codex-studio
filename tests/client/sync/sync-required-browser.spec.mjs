@@ -1,7 +1,7 @@
 // Unsupported endpoints fail visibly and never bypass the durable outbox.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, readApiSchemaHash } from "../playwright.mjs";
+import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
 
 test("sync required browser", async ({ page: runnerPage }) => {
   const { createServer } = await import(
@@ -209,9 +209,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
         });
-        res.write(
-          `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-        );
+        res.write(apiSchemaHandshakeSse());
         res.write(
           `event: resources\ndata: ${JSON.stringify({
             protocol: 3,

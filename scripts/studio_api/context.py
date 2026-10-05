@@ -5,15 +5,20 @@ import asyncio
 from concurrent.futures import Future
 import gzip
 import hashlib
+import importlib.metadata
 import json
 import logging
+import os
+import platform
+import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Callable, Protocol, cast, get_args, get_origin
 
 from pydantic import BaseModel, RootModel, TypeAdapter
 
@@ -56,6 +61,76 @@ CONTENT_SECURITY_POLICY = (
     "media-src 'self' blob: data:; frame-src 'self' blob:; "
     "frame-ancestors 'none'; base-uri 'none'"
 )
+API_SCHEMA_CACHE_DIRECTORY = "codex-studio-api-schema"
+API_SCHEMA_CACHE_FILE = "hash-v1.json"
+
+
+def api_schema_cache_key(backend_build: str | None = None) -> dict[str, str]:
+    """Key the persistent hash cache by every runtime input to OpenAPI."""
+    if backend_build is None:
+        from codex_backend_identity import BACKEND_BUILD
+
+        backend_build = BACKEND_BUILD
+    return {
+        "backendBuild": backend_build,
+        "python": platform.python_version(),
+        "fastapi": importlib.metadata.version("fastapi"),
+        "pydantic": importlib.metadata.version("pydantic"),
+        "starlette": importlib.metadata.version("starlette"),
+    }
+
+
+def _api_schema_cache_path() -> Path:
+    from codex_python import cache_root
+
+    return cache_root() / API_SCHEMA_CACHE_DIRECTORY / API_SCHEMA_CACHE_FILE
+
+
+def _valid_schema_hash(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def read_cached_or_compute_api_schema_hash(
+    key: dict[str, str], compute: Callable[[], str],
+) -> str:
+    """Return a matching disk cache or compute and atomically cache the hash."""
+    cache_path = _api_schema_cache_path()
+    try:
+        entry = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            isinstance(entry, dict)
+            and entry.get("key") == key
+            and _valid_schema_hash(entry.get("hash"))
+        ):
+            return cast(str, entry["hash"])
+    except (OSError, ValueError, TypeError):
+        pass
+
+    value = compute()
+    if not _valid_schema_hash(value):
+        raise RuntimeError("API schema hash computation returned an invalid value")
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="hash-", suffix=".tmp", dir=cache_path.parent,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as cache_file:
+                json.dump({"key": key, "hash": value}, cache_file, sort_keys=True)
+                cache_file.write("\n")
+                cache_file.flush()
+                os.fsync(cache_file.fileno())
+            os.replace(temporary_name, cache_path)
+        finally:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Could not write the API schema identity cache", exc_info=True,
+        )
+    return value
 
 
 class ApiContext:
@@ -121,7 +196,8 @@ class ApiContext:
     def _compute_api_schema_hash(self) -> str:
         from studio_api.schema import api_schema_hash
 
-        value = api_schema_hash()
+        key = api_schema_cache_key()
+        value = read_cached_or_compute_api_schema_hash(key, api_schema_hash)
         if not value:
             raise RuntimeError("API schema hash computation returned an empty value")
         return value
@@ -144,10 +220,12 @@ class ApiContext:
                     logging.getLogger(__name__).exception(
                         "Failed to compute Studio API schema identity"
                     )
-                    future.set_exception(error)
+                    if not future.done():
+                        future.set_exception(error)
                 else:
                     self._api_schema_hash = value
-                    future.set_result(value)
+                    if not future.done():
+                        future.set_result(value)
 
             threading.Thread(
                 target=compute,
@@ -160,7 +238,7 @@ class ApiContext:
         """Await the shared background computation without blocking the event loop."""
         if self._api_schema_hash is not None:
             return self._api_schema_hash
-        return await asyncio.wrap_future(self.start_api_schema_hash())
+        return await asyncio.shield(asyncio.wrap_future(self.start_api_schema_hash()))
 
     def peek_api_schema_hash(self) -> str | None:
         """Return the cached schema identity only when its background work is done."""

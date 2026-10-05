@@ -9,7 +9,7 @@ import {
   test,
   browserExecutablePath,
   spawnFixture as spawn,
-  readApiSchemaHash,
+  apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 
 test("Terminal dock", async () => {
@@ -72,9 +72,7 @@ test("Terminal dock", async () => {
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
-        res.write(
-          `event: api-schema\ndata: ${JSON.stringify({ hash: readApiSchemaHash() })}\n\n`,
-        );
+        res.write(apiSchemaHandshakeSse());
         resourceStreams.add(stream);
         writeResourceEvent(stream, "initial");
         const heartbeat = setInterval(() => {

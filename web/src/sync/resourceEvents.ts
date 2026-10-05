@@ -5,6 +5,7 @@ import {
   API_SCHEMA_MISMATCH_FIELD,
 } from "../generated/apiSchema";
 import {
+  clearSchemaUpdateAttemptAfterMatch,
   isApiSchemaMismatch,
   markApiSchemaMismatch,
   onApiSchemaMismatch,
@@ -353,24 +354,29 @@ function scheduleFlush() {
   if (flushTimer !== undefined) return;
   flushTimer = setTimeout(function flushResourceChanges() {
     flushTimer = undefined;
-    if (pendingReset) {
-      pendingReset = false;
-      const subscribed = new Set(aggregateResources().map(resourceKey));
-      for (const [key, listeners] of subscribers) {
-        if (subscribed.has(key)) {
-          const version = resourceValues.get(key);
-          for (const listener of listeners) listener(version);
+    try {
+      if (pendingReset) {
+        pendingReset = false;
+        const subscribed = new Set(aggregateResources().map(resourceKey));
+        for (const [key, listeners] of subscribers) {
+          if (subscribed.has(key)) {
+            const version = resourceValues.get(key);
+            for (const listener of listeners) listener(version);
+          }
         }
+        pendingResources = new Set();
+      } else {
+        for (const key of pendingResources) {
+          const version = resourceValues.get(key);
+          if (!version) continue;
+          for (const listener of subscribers.get(key) || []) listener(version);
+        }
+        pendingResources = new Set();
       }
-      pendingResources = new Set();
-      return;
+      retryCount = 0;
+    } catch (error) {
+      frameFailed(error);
     }
-    for (const key of pendingResources) {
-      const version = resourceValues.get(key);
-      if (!version) continue;
-      for (const listener of subscribers.get(key) || []) listener(version);
-    }
-    pendingResources = new Set();
   }, RESOURCE_FLUSH_MS);
 }
 
@@ -650,7 +656,11 @@ function openSource() {
           SCHEMA_HANDSHAKE_TIMEOUT_MS,
         );
     };
-    const applyFrame = (message: Event, apply: (parsed: unknown) => void) => {
+    const applyFrame = (
+      message: Event,
+      apply: (parsed: unknown) => void,
+      resetRetryOnSuccess = true,
+    ) => {
       if (source !== connected) return;
       if (!schemaHandshakeReceived) {
         markApiSchemaMismatch();
@@ -658,6 +668,7 @@ function openSource() {
       }
       try {
         apply(JSON.parse((message as MessageEvent<string>).data) as unknown);
+        if (resetRetryOnSuccess) retryCount = 0;
       } catch (error) {
         frameFailed(error);
       }
@@ -680,6 +691,7 @@ function openSource() {
         }
         schemaHandshakeReceived = true;
         preHandshakeFailures = 0;
+        clearSchemaUpdateAttemptAfterMatch();
         clearTimeout(schemaHandshakeTimeout);
         schemaHandshakeTimeout = undefined;
       } catch {
@@ -687,12 +699,15 @@ function openSource() {
       }
     });
     connected.addEventListener("resources", (message: Event) => {
-      applyFrame(message, (parsed) => {
-        if (!hasRevisionFrame(parsed) || !Array.isArray(parsed.resources))
-          throw new TypeError("Invalid resource frame");
-        receiveResourceEvent(parsed);
-        retryCount = 0;
-      });
+      applyFrame(
+        message,
+        (parsed) => {
+          if (!hasRevisionFrame(parsed) || !Array.isArray(parsed.resources))
+            throw new TypeError("Invalid resource frame");
+          receiveResourceEvent(parsed);
+        },
+        false,
+      );
     });
     connected.addEventListener("heartbeat", (message: Event) => {
       applyFrame(message, acceptHeartbeat);

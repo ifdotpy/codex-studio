@@ -160,6 +160,14 @@ export function schemaUpdateFailedAfterReload() {
   }
 }
 
+export function clearSchemaUpdateAttemptAfterMatch() {
+  try {
+    sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+  } catch {
+    // Storage may be disabled; the mismatch gate still works in memory.
+  }
+}
+
 export async function updateRendererAndReload() {
   try {
     if (
@@ -229,13 +237,8 @@ export const client = createClient<paths, "application/json">({
       (serverHash && serverHash !== API_SCHEMA_HASH)
     )
       markApiSchemaMismatch();
-    else if (serverHash === API_SCHEMA_HASH) {
-      try {
-        sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
-      } catch {
-        // Storage may be disabled; the mismatch gate still works in memory.
-      }
-    }
+    else if (serverHash === API_SCHEMA_HASH)
+      clearSchemaUpdateAttemptAfterMatch();
     return response;
   },
 });

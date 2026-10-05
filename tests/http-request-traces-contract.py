@@ -154,15 +154,11 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertTrue(self.finished.wait(.5))
         token = json.loads(response["body"])["token"]
         self.assertEqual(self.request("/api/session", "POST", token)["status"], 404)
-        protocol = self.request("/api/sync/protocol", include_headers=True)
         query = "protocol=3&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D"
-        schema_hash = protocol["headers"].get("X-Studio-API-Schema")
-        if schema_hash:
-            query += "&apiSchema=" + schema_hash
         stream = self.request("/api/sync/stream?" + query, read_limit=128)
         self.assertEqual(stream["status"], 200)
-        self.assertTrue(b"event: api-schema" in stream["body"]
-                        or b"event: resources" in stream["body"])
+        self.assertIn(b"event: resources", stream["body"])
+        self.assertNotIn(b"event: api-schema", stream["body"])
         self.assertEqual(traces._ACTIVE, {})
         self.assertEqual(traces._RECENT, [])
         self.assertEqual(traces._SEQUENCE, 1, "POST and SSE must not create tracking identities")

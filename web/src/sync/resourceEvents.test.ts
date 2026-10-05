@@ -262,6 +262,47 @@ describe("shared resource event transport", () => {
     stopStatus();
   });
 
+  it("fails closed when a named event arrives before the handshake", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const states: string[] = [];
+    const onChange = vi.fn();
+    const stopStatus = transport.watchResourceConnection((status) =>
+      states.push(status),
+    );
+    const stop = transport.watchResourceChanges({ kind: "state" }, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const source = Source.instances[0]!;
+    source.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+    });
+    expect(source.closed).toBe(true);
+    expect(states).toContain("schema-mismatch");
+    expect(onChange).not.toHaveBeenCalled();
+    stop();
+    stopStatus();
+  });
+
   it("retries a pre-open EventSource error without declaring a schema mismatch", async () => {
     vi.useFakeTimers();
     syncDatabase.mockResolvedValue({ workspaceId });
@@ -339,6 +380,70 @@ describe("shared resource event transport", () => {
     }
     expect(states).toContain("schema-mismatch");
     expect(Source.instances.at(-1)!.closed).toBe(true);
+    stop();
+    stopStatus();
+  });
+
+  it("resets the consecutive pre-handshake failure count on a matching handshake", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const states: string[] = [];
+    const stopStatus = transport.watchResourceConnection((status) =>
+      states.push(status),
+    );
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const failedOnce = Source.instances[0]!;
+    failedOnce.open();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    Source.skipNextAutoHandshake = true;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const failedTwice = Source.instances.at(-1)!;
+    failedTwice.open();
+    failedTwice.onerror?.();
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    const recovered = Source.instances.at(-1)!;
+    recovered.open();
+    recovered.emit("api-schema", { hash: API_SCHEMA_HASH });
+    recovered.onerror?.();
+
+    for (const retryDelay of [3_000, 5_000]) {
+      Source.skipNextAutoHandshake = true;
+      const previousCount = Source.instances.length;
+      await vi.advanceTimersByTimeAsync(retryDelay);
+      expect(Source.instances).toHaveLength(previousCount + 1);
+      const next = Source.instances.at(-1)!;
+      next.open();
+      next.onerror?.();
+      expect(states).not.toContain("schema-mismatch");
+    }
+    Source.skipNextAutoHandshake = true;
+    const previousCount = Source.instances.length;
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(Source.instances).toHaveLength(previousCount + 1);
+    const thirdFailure = Source.instances.at(-1)!;
+    thirdFailure.open();
+    thirdFailure.onerror?.();
+    expect(states).toContain("schema-mismatch");
     stop();
     stopStatus();
   });
@@ -437,6 +542,98 @@ describe("shared resource event transport", () => {
     expect(source.closed).toBe(true);
     expect(statuses).toContain("degraded");
     stop();
+  });
+
+  it("degrades and reconnects when a resource subscriber throws", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const transport = await import("./resourceEvents");
+    const statuses: string[] = [];
+    transport.watchResourceConnection((status) => statuses.push(status));
+    const stop = transport.watchResourceChanges({ kind: "state" }, () => {
+      throw new Error("subscriber failed");
+    });
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const source = Source.instances[0]!;
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    source.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(source.closed).toBe(true);
+    expect(statuses).toContain("degraded");
+    expect(log).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("degrades and reconnects on a same-schema peer frame without an event", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const transport = await import("./resourceEvents");
+    const statuses: string[] = [];
+    const stopStatus = transport.watchResourceConnection((status) =>
+      statuses.push(status),
+    );
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    Channel.instances[0]!.onmessage?.({
+      data: {
+        kind: "resource-event",
+        workspaceId,
+        tabId: "tab-peer",
+        apiSchemaHash: API_SCHEMA_HASH,
+      },
+    } as MessageEvent);
+    expect(Source.instances[0]!.closed).toBe(true);
+    expect(statuses).toContain("degraded");
+    expect(log).toHaveBeenCalledTimes(1);
+    stop();
+    stopStatus();
   });
 
   it.each([
