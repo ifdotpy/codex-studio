@@ -53,22 +53,68 @@ export interface ChatWaitState {
   inputs: number;
 }
 
+function chatChildren(data: Snapshot): Map<string, Agent[]> {
+  const children = new Map<string, Agent[]>();
+  for (const child of data.threads) {
+    if (child.source !== "managed" || !child.parentId) continue;
+    const siblings = children.get(child.parentId);
+    if (siblings) siblings.push(child);
+    else children.set(child.parentId, [child]);
+  }
+  return children;
+}
+
 // A saved waiting status alone cannot promise another turn.
 export function chatWaitState(
   data: Snapshot,
   agent: Agent,
   activities = chatActivities(data),
+  children = chatChildren(data),
 ): ChatWaitState {
   const runtime = data.runtime;
-  const agents = data.threads.filter(
-    (child) =>
-      child.source === "managed" &&
-      child.parentId === agent.id &&
-      (child.inFlight ||
+  const hasWork = (child: Agent) => {
+    const pending = [child];
+    const seen = new Set([agent.id]);
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (seen.has(current.id)) continue;
+      seen.add(current.id);
+      if (
+        current.archived ||
+        ["paused", "failed", "interrupted"].includes(current.status || "")
+      )
+        continue;
+      if (
+        current.inFlight ||
         ["queued", "starting", "running", "approval"].includes(
-          child.status || "",
-        )),
-  );
+          current.status || "",
+        )
+      )
+        return true;
+      const parked = current.status === "parked" && !!current.parkedEvent;
+      if (
+        (current.autoWake === false && !parked) ||
+        !["waiting", "parked"].includes(current.status || "")
+      )
+        continue;
+      if (parked) return true;
+      // Use the same owner and epoch checks as the visible activity records.
+      if (
+        activities
+          .get(current.id)
+          ?.some(
+            (activity) =>
+              activity.agentId === current.id &&
+              (activity.kind === "monitor" ||
+                (activity.kind === "task" && activity.commandTask)),
+          )
+      )
+        return true;
+      pending.push(...(children.get(current.id) || []));
+    }
+    return false;
+  };
+  const agents = (children.get(agent.id) || []).filter(hasWork);
   const owned = activities
     .get(agent.id)
     ?.filter((activity) => activity.agentId === agent.id);
@@ -272,6 +318,7 @@ export function chatIndicators(
 ): Map<string, ChatIndicator> {
   const agents = data.threads.filter((agent) => agent.source === "managed");
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const children = chatChildren(data);
   const answers = new Set<string>(),
     deferred = new Set<string>(),
     active = new Set<string>();
@@ -307,7 +354,7 @@ export function chatIndicators(
     agents.map((agent) => {
       let indicator: ChatIndicator;
       const waiting = ["waiting", "parked"].includes(agent.status || "");
-      const getWait = () => chatWaitState(data, agent, activities);
+      const getWait = () => chatWaitState(data, agent, activities, children);
       if (answers.has(agent.id)) {
         let label = "Needs your answer";
         if (waiting) {

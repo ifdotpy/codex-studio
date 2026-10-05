@@ -1,7 +1,10 @@
 import type { components } from "../generated/api";
 import { watchResourceChanges } from "../sync/resourceEvents";
+import { onResume } from "../sync/resume";
+import { readRetryDelay, retryableReadError } from "../sync/readRetry";
 
 type ResourceRef = components["schemas"]["ResourceRef"];
+type ResourceReadWatcher = (() => void) & { refresh: () => void };
 
 /**
  * Run one targeted read for the initial resource baseline and each later
@@ -12,39 +15,98 @@ export function watchResourceReads(
   resources: ResourceRef | readonly ResourceRef[],
   read: () => Promise<void>,
   failed: (error: unknown) => void,
-): () => void {
+): ResourceReadWatcher {
   const refs = Array.isArray(resources) ? resources : [resources];
   let active = true;
   let reading = false;
   let dirty = false;
   let scheduled = false;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const canRead = () =>
+    (typeof document === "undefined" || !document.hidden) &&
+    (typeof navigator === "undefined" || navigator.onLine !== false);
+  const clearRetry = () => {
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
 
   const refresh = () => {
     dirty = true;
-    if (!active || reading || scheduled) return;
+    if (
+      !active ||
+      reading ||
+      scheduled ||
+      retryTimer !== undefined ||
+      !canRead()
+    )
+      return;
     scheduled = true;
     queueMicrotask(() => {
       scheduled = false;
-      if (!active || reading || !dirty) return;
+      if (!active || reading || !dirty || !canRead()) return;
       reading = true;
       void (async () => {
-        while (active && dirty) {
-          dirty = false;
-          try {
-            await read();
-          } catch (error) {
-            if (active) failed(error);
+        try {
+          while (active && dirty && canRead()) {
+            dirty = false;
+            try {
+              await read();
+              retryCount = 0;
+            } catch (error) {
+              if (!active) break;
+              try {
+                failed(error);
+              } catch {
+                // The failure reporter cannot prevent recovery of the read.
+              }
+              if (!active) break;
+              if (retryableReadError(error)) {
+                dirty = true;
+                if (canRead()) {
+                  retryTimer = setTimeout(() => {
+                    retryTimer = undefined;
+                    refresh();
+                  }, readRetryDelay(retryCount++));
+                }
+                break;
+              }
+            }
           }
+        } finally {
+          reading = false;
         }
-        reading = false;
       })();
     });
   };
 
+  const stopResume =
+    typeof window === "undefined"
+      ? () => {}
+      : onResume(() => {
+          if (dirty) {
+            clearRetry();
+            refresh();
+          }
+        });
+  const pause = () => {
+    if (!canRead()) clearRetry();
+  };
+  if (typeof window !== "undefined") window.addEventListener("offline", pause);
+  if (typeof document !== "undefined")
+    document.addEventListener("visibilitychange", pause);
   const stops = refs.map((resource) => watchResourceChanges(resource, refresh));
-  return () => {
+  const dispose = () => {
     active = false;
     dirty = false;
+    clearRetry();
+    stopResume();
+    if (typeof window !== "undefined")
+      window.removeEventListener("offline", pause);
+    if (typeof document !== "undefined")
+      document.removeEventListener("visibilitychange", pause);
     for (const stop of stops) stop();
   };
+  return Object.assign(dispose, { refresh });
 }

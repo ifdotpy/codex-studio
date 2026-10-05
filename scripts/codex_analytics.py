@@ -504,13 +504,17 @@ class AnalyticsMixin:
         turn = p.get('turnId') or (p.get('turn') or {}).get('id') or a.get('turnId')
         meta.update(threadId=p.get('threadId') or a.get('threadId'), turnId=turn)
         if method == 'thread/tokenUsage/updated':
-            def advance_usage_generation():
+            def advance_usage_generation(previous_root=None):
                 # Cost history changes with saved usage, not duplicate notices.
                 generation = db.execute("SELECT value FROM analytics_meta WHERE key='usageGeneration'").fetchone()
                 generation = int(generation[0]) + 1 if generation else 1
                 db.execute("INSERT INTO analytics_meta VALUES ('usageGeneration',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(generation),))
-                db.execute("INSERT INTO analytics_usage_roots(root,generation) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",
-                           (meta['rootId'],))
+                roots = {meta['rootId']}
+                if previous_root is not None:
+                    roots.add(previous_root)
+                for root in roots:
+                    db.execute("INSERT INTO analytics_usage_roots(root,generation) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET generation=generation+1",
+                               (root,))
             if turn:
                 turn_key = ':'.join((a['id'], str(meta['threadId']), str(turn)))
                 known = db.execute('SELECT record FROM analytics_turns WHERE id=?', (turn_key,)).fetchone()
@@ -541,10 +545,33 @@ class AnalyticsMixin:
                           'reset': False, 'baselineMissing': False, 'fingerprint': fingerprint,
                           'responseId': response_id, 'usageSource': 'claudeResponse',
                           'requestUsage': response_usage}
+                previous = db.execute('SELECT agent,root,thread,turn,record FROM analytics_usage WHERE id=?',
+                                      (key,)).fetchone()
+                if previous:
+                    saved = json.loads(previous['record'])
+                    if isinstance(saved, dict) and record['modelContextWindow'] is None:
+                        saved_raw = saved.get('raw')
+                        raw_window = number(saved_raw.get('modelContextWindow')) if isinstance(saved_raw, dict) else None
+                        known_window = number(saved.get('modelContextWindow'))
+                        record['modelContextWindow'] = known_window if known_window is not None else raw_window
+                        if raw_window is not None:
+                            record['raw'] = {**usage, 'modelContextWindow': raw_window}
+                    def response_content(value):
+                        return {k: ({field: item for field, item in v.items() if field != 'modelContextWindow'}
+                                    if k == 'raw' and isinstance(v, dict) else v)
+                                for k, v in value.items()
+                                if k not in {'at', 'recordedAt', 'noticeTotal', 'noticeLast', 'noticeAt'}}
+                    # An exact duplicate keeps the original response timestamp.
+                    # Notice and budget capture have already completed above.
+                    if (isinstance(saved, dict)
+                            and (previous['agent'], previous['root'], previous['thread'], previous['turn'])
+                            == (a['id'], meta['rootId'], meta['threadId'], turn)
+                            and response_content(saved) == response_content(record)):
+                        return captured_tokens
                 db.execute('INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES (?,?,?,?,?,?,?) '
                            'ON CONFLICT(id) DO UPDATE SET root=excluded.root,turn=excluded.turn,at=excluded.at,record=excluded.record',
                            (key, a['id'], meta['rootId'], meta['threadId'], turn, at, json.dumps(record)))
-                advance_usage_generation()
+                advance_usage_generation(previous['root'] if previous else None)
                 return captured_tokens
             # Totals identify a request across native notices and rollout records.
             # The provider response id distinguishes real zero-token responses.

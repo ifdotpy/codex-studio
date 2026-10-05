@@ -341,7 +341,7 @@ export default function Usage({
             updating: Boolean(value.refreshing),
           });
         }
-      } catch {
+      } catch (error) {
         if (active)
           setSessionCostState((previous) => ({
             scope: costScope,
@@ -351,6 +351,7 @@ export default function Usage({
                 : peekSessionCost(stateDir, rootId),
             updating: false,
           }));
+        throw error;
       }
     };
     const stop = watchResourceReads(
@@ -377,13 +378,14 @@ export default function Usage({
         if (result.accountKey !== accountKey)
           throw new Error("Cost account mismatch");
         setCosts(result);
-      } catch {
+      } catch (error) {
         if (active) {
           setCosts((previous) => ({
             ...previous,
             error: "Local costs unavailable",
           }));
         }
+        throw error;
       }
     };
     setCosts(null);

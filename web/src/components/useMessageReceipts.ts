@@ -27,50 +27,47 @@ export function useMessageReceipts(
     const stop = watchResourceReads(
       { kind: "receipts", agentId: room },
       async () => {
-        try {
-          const current = requested.current;
-          for (let offset = 0; offset < current.length; offset += 100) {
-            const batch = current.slice(offset, offset + 100);
-            if (!batch.length) continue;
-            const result = await get("/api/messages/receipts", {
-              query: { agent: room, ids: JSON.stringify(batch) },
-              workspaceId,
-            });
-            if (!active) return;
-            const receipts = checkedMessageReceipts(result, room, batch);
-            setState((previous) => {
-              const next = new Map(
-                previous.scope === scope ? previous.receipts : [],
+        const current = requested.current;
+        for (let offset = 0; offset < current.length; offset += 100) {
+          const batch = current.slice(offset, offset + 100);
+          if (!batch.length) continue;
+          const result = await get("/api/messages/receipts", {
+            query: { agent: room, ids: JSON.stringify(batch) },
+            workspaceId,
+          });
+          if (!active) return;
+          const receipts = checkedMessageReceipts(result, room, batch);
+          setState((previous) => {
+            const next = new Map(
+              previous.scope === scope ? previous.receipts : [],
+            );
+            for (const receipt of receipts)
+              next.set(
+                receipt.id,
+                latestMessageReceipt(next.get(receipt.id), receipt),
               );
-              for (const receipt of receipts)
-                next.set(
-                  receipt.id,
-                  latestMessageReceipt(next.get(receipt.id), receipt),
-                );
-              // Keep confirmed receipts while retained history still has an old
-              // pending record. Bound this cache to the caller's current IDs.
-              const keep = new Set(requested.current);
-              for (const id of next.keys()) if (!keep.has(id)) next.delete(id);
-              if (
-                previous.scope === scope &&
-                next.size === previous.receipts.size &&
-                [...next].every(
-                  ([id, receipt]) =>
-                    JSON.stringify(receipt) ===
-                    JSON.stringify(previous.receipts.get(id)),
-                )
+            // Keep confirmed receipts while retained history still has an old
+            // pending record. Bound this cache to the caller's current IDs.
+            const keep = new Set(requested.current);
+            for (const id of next.keys()) if (!keep.has(id)) next.delete(id);
+            if (
+              previous.scope === scope &&
+              next.size === previous.receipts.size &&
+              [...next].every(
+                ([id, receipt]) =>
+                  JSON.stringify(receipt) ===
+                  JSON.stringify(previous.receipts.get(id)),
               )
-                return previous;
-              return { scope, receipts: next };
-            });
-            await reconcileOutboxReceipts(room, receipts, workspaceId);
-          }
-        } catch {
-          // Missing or unavailable receipts cannot prove delivery. Preserve
-          // the known receipt until a later resource event permits another read.
+            )
+              return previous;
+            return { scope, receipts: next };
+          });
+          await reconcileOutboxReceipts(room, receipts, workspaceId);
         }
       },
-      () => {},
+      () => {
+        // Preserve known receipts until a successful read confirms delivery.
+      },
     );
     return () => {
       active = false;

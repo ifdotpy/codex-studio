@@ -4,11 +4,15 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 import importlib.util
 import json
 from pathlib import Path
 import queue
+import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -84,6 +88,96 @@ class Controls(unittest.TestCase):
     def records(self):
         with self.rt.db() as db:
             return [json.loads(r[0]) for r in db.execute('SELECT record FROM runtime_items WHERE agent=? ORDER BY created', (self.key,))]
+
+    @contextmanager
+    def path_gate(self, kind, **body):
+        entered, release = threading.Event(), threading.Event()
+        resolve = Path.resolve
+
+        def blocked(path, *args, **kwargs):
+            if str(path) == self.tmp.name and not entered.is_set():
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError('The fixture path gate expired')
+            return resolve(path, *args, **kwargs)
+
+        with patch.object(Path, 'resolve', blocked), ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.call, kind, **body)
+            try:
+                self.assertTrue(entered.wait(3), 'The real action must reach its path preflight')
+                yield future, release
+            finally:
+                release.set()
+
+    def test_slow_path_checks_release_the_runtime_lock_for_both_controls(self):
+        with self.rt.db() as db:
+            db.execute('CREATE TABLE fixture_control_probe(id TEXT PRIMARY KEY)')
+        for kind, body in [('settings', {'settings': {}, 'request_id': 'path-settings'}),
+                           ('rollback', {'turn_id': 't2', 'request_id': 'path-rollback'})]:
+            with self.subTest(kind=kind), self.path_gate(kind, **body) as (future, release):
+                acquired = self.rt.lock.acquire(blocking=False)
+                if acquired:
+                    self.rt.lock.release()
+                self.assertTrue(acquired, 'Path.resolve must not hold Runtime.lock')
+                with closing(sqlite3.connect(self.rt.db_path, timeout=0)) as writer, writer:
+                    writer.execute('INSERT INTO fixture_control_probe VALUES (?)', (kind,))
+                release.set()
+                future.result(timeout=3)
+        self.assertEqual(self.server.forks, 1)
+
+    def test_epoch_change_during_path_checks_rejects_the_action(self):
+        with self.path_gate('rollback', turn_id='t2', request_id='epoch') as (future, release):
+            with self.rt.lock, self.rt.db() as db:
+                agent = self.rt.agent(self.key, db)
+                agent['epoch'] += 1
+                self.rt.put(db, 'agents', agent)
+            release.set()
+            with self.assertRaisesRegex(ValueError, 'session changed'):
+                future.result(timeout=3)
+        self.assertEqual(self.server.forks, 0)
+        self.assertTrue(all('afterRestore' not in row for row in self.records()))
+
+    def test_source_change_during_path_checks_rejects_the_action(self):
+        with self.path_gate('settings', settings={}, request_id='source') as (future, release):
+            with self.rt.lock, self.rt.db() as db:
+                agent = self.rt.agent(self.key, db)
+                agent['threadId'] = 'replacement-thread'
+                self.rt.put(db, 'agents', agent)
+            release.set()
+            with self.assertRaisesRegex(ValueError, 'session changed'):
+                future.result(timeout=3)
+        self.assertEqual(self.server.state['settings'], {})
+        self.assertIsNone(self.rt.agent(self.key).get('workspaceOperation'))
+
+    def test_new_queued_input_during_path_checks_blocks_rollback(self):
+        with self.path_gate('rollback', turn_id='t2', request_id='queue-race') as (future, release):
+            with self.rt.lock, self.rt.db() as db:
+                agent = self.rt.agent(self.key, db)
+                agent['autoWake'] = True
+                self.rt.put(db, 'agents', agent)
+                self.rt.enqueue(db, agent, 'user', 'queued', 'path-queued')
+            release.set()
+            with self.assertRaisesRegex(ValueError, 'queued messages'):
+                future.result(timeout=3)
+        self.assertEqual(self.server.forks, 0)
+
+    def test_busy_workspace_during_path_checks_blocks_settings(self):
+        peer = self.rt.new_lead({'cwd': self.tmp.name})
+        with self.path_gate('settings', settings={'thinking': True}, request_id='busy-race') as (future, release):
+            with self.rt.lock, self.rt.db() as db:
+                peer = self.rt.agent(peer['id'], db)
+                peer.update(cwd=self.tmp.name, inFlight=True)
+                self.rt.put(db, 'agents', peer)
+            release.set()
+            with self.assertRaisesRegex(ValueError, 'Workspace activity changed'):
+                future.result(timeout=3)
+        self.assertEqual(self.server.state['settings'], {})
+
+    def test_completed_receipt_retry_skips_path_checks(self):
+        result = self.call('rollback', turn_id='t2', request_id='completed-path')
+        with patch.object(Path, 'resolve', side_effect=AssertionError('A receipt retry must not resolve paths')):
+            self.assertEqual(self.call('rollback', turn_id='t2', request_id='completed-path'), result)
+        self.assertEqual(self.server.forks, 1)
 
     def test_rollback_receipt_and_hidden_history(self):
         result = self.call('rollback', turn_id='t2', request_id='r')

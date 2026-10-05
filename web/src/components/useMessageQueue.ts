@@ -7,6 +7,7 @@ import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
 import { watchResourceReads } from "./watchResourceReads";
 import { createQueueResourceRefresh } from "./queueResourceRefresh";
+import { retryableReadError } from "../sync/readRetry";
 
 type QueueView =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
@@ -103,6 +104,7 @@ export function useMessageQueue(p: {
   const resourceRefresh = useRef<{
     key: string;
     gate: ReturnType<typeof createQueueResourceRefresh>;
+    refresh: () => void;
   } | null>(null);
   const serial = useRef(0);
   const view = state.key === key ? state.view : emptyQueue;
@@ -137,7 +139,6 @@ export function useMessageQueue(p: {
       () => locks.current.has(key),
       reload,
     );
-    resourceRefresh.current = { key, gate };
     const stop = watchResourceReads(
       { kind: "queue", agentId: p.id },
       gate.invalidate,
@@ -145,6 +146,7 @@ export function useMessageQueue(p: {
         if (active) setFailure({ key, text: errorText(error) });
       },
     );
+    resourceRefresh.current = { key, gate, refresh: stop.refresh };
     return () => {
       active = false;
       stop();
@@ -183,6 +185,7 @@ export function useMessageQueue(p: {
     locks.current.add(key);
     setBusy(key);
     serial.current++;
+    let readFailed = false;
     try {
       await syncPost("/api/queue", request, {
         workspaceId: p.workspaceId,
@@ -197,9 +200,10 @@ export function useMessageQueue(p: {
       )
         p.edited?.(messageId, request.text);
       if (currentKey.current === key) {
-        await reload().catch((error) =>
-          setFailure({ key, text: errorText(error) }),
-        );
+        await reload().catch((error) => {
+          readFailed = retryableReadError(error);
+          setFailure({ key, text: errorText(error) });
+        });
         void p.refresh().catch(() => {});
       }
     } catch (error) {
@@ -209,17 +213,17 @@ export function useMessageQueue(p: {
       ) {
         await clearRequest(request);
       }
-      if (currentKey.current === key) await reload().catch(() => {});
+      if (currentKey.current === key)
+        await reload().catch((error) => {
+          readFailed = retryableReadError(error);
+        });
       throw error;
     } finally {
       locks.current.delete(key);
       setBusy((value) => (value === key ? null : value));
       const deferred = resourceRefresh.current;
-      if (deferred?.key === key)
-        void deferred.gate.flush().catch((error) => {
-          if (currentKey.current === key)
-            setFailure({ key, text: errorText(error) });
-        });
+      if (deferred?.key === key && (deferred.gate.pending || readFailed))
+        deferred.refresh();
     }
   };
   const mutate = async (change: QueueChange) => {

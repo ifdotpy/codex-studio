@@ -2547,8 +2547,12 @@ export interface components {
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerelative */
+      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
+      /** Imageworkspacestartcommit */
+      imageWorkspaceStartCommit?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3875,8 +3879,12 @@ export interface components {
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerelative */
+      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
+      /** Imageworkspacestartcommit */
+      imageWorkspaceStartCommit?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */

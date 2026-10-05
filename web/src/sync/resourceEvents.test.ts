@@ -58,12 +58,48 @@ class Channel {
 describe("shared resource event transport", () => {
   afterEach(() => {
     vi.resetModules();
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
     Source.instances = [];
     Channel.instances = [];
     syncDatabase.mockClear();
     resumeListeners.clear();
+  });
+
+  it("retries a transient initial identity failure without a page resume", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges(
+      { kind: "queue", agentId: "agent-one" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(syncDatabase).toHaveBeenCalledTimes(1);
+    expect(Source.instances).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(syncDatabase).toHaveBeenCalledTimes(2);
+    expect(Source.instances).toHaveLength(1);
+    stop();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(syncDatabase).toHaveBeenCalledTimes(2);
+    expect(Source.instances[0]!.closed).toBe(true);
   });
 
   it("notifies only the matching resource once per revision and preserves liveness on reconfigure", async () => {

@@ -26,10 +26,12 @@ spec = importlib.util.spec_from_file_location('invalidation_fixture', ROOT / 'te
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 BASELINE = subprocess.check_output(['git', 'show', '31f92edd:scripts/codex_analytics.py'], cwd=ROOT)
+INTERMEDIATE = subprocess.check_output(['git', 'show', '85f3f8d892727837f79c11f3e6c41dfc18694d1d:scripts/codex_analytics.py'], cwd=ROOT)
+REVIEWED_RUNTIME = subprocess.check_output(['git', 'show', '85f3f8d892727837f79c11f3e6c41dfc18694d1d:scripts/codex_runtime.py'], cwd=ROOT)
 
 
 @contextmanager
-def reviewed_fixture():
+def reviewed_fixture(baseline=BASELINE):
     with tempfile.TemporaryDirectory(prefix='studio-cost-update-') as folder:
         scripts = Path(folder)
         path = scripts / 'codex_analytics.py'
@@ -38,11 +40,11 @@ def reviewed_fixture():
         analytics = ModuleType('codex_analytics')
         analytics.__file__ = str(path)
         exec(compile(raw, str(path), 'exec'), vars(analytics))
-        old, _ = source_function(BASELINE, ['AnalyticsMixin', 'analytics_event'], vars(analytics), '<baseline-31f92edd>')
+        old, _ = source_function(baseline, ['AnalyticsMixin', 'analytics_event'], vars(analytics), '<baseline>')
         analytics.AnalyticsMixin.analytics_event = old
         runtime_module = ModuleType('codex_runtime')
         runtime_path = scripts / 'codex_runtime.py'
-        runtime_path.write_bytes((ROOT / 'scripts/codex_runtime.py').read_bytes())
+        runtime_path.write_bytes(REVIEWED_RUNTIME)
         runtime_module.__file__ = str(runtime_path)
         runtime_module.Runtime = type('Runtime', (analytics.AnalyticsMixin,), {
             'records': lambda _self, _db, _table: [],
@@ -69,6 +71,93 @@ def cost_fixture(runtime):
 
 
 class CostInvalidationUpdateContract(unittest.TestCase):
+    def test_applied_intermediate_callback_upgrades_and_preserves_claude_receipt(self):
+        with reviewed_fixture(INTERMEDIATE) as (runtime, analytics, _, _), cost_fixture(runtime) as case:
+            callback = runtime.analytics_event
+            function = callback.__func__
+            self.assertEqual(signature(function), update.INTERMEDIATE)
+            servers, cache = runtime.servers, runtime.cache
+            notice = case.claude_notice()
+            self.assertEqual(case.event(notice), 160)
+            observed = case.notice(responseId='response')
+            observed['tokenUsage']['modelContextWindow'] = 200000
+            observed_spent = case.event(observed, at=100.5)
+            first = case.estimate()
+            original, initial = case.usage(), case.state()
+            self.assertEqual(update.apply(runtime), {'status': 'applied'})
+            self.assertIs(analytics.AnalyticsMixin.analytics_event, function)
+            self.assertIs(callback.__func__, function)
+            self.assertIs(runtime.servers, servers)
+            self.assertIs(runtime.cache, cache)
+            with case.db:
+                self.assertEqual(callback(case.db, case.agent, 'thread/tokenUsage/updated', notice, at=101), observed_spent)
+            second = case.estimate()
+            self.assertEqual(case.usage(), original)
+            self.assertEqual(case.state(), initial)
+            self.assertEqual(case.projections, ['lead'])
+            self.assertEqual(second['totalUSD'], first['totalUSD'])
+            self.assertEqual(case.db.execute('SELECT count(*) FROM runtime_budget_usage').fetchone()[0], 2)
+            self.assertEqual(case.db.execute('SELECT sum(count) FROM analytics_notifications').fetchone()[0], 3)
+            code = function.__code__
+            self.assertEqual(update.apply(runtime), {'status': 'already_applied'})
+            self.assertIs(function.__code__, code)
+
+    def test_active_intermediate_claude_frame_finishes_before_later_duplicate_skip(self):
+        with reviewed_fixture(INTERMEDIATE) as (runtime, _, _, _), cost_fixture(runtime) as case:
+            callback = runtime.analytics_event
+            self.assertEqual(signature(callback.__func__), update.INTERMEDIATE)
+            notice = case.claude_notice()
+            case.event(notice)
+            case.estimate()
+            entered, release = threading.Event(), threading.Event()
+            errors = []
+
+            class GateDB:
+                def __init__(self, connection):
+                    self.connection = connection
+
+                def execute(self, sql, *args, **kwargs):
+                    if "SELECT value FROM analytics_meta WHERE key='usageGeneration'" in sql:
+                        entered.set()
+                        if not release.wait(3):
+                            raise AssertionError('The intermediate frame was not released')
+                    return self.connection.execute(sql, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self.connection, name)
+
+            def active():
+                db = sqlite3.connect(case.path)
+                db.row_factory = sqlite3.Row
+                try:
+                    with db:
+                        callback(GateDB(db), case.agent, 'thread/tokenUsage/updated', notice, at=101)
+                except Exception as error:
+                    errors.append(error)
+                finally:
+                    db.close()
+
+            worker = threading.Thread(target=active)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(update.apply(runtime), {'status': 'applied'})
+            finally:
+                release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(case.state(), {'maxSeq': 1, 'generation': 2})
+            self.assertEqual(case.db.execute('SELECT at FROM analytics_usage').fetchone()[0], 101)
+            original = case.usage()
+            case.estimate()
+            case.event(notice, at=102)
+            case.estimate()
+            self.assertEqual(case.usage(), original)
+            self.assertEqual(case.projections, ['lead', 'lead'])
+            self.assertEqual(case.state()['generation'], 2)
+            self.assertEqual(case.db.execute('SELECT count(*) FROM runtime_budget_usage').fetchone()[0], 1)
+
     def test_bound_callback_uses_the_new_code_and_keeps_exact_budget_and_cache(self):
         with reviewed_fixture() as (runtime, analytics, _, _), cost_fixture(runtime) as case:
             callback = runtime.analytics_event

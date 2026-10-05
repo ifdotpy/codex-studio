@@ -20,6 +20,7 @@ from pathlib import Path
 
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
+from codex_open_file_limit import raise_open_file_limit
 
 SCRIPTS = Path(__file__).resolve().parent
 WEB = SCRIPTS.parent / "web" / "dist"
@@ -600,25 +601,6 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
     from studio_api.server import make_server as create_server
 
     return create_server(canvas, port, public_origin, unix_socket)
-
-def raise_open_file_limit(target=65536):
-    """Raise the soft open-file limit before native processes start.
-
-    launchd starts the backend with a soft limit of 256. Each loaded Codex
-    thread keeps pipes to its MCP servers, so a busy app-server reached that
-    limit and could not start commands (OS error 24). Children inherit the
-    raised limit. The hard limit is never changed.
-    """
-    import resource
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    wanted = target if hard == resource.RLIM_INFINITY else min(target, hard)
-    if soft != resource.RLIM_INFINITY and soft < wanted:
-        try:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (wanted, hard))
-        except (ValueError, OSError):
-            pass
-    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-
 
 def main():
     raise_open_file_limit()

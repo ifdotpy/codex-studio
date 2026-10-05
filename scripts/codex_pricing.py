@@ -264,8 +264,8 @@ def price_usage(catalog, provider, model, usage, *, context_tokens=None, input_t
     else:
         over = rates["over"]
     if use_tier:
-        base_rate = over["input"] if over["input"] is not None else rates["input"]
-        out_rate = over["output"] if over["output"] is not None else rates["output"]
+        base_rate = over.get("input") if over.get("input") is not None else rates["input"]
+        out_rate = over.get("output") if over.get("output") is not None else rates["output"]
         read_rate = amount(over.get("cache_read")) if over.get("cache_read") is not None else rates["cache_read"]
         write_rate = amount(over.get("cache_write")) if over.get("cache_write") is not None else rates["cache_write"]
     else:

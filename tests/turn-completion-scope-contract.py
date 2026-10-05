@@ -10,11 +10,14 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('turn_scope_fixture',
     Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+import codex_runtime
+from codex_turn_scope_index_update import SQL as TURN_INDEX_SQL
 
 
 class TurnCompletionScope(unittest.TestCase):
@@ -26,6 +29,9 @@ class TurnCompletionScope(unittest.TestCase):
         self.runtime.scheduler.join(timeout=5)
         self.assertFalse(self.runtime.scheduler.is_alive())
         self.runtime.closed = False
+        with self.runtime.lock, self.runtime.db() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_item_turn_scope'").fetchone():
+                db.execute(TURN_INDEX_SQL)
         self.actor = self.runtime.create({'name': 'Turn scope', 'cwd': self.temp.name,
                                           'prompt': 'Fixture'}, defer=True)
         self.update(threadId='scope-thread', turnId='scope-turn', status='running',
@@ -105,6 +111,23 @@ class TurnCompletionScope(unittest.TestCase):
         if bounded:
             self.assertIn('created>?', plan)
 
+    def reopen(self):
+        self.runtime.close()
+        queries = []
+        original = codex_runtime.sqlite_connect
+        def traced(*args, **kwargs):
+            db = original(*args, **kwargs)
+            db.set_trace_callback(queries.append)
+            return db
+        with patch.object(codex_runtime, 'sqlite_connect', traced):
+            self.runtime = fixture.Runtime(Path(self.temp.name), fixture.FakeServer)
+            self.runtime.closed = True
+            self.runtime.changed.set()
+            self.runtime.scheduler.join(timeout=5)
+            self.assertFalse(self.runtime.scheduler.is_alive())
+            self.runtime.closed = False
+        return queries
+
     def test_unbound_attempt_marks_the_exact_turn_without_history_scan(self):
         self.update(startAttempt={'id': 'unbound', 'created': self.created,
                     'submitted': True, 'epoch': self.actor['epoch'], 'events': []})
@@ -159,19 +182,36 @@ class TurnCompletionScope(unittest.TestCase):
         self.assertEqual(self.complete(status='interrupted'), set())
         self.assertEqual(self.items(), saved)
 
-    def test_existing_state_gets_the_index_without_item_changes(self):
+    def test_existing_state_without_index_does_not_start_a_heavy_create(self):
         before = self.seed()
         with self.runtime.lock, self.runtime.db() as db:
             db.execute('DROP INDEX runtime_item_turn_scope')
-        self.runtime.close()
-        self.runtime = fixture.Runtime(Path(self.temp.name), fixture.FakeServer)
-        self.runtime.closed = True
-        self.runtime.changed.set()
-        self.runtime.scheduler.join(timeout=5)
-        self.assertFalse(self.runtime.scheduler.is_alive())
-        self.runtime.closed = False
+        queries = self.reopen()
+        self.assertFalse(any(query.lstrip().upper().startswith('CREATE INDEX')
+                             and 'runtime_item_turn_scope' in query for query in queries))
         self.assertEqual(self.items(), before)
         with self.runtime.db() as db:
+            self.assertIsNone(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='runtime_item_turn_scope'").fetchone())
+            plan = ' '.join(row[3] for row in db.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_items WHERE agent=? "
+                "AND json_extract(record,'$.turnId')=? AND created>=?",
+                (self.actor['id'], 'scope-turn', 0)))
+        self.assertIn('runtime_item_agent', plan)
+        self.assertNotIn('runtime_item_turn_scope', plan)
+
+    def test_existing_state_keeps_the_explicit_index_without_item_changes(self):
+        before = self.seed()
+        with self.runtime.db() as db:
+            saved = db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='runtime_item_turn_scope'").fetchone()[0]
+        queries = self.reopen()
+        self.assertFalse(any(query.lstrip().upper().startswith('CREATE INDEX')
+                             and 'runtime_item_turn_scope' in query for query in queries))
+        self.assertEqual(self.items(), before)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute(
+                "SELECT sql FROM sqlite_master WHERE name='runtime_item_turn_scope'").fetchone()[0], saved)
             plan = ' '.join(row[3] for row in db.execute(
                 "EXPLAIN QUERY PLAN SELECT id FROM runtime_items WHERE agent=? "
                 "AND json_extract(record,'$.turnId')=? AND created>=?",

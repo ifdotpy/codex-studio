@@ -153,6 +153,87 @@ class RuntimeReadLock(unittest.TestCase):
                         .get("pinned", False))
         self.assertNotIn(generation, self.runtime._agent_records_cache)
 
+    def test_agent_cache_build_does_not_block_writer_or_publish_old_revision(self):
+        reading = threading.Event()
+        release = threading.Event()
+        writer_entered = threading.Event()
+        writer_done = threading.Event()
+        rows = []
+        errors = []
+        generation = []
+        runtime = self.runtime
+
+        class SlowRows:
+            def __init__(self, cursor):
+                self.cursor = cursor
+
+            def __iter__(self):
+                reading.set()
+                if not release.wait(5):
+                    raise RuntimeError("agent cache fixture did not release its cursor")
+                return iter(self.cursor)
+
+        class SlowRead:
+            def __init__(self, db):
+                self.db = db
+
+            @property
+            def in_transaction(self):
+                return self.db.in_transaction
+
+            def execute(self, sql, *args):
+                cursor = self.db.execute(sql, *args)
+                if sql == "SELECT record FROM runtime_agents":
+                    return SlowRows(cursor)
+                return cursor
+
+        def read():
+            try:
+                with runtime.read_db() as db:
+                    generation.append(db.execute(
+                        "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0])
+                    rows.extend(runtime.records(SlowRead(db), "agents", shared=True))
+            except BaseException as error:
+                errors.append(error)
+
+        def write():
+            try:
+                with runtime.lock, runtime.db() as db:
+                    writer_entered.set()
+                    agent = runtime.agent(self.lead["id"], db)
+                    agent["name"] = "After cache build"
+                    runtime.put(db, "agents", agent)
+                writer_done.set()
+            except BaseException as error:
+                errors.append(error)
+
+        reader = threading.Thread(target=read)
+        writer = threading.Thread(target=write)
+        runtime.invalidate_agent_records()
+        reader.start()
+        try:
+            self.assertTrue(reading.wait(2))
+            writer.start()
+            self.assertTrue(writer_entered.wait(2))
+            self.assertTrue(writer_done.wait(1), "agent cache build blocked the SQLite writer")
+            available = runtime.lock.acquire(timeout=1)
+            self.assertTrue(available, "agent cache build blocked another Runtime caller")
+            if available:
+                runtime.lock.release()
+        finally:
+            release.set()
+            reader.join(5)
+            if writer.ident is not None:
+                writer.join(5)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(rows[0]["name"], "Lead")
+        self.assertNotIn(generation[0], runtime._agent_records_cache)
+        with runtime.read_db() as db:
+            self.assertEqual(runtime.records(db, "agents", shared=True)[0]["name"],
+                             "After cache build")
+
     def test_native_sweep_queries_use_targeted_indexes(self):
         with self.runtime.lock, self.runtime.db() as db:
             self.assertFalse(_account_busy(self.runtime, db, "default"))

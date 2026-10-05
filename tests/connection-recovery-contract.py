@@ -26,6 +26,26 @@ class Runtime(fixture.Runtime):
         pass
 
 
+class NativeHistoryServer(fixture.RecoveryServer):
+    def call(self, method, params, timeout=60):
+        if method == 'thread/items/list':
+            self.calls.append((method, params))
+            turn = next((turn for turn in self.native.get('turns', []) if turn['id'] == params['turnId']), None)
+            items = turn.get('items') if turn is not None else []
+            if not isinstance(items, list):
+                return {'data': None, 'nextCursor': None}
+            return {'data': [{'turnId': params['turnId'], 'item': copy.deepcopy(item)} for item in items],
+                    'nextCursor': None}
+        result = super().call(method, params, timeout)
+        if method == 'thread/turns/list':
+            result = copy.deepcopy(result)
+            for turn in result['data']:
+                turn['itemsView'] = params['itemsView']
+                if params['itemsView'] == 'notLoaded' and isinstance(turn.get('items'), list):
+                    turn['items'] = []
+        return result
+
+
 class ConnectionRecoveryContract(unittest.TestCase):
     def unsubmitted_disconnect(self, *, thread='native-thread', event_ids=None):
         event_ids = event_ids or ['original-unsent-input']
@@ -93,7 +113,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-connection-recovery-')
         self.addCleanup(self.temp.cleanup)
-        self.runtime = Runtime(Path(self.temp.name), fixture.RecoveryServer)
+        self.runtime = Runtime(Path(self.temp.name), NativeHistoryServer)
         self.addCleanup(self.runtime.close)
         self.server = self.runtime.connect()
         lead = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': ''}, draft=True, defer=True)
@@ -127,11 +147,14 @@ class ConnectionRecoveryContract(unittest.TestCase):
 
     def read_calls_only(self):
         self.assertTrue(self.server.calls)
-        self.assertTrue(all(method in {'thread/read', 'thread/turns/list'} for method, _ in self.server.calls), self.server.calls)
+        self.assertTrue(all(method in {'thread/read', 'thread/turns/list', 'thread/items/list'}
+                            for method, _ in self.server.calls), self.server.calls)
         for method, params in self.server.calls:
             self.assertEqual(params['threadId'], 'native-thread')
             if method == 'thread/read':
                 self.assertFalse(params['includeTurns'])
+            elif method == 'thread/items/list':
+                self.assertEqual(params['turnId'], 'lost-turn')
 
     def only_connection_check_changed(self, previous):
         a = self.runtime.agent(self.key)
@@ -267,7 +290,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
         self.assertEqual(recover(self.runtime, self.key)['outcome'], 'completed')
         self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
         pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
-        self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20'])
+        self.assertEqual([p.get('cursor') for p in pages], [None, '10', '20', '20'])
         self.read_calls_only()
 
     def test_bad_or_unavailable_later_page_preserves_interrupted_state(self):
@@ -365,9 +388,9 @@ class ConnectionRecoveryContract(unittest.TestCase):
             {'status': {'type': 'active'}},
             {'id': 'different-thread'},
             {'turns': []},
-            {'turns': [{'id': 'different-turn', 'status': 'completed'}]},
-            {'turns': [{'id': 'lost-turn', 'status': 'inProgress'}]},
-            {'turns': [{'id': 'lost-turn', 'status': 'future-state'}]},
+            {'turns': [{'id': 'different-turn', 'status': 'completed', 'items': []}]},
+            {'turns': [{'id': 'lost-turn', 'status': 'inProgress', 'items': []}]},
+            {'turns': [{'id': 'lost-turn', 'status': 'future-state', 'items': []}]},
         ]
         for case in cases:
             with self.subTest(case=case):
@@ -383,6 +406,17 @@ class ConnectionRecoveryContract(unittest.TestCase):
                     self.assertTrue(result['checked'])
                     self.only_connection_check_changed(self.a)
         self.read_calls_only()
+
+    def test_missing_target_items_are_unconfirmed_without_state_or_native_mutation(self):
+        self.server.native['turns'] = [{'id': 'lost-turn', 'status': 'completed'}]
+        result = recover(self.runtime, self.key)
+        self.assertEqual(result['status'], 'unconfirmed')
+        self.assertIn('items view', result['error'])
+        self.assertEqual(self.runtime.agent(self.key), self.a)
+        self.assertFalse(any(method == 'thread/items/list' for method, _ in self.server.calls))
+        self.read_calls_only()
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_completed_turns').fetchone()[0], 0)
 
     def test_native_becomes_active_or_changes_identity_after_turn_read(self):
         original = self.server.call
@@ -545,7 +579,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 finally:
                     error.close()
         try:
-            token = request('/api/state')[1]['token']
+            token = request('/api/session')[1]['token']
             path, body = '/api/connection-recovery', {'id': self.key}
             self.assertEqual(request(path, body)[0], 403)
             self.assertEqual(request(path, body, {'Origin': 'https://evil.invalid', 'X-Canvas-Token': token})[0], 403)
@@ -577,8 +611,9 @@ class ConnectionRecoveryContract(unittest.TestCase):
                             self.assertNotIn(field, agent)
         finally:
             server.shutdown()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
             server.server_close()
-            thread.join()
 
 
 if __name__ == '__main__':

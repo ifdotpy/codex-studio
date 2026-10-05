@@ -1565,8 +1565,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE TABLE IF NOT EXISTS runtime_items (
                   id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_item_agent ON runtime_items(agent, created);
-                CREATE INDEX IF NOT EXISTS runtime_item_turn_scope ON runtime_items(
-                    agent, json_extract(record,'$.turnId'), created);
                 CREATE TABLE IF NOT EXISTS runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running';
@@ -2474,15 +2472,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             generation = db.execute(
                 "SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
             cache = runtime.__dict__.setdefault("_agent_records_cache", {})
-            rows = cache.get(generation)
+            guard = runtime.__dict__["_agent_records_cache_lock"]
+            with guard:
+                revision = runtime._agent_record_revision
+                rows = cache.get(generation)
             if rows is None:
-                guard = runtime.__dict__["_agent_records_cache_lock"]
+                rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
+                    "SELECT record FROM runtime_agents"))
                 with guard:
-                    rows = cache.get(generation)
-                    if rows is None:
-                        rows = tuple(mode_fields(json.loads(r[0])) for r in db.execute(
-                            "SELECT record FROM runtime_agents"))
-                        cache[generation] = rows
+                    if runtime._agent_record_revision == revision:
+                        rows = cache.setdefault(generation, rows)
                         while len(cache) > 4:
                             cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
@@ -5158,6 +5157,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 transfer_store(self).tick(agents)
                 agents = current_agents(db)
             for a in agents:
+                if a.get("claudePreInputRetry"):
+                    from codex_claude_input_recovery import retire_stopped_retry
+                    retire_stopped_retry(self, db, a)
                 if a.get("liveSteerAttempt") or a.get("liveSteerRejectedTurnId") or a.get("queueNotice"):
                     self.retire_legacy_steer(db, a)
                 if (a.get("status") == "running" and a.get("inFlight") and a.get("turnId")
@@ -5299,7 +5301,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.pool.submit(self.run_native_action, a["id"], review_attempt)
                     continue
                 from codex_wakeups import pending_batch
-                pending = pending_batch(self, db, a)
+                claude_retry = a.get("claudePreInputRetry")
+                if claude_retry:
+                    from codex_claude_input_recovery import retire_stopped_retry, retry_batch
+                    if retire_stopped_retry(self, db, a):
+                        claude_retry = None
+                if claude_retry:
+                    pending = retry_batch(self, db, a)
+                    if pending is None:
+                        a.update(status="failed", nativeFailureHold=True,
+                                 error="The proven Claude retry changed. Review the saved input before continuing")
+                        self.put(db, "agents", a)
+                        continue
+                else:
+                    pending = pending_batch(self, db, a)
                 from codex_radio import select_pending
                 pending = select_pending(self, db, a, pending)
                 if busy and pending:
@@ -5357,6 +5372,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and "\n" not in event["text"]), None)
                     if command_index is not None:
                         rows = rows[:command_index] if command_index else rows[:1]
+                if claude_retry and [row["id"] for row in rows] != claude_retry["events"]:
+                    a.update(status="failed", nativeFailureHold=True,
+                             error="The proven Claude retry batch changed. Review the saved input before continuing")
+                    self.put(db, "agents", a)
+                    continue
                 for event in rows:
                     reserved = db.execute(
                         "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
@@ -5373,6 +5393,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                        "accountKey": a.get("accountKey", "default"),
                                        "events": [r["id"] for r in rows], "submitted": False,
                                        "created": time.time()})
+                if claude_retry:
+                    a["startAttempt"]["claudeRetryOf"] = claude_retry["id"]
                 self.put(db, "agents", a)
                 if not busy:
                     active.append(a)
@@ -5531,7 +5553,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if reconcile_start(self, db, current, rows):
                     return
                 timing["transcriptChecksDoneAt"] = time.monotonic_ns()
-                text = self.model_event_text(rows)
+                from codex_claude_input_recovery import retry_input
+                frozen_input = retry_input(self, db, current, rows)
+                text = frozen_input['text'] if frozen_input else self.model_event_text(rows)
                 timing["modelTextReadyAt"] = time.monotonic_ns()
                 asset_ids = []
                 clocks = []
@@ -5564,7 +5588,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 required = self.unanswered_complaints(db, a["id"])
                 latest["complaintsPresented"] = [c["id"] for c in required]
                 self.put(db, "agents", latest)
-                text += self.model_turn_context(db, a, rows[0]["id"])
+                if not frozen_input:
+                    text += self.model_turn_context(db, a, rows[0]["id"])
                 timing["contextReadyAt"] = time.monotonic_ns()
                 if not text:
                     text = "[Complaint update] No complaints require a response."
@@ -5606,6 +5631,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["cyberAccessProgram"] = program
                 if a.get("nativeEffort", a.get("effort")) is not None:
                     params["effort"] = a.get("nativeEffort", a.get("effort"))
+                if frozen_input:
+                    from codex_claude_input_recovery import ClaudeRetryChanged
+                    configuration = {key: value for key, value in params.items()
+                                     if key not in {'input', 'dynamicTools', 'clientUserMessageId'}}
+                    if configuration != frozen_input['configuration']:
+                        raise ClaudeRetryChanged('The proven Claude retry settings changed. Review the saved input before continuing')
+                    params['input'] = frozen_input['input']
+                if a.get("provider") == "claude" and not busy_at_reservation:
+                    from codex_claude_input_recovery import capture_input
+                    current['startAttempt']['claudeInputRequest'] = capture_input(db, current, rows, params, text)
+                    current.pop('claudePreInputRetry', None)
                 # The saved attempt keeps retries of this submission identical.
                 # A confirmed rejection permits a new attempt for the same input.
                 native_operation_id = "turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id) + ":attempt:" + attempt_id
@@ -5723,6 +5759,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a = self.agent(agent_id, db)
             if not self.operation_current(a, attempt, epoch=False) or a["threadId"] != attempt["threadId"]:
                 return
+            from codex_claude_input_recovery import rejected_start_saved
+            if a.get('provider') == 'claude' and rejected_start_saved(db, agent_id, attempt):
+                return
             turn = result["turn"]["id"]
             if not isinstance(turn, str) or not turn:
                 raise ValueError("Native response has no turn identity; outcome unknown")
@@ -5796,6 +5835,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
             attempt = a.get("startAttempt") or {}
+            from codex_claude_input_recovery import ClaudeRetryChanged, recover_rejected_start
+            if (isinstance(error, ClaudeRetryChanged) and attempt.get('id') == attempt_id
+                    and attempt.get('submitted') is False and attempt.get('epoch') == a['epoch']
+                    and a.get('autoWake')):
+                a['nativeFailureHold'] = True
+                preparation = True
+            if attempt.get('id') == attempt_id and not unknown:
+                recovered = recover_rejected_start(self, db, a, attempt, error=error,
+                    account_key=a.get('accountKey', 'default'), connection_id=attempt.get('connectionId'))
+                if recovered:
+                    if recovered == 'held':
+                        a['error'] = str(error)
+                    self.put(db, 'agents', a)
+                    self.changed.set()
+                    return
             if (attempt.get("id") != attempt_id or attempt.get("turnId")
                     or attempt.get("observedTurnId")):
                 return
@@ -6559,8 +6613,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not (not a["autoWake"] and a.get("turnEpoch", a["epoch"]) < a["epoch"]
                         and a.get("error")):
                     a["error"] = turn.get("error")
+                from codex_claude_input_recovery import recover_rejected_start
+                claude_pre_input_retry = recover_rejected_start(self, db, a, attempt, turn=turn,
+                    account_key=account_key, connection_id=connection_id) == 'retry'
                 if turn.get("status") == "failed":
-                    a["nativeFailureHold"] = True
+                    if not claude_pre_input_retry:
+                        a["nativeFailureHold"] = True
                 a["status"] = ("completed" if turn.get("status") == "completed" else
                                "interrupted" if turn.get("status") == "interrupted" else "failed")
                 if not a["autoWake"]:
@@ -6585,7 +6643,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
-                if (a["status"] != "waiting" and (not retrying_after_input or restart_event)
+                if (not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     stopped = (turn.get("status") != "completed"

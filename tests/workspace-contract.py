@@ -27,6 +27,7 @@ spec = importlib.util.spec_from_file_location(
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 Runtime, eventually = fixture.Runtime, fixture.eventually
+from codex_runtime import PreparationPending
 from codex_native_errors import NativeRpcError
 from codex_shell import monitor_command
 from codex_agent_management import manage_agent
@@ -1395,6 +1396,9 @@ class WorkspaceContract(unittest.TestCase):
         worker, path = self.isolated_worker()
         self.agent_update(worker, worktreeReady=False, threadId=None)
         with patch.object(type(self.runtime), "snapshot_tree", side_effect=NameError("git add timed out")):
+            with self.assertRaises(PreparationPending) as pending:
+                self.runtime.prepare(self.runtime.agent(worker["id"]))
+            pending.exception.future.result(timeout=5)
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
         with self.runtime.db() as db:
@@ -1407,6 +1411,9 @@ class WorkspaceContract(unittest.TestCase):
         worker, path = self.isolated_worker()
         self.agent_update(worker, worktreeReady=False, threadId=None)
         with patch.object(type(self.runtime), "capture_checkpoint", side_effect=NameError("capture timed out")):
+            with self.assertRaises(PreparationPending) as pending:
+                self.runtime.prepare(self.runtime.agent(worker["id"]))
+            pending.exception.future.result(timeout=5)
             prepared = self.runtime.prepare(self.runtime.agent(worker["id"]))
         self.assertTrue(prepared.get("threadId"))
         self.assertIn("capture timed out", self.runtime.agent(worker["id"])["checkpointError"])

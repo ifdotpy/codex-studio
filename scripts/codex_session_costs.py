@@ -634,6 +634,9 @@ class SessionCostReader:
         response_join = ("LEFT JOIN session_cost_responded_turns rt ON rt.agent=u.agent AND rt.thread IS u.thread AND rt.turn IS u.turn"
                          if missing_responses else "")
         response_filter = "(u.has_response OR rt.agent IS NULL)" if missing_responses else "1"
+        # The final query uses only the completed temporary tables. Release the
+        # history snapshot before opening its cursor and calculating prices.
+        db.commit()
         return db.execute(f"""
           WITH priced AS MATERIALIZED (
             SELECT {model} AS model,u.account_key,u.input_tokens,u.cached_tokens,u.write_tokens,u.output_tokens,u.input_uncached
@@ -681,12 +684,15 @@ class SessionCostReader:
             if not cached:
                 cached = self._load_persisted(root, usage_state, catalog_signature,
                                               cache_source["agentsSignature"], cache_source["claudeSignature"])
+            if cached and "claudeUsageSignature" in cached[2]:
+                cache_source["claudeUsageSignature"] = cached[2]["claudeUsageSignature"]
             if cached and cached[2] == cache_source:
                 return {**cached[1], "_cacheSource": cache_source}
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
             claude_messages = {}
+            claude_usage_digest = hashlib.sha256()
             for _, (current_key, current_profile, sessions) in claude_agents.items():
                 for account_key, thread_id in sessions:
                     config = self._claude_profile(account_key)
@@ -694,7 +700,16 @@ class SessionCostReader:
                         continue
                     for path in self._thread_ids(config, account_key, thread_id):
                         for message in self._log_rows(path):
-                            claude_messages.setdefault((account_key, thread_id, message["id"]), message)
+                            key = (account_key, thread_id, message["id"])
+                            claude_messages.setdefault(key, message)
+                            claude_usage_digest.update(json.dumps([key, message], sort_keys=True,
+                                separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+                            claude_usage_digest.update(b"\n")
+            cache_source["claudeUsageSignature"] = claude_usage_digest.hexdigest()
+            # Log metadata can change without changing usage or receipt exclusions.
+            if (cached and "claudeUsageSignature" in cached[2]
+                    and {**cached[2], "claudeSignature": cache_source["claudeSignature"]} == cache_source):
+                return {**cached[1], "_cacheSource": cache_source}
             db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
             db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
                            claude_messages.keys())
@@ -703,6 +718,7 @@ class SessionCostReader:
             except sqlite3.OperationalError as error:
                 if "no such table: analytics_usage" not in str(error):
                     raise
+                db.commit()
                 groups = ()
             for model, account_key, input_tokens, cached_tokens, write_tokens, output_tokens, input_uncached, count in groups:
                 if model == "<synthetic>":
@@ -715,8 +731,8 @@ class SessionCostReader:
                 usage = {"inputTokens": input_tokens, "cachedInputTokens": cached_tokens,
                          "cacheWriteInputTokens": write_tokens, "outputTokens": output_tokens}
                 context_tokens = usage.get("inputTokens")
-                if input_uncached:
-                    context_tokens += usage.get("cachedInputTokens", 0) + usage.get("cacheWriteInputTokens", 0)
+                if input_uncached and context_tokens is not None:
+                    context_tokens += (usage.get("cachedInputTokens") or 0) + (usage.get("cacheWriteInputTokens") or 0)
                 cost, status, tier = price_usage(catalog, provider, model, usage,
                                                  context_tokens=context_tokens,
                                                  input_tokens_are_uncached=bool(input_uncached))

@@ -104,12 +104,14 @@ function xml(value) {
   );
 }
 function launchAgent({ label, python, supervisor, config, state }) {
+  // HTTP requests and native pipes need app resource limits. Adaptive needs XPC.
   const args = [python, "-B", supervisor, "--config", config];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
+<key>ProcessType</key><string>Interactive</string>
 <key>ThrottleInterval</key><integer>10</integer>
 <key>LimitLoadToSessionType</key><string>Aqua</string>
 <key>AbandonProcessGroup</key><true/>
@@ -124,6 +126,7 @@ function supervisorLaunchAgent({ label, python, supervisor, state }) {
 <key>ProgramArguments</key><array>${args.map((arg) => `<string>${xml(arg)}</string>`).join("")}</array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
+<key>ProcessType</key><string>Interactive</string>
 <key>ThrottleInterval</key><integer>10</integer>
 <key>LimitLoadToSessionType</key><string>Aqua</string>
 <key>AbandonProcessGroup</key><true/>
@@ -377,8 +380,16 @@ async function configureRecovery({
   } catch {
     registered = false;
   }
+  // Save a policy-only change for the next registration. Preserve live children.
   const restartRecovery =
-    registered && previousPlist !== undefined && previousPlist !== nextPlist;
+    registered &&
+    previousPlist !== undefined &&
+    previousPlist !== nextPlist &&
+    previousPlist !==
+      nextPlist.replace(
+        "<key>ProcessType</key><string>Interactive</string>\n",
+        "",
+      );
   if (restartRecovery)
     await assertRecoveryBootoutSafe({
       serviceInfo,

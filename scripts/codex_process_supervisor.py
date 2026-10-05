@@ -24,6 +24,8 @@ import threading
 import time
 import uuid
 
+from codex_open_file_limit import raise_open_file_limit
+
 PROTOCOL = 1
 MAX_STDERR_EVENT_BYTES = 256 * 1024
 HANDLE_LIMIT = 256 * 1024 * 1024
@@ -1262,6 +1264,7 @@ def finish_fallback(root):
 
 
 def main():
+    raise_open_file_limit()
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", type=Path, required=True)
