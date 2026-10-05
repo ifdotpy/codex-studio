@@ -924,19 +924,6 @@ class TaskStatus(ContractStrEnum):
     UNKNOWN = "unknown"
 
 
-class MonitorStatus(ContractStrEnum):
-    RUNNING = "running"
-    STARTING = "starting"
-    APPROVAL = "approval"
-    QUEUED = "queued"
-    WAITING = "waiting"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    INTERRUPTED = "interrupted"
-    LOST = "lost"
-
-
 class TaskKind(ContractStrEnum):
     MONITOR = "monitor"
     COMMAND = "command"
@@ -987,7 +974,7 @@ class SnapshotTaskDto(TaskEntityDto):
 class MonitorEntityDto(ContractModel):
     id: str
     agent: str
-    status: MonitorStatus
+    status: TaskStatus | None = None
     created: float
     finished: float | None = None
     name: str | None = None

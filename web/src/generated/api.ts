@@ -5961,7 +5961,7 @@ export interface components {
       processId?: string | null;
       /** Ruleid */
       ruleId?: string | null;
-      status: components["schemas"]["MonitorStatus"];
+      status?: components["schemas"]["TaskStatus"] | null;
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
@@ -6014,21 +6014,6 @@ export interface components {
       | "completed"
       | "failed"
       | "cancelled"
-      | "lost";
-    /**
-     * MonitorStatus
-     * @enum {string}
-     */
-    MonitorStatus:
-      | "running"
-      | "starting"
-      | "approval"
-      | "queued"
-      | "waiting"
-      | "completed"
-      | "failed"
-      | "cancelled"
-      | "interrupted"
       | "lost";
     /** MutationReceipt */
     MutationReceipt: {

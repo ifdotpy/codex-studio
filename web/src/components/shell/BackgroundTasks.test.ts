@@ -22,4 +22,15 @@ describe("monitorTask", () => {
       cancelRequested: false,
     });
   });
+
+  it("drops statuses without a background task meaning", () => {
+    expect(
+      monitorTask({
+        id: "monitor-1",
+        agent: "agent-1",
+        created: 123,
+        status: "unknown",
+      }),
+    ).toBeNull();
+  });
 });

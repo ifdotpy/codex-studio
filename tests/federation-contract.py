@@ -129,19 +129,31 @@ class FederationContract(unittest.TestCase):
         states = [peer for service in self.services for peer in service.snapshot()["peers"]]
         self.assertTrue(all(peer["status"] == "approved" for peer in states), states)
 
-    def _room(self):
+    def _room(self, share_names=False, share_status=False, include_child=False):
         a, b = self.services
         peer_a = a.snapshot()["peers"][0]["stateId"]
         peer_b = b.snapshot()["peers"][0]["stateId"]
-        a.create_room({"peer_id": peer_a, "local_members": [self.leads[0]["id"]]})
-        room_id = a.snapshot()["rooms"][0]["id"]
+        members = [[lead["id"]] for lead in self.leads]
+        if include_child:
+            for index, (runtime, lead) in enumerate(zip(self.runtimes, self.leads)):
+                child = runtime.create(
+                    {"name": "Federated child", "prompt": "Fixture child", "role": "reviewer"},
+                    lead["id"], defer=True,
+                )
+                members[index].append(child["id"])
+        old_rooms = {room["id"] for room in a.snapshot()["rooms"]}
+        a.create_room({"peer_id": peer_a, "local_members": members[0],
+                       "share_names": share_names, "share_status": share_status})
+        room_id = next(room["id"] for room in a.snapshot()["rooms"]
+                       if room["id"] not in old_rooms)
         # Deliver invite B-side, explicitly approve on B, then exchange accept.
         local_a = a._local_identity()
         record = self._outbox_record(a, peer_a)
         envelope = a._outbound_envelope(record, local_a)
         receipt = b.receive_envelope(self._peer(b, peer_b), envelope)
         self.assertTrue(receipt["accepted"])
-        b.approve_room({"room_id": room_id, "local_members": [self.leads[1]["id"]]})
+        b.approve_room({"room_id": room_id, "local_members": members[1],
+                        "share_names": share_names, "share_status": share_status})
         record = self._outbox_record(b, peer_b)
         envelope = b._outbound_envelope(record, b._local_identity())
         a.receive_envelope(self._peer(a, peer_a), envelope)
@@ -149,6 +161,32 @@ class FederationContract(unittest.TestCase):
         self._mark_delivered(a, peer_a)
         self._mark_delivered(b, peer_b)
         return room_id
+
+    def test_room_producers_emit_only_named_local_participant_fields(self):
+        from studio_api.sync.models import SnapshotRoomDto
+
+        cases = (
+            (self._room(), {"id", "role", "name"}, {"lead"}),
+            (self._room(share_names=True, share_status=True, include_child=True),
+             {"id", "role", "name", "status"}, {"lead", "agent"}),
+        )
+        for room_id, expected_keys, expected_roles in cases:
+            for service in self.services:
+                with service.runtime.read_db() as db:
+                    row = db.execute(
+                        "SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)
+                    ).fetchone()
+                record = json.loads(row[0])
+                dto = SnapshotRoomDto.model_validate({
+                    "id": room_id,
+                    "localParticipants": record["localParticipants"],
+                })
+                participants = [
+                    participant.model_dump(mode="json", exclude_unset=True)
+                    for participant in dto.localParticipants or []
+                ]
+                self.assertEqual({participant["role"] for participant in participants}, expected_roles)
+                self.assertTrue(all(set(participant) == expected_keys for participant in participants))
 
     @staticmethod
     def _outbox_record(service, peer_id):
