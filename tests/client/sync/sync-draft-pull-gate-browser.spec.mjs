@@ -89,10 +89,11 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
-    await page.evaluate(async () => {
+    const draftTiming = await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.replicationErrors = [];
       window.rejectCancelOnce = false;
+      window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
       window.stopDrafts = await client.startDraftReplication(
         (error) => window.replicationErrors.push(error ? String(error) : null),
         {
@@ -105,6 +106,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
           },
         },
       );
+      return client.DRAFT_SYNC_TIMING_MS;
     });
     await page.waitForFunction(() => window.replicationErrors.length > 0);
     await page.evaluate(async () => {
@@ -118,7 +120,12 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     for (let attempt = 0; attempt < 250 && pushes === 0; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(pushes, 1, "A failed pull does not freeze the pending push");
-    await new Promise((resolve) => setTimeout(resolve, 3_400));
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
+      ),
+    );
     assert.equal(
       pulls,
       1,
@@ -158,7 +165,12 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     for (let attempt = 0; attempt < 100 && pulls === outageStart; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(pulls, outageStart + 1, "The outage trigger starts one pull");
-    await new Promise((resolve) => setTimeout(resolve, 3_400));
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
+      ),
+    );
     assert.equal(
       pulls,
       outageStart + 1,
@@ -205,12 +217,22 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       reportsBeforeCancelFailure,
     );
     assert.ok(
-      await page.evaluate(() => window.replicationErrors.some(Boolean)),
+      await page.evaluate(
+        (count) =>
+          window.replicationErrors
+            .slice(count)
+            .some((error) =>
+              String(error).includes("injected cancel rejection"),
+            ),
+        reportsBeforeCancelFailure,
+      ),
       "A cancel rejection is reported through the existing status callback",
     );
     failPush = false;
     const postsBeforeRetry = pushes;
-    await new Promise((resolve) => setTimeout(resolve, 3_200));
+    await new Promise((resolve) =>
+      setTimeout(resolve, draftTiming.pushRetry + draftTiming.pushQuietWait),
+    );
     assert.ok(
       pushes > postsBeforeRetry,
       "The replacement retries its pending push",

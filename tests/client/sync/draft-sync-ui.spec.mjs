@@ -6,13 +6,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DRAFT_SYNC_TIMING_MS } from "../../../web/src/sync/draftSyncTiming.mjs";
 
-// Keep the request-rate assertions aligned with the production client constants.
-const DRAFT_PUSH_RETRY_TIME_MS = 3_000;
-const DRAFT_PUSH_RESTART_MIN_INTERVAL_MS = 3_000;
-const DRAFT_PUSH_RESTART_BOUND_MS = 900;
-// The first GET can be logged a few milliseconds after its restart timer fires.
-const DRAFT_PUSH_RESTART_REQUEST_SKEW_MS = 100;
 test("Draft sync ui", async ({
   browser: testBrowser,
   page: runnerPage,
@@ -51,6 +46,10 @@ test("Draft sync ui", async ({
     const retiredDraftMapKey = `codex-drafts:${workspaceId}`;
     await runnerPage.addInitScript(
       ({ workspaceId, session, key }) => {
+        window.__draftReplicationCreations = 0;
+        window.__codexDraftReplicationTestObserver = {
+          onCreate: () => window.__draftReplicationCreations++,
+        };
         localStorage.setItem(
           "codex-sync-workspace",
           JSON.stringify(workspaceId),
@@ -131,6 +130,8 @@ test("Draft sync ui", async ({
     };
     const desktop = runnerPage;
     await desktop.setViewportSize({ width: 1280, height: 850 });
+    const restartRequestSkewMs = 100;
+    const restartRequestBoundMs = 900;
     const phone = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
       isMobile: true,
@@ -140,6 +141,7 @@ test("Draft sync ui", async ({
     for (const page of [desktop, phone])
       page.on("pageerror", (error) => errors.push(error.message));
     await desktop.goto(origin);
+    const draftTiming = DRAFT_SYNC_TIMING_MS;
     await desktop.waitForFunction(() => window.__retiredDraftMap);
     assert.equal(
       await desktop.evaluate(() => window.__retiredDraftMap.accesses),
@@ -417,6 +419,9 @@ test("Draft sync ui", async ({
 
     const stormStartedAt = Date.now();
     const stormPullsAtStart = draftPullRequests;
+    const stormCreationsAtStart = await desktop.evaluate(
+      () => window.__draftReplicationCreations,
+    );
     const stormPushesAtStart = pushFailures;
     const stormFailureTimesAtStart = pushFailureTimes.length;
     const pushProbeUpdate = async (text) => {
@@ -436,16 +441,19 @@ test("Draft sync ui", async ({
     }
     const stormDuration = Date.now() - stormStartedAt;
     const stormPulls = draftPullRequests - stormPullsAtStart;
+    const stormRestarts =
+      (await desktop.evaluate(() => window.__draftReplicationCreations)) -
+      stormCreationsAtStart;
     const stormPushFailures = pushFailures - stormPushesAtStart;
     const stormPushOffsets = pushFailureTimes
       .slice(stormFailureTimesAtStart)
       .map((time) => time - stormStartedAt);
     const maxRestartsAtMinimumInterval =
-      Math.floor(stormDuration / DRAFT_PUSH_RESTART_MIN_INTERVAL_MS) + 1;
-    const stormRestarts = stormPulls;
+      Math.floor(stormDuration / draftTiming.restartMinInterval) + 1;
+    assert.ok(stormRestarts >= 1, "the storm creates a replacement state");
     assert.ok(
       stormRestarts <= maxRestartsAtMinimumInterval,
-      `100 ms invalidations made ${stormRestarts} restarts in ${stormDuration} ms; max at the ${DRAFT_PUSH_RESTART_MIN_INTERVAL_MS} ms restart interval is ${maxRestartsAtMinimumInterval}`,
+      `100 ms invalidations made ${stormRestarts} restarts in ${stormDuration} ms; max at the ${draftTiming.restartMinInterval} ms restart interval is ${maxRestartsAtMinimumInterval}`,
     );
     assert.equal(
       stormPulls,
@@ -454,10 +462,14 @@ test("Draft sync ui", async ({
     );
     assert.ok(
       stormPulls <= maxRestartsAtMinimumInterval,
-      `100 ms invalidations made ${stormPulls} draft pulls in ${stormDuration} ms; max at the ${DRAFT_PUSH_RESTART_MIN_INTERVAL_MS} ms restart interval is ${maxRestartsAtMinimumInterval}`,
+      `100 ms invalidations made ${stormPulls} draft pulls in ${stormDuration} ms; max at the ${draftTiming.restartMinInterval} ms restart interval is ${maxRestartsAtMinimumInterval}`,
     );
+    await until(async () => {
+      const local = await localDraft(remoteProbeId);
+      return local && JSON.parse(local.payload).text === "restart trigger 59";
+    }, "the last remote draft written during the storm is pulled");
     const baseRetryAttempts =
-      Math.floor(stormDuration / DRAFT_PUSH_RETRY_TIME_MS) + 1;
+      Math.floor(stormDuration / draftTiming.pushRetry) + 1;
     const maxPushAttempts = baseRetryAttempts + stormRestarts;
     assert.ok(
       stormPushFailures <= maxPushAttempts,
@@ -501,7 +513,9 @@ test("Draft sync ui", async ({
       () => successfulDraftPosts > postsBeforeRestore,
       "the retained composer draft is pushed after recovery",
     );
-    await desktop.waitForTimeout(3_500);
+    await desktop.waitForTimeout(
+      draftTiming.pushRetry + draftTiming.pushQuietWait + 200,
+    );
     failPush = true;
     await desktop.locator("#message").fill("Second push outage");
     const failuresBeforeNextOutage = pushFailures;
@@ -550,17 +564,13 @@ test("Draft sync ui", async ({
     const pullBStartedAt = draftPullRequestTimes[pullBIndex];
     assert.ok(
       pullBStartedAt >=
-        pullAStartedAt +
-          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS -
-          DRAFT_PUSH_RESTART_REQUEST_SKEW_MS,
-      `trigger B pull started earlier than the restart interval minus ${DRAFT_PUSH_RESTART_REQUEST_SKEW_MS} ms request-log skew: A=${pullAStartedAt}, B=${pullBStartedAt}`,
+        pullAStartedAt + draftTiming.restartMinInterval - restartRequestSkewMs,
+      `trigger B pull started earlier than the restart interval minus ${restartRequestSkewMs} ms request-log skew: A=${pullAStartedAt}, B=${pullBStartedAt}`,
     );
     assert.ok(
       pullBStartedAt <=
-        pullAStartedAt +
-          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS +
-          DRAFT_PUSH_RESTART_BOUND_MS,
-      `trigger B pull exceeded the restart interval plus ${DRAFT_PUSH_RESTART_BOUND_MS} ms: A=${pullAStartedAt}, B=${pullBStartedAt}`,
+        pullAStartedAt + draftTiming.restartMinInterval + restartRequestBoundMs,
+      `trigger B pull exceeded the restart interval plus ${restartRequestBoundMs} ms: A=${pullAStartedAt}, B=${pullBStartedAt}`,
     );
     await until(async () => {
       const local = await localDraft(remoteProbeId);
@@ -574,7 +584,9 @@ test("Draft sync ui", async ({
       () => draftPullCompletedTimes.length > pullBIndex,
       "trigger B pull completes",
     );
-    await desktop.waitForTimeout(3_300);
+    await desktop.waitForTimeout(
+      draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
+    );
     assert.equal(
       draftPullRequests - pullCountBeforeB,
       1,
@@ -621,16 +633,16 @@ test("Draft sync ui", async ({
     assert.ok(
       inFlightBStartedAt >=
         inFlightAStartedAt +
-          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS -
-          DRAFT_PUSH_RESTART_REQUEST_SKEW_MS,
-      `in-flight trigger B pull started earlier than the restart interval minus ${DRAFT_PUSH_RESTART_REQUEST_SKEW_MS} ms request-log skew: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
+          draftTiming.restartMinInterval -
+          restartRequestSkewMs,
+      `in-flight trigger B pull started earlier than the restart interval minus ${restartRequestSkewMs} ms request-log skew: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
     );
     assert.ok(
       inFlightBStartedAt <=
         inFlightAStartedAt +
-          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS +
-          DRAFT_PUSH_RESTART_BOUND_MS,
-      `in-flight trigger B pull exceeded the interval plus ${DRAFT_PUSH_RESTART_BOUND_MS} ms: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
+          draftTiming.restartMinInterval +
+          restartRequestBoundMs,
+      `in-flight trigger B pull exceeded the interval plus ${restartRequestBoundMs} ms: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
     );
     await until(async () => {
       const local = await localDraft(remoteProbeId);
@@ -644,7 +656,9 @@ test("Draft sync ui", async ({
       () => draftPullCompletedTimes.length > inFlightBIndex,
       "in-flight trigger B pull completes",
     );
-    await desktop.waitForTimeout(3_300);
+    await desktop.waitForTimeout(
+      draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
+    );
     assert.equal(
       draftPullRequests - inFlightPullCountBeforeB,
       1,

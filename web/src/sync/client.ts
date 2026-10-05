@@ -21,13 +21,17 @@ import {
   patchTranscriptValue,
   subscribeTranscript,
 } from "./transcriptCache";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+
+export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
-const DRAFT_PUSH_QUIET_WAIT_MS = 300;
-const DRAFT_PUSH_MAX_WAIT_MS = 2_000;
-const DRAFT_PUSH_RETRY_TIME_MS = 3_000;
+const DRAFT_PUSH_QUIET_WAIT_MS = DRAFT_SYNC_TIMING_MS.pushQuietWait;
+const DRAFT_PUSH_MAX_WAIT_MS = DRAFT_SYNC_TIMING_MS.pushMaxWait;
+const DRAFT_PUSH_RETRY_TIME_MS = DRAFT_SYNC_TIMING_MS.pushRetry;
 // Failed pushes already retry this often; restart triggers must not accelerate them.
-const DRAFT_PUSH_RESTART_MIN_INTERVAL_MS = DRAFT_PUSH_RETRY_TIME_MS;
+const DRAFT_PUSH_RESTART_MIN_INTERVAL_MS =
+  DRAFT_SYNC_TIMING_MS.restartMinInterval;
 export type SyncDocument = {
   id: string;
   payload: string;
@@ -1096,24 +1100,33 @@ export function prefetchTranscript(
 
 export async function startDraftReplication(
   report: (e: unknown | null) => void,
-  lifecycle: {
+  /** @internal Test-only cancellation seam; production callers omit it. */
+  testHooks: {
     cancel?: (cancel: () => Promise<void>) => Promise<void>;
   } = {},
 ) {
   const { db, workspaceId, verifyWorkspace } = await syncDatabase();
+  // One-state pull/restart machine. `pullTriggered` is the sole queued-work
+  // bit, `pullInFlight` protects a pull's snapshot, and `restarting` covers
+  // cancel + replacement startup. Every event sets the bit. A pull consumes it
+  // only when its handler starts; events during a pull set it again. While the
+  // push is healthy, a pending bit calls reSync. While push is failed, the bit
+  // waits for any active pull and then schedules one restart at the monotonic
+  // minimum-interval deadline. Push recovery serves the bit with reSync; push
+  // failure serves it with a restart. Completion of a pull/restart rechecks the
+  // bit. Stop cancels the timer and wakes all waits before cancelling RxDB.
+  // Invariants: no network pull without a trigger; no trigger is lost while an
+  // outage/recovery transition is in progress; restarts are interval-limited.
   const failures = new Map<string, unknown>();
   let stopped = false;
-  let pullFailed = false;
   let pushFailed = false;
   let pullTriggered = false;
-  let pullReady = false;
+  let pullInFlight = false;
   let replication: ReturnType<
     typeof replicateRxCollection<SyncDocument, { seq: number }>
   >;
   let replicationErrors: { unsubscribe: () => void }[] = [];
   let restarting: Promise<void> | undefined;
-  let restartQueued = false;
-  let replacementStarted = false;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   let lastRestartAt = Number.NEGATIVE_INFINITY;
   let replicationGeneration = 0;
@@ -1141,8 +1154,8 @@ export async function startDraftReplication(
     }
   };
   const cancelReplication = (current: typeof replication) =>
-    lifecycle.cancel
-      ? lifecycle.cancel(() => current.cancel())
+    testHooks.cancel
+      ? testHooks.cancel(() => current.cancel())
       : current.cancel();
   const state = (direction: string, error: unknown | null) => {
     if (stopped) return;
@@ -1151,23 +1164,20 @@ export async function startDraftReplication(
     if (direction === "push") {
       pushFailed = error !== null;
       if (!pushFailed) {
-        restartQueued = false;
         clearTimeout(restartTimer);
         restartTimer = undefined;
       }
+      servePendingPull();
     }
     report(failures.size ? failures.values().next().value : null);
   };
-  const wakePullRetry = () => {
-    pullTriggered = true;
-  };
-  const pullAllowed = () => {
-    if (stopped) return false;
-    if (pullReady && (!pullFailed || pullTriggered)) {
-      pullTriggered = false;
-      return true;
-    }
-    return false;
+  const beginTriggeredPull = () => {
+    if (stopped || !pullTriggered || pullInFlight) return false;
+    // There is no await between admission and marking the pull active. Events
+    // received after this point remain pending for a later pull.
+    pullTriggered = false;
+    pullInFlight = true;
+    return true;
   };
   let pendingPushWait:
     | {
@@ -1217,12 +1227,10 @@ export async function startDraftReplication(
       if (generation === replicationGeneration) {
         state(direction, null);
         state("replication", null);
-        if (direction === "pull") pullFailed = false;
       }
       return result;
     } catch (error) {
       if (generation === replicationGeneration) {
-        if (direction === "pull") pullFailed = true;
         state(direction, error);
       }
       throw error;
@@ -1238,24 +1246,28 @@ export async function startDraftReplication(
       retryTime: DRAFT_PUSH_RETRY_TIME_MS,
       pull: {
         handler: async (checkpoint, batchSize) => {
-          const allowed = pullAllowed();
-          if (!allowed)
+          if (!beginTriggeredPull())
             return { documents: [], checkpoint: checkpoint || { seq: 0 } };
-          return attempt(generation, "pull", async () => {
-            const result = await pull(
-              "drafts",
-              checkpoint?.seq || 0,
-              batchSize,
-              workspaceId,
-              verifyWorkspace,
-            );
-            if (result.reset === true)
-              throw new Error("The server reset draft sync unexpectedly.");
-            return {
-              documents: result.documents,
-              checkpoint: result.checkpoint,
-            };
-          });
+          try {
+            return await attempt(generation, "pull", async () => {
+              const result = await pull(
+                "drafts",
+                checkpoint?.seq || 0,
+                batchSize,
+                workspaceId,
+                verifyWorkspace,
+              );
+              if (result.reset === true)
+                throw new Error("The server reset draft sync unexpectedly.");
+              return {
+                documents: result.documents,
+                checkpoint: result.checkpoint,
+              };
+            });
+          } finally {
+            pullInFlight = false;
+            servePendingPull();
+          }
         },
         batchSize: 100,
       },
@@ -1269,6 +1281,18 @@ export async function startDraftReplication(
         batchSize: 100,
       },
     });
+    // Browser specs install this observer to count actual RxDB states. With no
+    // observer, which is every production page, this has no runtime effect.
+    if (typeof window !== "undefined") {
+      const observer = (window as any).__codexDraftReplicationTestObserver;
+      if (typeof observer?.onCreate === "function") {
+        try {
+          observer.onCreate();
+        } catch {
+          // Test instrumentation must not affect the replication lifecycle.
+        }
+      }
+    }
     replicationErrors = [
       current.error$.subscribe((error: any) => {
         if (generation !== replicationGeneration) return;
@@ -1298,7 +1322,10 @@ export async function startDraftReplication(
         stopWaiters.delete(finish);
         resolve();
       };
-      const timeout = setTimeout(finish, DRAFT_PUSH_RESTART_MIN_INTERVAL_MS);
+      const timeout = setTimeout(
+        finish,
+        DRAFT_SYNC_TIMING_MS.restartPullWaitCap,
+      );
       stopWaiters.add(finish);
       subscription = downSync.subscribe((done) => {
         if (done) finish();
@@ -1306,42 +1333,43 @@ export async function startDraftReplication(
     });
   };
   const scheduleRestart = () => {
-    if (stopped || !pushFailed || !restartQueued || restarting || restartTimer)
+    if (
+      stopped ||
+      !pushFailed ||
+      !pullTriggered ||
+      pullInFlight ||
+      restarting ||
+      restartTimer
+    )
       return;
-    const earliestRestartAt = () =>
-      lastRestartAt + DRAFT_PUSH_RESTART_MIN_INTERVAL_MS;
-    const delay = Math.max(0, earliestRestartAt() - Date.now());
+    const dueAt = lastRestartAt + DRAFT_PUSH_RESTART_MIN_INTERVAL_MS;
+    const delay = Math.max(0, dueAt - performance.now());
     restartTimer = setTimeout(() => {
       restartTimer = undefined;
-      if (stopped || !pushFailed || !restartQueued) return;
-      if (Date.now() < earliestRestartAt()) {
+      if (stopped || !pushFailed || !pullTriggered) return;
+      if (pullInFlight || restarting) return;
+      const remaining = dueAt - performance.now();
+      if (remaining > 0) {
         scheduleRestart();
         return;
       }
-      restartQueued = false;
-      replacementStarted = false;
       const previous = replication;
-      // Ignore completions and errors from the state being canceled while its
-      // replacement is starting.
       advanceReplicationGeneration();
       replicationErrors.forEach((subscription) => subscription.unsubscribe());
       replicationErrors = [];
-      // Settle the shared coalescing wait before cancel so RxDB can finish its
-      // persistence queue; the replacement creates a fresh wait on demand.
       settlePushWait();
       restarting = (async () => {
         try {
           await cancelReplication(previous);
         } catch (error) {
           state("replication", error);
+          report(error);
         }
         if (stopped) return;
-        lastRestartAt = Date.now();
-        // RxDB starts both directions in parallel. A new state's initial pull
-        // can run while its upstream push is failing; RESYNC on the old state
-        // cannot run until that state's upstream becomes inactive.
+        lastRestartAt = performance.now();
+        // RxDB starts both directions in parallel. This fresh state's initial
+        // pull can start while its upstream retries a failed push.
         const current = createReplication();
-        replacementStarted = true;
         await waitForDownstreamInitialSync(current);
       })()
         .catch((error) => {
@@ -1349,23 +1377,18 @@ export async function startDraftReplication(
         })
         .finally(() => {
           restarting = undefined;
-          if (!pushFailed) restartQueued = false;
-          scheduleRestart();
+          servePendingPull();
         });
     }, delay);
   };
-  const restartAfterPushFailure = () => {
-    if (stopped || !pushFailed) return;
-    // Until the replacement starts, its initial pull covers this trigger.
-    if (restarting && !replacementStarted) return;
-    restartQueued = true;
-    scheduleRestart();
+  const servePendingPull = () => {
+    if (stopped || !pullTriggered || pullInFlight || restarting) return;
+    if (pushFailed) scheduleRestart();
+    else replication.reSync();
   };
   const triggerPull = () => {
-    pullReady = true;
-    wakePullRetry();
-    if (pushFailed) restartAfterPushFailure();
-    else replication.reSync();
+    pullTriggered = true;
+    servePendingPull();
   };
   const stopInvalidation = watchSyncInvalidations(() => {
     triggerPull();
@@ -1377,7 +1400,6 @@ export async function startDraftReplication(
     stopped = true;
     clearTimeout(restartTimer);
     restartTimer = undefined;
-    restartQueued = false;
     for (const wake of stopWaiters) wake();
     stopInvalidation();
     stopResume();
