@@ -161,6 +161,62 @@ describe("OpenAPI transport facade", () => {
     expect(request.signal.aborted).toBe(false);
   });
 
+  it.each([
+    ["204", () => new Response(null, { status: 204 })],
+    [
+      "zero Content-Length",
+      () =>
+        new Response(null, {
+          status: 200,
+          headers: { "Content-Length": "0" },
+        }),
+    ],
+    ["empty body without Content-Length", () => new Response(null)],
+  ] as const)(
+    "resolves an empty successful POST (%s) without dispatching sync",
+    async (_label, response) => {
+      const events = new EventTarget();
+      const syncEvents: CustomEvent[] = [];
+      events.addEventListener("codex-sync-entities", (event) => {
+        syncEvents.push(event as CustomEvent);
+      });
+      vi.stubGlobal("window", events);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => response()),
+      );
+
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).resolves.toBeUndefined();
+      expect(syncEvents).toEqual([]);
+    },
+  );
+
+  it("dispatches sync entities from a successful POST response", async () => {
+    const events = new EventTarget();
+    const syncEvents: CustomEvent[] = [];
+    events.addEventListener("codex-sync-entities", (event) => {
+      syncEvents.push(event as CustomEvent);
+    });
+    vi.stubGlobal("window", events);
+    const documents = [
+      { id: "entity:projects:/work", seq: 4, payload: "{}", _deleted: false },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ _syncEntities: documents })),
+    );
+
+    await post("/api/sync/drafts", { rows: [] });
+
+    expect(syncEvents).toHaveLength(1);
+    expect(syncEvents[0]?.detail).toEqual({
+      workspaceId: "workspace-a",
+      documents,
+    });
+  });
+
   it("does not apply the default read deadline to POST writes", async () => {
     vi.useFakeTimers();
     let resolveFetch: ((response: Response) => void) | undefined;

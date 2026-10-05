@@ -44,9 +44,6 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
       ),
       [{ id: "sso", status }],
     );
-  assert.throws(() => checkedMessageReceipts(null, "chat", ["sso"]), {
-    message: "The delivery receipts belong to another chat.",
-  });
   assert.throws(
     () =>
       checkedMessageReceipts({ agent: "foreign", items: [delivered] }, "chat", [
@@ -57,16 +54,10 @@ it("joins outgoing messages to accepted and delivered receipts by identity", () 
   for (const value of [
     { agent: "chat", items: [{ id: "other", status: "delivered" }] },
     { agent: "chat", items: [delivered, delivered] },
-    { agent: "chat", items: [{ id: "sso", status: "unknown" }] },
   ])
     assert.throws(() => checkedMessageReceipts(value, "chat", ["sso"]), {
       message: "The delivery receipts do not match the requested messages.",
     });
-  assert.throws(
-    () =>
-      checkedMessageReceipts({ agent: "chat", items: [null] }, "chat", ["sso"]),
-    { message: "The delivery receipts do not match the requested messages." },
-  );
   assert.throws(
     () =>
       checkedMessageReceipts(

@@ -3973,7 +3973,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if expanded == ids:
                     break
                 ids = expanded
-            for a in agents:
+            children = {}
+            for agent in agents:
+                parent_id = agent.get("parentId")
+                if agent["id"] in ids and parent_id in ids:
+                    children.setdefault(parent_id, []).append(agent["id"])
+            ordered_ids = [key]
+            frontier = {key}
+            while frontier:
+                frontier = {child for parent_id in frontier
+                            for child in children.get(parent_id, ())} - set(ordered_ids)
+                ordered_ids.extend(sorted(frontier))
+            by_id = {agent["id"]: agent for agent in agents}
+            for agent_id in reversed(ordered_ids):
+                a = by_id[agent_id]
                 if a["id"] in ids:
                     a.update(deletedAt=a.get("deletedAt") or time.time(), autoWake=False)
                     self.put(db, "agents", a)
@@ -7722,8 +7735,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     result["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
                 rooms.append(result)
                 continue
+            if (room.get("kind") == "broadcast" and room.get("rootId") != "all"
+                    and room.get("rootId") not in agents):
+                continue
             members = ([a["id"] for a in agents.values() if room.get("rootId") in {"all", a["rootId"]}]
-                       if room["kind"] == "broadcast" else room["members"])
+                       if room.get("kind") == "broadcast" else room.get("members", []))
             if any(m not in agents for m in members) or not members or (viewer and viewer not in members):
                 continue
             if viewer and room.get("kind") != "federated" and (not viewer_root or room.get("rootId") == "all"):
