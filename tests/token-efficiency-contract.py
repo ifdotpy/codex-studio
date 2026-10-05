@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import time
 import unittest
+import uuid
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('efficiency_fixture', Path(__file__).with_name('workspace-contract.py'))
@@ -72,6 +73,79 @@ class EfficiencyContract(unittest.TestCase):
         for args in [{'limit': True}, {'limit': 51}, {'limit': 0}, {'cursor': 'bad!'}]:
             with self.assertRaises(ValueError):
                 self.runtime.model_work(lead['id'], args)
+
+    def test_peer_cursor_survives_volatile_changes_and_returns_current_status(self):
+        lead = self.lead()
+        agents = [lead, *(self.worker(lead, f'Worker {i}') for i in range(20))]
+        agents.sort(key=lambda agent: agent['id'])
+        first = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 20})
+        self.assertEqual([agent['id'] for agent in first['items']], [agent['id'] for agent in agents[:20]])
+        target = agents[-1]
+        expected = {key: target.get(key) for key in ('id', 'name', 'role', 'rootId', 'parentId')}
+        for agent in agents:
+            self.agent_update(agent, status='running', inFlight=True, error='Current state', lastEvent=time.time())
+        for status in ('running', 'approval', 'waiting'):
+            with self.subTest(status=status):
+                self.agent_update(target, status=status)
+                page = self.runtime.model_directory(lead['id'], 'orchestration_peers',
+                    {'limit': 20, 'cursor': first['nextCursor']})
+                self.assertEqual(page['items'], [{**expected, 'status': status}])
+                self.assertEqual(page['revision'], first['revision'])
+                self.assertEqual(page['nextCursor'], None)
+                self.assertEqual(page['total'], 21)
+
+    def test_peer_cursor_rejects_identity_and_membership_changes(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        for field, value in (('name', 'New display name'), ('role', 'implementer'), ('parentId', None)):
+            with self.subTest(field=field):
+                page = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 1})
+                self.agent_update(worker, **{field: value})
+                with self.assertRaisesRegex(ValueError, 'List changed'):
+                    self.runtime.model_directory(lead['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+                self.agent_update(worker, **{field: worker.get(field)})
+        page = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 1})
+        added = self.worker(lead, 'Added')
+        with self.assertRaisesRegex(ValueError, 'List changed'):
+            self.runtime.model_directory(lead['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+        page = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 1})
+        self.agent_update(added, deletedAt=time.time())
+        with self.assertRaisesRegex(ValueError, 'List changed'):
+            self.runtime.model_directory(lead['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+
+    def test_peer_cursor_preserves_actor_scope_and_room_permissions(self):
+        from codex_peer_teams import manage
+        lead, peer = self.lead(), self.lead('Peer')
+        worker = self.worker(lead)
+        team_id = str(uuid.uuid4())
+        group = {'action': 'save', 'path': str(self.project), 'team_id': team_id,
+                 'name': 'Peers', 'members': [lead['id'], peer['id']]}
+        manage(self.runtime, {**group, 'expected_revision': 0, 'request_id': str(uuid.uuid4())})
+        receipt = self.runtime.chat_message(lead['id'], peer['id'], 'Private peer question', 'peer-cursor-room')
+        page = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 1})
+        for actor in (worker, peer):
+            with self.subTest(actor=actor['id']), self.assertRaisesRegex(ValueError, 'List changed'):
+                self.runtime.model_directory(actor['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+        with self.assertRaisesRegex(ValueError, 'limited to your team'):
+            self.runtime.model_directory(lead['id'], 'orchestration_peers', {'scope': 'all', 'cursor': page['nextCursor']})
+        manage(self.runtime, {**group, 'name': 'Renamed peers', 'expected_revision': 1,
+                              'request_id': str(uuid.uuid4())})
+        with self.assertRaisesRegex(ValueError, 'List changed'):
+            self.runtime.model_directory(lead['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+        page = self.runtime.model_directory(lead['id'], 'orchestration_peers', {'limit': 1})
+        manage(self.runtime, {'action': 'delete', 'path': str(self.project), 'team_id': team_id,
+                              'expected_revision': 2, 'request_id': str(uuid.uuid4())})
+        with self.assertRaisesRegex(ValueError, 'List changed'):
+            self.runtime.model_directory(lead['id'], 'orchestration_peers', {'cursor': page['nextCursor']})
+        with self.assertRaises(ValueError):
+            self.runtime.chat_read(receipt['room'], peer['id'])
+
+    def test_default_cursor_still_tracks_status_changes(self):
+        rows = [{'id': 'first', 'status': 'pending'}, {'id': 'second', 'status': 'pending'}]
+        page = self.runtime.model_page(rows, {'limit': 1}, ['other-directory'])
+        rows[-1]['status'] = 'completed'
+        with self.assertRaisesRegex(ValueError, 'List changed'):
+            self.runtime.model_page(rows, {'cursor': page['nextCursor']}, ['other-directory'])
 
     def test_mutation_receipt_is_compact_but_full_evidence_is_durable(self):
         lead = self.lead()

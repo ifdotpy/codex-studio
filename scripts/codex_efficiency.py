@@ -86,11 +86,11 @@ def efficiency_tools(tool, text):
 
 
 class EfficiencyMixin:
-    def model_page(self, rows, args, scope, byte_limit=None):
+    def model_page(self, rows, args, scope, byte_limit=None, revision_rows=None):
         limit = args.get('limit', 20)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError('limit must be 1 to 50')
-        revision = digest([scope, rows])
+        revision = digest([scope, rows if revision_rows is None else revision_rows])
         offset = 0
         if args.get('cursor'):
             try:
@@ -167,7 +167,12 @@ class EfficiencyMixin:
         # after the agents, without repeating rooms on each agent page.
         entries = [{'entry': 'agent', 'value': r} for r in rows]
         entries += [{'entry': 'room', 'value': r} for r in rooms]
-        result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000)
+        # The cursor follows identities; each page retains current status.
+        revision_rows = [{'entry': 'agent', 'value': {k: v for k, v in r.items() if k != 'status'}}
+                         for r in rows]
+        revision_rows += [{'entry': 'room', 'value': r} for r in rooms]
+        result = self.model_page(entries, args, [actor_id, scope], byte_limit=13000,
+                                 revision_rows=revision_rows)
         page = result.pop('items')
         result.update(self=actor_id, lead=actor['rootId'],
                       items=[r['value'] for r in page if r['entry'] == 'agent'],
