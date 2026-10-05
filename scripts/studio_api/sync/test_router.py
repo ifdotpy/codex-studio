@@ -610,6 +610,7 @@ class SyncRouterTests(unittest.TestCase):
 
         backend.db = database
         backend.records = lambda _db, table=None: [agent] if table == "agents" else []
+        backend.account_agents = lambda _db, _account: [agent]
         backend.retire_legacy_steer = lambda *_args: None
         backend.capacity_restart = lambda *_args: None
 

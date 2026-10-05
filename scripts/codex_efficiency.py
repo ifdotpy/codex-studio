@@ -154,10 +154,12 @@ class EfficiencyMixin:
         if scope != 'team':
             raise ValueError('Agent discovery is limited to your team')
         from codex_peer_teams import peers_for
-        agents = [a for a in self.records(db, 'agents') if not a.get('deletedAt')]
+        agents = self.team_agents(db, actor['rootId'])
         peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
+        agents = {agent['id']: agent for agent in agents}
+        agents.update(self.named_agents(db, peer_ids))
         rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
-                for a in agents if a['rootId'] == actor['rootId'] or a['id'] in peer_ids]
+                for a in agents.values() if not a.get('deletedAt')]
         rows.sort(key=lambda a: a['id'])
         rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName',
                                          'federated', 'peerId', 'peerLabel', 'localMembers')}

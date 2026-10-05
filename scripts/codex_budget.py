@@ -202,7 +202,9 @@ def _coverage(db, a, state):
 
 def budget_status(runtime, db, agent, *, check_coverage=True):
     root = runtime.agent(agent.get('rootId') or agent['id'], db)
-    members = [a for a in runtime.records(db, 'agents') if (a.get('rootId') or a['id']) == root['id']]
+    members = [a for a in runtime.team_agents(db, root['id'], include_deleted=True,
+                                              include_id=root['id'])
+               if (a.get('rootId') or a['id']) == root['id']]
     spent, incomplete = 0, []
     for member in members:
         state = _state(db, member)
