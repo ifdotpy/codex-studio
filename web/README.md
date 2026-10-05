@@ -128,7 +128,9 @@ mismatching stream closes after that event without a subscription. Hashless
 non-renderer clients retain the earlier protocol-3 event sequence. If hashes
 differ, the page keeps the loaded transcript and local composer draft visible,
 then pauses stream, draft replication, outbox delivery, and send actions until
-the renderer updates.
+the renderer updates. The mismatch alert appears even before the first workspace
+snapshot loads. If the server cannot compute its API schema hash, startup shows
+the schema identity error with a Reload Studio link.
 Protocol-3 event payloads no longer use generated per-event runtime validators;
 workspace, epoch, revision, and ordering semantics remain enforced.
 Desktop windows skip service workers, so Update reloads the renderer directly;
