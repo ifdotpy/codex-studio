@@ -15,6 +15,13 @@ The normative client and server behavior is documented in
 `scripts/sync/sync_store.py` was a divergent prototype; it is not an alternate
 implementation or source of contract.
 
+The browser receives typed protocol-3 resource notifications over
+`/api/sync/stream` and pulls affected projections through `/api/sync/pull`.
+Each connection sends an initial resource baseline, then only changed references.
+Reconnect and explicit resume reconcile active subscriptions. The server has no
+generation polling route or legacy unversioned/transcript stream. These resource
+events are transient invalidations, not durable projection cursors.
+
 ## Checks
 
 ```sh

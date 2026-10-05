@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
 import threading
@@ -21,7 +22,7 @@ from unittest.mock import patch
 
 from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
-from studio_api.sync.models import SyncStreamQuery, TranscriptStreamQuery
+from studio_api.sync.models import SyncStreamQuery
 from studio_api.responses import install_error_response_docs
 from studio_api.sync.router import create_router
 from studio_api.sync.resources.hub import ResourceHub
@@ -32,6 +33,7 @@ from studio_api.sync.resources.models import (
     TranscriptResource,
 )
 from codex_runtime import Runtime
+from codex_sync import SyncStore
 
 
 class StoreStub:
@@ -202,36 +204,29 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
 
 
 class SyncRouterTests(unittest.TestCase):
-    def test_stream_openapi_declares_event_stream_without_json_success(self) -> None:
+    def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))
         install_error_response_docs(app)
         paths = app.openapi()["paths"]
-        for path in ("/api/sync/stream", "/api/transcript/stream"):
-            responses = paths[path]["get"]["responses"]
-            if path == "/api/sync/stream":
-                event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
-                self.assertEqual(
-                    event_schema["oneOf"],
-                    [
-                        {"$ref": "#/components/schemas/ResourceChangeEvent"},
-                        {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
-                        {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
-                    ],
-                )
-                components = app.openapi()["components"]["schemas"]
-                self.assertIn("ResourceRef", components)
-                self.assertIn("ResourceChangeEvent", components)
-                self.assertIn("ResourceHeartbeatEvent", components)
-                self.assertIn("ResourceTokenRatesEvent", components)
-                self.assertIn("resources", event_schema["x-sse-events"])
-            else:
-                self.assertEqual(
-                    responses["200"]["content"],
-                    {"text/event-stream": {"schema": {"type": "string"}}},
-                )
-            self.assertIn("400", responses)
-            self.assertIn("application/json", responses["400"]["content"])
+        responses = paths["/api/sync/stream"]["get"]["responses"]
+        event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
+        self.assertEqual(
+            event_schema["oneOf"],
+            [
+                {"$ref": "#/components/schemas/ResourceChangeEvent"},
+                {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
+                {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
+            ],
+        )
+        components = app.openapi()["components"]["schemas"]
+        self.assertIn("ResourceRef", components)
+        self.assertIn("ResourceChangeEvent", components)
+        self.assertIn("ResourceHeartbeatEvent", components)
+        self.assertIn("ResourceTokenRatesEvent", components)
+        self.assertIn("resources", event_schema["x-sse-events"])
+        self.assertNotIn("/api/sync/generations", paths)
+        self.assertNotIn("/api/transcript/stream", paths)
 
     def read_stream(
         self, context: ContextStub, path: str, headers: list[tuple[bytes, bytes]] | None = None
@@ -251,14 +246,14 @@ class SyncRouterTests(unittest.TestCase):
         request = ConnectedRequest(scope)
 
         async def read() -> bytes:
-            if path.startswith("/api/sync/stream"):
-                protocol = "3" if "protocol=3" in path else "2" if "protocol=2" in path else "1"
-                resources = request.query_params.get("resources")
-                response = await route.endpoint(
-                    request, SyncStreamQuery(protocol=protocol, scope="drafts", after=4, resources=resources)
-                )
-            else:
-                response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
+            resources = request.query_params.get("resources")
+            response = await route.endpoint(
+                request,
+                SyncStreamQuery(
+                    protocol=request.query_params.get("protocol"),
+                    resources=resources,
+                ),
+            )
             result = bytearray()
             async for chunk in response.body_iterator:
                 result.extend(chunk)
@@ -266,21 +261,22 @@ class SyncRouterTests(unittest.TestCase):
 
         return asyncio.run(read()).decode()
 
-    def test_shared_stream_reads_token_rates_object_and_emits_snapshot(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
+    def test_protocol_endpoint_advertises_only_version_three(self) -> None:
+        response = make_client(ContextStub()).get("/api/sync/protocol")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["protocolVersion"], 3)
+        self.assertEqual(response.json()["supportedVersions"], [3])
 
-        async def stop_after_first_iteration(_delay: float) -> None:
-            context.runtime.closed = True
-
-        with (
-            patch("codex_token_rate.token_rates", return_value=TokenRatesStub()),
-            patch("studio_api.sync.router.asyncio.sleep", new=stop_after_first_iteration),
-        ):
-            body = self.read_stream(context, "/api/sync/stream?protocol=2&scope=drafts&after=0")
-        self.assertIn("event: token-rates", body)
-        self.assertIn('"rates": {"agent-a": {"rate": 8.5}}', body)
-        self.assertIn('"workspaceId": "workspace-a"', body)
+    def test_removed_routes_and_unsupported_stream_selectors_are_rejected(self) -> None:
+        client = make_client(ContextStub())
+        for path in ("/api/sync/generations", "/api/transcript/stream"):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 404)
+        for selector in ("?protocol=1", "?protocol=2", ""):
+            with self.subTest(selector=selector):
+                response = client.get("/api/sync/stream" + selector)
+                self.assertEqual(response.status_code, 426)
+                self.assertEqual(response.json()["supportedVersions"], [3])
 
     def test_protocol_three_emits_typed_initial_resources_and_token_rates(self) -> None:
         context = ContextStub()
@@ -304,6 +300,19 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"reason":"reconnect"', body)
         self.assertIn('"kind":"panel","agentId":"agent-a"', body)
 
+    def test_protocol_three_entity_invalidation_keeps_tombstone_floor_reset_pull(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "state"}], separators=(",", ":"))
+        body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertIn('"kind":"state"', body)
+        context.store.reset_pull = True
+        response = make_client(context).get(
+            "/api/sync/pull?scope=state:entities:v1&after=2&reset=1"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["floor"], 4)
+        self.assertTrue(response.json()["reset"])
+
     def test_missing_panel_agent_does_not_block_or_watch_other_resources(self) -> None:
         context = ContextStub()
         resources = json.dumps([
@@ -321,6 +330,41 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+
+    def test_real_sync_store_returns_unchanged_transcript_for_full_pull(self) -> None:
+        context = ContextStub()
+        unchanged_transcript = {
+            "items": [{"id": "item-a", "text": "unchanged chat"}],
+            "title": "Existing chat",
+        }
+        context.runtime.transcript_responses = [unchanged_transcript, unchanged_transcript]
+        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(
+            connect,
+            snapshot=lambda: {},
+            transcript=context.runtime.transcript,
+        )
+        context.sync = lambda: store
+        client = make_client(context)
+        full = client.get("/api/sync/pull?scope=transcript:agent-a&after=0")
+        self.assertEqual(full.status_code, 200)
+        full_document = full.json()["documents"][0]
+        self.assertIn("unchanged chat", full_document["payload"])
+        checkpoint = full.json()["checkpoint"]["seq"]
+        self.assertEqual(full_document["seq"], checkpoint)
+        unchanged = client.get(f"/api/sync/pull?scope=transcript:agent-a&after={checkpoint}")
+        self.assertEqual(unchanged.status_code, 200)
+        self.assertEqual(unchanged.json()["documents"], [])
+        self.assertEqual(unchanged.json()["checkpoint"]["seq"], checkpoint)
 
     def test_pull_keeps_query_parameter_openapi_schema(self) -> None:
         app = FastAPI()
@@ -460,227 +504,6 @@ class SyncRouterTests(unittest.TestCase):
         })
         self.assertEqual(pull.status_code, 200)
         self.assertEqual(pull.json()["generation"], 3)
-
-    def test_protocol_one_stream_has_wire_headers_and_invalid_cursor_is_preflight(self) -> None:
-        context = ContextStub()
-        client = make_client(context)
-        response = client.get("/api/sync/stream?protocol=1&scope=drafts&after=0")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["x-codex-sync-protocol"], "1")
-        bad = client.get("/api/sync/stream?protocol=1&scope=drafts&after=-1")
-        self.assertEqual(bad.status_code, 400)
-        self.assertEqual(context.store.stream_calls, 1)
-
-    def test_protocol_one_stream_emits_changes_and_advances_reconnect_cursor(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
-        context.store.stream_batches = [
-            {"kind": "changes", "documents": [], "cursor": 5, "maxSeq": 5, "floor": 0},
-            {"kind": "idle", "documents": [], "cursor": 5, "maxSeq": 5, "floor": 0},
-        ]
-        body = self.read_stream(context, "/api/sync/stream?protocol=1&scope=drafts&after=4")
-        self.assertIn("id: 5\nevent: changes", body)
-        self.assertEqual(context.store.stream_calls, 2)
-        self.assertEqual(context.store.stream_cursors, [4, 5])
-
-    def test_protocol_one_change_identity_read_does_not_block_event_loop(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
-        context.store.stream_batches = [
-            {"kind": "changes", "documents": [{"id": "doc", "payload": "{}"}],
-             "cursor": 5, "maxSeq": 5, "floor": 0},
-        ]
-        identity_entered = threading.Event()
-        identity_release = threading.Event()
-        event_loop_progressed = threading.Event()
-
-        def blocked_identity() -> dict[str, object]:
-            identity_entered.set()
-            if not identity_release.wait(2):
-                raise TimeoutError("Identity fixture was not released")
-            return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
-
-        router = create_router(cast(ApiContext, context))
-        route = cast(
-            APIRoute,
-            next(route for route in router.routes
-                 if getattr(route, "path", None) == "/api/sync/stream"),
-        )
-        scope: dict[str, object] = {
-            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-            "method": "GET", "scheme": "http", "path": "/api/sync/stream",
-            "raw_path": b"/api/sync/stream", "query_string": b"protocol=1&scope=drafts&after=4",
-            "headers": [], "client": ("test", 1000), "server": ("test", 80),
-        }
-        request = ConnectedRequest(scope)
-
-        async def read_one() -> bytes:
-            response = await route.endpoint(
-                request, SyncStreamQuery(protocol="1", scope="drafts", after=4)
-            )
-
-            async def prove_loop_progress() -> None:
-                try:
-                    self.assertTrue(await asyncio.to_thread(identity_entered.wait, 1))
-                    asyncio.get_running_loop().call_soon_threadsafe(event_loop_progressed.set)
-                    self.assertTrue(await asyncio.to_thread(event_loop_progressed.wait, 0.5))
-                finally:
-                    identity_release.set()
-
-            progress = asyncio.create_task(prove_loop_progress())
-            try:
-                chunk = cast(bytes, await asyncio.wait_for(response.body_iterator.__anext__(), 1))
-                await asyncio.wait_for(progress, 1)
-                return chunk
-            finally:
-                identity_release.set()
-                await response.body_iterator.aclose()
-
-        with patch.object(context.store, "identity", side_effect=blocked_identity):
-            chunk = asyncio.run(read_one())
-        self.assertEqual(
-            chunk.decode(),
-            'id: 5\nevent: changes\ndata: '
-            '{"protocolVersion":1,"workspaceId":"workspace-a","scope":"drafts",'
-            '"documents":[{"id":"doc","payload":"{}"}],"cursor":5}\n\n',
-        )
-        self.assertTrue(event_loop_progressed.is_set())
-
-    def test_protocol_one_stream_emits_reset_control_event(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
-        context.store.stream_batches = [
-            {"kind": "reset", "reason": "floor-advanced", "floor": 7, "maxSeq": 9}
-        ]
-        body = self.read_stream(context, "/api/sync/stream?protocol=1&scope=drafts&after=0")
-        self.assertIn("event: reset", body)
-        self.assertIn('"reason": "floor-advanced"', body)
-
-    def test_transcript_stream_preserves_replace_delta_and_order_updates(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
-        context.runtime.transcript_responses = [
-            {"items": [{"id": "b", "text": "hello", "kind": "message"},
-                        {"id": "a", "text": "second", "kind": "message"}], "truncated": False},
-            {"items": [{"id": "a", "text": "second", "kind": "message"},
-                        {"id": "b", "text": "hello world", "kind": "message"}], "truncated": False},
-        ]
-        body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
-        events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines() if line.startswith("data: ")]
-        self.assertEqual(len(events), 2)
-        self.assertTrue(events[0]["replace"])
-        self.assertEqual(events[0]["order"], ["b", "a"])
-        self.assertEqual(events[1]["order"], ["a", "b"])
-        self.assertEqual(events[1]["items"], [{"id": "b", "append": " world"}])
-        self.assertEqual(context.runtime.transcript_reads, 2)
-        self.assertNotIn("event: transcript", body)
-        self.assertTrue(body.startswith("data: "))
-
-    def test_legacy_transcript_stream_receives_disconnect_status_change(self) -> None:
-        context = ContextStub()
-        context.canvas.root = tempfile.gettempdir() + "/studio-transcript-disconnect-test"
-        context.runtime.closed = False
-        context.runtime.transcript_close_after = 2
-        context.runtime.transcript_responses = [
-            {"items": [], "agent": {"id": "agent-a", "status": "running"}},
-            {"items": [], "agent": {"id": "agent-a", "status": "interrupted"}},
-        ]
-        agent = {
-            "id": "agent-a", "rootId": "agent-a", "status": "running", "autoWake": True,
-            "inFlight": True, "threadId": "thread-a", "turnId": "turn-a", "epoch": 1,
-        }
-        backend = Runtime.__new__(Runtime)
-        backend.lock = threading.RLock()
-        backend.connection_ids = {"default": "connection-a"}
-        backend.offline_accounts = {"default"}
-        backend.offline = False
-        backend.loaded = {"agent-a"}
-        backend.servers = {}
-        backend.preparations = {}
-        connection = sqlite3.connect(":memory:")
-        connection.executescript("""
-            CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, status TEXT, error TEXT);
-            CREATE TABLE runtime_tasks(record TEXT);
-            CREATE TABLE runtime_monitors(record TEXT);
-        """)
-
-        @contextmanager
-        def database():
-            yield connection
-
-        backend.db = database
-        backend.records = lambda _db, table=None: [agent] if table == "agents" else []
-        backend.account_agents = lambda _db, _account: [agent]
-        backend.retire_legacy_steer = lambda *_args: None
-        backend.capacity_restart = lambda *_args: None
-
-        def put_agent(_db: object, table: str, record: dict[str, object]) -> None:
-            self.assertEqual(table, "agents")
-            agent.update(record)
-            context.hub.publish(
-                ResourceRef(TranscriptResource(kind="transcript", agentId="agent-a"))
-            )
-
-        backend.put = put_agent
-        route = next(
-            route for route in create_router(cast(ApiContext, context)).routes
-            if getattr(route, "path", None) == "/api/transcript/stream"
-        )
-        scope: dict[str, object] = {
-            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-            "method": "GET", "scheme": "http", "path": "/api/transcript/stream",
-            "raw_path": b"/api/transcript/stream", "query_string": b"id=agent-a",
-            "headers": [], "client": ("test", 1000), "server": ("test", 80),
-        }
-        request = ConnectedRequest(scope)
-
-        async def exercise() -> tuple[bytes, bytes]:
-            response = await route.endpoint(request, TranscriptStreamQuery(id="agent-a"))
-            first = cast(bytes, await response.body_iterator.__anext__())
-            backend.disconnected("default", "connection-a")
-            second = cast(bytes, await response.body_iterator.__anext__())
-            await response.body_iterator.aclose()
-            return first, second
-
-        try:
-            first, second = asyncio.run(exercise())
-            self.assertTrue(first.startswith(b"data: "))
-            self.assertNotIn(b"event: transcript", first)
-            self.assertTrue(second.startswith(b"data: "))
-            self.assertNotIn(b"event: transcript", second)
-            payload = json.loads(second.split(b"data: ", 1)[1].split(b"\n", 1)[0])
-            self.assertEqual(payload["agent"]["status"], "interrupted")
-        finally:
-            connection.close()
-
-    def test_transcript_stream_emits_metadata_only_changes(self) -> None:
-        context = ContextStub()
-        context.runtime.closed = False
-        context.runtime.transcript_close_after = 3
-        context.runtime.transcript_responses = [
-            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
-             "activity": {"phase": "writing"}},
-            {"items": [{"id": "item-a", "text": "hello"}], "truncated": False,
-             "activity": {"phase": "completed"}},
-        ]
-
-        body = self.read_stream(context, "/api/transcript/stream?id=agent-a")
-
-        events = [json.loads(line.removeprefix("data: ")) for line in body.splitlines()
-                  if line.startswith("data: ")]
-        self.assertEqual(len(events), 3)
-        self.assertEqual(events[1]["activity"], {"phase": "completed"})
-        self.assertEqual(events[1]["items"], [])
-
-    def test_transcript_initial_read_failure_closes_subscription(self) -> None:
-        context = ContextStub()
-        context.runtime.transcript_error = OSError("transcript unavailable")
-
-        response = make_client(context).get("/api/transcript/stream?id=agent-a")
-
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(context.hub._subscriptions, set())
-
 
 if __name__ == "__main__":
     unittest.main()

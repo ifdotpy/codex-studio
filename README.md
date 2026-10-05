@@ -294,8 +294,10 @@ Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
 The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. One shared event stream tells visible windows
-when entity state, drafts, or open transcripts need an update.
+histories through its existing API. One shared protocol-3 event stream tells
+visible windows when entity state, drafts, or open transcripts need an update.
+Tabs pull their scoped projections after an invalidation; transcript updates do
+not use generation polling or a separate transcript stream.
 While Studio is visible, it prepares unarchived chats and the selected team's
 agent chats in the background. It updates these saved histories before selection.
 The current chat loads first. One background history loads at a time.
