@@ -11,7 +11,7 @@ import time
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from sync.sync_store import SyncStore
+from codex_sync import SyncStore
 
 
 def percentile(values, percent):
@@ -44,8 +44,7 @@ def run(iterations):
         after = first["checkpoint"]["seq"]
         timings = {"analyticsChurn": [], "uiWrites": []}
         bytes_out = {"analyticsChurn": 0, "uiWrites": 0}
-        observed_invalidations = 0
-        previous_generation = store.generations()["state"]
+        documents = {"analyticsChurn": 0, "uiWrites": 0}
         for i in range(iterations):
             with connect() as db:
                 db.execute("INSERT INTO analytics_usage VALUES (?, '{}')", (f"a{i}",))
@@ -54,30 +53,26 @@ def run(iterations):
             result = store.pull("state", after)
             timings["analyticsChurn"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["analyticsChurn"] += sum(len(row["payload"].encode()) for row in result["documents"])
-            if store.generations()["state"] != previous_generation:
-                observed_invalidations += 1
+            documents["analyticsChurn"] += len(result["documents"])
             with connect() as db:
                 db.execute("INSERT OR REPLACE INTO groups VALUES (?, 'team', '[]')", (f"g{i}",))
             started = time.perf_counter_ns()
             result = store.pull("state", after)
             timings["uiWrites"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["uiWrites"] += sum(len(row["payload"].encode()) for row in result["documents"])
+            documents["uiWrites"] += len(result["documents"])
             after = result["checkpoint"]["seq"]
-            current_generation = store.generations()["state"]
-            if current_generation != previous_generation:
-                observed_invalidations += 1
-                previous_generation = current_generation
         return {
             "schemaVersion": 1,
-            "benchmark": "sync_scoped_invalidation",
+            "benchmark": "sync_production_store",
             "iterations": iterations,
             "payloadBytes": bytes_out,
+            "stateDocuments": documents,
             "latencyMs": {name: {"p50": percentile(values, .50), "p95": percentile(values, .95), "p99": percentile(values, .99)} for name, values in timings.items()},
             "stateBuildCount": state_builds,
-            "scopedInvalidationCount": observed_invalidations,
-            "storeSnapshotBuildCount": store.snapshot_builds,
             "legacyBroadGeneration": store.generation(),
-            "expectedAnalyticsStateInvalidations": 0,
+            "expectedAnalyticsStateDocuments": 0,
+            "expectedUiStateDocuments": iterations,
         }
 
 
@@ -91,10 +86,10 @@ def main():
         parser.error("--iterations must be between 1 and 5000")
     result = run(2 if args.check else args.iterations)
     expected_iterations = 2 if args.check else args.iterations
-    if result["scopedInvalidationCount"] != expected_iterations:
-        raise SystemExit("Scoped invalidation count did not match relevant UI writes")
-    if result["stateBuildCount"] != result["scopedInvalidationCount"] + 1:
-        raise SystemExit("Unexpected state projection rebuild count")
+    if result["stateDocuments"]["analyticsChurn"] != result["expectedAnalyticsStateDocuments"]:
+        raise SystemExit("Analytics-only writes changed the state projection")
+    if result["stateDocuments"]["uiWrites"] != result["expectedUiStateDocuments"]:
+        raise SystemExit("UI writes did not produce the expected state documents")
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.output:
         args.output.write_text(payload + "\n", encoding="utf-8")
