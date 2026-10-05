@@ -550,47 +550,47 @@ class SessionCostReader:
         return rows
 
     def _cost_usage_groups(self, db, root):
-        # The compact temporary table keeps repeated model and response checks
-        # away from the full history records. It stays on this read connection.
-        db.execute("""
+        # Store only the selected token object and response value. The outer
+        # projection reuses them without parsing the full record again.
+        extract = "jsonb_extract" if sqlite3.sqlite_version_info >= (3, 45, 0) else "json_extract"
+        db.execute(f"""
           CREATE TEMP TABLE session_cost_usage AS
-            SELECT seq,agent,thread,turn,at,
-                   json_extract(record,'$.agentId') AS record_agent,
-                   json_extract(record,'$.threadId') AS record_thread,
-                   json_extract(record,'$.turnId') AS record_turn,
-                   CASE WHEN json_type(record,'$.responseId') IS NULL
-                       OR json_type(record,'$.responseId') IN ('null','false')
-                       OR (json_type(record,'$.responseId') IN ('integer','real') AND json_extract(record,'$.responseId')=0)
-                       OR (json_type(record,'$.responseId')='text' AND json_extract(record,'$.responseId')='')
-                       OR (json_type(record,'$.responseId')='array' AND json_array_length(record,'$.responseId')=0)
-                       OR (json_type(record,'$.responseId')='object' AND NOT EXISTS
-                           (SELECT 1 FROM json_each(analytics_usage.record,'$.responseId')))
+            WITH records AS MATERIALIZED (
+              SELECT seq,agent,thread,turn,at,
+                     json_extract(record,'$.agentId') AS record_agent,
+                     json_extract(record,'$.threadId') AS record_thread,
+                     json_extract(record,'$.turnId') AS record_turn,
+                     json_type(record,'$.responseId') AS response_type,
+                     {extract}(record,'$.responseId') AS response,
+                     CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
+                     COALESCE(json_extract(record,'$.accountKey'),'default') AS account_key,
+                     CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
+                            AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
+                          THEN {extract}(record,'$.delta')
+                          WHEN json_type(record,'$.last')='object' THEN {extract}(record,'$.last') END AS tokens,
+                     CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
+                FROM analytics_usage
+               WHERE root=? AND NOT EXISTS
+                     (SELECT 1 FROM session_cost_claude_messages l
+                       WHERE l.account_key IS json_extract(analytics_usage.record,'$.accountKey')
+                         AND l.thread_id IS analytics_usage.thread
+                         AND l.response_id IS json_extract(analytics_usage.record,'$.responseId'))
+            )
+            SELECT seq,agent,thread,turn,at,record_agent,record_thread,record_turn,
+                   CASE WHEN response_type IS NULL OR response_type IN ('null','false')
+                       OR (response_type IN ('integer','real') AND response=0)
+                       OR (response_type='text' AND response='')
+                       OR (response_type='array' AND json_array_length(response)=0)
+                       OR (response_type='object' AND NOT EXISTS
+                           (SELECT 1 FROM json_each(records.response)))
                       THEN 0 ELSE 1 END AS has_response,
-                   CASE WHEN json_type(record,'$.model')='text' THEN json_extract(record,'$.model') END AS model,
-                   COALESCE(json_extract(record,'$.accountKey'),'default') AS account_key,
-                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                        THEN CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.inputTokens') END
-                        WHEN json_type(record,'$.last.inputTokens') IN ('integer','real') THEN json_extract(record,'$.last.inputTokens') END AS input_tokens,
-                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                        THEN CASE WHEN json_type(record,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cachedInputTokens') END
-                        WHEN json_type(record,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cachedInputTokens') END AS cached_tokens,
-                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                        THEN CASE WHEN json_type(record,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.cacheWriteInputTokens') END
-                        WHEN json_type(record,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(record,'$.last.cacheWriteInputTokens') END AS write_tokens,
-                   CASE WHEN json_type(record,'$.delta.inputTokens') IN ('integer','real','true','false')
-                          AND json_type(record,'$.delta.outputTokens') IN ('integer','real','true','false')
-                        THEN CASE WHEN json_type(record,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(record,'$.delta.outputTokens') END
-                        WHEN json_type(record,'$.last.outputTokens') IN ('integer','real') THEN json_extract(record,'$.last.outputTokens') END AS output_tokens,
-                   CASE WHEN json_extract(record,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END AS input_uncached
-              FROM analytics_usage
-             WHERE root=? AND NOT EXISTS
-                   (SELECT 1 FROM session_cost_claude_messages l
-                     WHERE l.account_key IS json_extract(analytics_usage.record,'$.accountKey')
-                       AND l.thread_id IS analytics_usage.thread
-                       AND l.response_id IS json_extract(analytics_usage.record,'$.responseId'))
+                   model,account_key,
+                   CASE WHEN json_type(tokens,'$.inputTokens') IN ('integer','real') THEN json_extract(tokens,'$.inputTokens') END AS input_tokens,
+                   CASE WHEN json_type(tokens,'$.cachedInputTokens') IN ('integer','real') THEN json_extract(tokens,'$.cachedInputTokens') END AS cached_tokens,
+                   CASE WHEN json_type(tokens,'$.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(tokens,'$.cacheWriteInputTokens') END AS write_tokens,
+                   CASE WHEN json_type(tokens,'$.outputTokens') IN ('integer','real') THEN json_extract(tokens,'$.outputTokens') END AS output_tokens,
+                   input_uncached
+              FROM records
         """, (root,))
         status = db.execute("SELECT MAX(model IS NULL),MAX(NOT has_response) FROM session_cost_usage").fetchone()
         missing_models, missing_responses = (bool(value) for value in status)

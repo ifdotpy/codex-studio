@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import gc
+import hashlib
 import importlib
 import json
 import os
@@ -27,6 +28,12 @@ import codex_sqlite_traces as traces
 class OwnerHistoryContract(unittest.TestCase):
     def setUp(self):
         importlib.reload(traces)
+        source = os.environ.get("STUDIO_SQLITE_TRACE_SOURCE")
+        if source:
+            from codex_source import source_function
+            function, _ = source_function(Path(source).read_bytes(),
+                ["_archive_previous"], vars(traces), "<archive-before>")
+            traces._archive_previous.__code__ = function.__code__
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -108,6 +115,155 @@ class OwnerHistoryContract(unittest.TestCase):
         self.assertEqual(json.loads(archived.read_text())["recent"][-1]["id"], entry["id"])
         self.restart_watchdog()
         self.assertEqual(json.loads(archived.read_text())["recent"][-1]["id"], entry["id"])
+
+    def owner_session(self, seconds):
+        code = """
+from pathlib import Path
+import json, os, sys
+import codex_sqlite
+import codex_sqlite_traces as traces
+source = os.environ.get("STUDIO_SQLITE_TRACE_SOURCE")
+if source:
+    from codex_source import source_function
+    function, _ = source_function(Path(source).read_bytes(), ["_archive_previous"], vars(traces))
+    traces._archive_previous.__code__ = function.__code__
+now = [1000.0]
+codex_sqlite._clock = traces._clock = lambda: now[0]
+root = Path(sys.argv[1])
+db = codex_sqlite.connect(root / "canvas.sqlite3", site="contract.session")
+try:
+    db.execute("INSERT INTO events VALUES (?)", ("PRIVATE_MESSAGE_NOT_IN_JOURNAL",))
+    now[0] += float(sys.argv[2])
+    db.commit()
+finally:
+    db.close()
+traces.transaction_watchdog(root)
+print(json.dumps(traces.history()["recent"][-1]))
+"""
+        result = subprocess.run([sys.executable, "-B", "-c", code, str(self.root), str(seconds)],
+                                check=True, env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")},
+                                timeout=5, capture_output=True)
+        return json.loads(result.stdout)
+
+    def archived_snapshots(self):
+        return sorted(self.journal.parent.glob("sqlite-transactions.history.*.json"))
+
+    def test_three_nonempty_sessions_preserve_the_first_exact_owner(self):
+        first = self.owner_session(282.180956666)
+        first_raw = self.journal.read_bytes()
+        second = self.owner_session(2)
+        self.owner_session(3)
+        snapshots = [self.journal, self.journal.with_name("sqlite-transactions.previous.json"),
+                     *self.archived_snapshots()]
+        owners = [entry for path in snapshots for entry in json.loads(path.read_bytes())["recent"]]
+        self.assertIn(first, owners)
+        self.assertEqual(first["durationMs"], 282180.957)
+        self.assertNotEqual(first["pid"], second["pid"])
+        self.assertEqual(json.loads(self.journal.with_name("sqlite-transactions.previous.json").read_bytes())["recent"][-1], second)
+        archive = next(path for path in self.archived_snapshots() if path.read_bytes() == first_raw)
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(b"PRIVATE_MESSAGE_NOT_IN_JOURNAL", archive.read_bytes())
+        self.assertNotIn(str(self.root).encode(), archive.read_bytes())
+
+    def test_history_files_have_a_fixed_count_and_keep_recent_sessions(self):
+        receipts = [self.owner_session(seconds) for seconds in range(2, 9)]
+        archives = self.archived_snapshots()
+        self.assertEqual(len(archives), 3)
+        owners = [entry for path in [self.journal, *archives]
+                  for entry in json.loads(path.read_bytes())["recent"]]
+        for receipt in receipts[-4:]:
+            self.assertIn(receipt, owners)
+        self.assertNotIn(receipts[0], owners)
+        for archive in archives:
+            raw = archive.read_bytes()
+            self.assertEqual(archive.name, "sqlite-transactions.history." + hashlib.sha256(raw).hexdigest() + ".json")
+            self.assertLessEqual(len(raw), traces.JOURNAL_LIMIT)
+        before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in archives}
+        self.restart_watchdog()
+        after_restart = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                         for path in self.archived_snapshots()}
+        self.restart_watchdog()
+        self.assertEqual({path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                          for path in self.archived_snapshots()}, after_restart)
+        for name in before.keys() & after_restart.keys():
+            self.assertEqual(before[name], after_restart[name])
+
+    def seed_snapshot(self, identity):
+        entry = {"id": identity, "pid": -1, "site": "contract.saved",
+                 "startedAt": 1, "durationMs": 2000, "originFrames": []}
+        return json.dumps({"version": 1, "pid": -1, "coverageStartedAt": 1,
+                           "active": [], "recent": [entry], "longest": [entry]}).encode()
+
+    def test_corrupt_or_oversize_originals_remain_unchanged_until_retry(self):
+        for filename in ("sqlite-transactions.json", "sqlite-transactions.previous.json"):
+            for broken in (b"{", json.dumps({"version": 2}).encode(), b" " * 1025):
+                with self.subTest(filename=filename, bytes=len(broken)):
+                    importlib.reload(traces)
+                    for path in self.archived_snapshots():
+                        path.unlink()
+                    self.journal.parent.mkdir(exist_ok=True)
+                    previous_path = self.journal.with_name("sqlite-transactions.previous.json")
+                    self.journal.write_bytes(self.seed_snapshot("current:1"))
+                    previous_path.write_bytes(self.seed_snapshot("previous:1"))
+                    broken_path = self.journal.with_name(filename)
+                    broken_path.write_bytes(broken)
+                    originals = {path: path.read_bytes() for path in (self.journal, previous_path)}
+                    with patch.object(traces, "JOURNAL_LIMIT", 1024):
+                        traces.transaction_watchdog(self.root)
+                    self.assertEqual(traces.history()["journal"]["status"], "error")
+                    for path, raw in originals.items():
+                        self.assertEqual(path.read_bytes(), raw)
+                    self.assertEqual(self.archived_snapshots(), [])
+                    self.assertEqual(list(self.root.glob("diagnostics/.sqlite-transactions-*")), [])
+                    broken_path.write_bytes(self.seed_snapshot("repaired:1"))
+                    traces.transaction_watchdog(self.root)
+                    self.assertEqual(traces.history()["journal"]["status"], "written")
+                    self.assertEqual(len(self.archived_snapshots()), 2)
+
+    def test_archive_or_rotation_failure_preserves_originals_and_retries(self):
+        for failure in ("archive", "rotation"):
+            with self.subTest(failure=failure):
+                importlib.reload(traces)
+                for path in self.archived_snapshots():
+                    path.unlink()
+                self.journal.parent.mkdir(exist_ok=True)
+                previous_path = self.journal.with_name("sqlite-transactions.previous.json")
+                self.journal.write_bytes(self.seed_snapshot("current:1"))
+                previous_path.write_bytes(self.seed_snapshot("previous:1"))
+                originals = {path: path.read_bytes() for path in (self.journal, previous_path)}
+                replace = traces.os.replace
+                def fail(source, target):
+                    if ((failure == "archive" and ".history." in str(target))
+                            or (failure == "rotation" and Path(target) == previous_path)):
+                        raise PermissionError("PRIVATE_IO_FAILURE")
+                    return replace(source, target)
+                with patch.object(traces.os, "replace", side_effect=fail):
+                    traces.transaction_watchdog(self.root)
+                self.assertEqual(traces.history()["journal"]["status"], "error")
+                for path, raw in originals.items():
+                    self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(list(self.root.glob("diagnostics/.sqlite-transactions-*")), [])
+                saved_archives = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                                  for path in self.archived_snapshots()}
+                traces.transaction_watchdog(self.root)
+                self.assertEqual(traces.history()["journal"]["status"], "written")
+                self.assertEqual(previous_path.read_bytes(), originals[self.journal])
+                for name, saved in saved_archives.items():
+                    path = self.journal.with_name(name)
+                    self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), saved)
+                self.assertEqual(len(self.archived_snapshots()), 2)
+
+    def test_existing_archive_with_wrong_bytes_is_not_overwritten(self):
+        raw = self.seed_snapshot("old:1")
+        self.journal.parent.mkdir()
+        self.journal.write_bytes(raw)
+        archive = self.journal.with_name("sqlite-transactions.history." + hashlib.sha256(raw).hexdigest() + ".json")
+        archive.write_bytes(b"foreign")
+        traces.transaction_watchdog(self.root)
+        self.assertEqual(traces.history()["journal"]["status"], "error")
+        self.assertEqual(self.journal.read_bytes(), raw)
+        self.assertEqual(archive.read_bytes(), b"foreign")
+        self.assertFalse(self.journal.with_name("sqlite-transactions.previous.json").exists())
 
     def restart_watchdog(self):
         code = "from pathlib import Path; import sys; from codex_sqlite_traces import transaction_watchdog; transaction_watchdog(Path(sys.argv[1]))"
