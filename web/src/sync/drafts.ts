@@ -519,9 +519,16 @@ export function useSyncedDrafts() {
           if (stopped) return;
           adoptScope(workspaceId);
           await flushDrafts();
-          cancel = await startDraftReplication((e) => {
-            if (!stopped) reportSyncFailure(e !== null);
-          });
+          const testOnly =
+            typeof window !== "undefined"
+              ? (window as any).__codexDraftReplicationTestOnly
+              : undefined;
+          cancel = await startDraftReplication(
+            (e) => {
+              if (!stopped) reportSyncFailure(e !== null);
+            },
+            testOnly ? { testOnly } : undefined,
+          );
           if (stopped) {
             cancel();
             return;
