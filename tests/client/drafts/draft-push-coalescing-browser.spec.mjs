@@ -176,6 +176,10 @@ test("draft pushes coalesce at the production replication boundary", async ({
       pushTimes[maxWaitPushIndex] - maxWaitStart <= 2_600,
       "The first push is bounded from the start of continuous typing",
     );
+    assert.ok(
+      pushTimes[maxWaitPushIndex] - maxWaitStart >= 1_500,
+      "A quiet-period push must not satisfy the maximum-wait assertion",
+    );
     await page.waitForTimeout(400);
     const continuous = pushes.slice(maxWaitPushIndex);
     assert.equal(

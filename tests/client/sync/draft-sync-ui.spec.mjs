@@ -6,6 +6,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Keep the request-rate assertions aligned with the production client constants.
+const DRAFT_PUSH_RETRY_TIME_MS = 3_000;
+const DRAFT_PUSH_RESTART_MIN_INTERVAL_MS = 3_000;
+const DRAFT_PUSH_RESTART_BOUND_MS = 900;
+// The first GET can be logged a few milliseconds after its restart timer fires.
+const DRAFT_PUSH_RESTART_REQUEST_SKEW_MS = 100;
 test("Draft sync ui", async ({
   browser: testBrowser,
   page: runnerPage,
@@ -209,25 +216,42 @@ test("Draft sync ui", async ({
       failPush = false,
       pullFailures = 0,
       pushFailures = 0,
+      successfulDraftPosts = 0,
       successfulPulls = 0,
       draftPullRequests = 0,
       remoteProbePulled = false;
+    const draftPullRequestTimes = [];
+    const draftPullCompletedTimes = [];
+    let nextPullGate;
     const remoteProbeId = "remote-pull-probe:remote-pull-probe-session";
     const pushedDraftIds = [];
     const pushedDraftRows = [];
+    const pushFailureTimes = [];
     await desktop.route("**/api/sync/pull?*", async (route) => {
       if (new URL(route.request().url()).searchParams.get("scope") !== "drafts")
         return route.continue();
       draftPullRequests++;
+      draftPullRequestTimes.push(Date.now());
       if (failPull) {
         pullFailures++;
+        draftPullCompletedTimes.push(Date.now());
         return route.abort("failed");
       }
       const response = await route.fetch();
       const body = await response.json();
+      const gate = nextPullGate;
+      if (gate) {
+        nextPullGate = undefined;
+        gate.snapshotReadyAt = Date.now();
+        gate.body = body;
+        gate.response = response;
+        gate.startedResolve(gate.snapshotReadyAt);
+        await gate.releasePromise;
+      }
       if (body.documents.some((document) => document.id === remoteProbeId))
         remoteProbePulled = true;
       successfulPulls++;
+      draftPullCompletedTimes.push(Date.now());
       return route.fulfill({ response, body: JSON.stringify(body) });
     });
     await desktop.route("**/api/sync/drafts", (route) => {
@@ -236,8 +260,10 @@ test("Draft sync ui", async ({
       pushedDraftRows.push(...rows);
       if (failPush) {
         pushFailures++;
+        pushFailureTimes.push(Date.now());
         return route.abort("failed");
       }
+      successfulDraftPosts++;
       return route.continue();
     });
     const until = async (condition, label) => {
@@ -247,6 +273,38 @@ test("Draft sync ui", async ({
       }
       throw new Error(label);
     };
+    const localDraft = (id) =>
+      desktop.evaluate(
+        async ({ workspaceId, id }) => {
+          const databases = await indexedDB.databases();
+          const name = databases
+            .map((database) => database.name)
+            .find(
+              (candidate) =>
+                candidate?.endsWith(`--0--drafts`) &&
+                candidate.includes(workspaceId),
+            );
+          if (!name) return null;
+          const database = await new Promise((resolve, reject) => {
+            const request = indexedDB.open(name);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          try {
+            return await new Promise((resolve, reject) => {
+              const request = database
+                .transaction("docs", "readonly")
+                .objectStore("docs")
+                .get(id);
+              request.onsuccess = () => resolve(request.result || null);
+              request.onerror = () => reject(request.error);
+            });
+          } finally {
+            database.close();
+          }
+        },
+        { workspaceId, id },
+      );
     await push({
       id: remoteProbeId,
       session: "remote-pull-probe-session",
@@ -326,19 +384,8 @@ test("Draft sync ui", async ({
       1,
       "resume starts one draft pull while push retries",
     );
-    for (let restart = 0; restart < 2; restart++) {
-      const requestsBeforeRestart = draftPullRequests;
-      await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
-      await until(
-        () => draftPullRequests > requestsBeforeRestart,
-        `resume restart ${restart + 2} pulls once`,
-      );
-      assert.equal(
-        draftPullRequests - requestsBeforeRestart,
-        1,
-        `resume restart ${restart + 2} makes exactly one pull request`,
-      );
-    }
+    // This single resume event must yield exactly one pull. The storm phase
+    // below covers bursts while restart throttling is active.
     const pullsAfterRecovery = draftPullRequests;
     const pushesAfterRecovery = pushFailures;
     await desktop.waitForTimeout(30_000);
@@ -351,6 +398,11 @@ test("Draft sync ui", async ({
       pushFailures > pushesAfterRecovery,
       "push keeps retrying during the sustained outage",
     );
+    assert.equal(
+      await status.isVisible(),
+      true,
+      "a healthy pull cannot hide the failed push",
+    );
     const pullRequestsTriggeredByResume =
       pullsAfterRecovery - requestsBeforeRecovery;
     console.log(
@@ -362,16 +414,254 @@ test("Draft sync ui", async ({
         pushFailuresDuring30sOutage: pushFailures - pushesAfterRecovery,
       }),
     );
-    assert.equal(
-      await status.isVisible(),
-      true,
-      "healthy pull cannot hide failed push",
+
+    const stormStartedAt = Date.now();
+    const stormPullsAtStart = draftPullRequests;
+    const stormPushesAtStart = pushFailures;
+    const stormFailureTimesAtStart = pushFailureTimes.length;
+    const pushProbeUpdate = async (text) => {
+      const previous = (await documents()).find(
+        (document) => document.id === remoteProbeId,
+      );
+      assert.ok(previous, "the existing pull probe remains on the server");
+      await push(
+        { ...JSON.parse(previous.payload), text, updated: Date.now() },
+        previous,
+      );
+    };
+    for (let index = 0; index < 60; index++) {
+      await pushProbeUpdate(`restart trigger ${index}`);
+      await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
+      await desktop.waitForTimeout(100);
+    }
+    const stormDuration = Date.now() - stormStartedAt;
+    const stormPulls = draftPullRequests - stormPullsAtStart;
+    const stormPushFailures = pushFailures - stormPushesAtStart;
+    const stormPushOffsets = pushFailureTimes
+      .slice(stormFailureTimesAtStart)
+      .map((time) => time - stormStartedAt);
+    const maxRestartsAtMinimumInterval =
+      Math.floor(stormDuration / DRAFT_PUSH_RESTART_MIN_INTERVAL_MS) + 1;
+    const stormRestarts = stormPulls;
+    assert.ok(
+      stormRestarts <= maxRestartsAtMinimumInterval,
+      `100 ms invalidations made ${stormRestarts} restarts in ${stormDuration} ms; max at the ${DRAFT_PUSH_RESTART_MIN_INTERVAL_MS} ms restart interval is ${maxRestartsAtMinimumInterval}`,
     );
+    assert.equal(
+      stormPulls,
+      stormRestarts,
+      "each replacement state makes one initial draft pull",
+    );
+    assert.ok(
+      stormPulls <= maxRestartsAtMinimumInterval,
+      `100 ms invalidations made ${stormPulls} draft pulls in ${stormDuration} ms; max at the ${DRAFT_PUSH_RESTART_MIN_INTERVAL_MS} ms restart interval is ${maxRestartsAtMinimumInterval}`,
+    );
+    const baseRetryAttempts =
+      Math.floor(stormDuration / DRAFT_PUSH_RETRY_TIME_MS) + 1;
+    const maxPushAttempts = baseRetryAttempts + stormRestarts;
+    assert.ok(
+      stormPushFailures <= maxPushAttempts,
+      `100 ms invalidations made ${stormPushFailures} failed pushes at offsets ${JSON.stringify(stormPushOffsets)} in ${stormDuration} ms; the ${baseRetryAttempts} base retry slots plus ${stormRestarts} restart attempts allow ${maxPushAttempts}`,
+    );
+    console.log(
+      "Draft restart storm requests:",
+      JSON.stringify({
+        stormDuration,
+        stormPulls,
+        stormPushFailures,
+        stormPushOffsets,
+      }),
+    );
+    // Queue several events while a replacement is starting, then let its first
+    // push recover. No queued restart may survive into a later outage.
+    const failedBurstStart = pushFailures;
+    for (let index = 0; index < 6; index++) {
+      await pushProbeUpdate(`recovery trigger ${index}`);
+    }
+    await until(
+      () => pushFailures > failedBurstStart,
+      "a replacement push fails during the trigger burst",
+    );
+    const postsBeforeRecovery = successfulDraftPosts;
+    failPush = false;
+    await desktop.locator("#message").fill("Pending local draft after restart");
+    await until(
+      () =>
+        successfulDraftPosts > postsBeforeRecovery &&
+        pushedDraftRows.some(
+          (row) =>
+            JSON.parse(row.newDocumentState.payload).text ===
+            "Pending local draft after restart",
+        ),
+      "the pending local draft is pushed after replacement recovery",
+    );
+    const postsBeforeRestore = successfulDraftPosts;
+    await desktop.locator("#message").fill("Retained during sync outage");
+    await until(
+      () => successfulDraftPosts > postsBeforeRestore,
+      "the retained composer draft is pushed after recovery",
+    );
+    await desktop.waitForTimeout(3_500);
+    failPush = true;
+    await desktop.locator("#message").fill("Second push outage");
+    const failuresBeforeNextOutage = pushFailures;
+    await until(
+      () => pushFailures > failuresBeforeNextOutage,
+      "second push outage is observed",
+    );
+
+    // Trigger A starts immediately once the restart interval has elapsed.
+    const pullsBeforeA = draftPullRequests;
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
+    await until(
+      () => draftPullRequests > pullsBeforeA,
+      "trigger A starts its draft pull during the push outage",
+    );
+    assert.equal(
+      draftPullRequests - pullsBeforeA,
+      1,
+      "trigger A starts exactly one pull",
+    );
+    const pullAIndex = draftPullRequestTimes.length - 1;
+    await until(
+      () => draftPullCompletedTimes.length > pullAIndex,
+      "trigger A pull completes",
+    );
+    const pullAStartedAt = draftPullRequestTimes[pullAIndex];
+    const pullACompletedAt = draftPullCompletedTimes[pullAIndex];
+
+    // Trigger B arrives 500 ms after A's pull completes. The restart interval
+    // retains it and runs one replacement at the next allowed time.
+    await pushProbeUpdate("Latest remote draft after deferred trigger B");
+    await desktop.waitForTimeout(500);
+    const triggerBDispatchedAt = Date.now();
+    assert.ok(
+      triggerBDispatchedAt - pullACompletedAt >= 500 &&
+        triggerBDispatchedAt - pullACompletedAt <= 1_000,
+      "trigger B is dispatched about 500 ms after trigger A's pull completes",
+    );
+    const pullCountBeforeB = draftPullRequests;
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
+    await until(
+      () => draftPullRequests > pullCountBeforeB,
+      "trigger B is deferred until the restart interval",
+    );
+    const pullBIndex = draftPullRequestTimes.length - 1;
+    const pullBStartedAt = draftPullRequestTimes[pullBIndex];
+    assert.ok(
+      pullBStartedAt >=
+        pullAStartedAt +
+          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS -
+          DRAFT_PUSH_RESTART_REQUEST_SKEW_MS,
+      `trigger B pull started earlier than the restart interval minus ${DRAFT_PUSH_RESTART_REQUEST_SKEW_MS} ms request-log skew: A=${pullAStartedAt}, B=${pullBStartedAt}`,
+    );
+    assert.ok(
+      pullBStartedAt <=
+        pullAStartedAt +
+          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS +
+          DRAFT_PUSH_RESTART_BOUND_MS,
+      `trigger B pull exceeded the restart interval plus ${DRAFT_PUSH_RESTART_BOUND_MS} ms: A=${pullAStartedAt}, B=${pullBStartedAt}`,
+    );
+    await until(async () => {
+      const local = await localDraft(remoteProbeId);
+      return (
+        local &&
+        JSON.parse(local.payload).text ===
+          "Latest remote draft after deferred trigger B"
+      );
+    }, "deferred trigger B applies the latest remote draft to IndexedDB");
+    await until(
+      () => draftPullCompletedTimes.length > pullBIndex,
+      "trigger B pull completes",
+    );
+    await desktop.waitForTimeout(3_300);
+    assert.equal(
+      draftPullRequests - pullCountBeforeB,
+      1,
+      "trigger B produces one deferred pull and no quiet-period polling",
+    );
+
+    // Hold A's initial response after its server snapshot is captured. B is
+    // dispatched while A is still in progress, so the latest server row is
+    // intentionally absent from A and needs one queued replacement pull.
+    let releaseHeldPull;
+    let signalHeldPullStarted;
+    const heldPullStarted = new Promise((resolve) => {
+      signalHeldPullStarted = resolve;
+    });
+    const heldPullReleased = new Promise((resolve) => {
+      releaseHeldPull = resolve;
+    });
+    nextPullGate = {
+      startedResolve: signalHeldPullStarted,
+      releasePromise: heldPullReleased,
+    };
+    const pullsBeforeInFlightA = draftPullRequests;
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
+    await heldPullStarted;
+    const inFlightAStartedAt = draftPullRequestTimes.at(-1);
+    assert.equal(
+      draftPullRequests - pullsBeforeInFlightA,
+      1,
+      "in-flight trigger A starts one held pull",
+    );
+    await pushProbeUpdate("Latest remote draft after in-flight trigger B");
+    const inFlightPullCountBeforeB = draftPullRequests;
+    await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
+    // onResume debounces lifecycle events by 50 ms; leave A held long enough
+    // for B's callback to queue its deferred restart before releasing A.
+    await desktop.waitForTimeout(100);
+    releaseHeldPull();
+    await until(
+      () => draftPullRequests > inFlightPullCountBeforeB,
+      "trigger B during A's restart gets one deferred pull",
+    );
+    const inFlightBIndex = draftPullRequestTimes.length - 1;
+    const inFlightBStartedAt = draftPullRequestTimes[inFlightBIndex];
+    assert.ok(
+      inFlightBStartedAt >=
+        inFlightAStartedAt +
+          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS -
+          DRAFT_PUSH_RESTART_REQUEST_SKEW_MS,
+      `in-flight trigger B pull started earlier than the restart interval minus ${DRAFT_PUSH_RESTART_REQUEST_SKEW_MS} ms request-log skew: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
+    );
+    assert.ok(
+      inFlightBStartedAt <=
+        inFlightAStartedAt +
+          DRAFT_PUSH_RESTART_MIN_INTERVAL_MS +
+          DRAFT_PUSH_RESTART_BOUND_MS,
+      `in-flight trigger B pull exceeded the interval plus ${DRAFT_PUSH_RESTART_BOUND_MS} ms: A=${inFlightAStartedAt}, B=${inFlightBStartedAt}`,
+    );
+    await until(async () => {
+      const local = await localDraft(remoteProbeId);
+      return (
+        local &&
+        JSON.parse(local.payload).text ===
+          "Latest remote draft after in-flight trigger B"
+      );
+    }, "in-flight trigger B applies the latest remote draft to IndexedDB");
+    await until(
+      () => draftPullCompletedTimes.length > inFlightBIndex,
+      "in-flight trigger B pull completes",
+    );
+    await desktop.waitForTimeout(3_300);
+    assert.equal(
+      draftPullRequests - inFlightPullCountBeforeB,
+      1,
+      "trigger B during a restart gets one later pull and no polling",
+    );
+
     assert.equal(
       await desktop.locator("#message").inputValue(),
-      "Retained during sync outage",
+      "Second push outage",
     );
+    const postsBeforeFinalRecovery = successfulDraftPosts;
     failPush = false;
+    await desktop.locator("#message").fill("Retained during sync outage");
+    await until(
+      () => successfulDraftPosts > postsBeforeFinalRecovery,
+      "the retained draft recovers after the second outage",
+    );
     await phone.reload();
     await waitText(phone, "Retained during sync outage");
     await status.waitFor({ state: "hidden", timeout: 15000 });
@@ -521,6 +811,38 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
           await fetch(`${origin}/api/sync/pull?scope=drafts&after=0&limit=100`)
         ).json()
       ).documents;
+    const localDraft = (id) =>
+      page.evaluate(
+        async ({ workspaceId, id }) => {
+          const databases = await indexedDB.databases();
+          const name = databases
+            .map((database) => database.name)
+            .find(
+              (candidate) =>
+                candidate?.endsWith(`--0--drafts`) &&
+                candidate.includes(workspaceId),
+            );
+          if (!name) return null;
+          const database = await new Promise((resolve, reject) => {
+            const request = indexedDB.open(name);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          try {
+            return await new Promise((resolve, reject) => {
+              const request = database
+                .transaction("docs", "readonly")
+                .objectStore("docs")
+                .get(id);
+              request.onsuccess = () => resolve(request.result || null);
+              request.onerror = () => reject(request.error);
+            });
+          } finally {
+            database.close();
+          }
+        },
+        { workspaceId, id },
+      );
     const sendRemote = async (value, previous) => {
       const response = await fetch(`${origin}/api/sync/drafts`, {
         method: "POST",
@@ -544,6 +866,7 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         }),
       });
       assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), []);
     };
     const until = async (condition, label, timeout = 20_000) => {
       const deadline = Date.now() + timeout;
@@ -617,6 +940,24 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     );
     assert.ok(baseline);
     targetId = baseline.id;
+    const pulledRemoteText = "Remote master applied before local edit";
+    await sendRemote(
+      {
+        ...JSON.parse(baseline.payload),
+        text: pulledRemoteText,
+        updated: Date.now() + 30_000,
+      },
+      baseline,
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await until(async () => {
+      const local = await localDraft(targetId);
+      return local && JSON.parse(local.payload).text === pulledRemoteText;
+    }, "an unopposed remote draft update is applied to the local RxDB row");
+    const pulledRemoteMaster = (await documents()).find(
+      (document) => document.id === targetId,
+    );
+    assert.ok(pulledRemoteMaster);
     remoteText = "Remote winner after resume";
     failPush = true;
     const failuresBeforeEdit = pushFailures;
@@ -632,13 +973,24 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         ),
       "pending local edit is rejected by the push route",
     );
+    assert.ok(
+      attempts.some(
+        (row) =>
+          row.newDocumentState.id === targetId &&
+          JSON.parse(row.newDocumentState.payload).text ===
+            "Pending local conflict" &&
+          row.assumedMasterState &&
+          JSON.parse(row.assumedMasterState.payload).text === pulledRemoteText,
+      ),
+      "push uses the master state written by the earlier pull",
+    );
     await sendRemote(
       {
         ...JSON.parse(baseline.payload),
         text: remoteText,
         updated: Date.now() + 60_000,
       },
-      baseline,
+      pulledRemoteMaster,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await until(
@@ -674,7 +1026,7 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
             "Pending local conflict",
           ),
       ),
-      "recovery push uses the pulled remote document as assumed master",
+      "conflict retry uses the latest remote master as assumed master",
     );
     assert.deepEqual(pageErrors, []);
   } finally {

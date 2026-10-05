@@ -17,6 +17,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   const streams = new Set();
   let pulls = 0;
   let pushes = 0;
+  let failPush = false;
   let pullSucceeds = false;
   let revision = 0;
   const notifyDrafts = () => {
@@ -75,6 +76,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
         json({ workspaceId, documents: [], checkpoint: { seq: 0 } });
       } else if (url.pathname === "/api/sync/drafts") {
         pushes++;
+        if (failPush) return json({ error: "temporary push failure" }, 500);
         json([]);
       } else next();
     },
@@ -90,8 +92,18 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.replicationErrors = [];
-      window.stopDrafts = await client.startDraftReplication((error) =>
-        window.replicationErrors.push(error ? String(error) : null),
+      window.rejectCancelOnce = false;
+      window.stopDrafts = await client.startDraftReplication(
+        (error) => window.replicationErrors.push(error ? String(error) : null),
+        {
+          cancel: async (cancel) => {
+            await cancel();
+            if (window.rejectCancelOnce) {
+              window.rejectCancelOnce = false;
+              throw new Error("injected cancel rejection");
+            }
+          },
+        },
       );
     });
     await page.waitForFunction(() => window.replicationErrors.length > 0);
@@ -124,8 +136,98 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     );
     assert.equal(pulls, 2, "One draft event retries the failed pull once");
     assert.equal(pushes, 1);
+
+    const healthyBurstStart = pulls;
+    for (let index = 0; index < 6; index++) notifyDrafts();
+    for (
+      let attempt = 0;
+      attempt < 100 && pulls === healthyBurstStart;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(
+      pulls - healthyBurstStart,
+      1,
+      "A healthy burst coalesces to one pull",
+    );
+
+    pullSucceeds = false;
+    const outageStart = pulls;
+    notifyDrafts();
+    for (let attempt = 0; attempt < 100 && pulls === outageStart; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(pulls, outageStart + 1, "The outage trigger starts one pull");
+    await new Promise((resolve) => setTimeout(resolve, 3_400));
+    assert.equal(
+      pulls,
+      outageStart + 1,
+      "One trigger after a healthy burst must not leave retry tokens",
+    );
+    pullSucceeds = true;
+    failPush = true;
+    const pushBeforeRestart = pushes;
+    await page.evaluate(async () => {
+      const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
+      await db.drafts.insert({
+        id: "restart-cancel-probe",
+        payload: JSON.stringify({ session: "chat", text: "retry me" }),
+        seq: 1,
+      });
+    });
+    for (
+      let attempt = 0;
+      attempt < 100 && pushes === pushBeforeRestart;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(pushes > pushBeforeRestart, "A push failure is observed");
+    const beforeRestartPull = pulls;
+    const reportsBeforeCancelFailure = await page.evaluate(
+      () => window.replicationErrors.length,
+    );
+    await page.evaluate(() => {
+      window.rejectCancelOnce = true;
+      window.dispatchEvent(new Event("online"));
+    });
+    for (
+      let attempt = 0;
+      attempt < 100 && pulls === beforeRestartPull;
+      attempt++
+    )
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(
+      pulls > beforeRestartPull,
+      "A replacement starts after cancel rejects",
+    );
+    await page.waitForFunction(
+      (count) => window.replicationErrors.length > count,
+      reportsBeforeCancelFailure,
+    );
+    assert.ok(
+      await page.evaluate(() => window.replicationErrors.some(Boolean)),
+      "A cancel rejection is reported through the existing status callback",
+    );
+    failPush = false;
+    const postsBeforeRetry = pushes;
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+    assert.ok(
+      pushes > postsBeforeRetry,
+      "The replacement retries its pending push",
+    );
+    await page.evaluate(async () => {
+      window.rejectCancelOnce = true;
+      await window.stopDrafts();
+    });
+    assert.ok(
+      await page.evaluate(() =>
+        window.replicationErrors.some((error) =>
+          String(error).includes("injected cancel rejection"),
+        ),
+      ),
+      "A stop cancellation rejection is reported through replication status",
+    );
     expect(errors).toEqual([]);
-    await page.evaluate(() => window.stopDrafts());
   } finally {
     for (const stream of streams) stream.response.end();
     await server.close();
