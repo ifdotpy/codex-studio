@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import importlib.util
+from contextlib import contextmanager
 from pathlib import Path
 import threading
 import unittest
@@ -29,6 +30,24 @@ class ReservationRecovery(unittest.TestCase):
     def reserve(self, agent, kind='checkpoint'):
         with self.runtime.lock, self.runtime.db() as db:
             return self.runtime._reserve_checkpoint(db, self.runtime.agent(agent['id'], db), kind, 'old-turn')
+
+    @contextmanager
+    def checkpoint_jobs(self):
+        jobs = []
+        submit = self.runtime.pool.submit
+
+        def submitted(function, *args, **kwargs):
+            future = submit(function, *args, **kwargs)
+            if function.__name__ in {'_checkpoint_after_committed_turn', 'checkpoint_after_turn'}:
+                jobs.append(future)
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=submitted):
+            try:
+                yield
+            finally:
+                for future in jobs:
+                    future.result(timeout=5)
 
     def test_capture_receipt_identifies_owner_and_settlement_then_dispatches_once(self):
         owner = self.lead('owner')
@@ -136,7 +155,8 @@ class ReservationRecovery(unittest.TestCase):
                 self.runtime.put(db, 'monitors', {'id': 'peer-monitor', 'agent': peer['id'],
                     'cwd': peer['cwd'], 'status': 'running'})
         with patch.object(self.runtime, 'capture_checkpoint') as capture:
-            self.runtime.server.complete(a['threadId'], a['turnId'])
+            with self.checkpoint_jobs():
+                self.runtime.server.complete(a['threadId'], a['turnId'])
             capture.assert_not_called()
         current = self.runtime.agent(a['id'])
         self.assertIsNone(current.get('workspaceOperation'))
@@ -187,7 +207,8 @@ class ReservationRecovery(unittest.TestCase):
         f.eventually(lambda: self.runtime.agent(a['id']).get('turnId'))
         a = self.agent_update(a, worktreeReady=True)
         with patch.object(self.runtime, 'capture_checkpoint', return_value={'id': 'capture'}) as capture:
-            self.runtime.server.complete(a['threadId'], a['turnId'])
+            with self.checkpoint_jobs():
+                self.runtime.server.complete(a['threadId'], a['turnId'])
             f.eventually(lambda: self.runtime.agent(a['id']).get('workspaceOperation') is None)
             self.assertEqual(capture.call_count, 1)
         with self.runtime.db() as db:
@@ -207,10 +228,12 @@ class ReservationRecovery(unittest.TestCase):
         self.assertTrue(current['autoWake'])
 
     def test_rejected_executor_submission_does_not_leave_directory_reserved(self):
-        a = self.lead()
+        a = self.agent_update(self.lead(), workspaceOperation=None)
         with self.runtime.lock, self.runtime.db() as db:
             with patch.object(self.runtime.pool, 'submit', side_effect=RuntimeError('executor closed')):
                 self.runtime.queue_checkpoint_after_turn(db, a, 'completed-turn')
+                # The notification caller persists the returned agent state.
+                self.runtime.put(db, 'agents', a)
         current = self.runtime.agent(a['id'])
         self.assertIsNone(current['workspaceOperation'])
         self.assertEqual(current['checkpointError'], 'executor closed')

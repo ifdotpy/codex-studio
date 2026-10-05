@@ -721,6 +721,7 @@ class WorkspaceMixin:
             "id": kind + ":" + str(uuid.uuid4()),
             "kind": kind, "agent": agent["id"], "cwd": agent["cwd"],
             "epoch": agent["epoch"], "turnId": turn_id,
+            "source": self._workspace_source(agent),
             "phase": "capture_pending", "created": time.time(),
         }
         self._put_workspace_operation(db, operation)
@@ -729,18 +730,64 @@ class WorkspaceMixin:
         return operation["id"]
 
     def queue_checkpoint_after_turn(self, db, agent, turn_id):
-        # A native turn can finish while a conversation fork holds this directory.
-        # Its completion must not replace the fork's reservation.
-        try:
-            self._assert_workspace_idle(db, agent, current_state=True)
-        except ValueError as error:
-            agent["checkpointError"] = "Checkpoint skipped: " + str(error)
+        if agent.get("workspaceOperation"):
+            agent["checkpointError"] = "Checkpoint skipped: An agent is using this workspace"
             return
-        operation_id = self._reserve_checkpoint(db, agent, "checkpoint", turn_id)
+        # The worker waits for the notification lock, then proves this turn's
+        # committed receipt before resolving paths or reserving the workspace.
+        request = (agent["id"], agent["epoch"], agent["cwd"],
+                   agent.get("accountKey", "default"), agent.get("threadId"), turn_id,
+                   (agent.get("startAttempt") or {}).get("id"))
         try:
-            self.pool.submit(self.checkpoint_after_turn, agent["id"], turn_id, operation_id)
+            self.pool.submit(self._checkpoint_after_committed_turn, request)
         except Exception as error:
-            self._settle_checkpoint(db, agent, operation_id, error)
+            agent["checkpointError"] = str(error)
+
+    def _checkpoint_completed_agent(self, db, request):
+        key, epoch, cwd, account, thread, turn_id, attempt = request
+        if self.closed:
+            return None
+        agent = self.agent(key, db)
+        if (agent.get("epoch") != epoch or agent.get("cwd") != cwd
+                or agent.get("accountKey", "default") != account
+                or agent.get("threadId") != thread or agent.get("lastCompletedTurn") != turn_id
+                or agent.get("inFlight") or agent.get("turnId") or agent.get("workspaceOperation")
+                or not agent.get("autoWake") or agent.get("status") in {"paused", "starting"}
+                or agent.get("deletedAt") or agent.get("agentArchive")
+                or (agent.get("startAttempt") or {}).get("id") != attempt):
+            return None
+        if not db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?",
+                          (key + ":" + str(turn_id),)).fetchone():
+            return None
+        return agent
+
+    def _checkpoint_after_committed_turn(self, request):
+        with self.lock, self.db() as db:
+            agent = self._checkpoint_completed_agent(db, request)
+            if agent is None:
+                return
+            snapshot = self._workspace_idle_snapshot(db, agent)
+        error = None
+        try:
+            resolved = self._resolve_workspace_idle(snapshot, agent)
+        except Exception as cause:
+            error = cause
+        with self.lock, self.db() as db:
+            agent = self._checkpoint_completed_agent(db, request)
+            if agent is None:
+                return
+            try:
+                if error is not None:
+                    raise ValueError(str(error)) from error
+                if self._workspace_idle_snapshot(db, agent) != snapshot:
+                    raise ValueError("Workspace activity changed before checkpoint capture")
+                self._assert_workspace_idle(db, agent, snapshot=snapshot, resolved=resolved)
+            except ValueError as error:
+                agent["checkpointError"] = "Checkpoint skipped: " + str(error)
+                self.put(db, "agents", agent)
+                return
+            operation_id = self._reserve_checkpoint(db, agent, "checkpoint", request[5])
+        self.checkpoint_after_turn(request[0], request[5], operation_id)
 
     def _settle_checkpoint(self, db, agent, operation_id, error=None):
         operation = self._workspace_operation(db, operation_id)
@@ -769,8 +816,30 @@ class WorkspaceMixin:
                 self._settle_checkpoint(db, agent, operation_id,
                                         "Checkpoint reservation changed before capture")
                 return None
+            snapshot = self._workspace_idle_snapshot(db, agent)
+        error = None
+        try:
+            resolved = self._resolve_workspace_idle(snapshot, agent)
+        except Exception as cause:
+            error = cause
+        with self.lock, self.db() as db:
+            agent = self.agent(key, db)
+            operation = self._workspace_operation(db, operation_id)
+            if not operation or operation.get("phase") != "capture_pending":
+                return None
+            if (agent.get("workspaceReservationId") != operation_id
+                    or agent.get("workspaceOperation") != operation["kind"]
+                    or agent["cwd"] != operation["cwd"] or agent["epoch"] != operation["epoch"]):
+                self._settle_checkpoint(db, agent, operation_id,
+                                        "Checkpoint reservation changed before capture")
+                return None
             try:
-                self._assert_workspace_idle(db, agent, operation_id)
+                if error is not None:
+                    raise ValueError(str(error)) from error
+                self._assert_workspace_source(operation, agent)
+                if self._workspace_idle_snapshot(db, agent) != snapshot:
+                    raise ValueError("Workspace activity changed before checkpoint capture")
+                self._assert_workspace_idle(db, agent, operation_id, snapshot=snapshot, resolved=resolved)
             except ValueError as error:
                 self._settle_checkpoint(db, agent, operation_id, "Checkpoint skipped: " + str(error))
                 return None
@@ -907,33 +976,53 @@ class WorkspaceMixin:
 
     def checkpoint_after_turn(self, key, turn_id, operation_id):
         try:
-            self._capture_reserved_checkpoint(key, "After turn", turn_id, operation_id)
+            if self._capture_reserved_checkpoint(key, "After turn", turn_id, operation_id) is None:
+                return
         except Exception:
             # The capture helper persists the exact failure and releases only its
             # own reservation. Automatic capture must not fail the completed turn.
-            pass
+            return
+        scope = None
+
+        def current(agent):
+            return (scope == (agent.get("epoch"), self._workspace_source(agent))
+                    and agent.get("autoWake") and agent.get("status") not in {"paused", "starting"}
+                    and not agent.get("inFlight") and not agent.get("turnId")
+                    and not agent.get("workspaceOperation") and not agent.get("workspaceReservationId")
+                    and not agent.get("deletedAt") and not agent.get("agentArchive")
+                    and agent.get("lastCompletedTurn") == turn_id and agent.get("imageWorkspaceReady"))
+
         try:
             with self.lock, self.db() as db:
+                operation = self._workspace_operation(db, operation_id)
+                if (not operation or operation.get("agent") != key or operation.get("phase") != "completed"
+                        or operation.get("turnId") != turn_id or not operation.get("source")):
+                    return
+                scope = (operation["epoch"], operation["source"])
                 agent = self.agent(key, db)
-                image_ready = agent.get("imageWorkspaceReady")
-            if image_ready:
-                from codex_workspace_images import collect
-                result = collect(key)
-                with self.lock, self.db() as db:
-                    agent = self.agent(key, db)
-                    agent["imageWorkspaceCollect"] = result
-                    if result.get("conflict") or result.get("conflicts"):
-                        conflict = str(result.get("conflict") or result.get("conflicts"))[:1200]
-                        agent["imageWorkspaceError"] = "Collect conflict: " + conflict
-                        raw_ref = result.get("rawRef") or result.get("branch") or "unknown raw branch"
-                        self.parent_event(db, agent, "collect:" + str(turn_id),
-                                          "Image workspace collect conflict after turn "
-                                          + str(turn_id) + ": " + conflict + ". Raw branch: " + str(raw_ref))
-                    self.put(db, "agents", agent)
-                    self.changed.set()
+                if not current(agent):
+                    return
+            from codex_workspace_images import collect
+            result = collect(key)
+            with self.lock, self.db() as db:
+                agent = self.agent(key, db)
+                if not current(agent):
+                    return
+                agent["imageWorkspaceCollect"] = result
+                if result.get("conflict") or result.get("conflicts"):
+                    conflict = str(result.get("conflict") or result.get("conflicts"))[:1200]
+                    agent["imageWorkspaceError"] = "Collect conflict: " + conflict
+                    raw_ref = result.get("rawRef") or result.get("branch") or "unknown raw branch"
+                    self.parent_event(db, agent, "collect:" + str(turn_id),
+                                      "Image workspace collect conflict after turn "
+                                      + str(turn_id) + ": " + conflict + ". Raw branch: " + str(raw_ref))
+                self.put(db, "agents", agent)
+                self.changed.set()
         except Exception as error:
             with self.lock, self.db() as db:
                 agent = self.agent(key, db)
+                if not current(agent):
+                    return
                 agent["imageWorkspaceError"] = "Collect failed: " + str(error)[:1200]
                 self.put(db, "agents", agent)
                 self.changed.set()
@@ -1231,25 +1320,54 @@ class WorkspaceMixin:
         with self.db() as db:
             self._assert_workspace_idle(db, a)
 
-    def _assert_workspace_idle(self, db, a, reservation_id=None, *, current_state=False):
-        if self._workspace_operation_busy(db, a["cwd"], reservation_id):
+    def _workspace_idle_snapshot(self, db, a, *, current_state=False):
+        agents = [tuple(row) for row in db.execute(
+            "SELECT id,json_extract(record,'$.cwd'),json_extract(record,'$.inFlight'),"
+            "json_extract(record,'$.workspaceOperation'),json_extract(record,'$.workspaceReservationId') "
+            "FROM runtime_agents ORDER BY id")]
+        if current_state:
+            agents = [(a["id"], a["cwd"], a.get("inFlight"), a.get("workspaceOperation"),
+                       a.get("workspaceReservationId")) if row[0] == a["id"] else row for row in agents]
+        phases = tuple(sorted(self.WORKSPACE_OPERATION_ACTIVE))
+        operations = [tuple(row) for row in db.execute(
+            "SELECT id,json_extract(record,'$.agent'),json_extract(record,'$.phase') "
+            "FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IN ("
+            + ",".join("?" for _ in phases) + ") ORDER BY id", phases)]
+        monitors = [tuple(row) for row in db.execute(
+            "SELECT id,json_extract(record,'$.cwd'),json_extract(record,'$.status') "
+            "FROM runtime_monitors WHERE json_extract(record,'$.status') IN (?,?,?) ORDER BY id",
+            ACTIVE_MONITOR_STATUSES)]
+        tasks = [tuple(row) for row in db.execute(
+            "SELECT id,json_extract(record,'$.agent') FROM runtime_tasks "
+            "WHERE json_extract(record,'$.status')='running' ORDER BY id")]
+        return agents, operations, monitors, tasks
+
+    def _resolve_workspace_idle(self, snapshot, a):
+        agents, operations, monitors, tasks = snapshot
+        busy_ids = {row[1] for row in operations} | {row[1] for row in tasks}
+        paths = {a["cwd"]} | {row[1] for row in monitors}
+        paths.update(row[1] for row in agents if row[2] or row[3] or row[0] in busy_ids)
+        return {cwd: Path(cwd).resolve() for cwd in sorted(paths)}
+
+    def _assert_workspace_idle(self, db, a, reservation_id=None, *, current_state=False,
+                               snapshot=None, resolved=None):
+        snapshot = snapshot if snapshot is not None else self._workspace_idle_snapshot(db, a, current_state=current_state)
+        resolved = resolved if resolved is not None else self._resolve_workspace_idle(snapshot, a)
+        agents, operations, monitors, tasks = snapshot
+        cwd = resolved[a["cwd"]]
+        by_id = {row[0]: row for row in agents}
+        if any(operation[0] != reservation_id and operation[1] in by_id
+               and resolved[by_id[operation[1]][1]] == cwd for operation in operations):
             raise ValueError("Workspace recovery is required before using this workspace")
-        # Notification handlers have not yet written this turn's terminal state.
-        # Use that exact current agent rather than its older in-flight DB row.
-        agents = [a if current_state and other["id"] == a["id"] else other
-                  for other in self.records(db, "agents")]
-        cwd = Path(a["cwd"]).resolve()
-        peers = [other for other in agents if Path(other["cwd"]).resolve() == cwd]
-        for other in peers:
-            own_reservation = (reservation_id is not None and other["id"] == a["id"]
-                               and other.get("workspaceReservationId") == reservation_id)
-            if other.get("inFlight") or (other.get("workspaceOperation") and not own_reservation):
+        for key, path, in_flight, workspace_operation, reservation in agents:
+            if not (in_flight or workspace_operation) or resolved[path] != cwd:
+                continue
+            own_reservation = reservation_id is not None and key == a["id"] and reservation == reservation_id
+            if in_flight or (workspace_operation and not own_reservation):
                 raise ValueError("An agent is using this workspace")
-        if any(Path(m["cwd"]).resolve() == cwd and m["status"] in {"running", "starting", "approval"}
-               for m in active_monitors(db)):
+        if any(resolved[row[1]] == cwd for row in monitors):
             raise ValueError("A monitor is using this workspace")
-        peer_ids = {other["id"] for other in peers}
-        if any(t["agent"] in peer_ids for t in active_task_records(db)):
+        if any(row[1] in by_id and resolved[by_id[row[1]][1]] == cwd for row in tasks):
             raise ValueError("A command or tool is still active")
 
     def branch_conversation(self, key, data):
