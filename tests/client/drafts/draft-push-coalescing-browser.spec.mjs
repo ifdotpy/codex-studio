@@ -163,10 +163,10 @@ test("draft pushes coalesce at the production replication boundary", async ({
     const maxWaitStart = Date.now();
     const maxWaitPushIndex = pushes.length;
     let pushedDuringTyping = false;
-    for (let index = 0; index < 28; index++) {
+    for (let index = 0; index < 60; index++) {
       await edit(`continuous ${index}`);
       if (pushes.length > maxWaitPushIndex) pushedDuringTyping = true;
-      if (index < 27) await page.waitForTimeout(70);
+      if (index < 59) await page.waitForTimeout(100);
     }
     assert.ok(
       pushedDuringTyping,
@@ -181,7 +181,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
     assert.equal(
       JSON.parse(continuous.at(-1)?.[0]?.newDocumentState?.payload || "{}")
         .text,
-      "continuous 27",
+      "continuous 59",
       "The quiet-period push after continuous typing carries its final value",
     );
 

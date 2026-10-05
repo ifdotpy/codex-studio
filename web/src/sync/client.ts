@@ -1112,21 +1112,34 @@ export async function startDraftReplication(
   const failures = new Map<string, unknown>();
   let stopped = false;
   let pullFailed = false;
-  let pullTriggered = false;
+  let pushFailed = false;
+  let pullTriggers = 0;
   let pullReady = false;
+  let replication: ReturnType<
+    typeof replicateRxCollection<SyncDocument, { seq: number }>
+  >;
+  let replicationErrors: { unsubscribe: () => void }[] = [];
+  let restarting: Promise<void> | undefined;
+  let pendingRestarts = 0;
+  let replicationGeneration = 0;
+  let releaseStopSignal!: () => void;
+  const stopSignal = new Promise<void>((resolve) => {
+    releaseStopSignal = resolve;
+  });
   const state = (direction: string, error: unknown | null) => {
     if (stopped) return;
     if (error === null) failures.delete(direction);
     else failures.set(direction, error);
+    if (direction === "push") pushFailed = error !== null;
     report(failures.size ? failures.values().next().value : null);
   };
   const wakePullRetry = () => {
-    pullTriggered = true;
+    pullTriggers++;
   };
   const pullAllowed = () => {
     if (stopped) return false;
-    if (pullReady && (!pullFailed || pullTriggered)) {
-      pullTriggered = false;
+    if (pullReady && (!pullFailed || pullTriggers > 0)) {
+      if (pullTriggers > 0) pullTriggers--;
       return true;
     }
     return false;
@@ -1168,81 +1181,161 @@ export async function startDraftReplication(
     );
     return wait.promise;
   };
-  const attempt = async <T>(direction: string, request: () => Promise<T>) => {
+  const attempt = async <T>(
+    generation: number,
+    direction: string,
+    request: () => Promise<T>,
+  ) => {
     try {
       const result = await request();
       // Empty pulls also prove recovery. One direction cannot clear the other.
-      state(direction, null);
-      if (direction === "pull") pullFailed = false;
+      if (generation === replicationGeneration) {
+        state(direction, null);
+        if (direction === "pull") pullFailed = false;
+      }
       return result;
     } catch (error) {
-      if (direction === "pull") pullFailed = true;
-      state(direction, error);
+      if (generation === replicationGeneration) {
+        if (direction === "pull") pullFailed = true;
+        state(direction, error);
+      }
       throw error;
     }
   };
-  const replication = replicateRxCollection<SyncDocument, { seq: number }>({
-    collection: db.drafts,
-    replicationIdentifier: `${workspaceId}:drafts:v1`,
-    live: true,
-    retryTime: 3000,
-    pull: {
-      handler: async (checkpoint, batchSize) => {
-        if (!pullAllowed())
-          return { documents: [], checkpoint: checkpoint || { seq: 0 } };
-        return attempt("pull", async () => {
-          const result = await pull(
-            "drafts",
-            checkpoint?.seq || 0,
-            batchSize,
-            workspaceId,
-            verifyWorkspace,
-          );
-          if (result.reset === true)
-            throw new Error("The server reset draft sync unexpectedly.");
-          return { documents: result.documents, checkpoint: result.checkpoint };
-        });
+  const replicationIdentifier = `${workspaceId}:drafts:v1`;
+  const createReplication = () => {
+    const generation = ++replicationGeneration;
+    const current = replicateRxCollection<SyncDocument, { seq: number }>({
+      collection: db.drafts,
+      replicationIdentifier,
+      live: true,
+      retryTime: 3000,
+      pull: {
+        handler: async (checkpoint, batchSize) => {
+          if (!pullAllowed())
+            return { documents: [], checkpoint: checkpoint || { seq: 0 } };
+          return attempt(generation, "pull", async () => {
+            const result = await pull(
+              "drafts",
+              checkpoint?.seq || 0,
+              batchSize,
+              workspaceId,
+              verifyWorkspace,
+            );
+            if (result.reset === true)
+              throw new Error("The server reset draft sync unexpectedly.");
+            return {
+              documents: result.documents,
+              checkpoint: result.checkpoint,
+            };
+          });
+        },
+        batchSize: 100,
       },
-      batchSize: 100,
-    },
-    push: {
-      waitBeforePersist,
-      handler: (rows) =>
-        attempt("push", async () => {
-          await verifyWorkspace();
-          return syncPost("/api/sync/drafts", { rows }, { workspaceId });
-        }),
-      batchSize: 100,
-    },
-  });
-  const stopInvalidation = watchSyncInvalidations(() => {
+      push: {
+        waitBeforePersist,
+        handler: (rows) =>
+          attempt(generation, "push", async () => {
+            await verifyWorkspace();
+            return syncPost("/api/sync/drafts", { rows }, { workspaceId });
+          }),
+        batchSize: 100,
+      },
+    });
+    replicationErrors = [
+      current.error$.subscribe((error: any) => {
+        if (generation !== replicationGeneration) return;
+        const direction =
+          error.code === "RC_PULL"
+            ? "pull"
+            : error.code === "RC_PUSH"
+              ? "push"
+              : "replication";
+        state(direction, error);
+      }),
+    ];
+    replication = current;
+    return current;
+  };
+  createReplication();
+  const waitForDownstreamInitialSync = async (current: typeof replication) => {
+    await Promise.race([current.startPromise, stopSignal]);
+    if (stopped) return;
+    const downSync = current.internalReplicationState?.firstSyncDone.down;
+    if (!downSync || downSync.getValue()) return;
+    await new Promise<void>((resolve) => {
+      let subscription: { unsubscribe: () => void };
+      const finish = () => {
+        subscription.unsubscribe();
+        resolve();
+      };
+      subscription = downSync.subscribe((done) => {
+        if (done) {
+          finish();
+        }
+      });
+      void stopSignal.then(finish);
+    });
+  };
+  const drainPushFailureRestarts = () => {
+    if (stopped || !pushFailed || restarting || pendingRestarts === 0) return;
+    restarting = (async () => {
+      while (!stopped && pushFailed && pendingRestarts > 0) {
+        pendingRestarts--;
+        const previous = replication;
+        // Ignore completions and errors from the state being canceled while its
+        // replacement is starting.
+        replicationGeneration++;
+        replicationErrors.forEach((subscription) => subscription.unsubscribe());
+        replicationErrors = [];
+        // Release a coalescing wait before cancel so RxDB can observe
+        // cancellation and finish its queues.
+        settlePushWait();
+        await previous.cancel();
+        if (stopped) return;
+        const current = createReplication();
+        if (pendingRestarts > 0) {
+          await waitForDownstreamInitialSync(current);
+          if (stopped) return;
+        }
+      }
+    })().finally(() => {
+      restarting = undefined;
+      drainPushFailureRestarts();
+    });
+  };
+  const restartAfterPushFailure = () => {
+    if (stopped || !pushFailed) return;
+    pendingRestarts++;
+    drainPushFailureRestarts();
+  };
+  const triggerPull = () => {
     pullReady = true;
     wakePullRetry();
-    replication.reSync();
+    if (pushFailed) restartAfterPushFailure();
+    else replication.reSync();
+  };
+  const stopInvalidation = watchSyncInvalidations(() => {
+    triggerPull();
   }, "drafts");
   const stopResume = onResume(() => {
-    pullReady = true;
-    wakePullRetry();
-    replication.reSync();
-  });
-  const errors = replication.error$.subscribe((error) => {
-    const direction =
-      error.code === "RC_PULL"
-        ? "pull"
-        : error.code === "RC_PUSH"
-          ? "push"
-          : "replication";
-    state(direction, error);
+    triggerPull();
   });
   return () => {
     stopped = true;
+    releaseStopSignal();
     stopInvalidation();
     stopResume();
-    errors.unsubscribe();
-    void replication.cancel().then(
-      () => settlePushWait(),
-      () => settlePushWait(),
-    );
+    replicationErrors.forEach((subscription) => subscription.unsubscribe());
+    replicationErrors = [];
+    // Settle the gate first: cancellation waits for replication work that may
+    // currently be paused in waitBeforePersist().
+    settlePushWait();
+    void (async () => {
+      await restarting;
+      await replication.cancel();
+      settlePushWait();
+    })();
   };
 }
 
