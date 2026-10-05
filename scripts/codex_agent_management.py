@@ -1,8 +1,10 @@
 """Lead-only worker inspection and reversible, guarded team cleanup."""
 import json
 import os
+import stat
 import subprocess
 import time
+import tempfile
 from pathlib import Path
 
 
@@ -11,6 +13,10 @@ def management_tools(tool, text):
         'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. '
         'archive hides an inactive worker, collects and removes its image workspace, or removes a safe Studio Git worktree; it reports conflicts and why a workspace stays. '
         'archive_finished archives finished descendants with safe workspaces and reports freed bytes and kept workers. '
+        'For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. '
+        'Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. '
+        'Retry archive with a new tool call to finish partial Git removal. The exact original Git link and archive ref are required. '
+        'Changed or untracked files stay for inspection. A missing Git link leaves the folder for manual review. '
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore recreates a removed image workspace or Git worktree and returns an archived worker paused; use orchestration_send to resume. '
@@ -21,6 +27,7 @@ def management_tools(tool, text):
         'Only the lead may archive, restore, recover, reset tools, or emit an event.',
         {'action': {'type': 'string', 'enum': ['inspect', 'list', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report', 'park', 'list_parked', 'cancel_park', 'emit_event']},
          'agent_id': text, 'reason': {'type': 'string', 'maxLength': 1000},
+         'unassign_work': {'type': 'boolean'},
          'event': {'type': 'string', 'minLength': 1, 'maxLength': 120},
          'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200},
          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50}, 'cursor': text}, ['action'])]
@@ -192,7 +199,7 @@ def _missing_transferred_history(db, agent, rt=None):
     return None
 
 
-def _blockers(rt, db, a):
+def _blockers(rt, db, a, *, unassign_work=False):
     from codex_workspace import active_task_records
     key = a['id']
     result = []
@@ -231,10 +238,11 @@ def _blockers(rt, db, a):
     add('questions', [row[0] for row in db.execute(
         "SELECT id FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
         "AND json_extract(record,'$.status')='pending' ORDER BY rowid", (key,))])
-    add('assigned_work', [row[0] for row in db.execute(
-        "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
-        "AND (json_extract(record,'$.status') IS NULL "
-        "OR json_extract(record,'$.status') NOT IN ('accepted','cancelled')) ORDER BY rowid", (key,))])
+    if not unassign_work:
+        add('assigned_work', [row[0] for row in db.execute(
+            "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND (json_extract(record,'$.status') IS NULL "
+            "OR json_extract(record,'$.status') NOT IN ('accepted','cancelled')) ORDER BY rowid", (key,))])
     rt.reconcile_tool_requests(db, key)
     add('tool_requests', [row[0] for row in db.execute(
         "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
@@ -302,12 +310,12 @@ def _worker_worktree_root(agent_id, cwd):
     return roots[0] if len(roots) == 1 else None
 
 
-def _worktree_check(rt, actor_id, agent_id, epoch):
+def _worktree_check(rt, actor_id, agent_id, epoch, *, unassign_work=False):
     """Use one safety check for archive, bulk archive, and maintenance reports."""
     with rt.lock, rt.db() as db:
         a = rt.agent(agent_id, db)
         _authorize(rt, db, actor_id, epoch, a)
-        blockers = _blockers(rt, db, a)
+        blockers = _blockers(rt, db, a, unassign_work=unassign_work)
         if blockers:
             return None, ', '.join(item['kind'] for item in blockers)
         if not a.get('worktreeReady'):
@@ -348,17 +356,142 @@ def _worktree_check(rt, actor_id, agent_id, epoch):
                     'branch': branch, 'head': head, 'missing': True,
                     'identity': identity}, None
         if not entry:
-            return None, 'worktree registration is missing'
+            return _legacy_worktree_info(a, root, repo, relative, identity), None
+        if not stat.S_ISREG(_file_identity(root / '.git')[2]):
+            return None, 'the remaining Git link is not a regular file'
         if _git(root, 'status', '--porcelain', '--untracked-files=normal').stdout:
             return None, 'tracked or untracked files have changes'
         head = _git(root, 'rev-parse', 'HEAD').stdout.decode().strip()
         if entry.get('HEAD') != head:
             return None, 'worktree registration HEAD differs'
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         return None, 'git check failed: ' + str(error)[:180]
     return {'root': str(root), 'repo': str(repo), 'relative': str(relative),
             'branch': entry.get('branch', '').removeprefix('refs/heads/') or None,
-            'head': head, 'identity': identity}, None
+            'head': head, 'identity': identity, 'gitFile': _file_identity(root / '.git'),
+            'rootFile': _file_identity(root)}, None
+
+
+
+
+def _file_identity(path):
+    value = os.stat(path, follow_symlinks=False)
+    return [value.st_dev, value.st_ino, value.st_mode, value.st_size,
+            value.st_mtime_ns, value.st_ctime_ns]
+
+
+def _legacy_worktree_info(agent, root, repo, relative, identity):
+    """Accept only an archived worktree with its original, exact Git link."""
+    archive = agent.get('agentArchive') or {}
+    branch = 'codex-agent/' + agent['id']
+    gitdir = repo / '.git' / 'worktrees' / agent['id']
+    gitfile = root / '.git'
+    if (archive.get('at') != agent.get('deletedAt') or archive.get('epoch') != agent['epoch']
+            or not archive.get('at') or agent.get('branch') != branch
+            or root.is_symlink() or not root.is_dir() or gitfile.is_symlink()
+            or gitdir.exists() or gitdir.is_symlink() or not (repo / '.git').is_dir()):
+        raise ValueError('worktree registration is missing without exact archive evidence')
+    fd = os.open(gitfile, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    try:
+        value = os.fstat(fd)
+        if not stat.S_ISREG(value.st_mode):
+            raise ValueError('the remaining Git link is not a regular file')
+        git_identity = [value.st_dev, value.st_ino, value.st_mode, value.st_size,
+                        value.st_mtime_ns, value.st_ctime_ns]
+        link = os.read(fd, 4097)
+        if _file_identity(gitfile) != git_identity:
+            raise ValueError('the remaining Git link changed during its identity check')
+    finally:
+        os.close(fd)
+    if (len(link) > 4096 or not link.startswith(b'gitdir: ') or not link.endswith(b'\n')
+            or b'\n' in link[:-1] or not Path(os.fsdecode(link[8:-1])).is_absolute()
+            or Path(os.fsdecode(link[8:-1])).resolve() != gitdir):
+        raise ValueError('the remaining Git link differs from the saved worktree identity')
+    head = _git(repo, 'rev-parse', '--verify', 'refs/codex-agents/archive/' + agent['id']).stdout.decode().strip()
+    if not head or _branch_commit(repo, branch) != head:
+        raise ValueError('archive ref and worker branch differ; keep the remaining folder')
+    saved = agent.get('worktreeCleanup')
+    if saved:
+        expected = {'root': str(root), 'repo': str(repo), 'relative': str(relative),
+                    'branch': branch, 'head': head, 'identity': identity}
+        if (any(saved.get(key) != value for key, value in expected.items())
+                or (saved.get('gitFile') and saved['gitFile'] != git_identity)
+                or (saved.get('rootFile') and saved['rootFile'][:3] != _file_identity(root)[:3])):
+            raise ValueError('the remaining worktree differs from its saved cleanup identity')
+
+    return {'root': str(root), 'repo': str(repo), 'relative': str(relative),
+            'branch': branch, 'head': head, 'identity': identity,
+            'gitFile': git_identity, 'rootFile': _file_identity(root),
+            'registrationRepair': {'gitdir': str(gitdir), 'gitFile': git_identity,
+                                   'rootFile': _file_identity(root)}}
+
+
+def _repair_worktree_registration(info):
+    """Restore Git metadata only. Do not overwrite remaining worktree files."""
+    repair = info['registrationRepair']
+    root, repo, gitdir = Path(info['root']), Path(info['repo']), Path(repair['gitdir'])
+    if (_file_identity(root) != repair['rootFile'] or _file_identity(root / '.git') != repair['gitFile']
+            or gitdir != repo / '.git' / 'worktrees' / root.name or gitdir.exists() or gitdir.is_symlink()
+            or _worktree_registration(repo, root) is not None
+            or _branch_commit(repo, info['branch']) != info['head']
+            or _git(repo, 'rev-parse', '--verify', 'refs/codex-agents/archive/' + root.name).stdout.decode().strip() != info['head']):
+        raise ValueError('worktree identity changed before Git registration repair')
+    if any(item.get('branch') == 'refs/heads/' + info['branch'] for item in _worktree_entries(repo)):
+        raise ValueError('another registered worktree uses the saved branch')
+    temporary = Path(tempfile.mkdtemp(prefix='.studio-archive-repair-', dir=root.parent))
+    stage = None
+    try:
+        _git(repo, 'worktree', 'add', '--detach', '--no-checkout', str(temporary), info['head'])
+        stage = Path((temporary / '.git').read_text().strip().removeprefix('gitdir: '))
+        if stage.parent != gitdir.parent or stage == gitdir:
+            raise ValueError('temporary Git registration differs from the repair scope')
+        _git(temporary, 'symbolic-ref', 'HEAD', 'refs/heads/' + info['branch'])
+        _git(temporary, 'read-tree', info['head'])
+        (stage / 'gitdir').write_text(str(root / '.git') + '\n')
+        # mkdir claims the absent registration without replacing an existing path.
+        gitdir.mkdir()
+        for child in stage.iterdir():
+            child.rename(gitdir / child.name)
+        stage.rmdir()
+    finally:
+        if stage is not None and not stage.exists():
+            (temporary / '.git').unlink(missing_ok=True)
+        if not any(temporary.iterdir()):
+            temporary.rmdir()
+    # Deleted tracked files are consistent with the failed removal. All other
+    # changes must remain for inspection. Git never writes their contents here.
+    changes = _git(root, 'status', '--porcelain', '-z', '--untracked-files=all').stdout
+    if any(entry and entry[:3] != b' D ' for entry in changes.split(b'\0')):
+        raise ValueError('repaired worktree has modified or untracked files; keep it for inspection')
+
+
+def _worktree_removal_check(info):
+    """Verify one exact clean snapshot without a Runtime lock or writer."""
+    root, repo = info['root'], info['repo']
+    if (_file_identity(Path(root) / '.git') != info['gitFile']
+            or _file_identity(root)[:3] != info['rootFile'][:3]):
+        raise ValueError('the original Git link or worktree root changed')
+    changes = _git(root, 'status', '--porcelain', '-z', '--untracked-files=all').stdout
+    if info.get('registrationRepair'):
+        dirty = any(entry and entry[:3] != b' D ' for entry in changes.split(b'\0'))
+    else:
+        dirty = bool(changes)
+    if dirty:
+        raise ValueError('files changed after the safety check')
+    if _git(root, 'rev-parse', 'HEAD').stdout.decode().strip() != info['head']:
+        raise ValueError('HEAD changed after the safety check')
+    entries = _worktree_entries(repo)
+    if not any(item.get('worktree') and Path(item['worktree']).resolve() == Path(root)
+               and item.get('HEAD') == info['head']
+               and (item.get('branch', '').removeprefix('refs/heads/') or None) == info['branch']
+               for item in entries):
+        raise ValueError('worktree registration changed after the safety check')
+    if any(item.get('worktree') and Path(item['worktree']).resolve() != Path(root)
+           and Path(item['worktree']).resolve().is_relative_to(Path(root)) for item in entries):
+        raise ValueError('another registered worktree appeared inside this path')
+    if (_file_identity(Path(root) / '.git') != info['gitFile']
+            or _file_identity(root)[:3] != info['rootFile'][:3]):
+        raise ValueError('the original Git link or worktree root changed')
 
 
 def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
@@ -390,14 +523,16 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
                 with rt.lock, rt.db() as db:
                     a = rt.agent(agent_id, db)
                     _authorize(rt, db, actor_id, epoch, a)
-                    if a.get('worktreeCleanup') != saved:
+                    if (a.get('worktreeCleanup') != saved
+                            or [a['epoch'], a['cwd'], a.get('deletedAt')] != saved.get('identity')):
                         raise ValueError('Worker changed during cleanup recovery')
                     a.update(cwd=str(Path(saved['repo']) / saved['relative']), worktreeReady=False)
                     a.pop('worktreeCleanup', None)
                     a['cleanedWorktree'] = ({**saved, 'bytes': 0,
                                              'note': ('worktree folder missing; branch saved to archive ref'
                                                       if saved.get('head') else 'worktree folder missing; nothing to save')}
-                                            if saved.get('missing') else saved)
+                                            if saved.get('missing') else
+                                            saved)
                     rt.put(db, 'agents', a)
                 if saved.get('missing'):
                     reason = ('worktree folder missing; branch saved to archive ref'
@@ -407,7 +542,10 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
         except (OSError, subprocess.SubprocessError):
             pass
         return {'state': 'kept', 'reason': 'worktree removal outcome is unknown; inspect its path and ref', 'bytes': 0}
-    info, reason = checked or _worktree_check(rt, actor_id, agent_id, epoch)
+    registered = bool(saved and saved.get('registrationRepair')
+                      and _worktree_registration(saved['repo'], saved['root']) is not None)
+    info, reason = (({key: value for key, value in saved.items() if key not in {'bytes', 'error'}}, None)
+                    if registered else checked or _worktree_check(rt, actor_id, agent_id, epoch))
     if reason:
         return {'state': 'kept', 'reason': reason, 'bytes': 0}
     with rt.lock, rt.db() as db:
@@ -443,6 +581,8 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
             rt.put(db, 'agents', a)
         return {'state': 'missing', 'reason': reason, 'bytes': 0}
     try:
+        if info.get('registrationRepair') and _worktree_registration(repo, root) is None:
+            _repair_worktree_registration(info)
         # du can be slow on Chromium trees. A timeout leaves the byte count unknown.
         try:
             size = subprocess.run(['du', '-sk', root], check=True, capture_output=True,
@@ -455,29 +595,36 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
             if a.get('worktreeCleanup') == info:
                 a['worktreeCleanup']['bytes'] = measured
                 rt.put(db, 'agents', a)
-        if _git(root, 'status', '--porcelain', '--untracked-files=normal').stdout:
-            raise ValueError('files changed after the safety check')
-        if _git(root, 'rev-parse', 'HEAD').stdout.decode().strip() != info['head']:
-            raise ValueError('HEAD changed after the safety check')
-        entries = _worktree_entries(repo)
-        if not any(item.get('worktree') and Path(item['worktree']).resolve() == Path(root)
-                   and item.get('HEAD') == info['head']
-                   and (item.get('branch', '').removeprefix('refs/heads/') or None) == info['branch']
-                   for item in entries):
-            raise ValueError('worktree registration changed after the safety check')
-        if any(item.get('worktree') and Path(item['worktree']).resolve() != Path(root)
-               and Path(item['worktree']).resolve().is_relative_to(Path(root)) for item in entries):
-            raise ValueError('another registered worktree appeared inside this path')
-        _git(repo, 'update-ref', 'refs/codex-agents/archive/' + agent_id, info['head'])
+        with rt.lock, rt.db() as db:
+            a = rt.agent(agent_id, db)
+            _authorize(rt, db, actor_id, epoch, a)
+            if (not a.get('worktreeCleanup')
+                    or any(a['worktreeCleanup'].get(k) != info[k] for k in info)
+                    or [a['epoch'], a['cwd'], a.get('deletedAt')] != info['identity']
+                    or _blockers(rt, db, a)):
+                raise ValueError('worker changed before worktree removal')
+        _worktree_removal_check(info)
+        _save_archive_ref(repo, agent_id, info['head'])
         _git(repo, 'worktree', 'remove', '--force', root)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        if Path(root).exists():
-            with rt.lock, rt.db() as db:
-                a = rt.agent(agent_id, db)
-                if a.get('worktreeCleanup') and all(a['worktreeCleanup'].get(k) == info[k] for k in info):
-                    a.pop('worktreeCleanup', None)
-                    rt.put(db, 'agents', a)
-        return {'state': 'kept', 'reason': 'worktree removal failed: ' + str(error)[:180], 'bytes': 0}
+        failure = {'message': str(error)[:500], 'at': time.time(), 'by': actor_id}
+        stderr = getattr(error, 'stderr', None)
+        if isinstance(stderr, bytes):
+            stderr = stderr[:4096].decode('utf-8', 'replace')
+        if isinstance(stderr, str) and stderr.strip():
+            failure['stderr'] = stderr[:4096]
+        if isinstance(getattr(error, 'errno', None), int):
+            failure['errno'] = error.errno
+        if isinstance(getattr(error, 'returncode', None), int):
+            failure['returncode'] = error.returncode
+        with rt.lock, rt.db() as db:
+            a = rt.agent(agent_id, db)
+            if (a.get('worktreeCleanup')
+                    and all(a['worktreeCleanup'].get(key) == info[key] for key in info)):
+                a['worktreeCleanup']['error'] = failure
+                rt.put(db, 'agents', a)
+        summary = failure.get('stderr', failure['message']).strip()
+        return {'state': 'kept', 'reason': 'worktree removal failed: ' + summary[:180], 'bytes': 0}
     with rt.lock, rt.db() as db:
         a = rt.agent(agent_id, db)
         if not a.get('worktreeCleanup') or any(a['worktreeCleanup'].get(k) != info[k] for k in info):
@@ -702,7 +849,7 @@ def _archive_reviewer(rt, lead_id, parent_id, child_id, event_id):
         delay = min(60, delay * 2)
 
 
-def _archive_finished(rt, actor_id, epoch):
+def _archive_finished(rt, actor_id, epoch, *, unassign_work=False):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
         agents = [a for a in rt.records(db, 'agents') if a['rootId'] == actor['rootId']
@@ -715,21 +862,23 @@ def _archive_finished(rt, actor_id, epoch):
                 a = by_id[a['parentId']]
             return count
         agents.sort(key=lambda a: (-depth(a), a['id']))
-    result = {'archived': 0, 'freedBytes': 0, 'unknownBytes': 0, 'kept': []}
+    result = {'archived': 0, 'freedBytes': 0, 'unknownBytes': 0, 'kept': [], 'unassignedWork': []}
     for a in agents:
-        checked = (_worktree_check(rt, actor_id, a['id'], epoch)
+        checked = (_worktree_check(rt, actor_id, a['id'], epoch, unassign_work=unassign_work)
                    if a.get('worktreeReady') else (None, None))
         if checked[1]:
             result['kept'].append({'id': a['id'], 'reason': checked[1]})
             continue
         try:
             archived = manage_agent(rt, actor_id, {'action': 'archive', 'agent_id': a['id'],
-                                                    'reason': 'Finished worker cleanup'}, epoch)
+                                                    'reason': 'Finished worker cleanup',
+                                                    'unassign_work': unassign_work}, epoch)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             result['kept'].append({'id': a['id'], 'reason': str(error)[:180]})
             continue
         if archived['status'] == 'archived':
             result['archived'] += 1
+            result['unassignedWork'].extend(archived.get('unassignedWork', []))
             cleanup = archived.get('workspace') or archived.get('worktree') or {'state': 'none', 'bytes': 0}
             if cleanup['state'] in {'removed', 'conflict'}:
                 if cleanup['bytes'] is None:
@@ -830,19 +979,34 @@ def _restore_worktree(info):
     return None, None
 
 
-def _archive_record(rt, db, target, actor_id, reason, *, cleanup_pending):
+def _archive_record(rt, db, target, actor_id, reason, *, cleanup_pending, unassign_work=False):
     if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
         raise ValueError('Give an archive reason with 1 to 1000 characters')
     unknown = [row[0] for row in db.execute(
         "SELECT id FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
         "AND json_extract(record,'$.outcome')='unknown' ORDER BY id", (target['id'],))]
     at = time.time()
+    unassigned = []
+    if unassign_work:
+        works = [json.loads(row[0]) for row in db.execute(
+            "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
+            "AND (json_extract(record,'$.status') IS NULL "
+            "OR json_extract(record,'$.status') NOT IN ('accepted','cancelled')) ORDER BY rowid",
+            (target['id'],))]
+        if any(work.get('rootId') != target['rootId'] for work in works):
+            raise ValueError('An assigned task belongs to another team')
+        for work in works:
+            work.setdefault('releases', []).append({'agent': target['id'], 'reason': reason.strip(),
+                                                    'created': at, 'by': actor_id})
+            work.update(owner=None, status='ready', version=work.get('version', 0) + 1, updated=at)
+            rt.put(db, 'work', work)
+            unassigned.append(work['id'])
     target.update(deletedAt=at, autoWake=False, status='paused', epoch=target['epoch'] + 1)
     target['agentArchive'] = {'at': at, 'by': actor_id, 'reason': reason.strip(),
                               'epoch': target['epoch'], 'cleanupPending': cleanup_pending,
-                              'unknownToolRequests': unknown}
+                              'unknownToolRequests': unknown, 'unassignedWork': unassigned}
     rt.put(db, 'agents', target)
-    # Blockers already exclude unfinished assignments. Other workers' claims
+    # The task releases and archive share this transaction. Other workers' claims
     # stay with the scheduler; archive must not postpone its global sweep.
     return _brief(target)
 
@@ -852,10 +1016,15 @@ def manage_agent(rt, actor_id, args, epoch=None):
     if action not in {'inspect','list','recover','reset_tools','archive','archive_finished','restore','list_archived','maintenance_report',
                       'park','list_parked','cancel_park','emit_event'}:
         raise ValueError('Unknown agent management action')
+    unassign_work = args.get('unassign_work', False)
+    if type(unassign_work) is not bool:
+        raise ValueError('unassign_work must be a boolean')
+    if unassign_work and action not in {'archive', 'archive_finished'}:
+        raise ValueError('unassign_work applies only to archive or archive_finished')
     if action in {'park', 'list_parked', 'cancel_park', 'emit_event'}:
         return _park_action(rt, actor_id, args, epoch)
     if action == 'archive_finished':
-        return _archive_finished(rt, actor_id, epoch)
+        return _archive_finished(rt, actor_id, epoch, unassign_work=unassign_work)
     if action == 'maintenance_report':
         return worktree_maintenance_report(rt, actor_id, epoch)
     if action == 'reset_tools':
@@ -883,15 +1052,16 @@ def manage_agent(rt, actor_id, args, epoch=None):
             target = rt.agent(args.get('agent_id'), db)
             _authorize(rt, db, actor_id, epoch, target)
             if not target.get('deletedAt'):
-                blockers = _blockers(rt, db, target)
+                blockers = _blockers(rt, db, target, unassign_work=unassign_work)
                 if blockers: return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
                 if (not target.get('agentArchive') and not target.get('threadId')
                         and not target.get('worktreeReady') and not target.get('worktreeCleanup')
                         and not target.get('cleanedWorktree')):
                     archived_agent = _archive_record(rt, db, target, actor_id, args.get('reason', ''),
-                                                     cleanup_pending=False)
+                                                     cleanup_pending=False, unassign_work=unassign_work)
                     return {'status': 'archived', 'agent': archived_agent,
-                            'worktree': {'state': 'none', 'bytes': 0}}
+                            'worktree': {'state': 'none', 'bytes': 0},
+                            'unassignedWork': archived_agent['agentArchive']['unassignedWork']}
                 observed = (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
                 connection = rt.connection_ids.get(observed[2])
                 server = rt.servers.get(observed[2])
@@ -938,7 +1108,9 @@ def manage_agent(rt, actor_id, args, epoch=None):
         if target.get('deletedAt') and not archived:
             raise ValueError('This worker was deleted, not archived')
         if action == 'archive' and archived:
-            if archived.get('cleanupPending'):
+            if archived.get('cleanupPending') or (target.get('worktreeReady') and not target.get('imageWorkspace')):
+                target['agentArchive']['cleanupPending'] = True
+                rt.put(db, 'agents', target)
                 archived_agent = _brief(target)
             else:
                 cleaned = target.get('cleanedWorktree') if not target.get('worktreeReady') else None
@@ -951,7 +1123,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 return {'status': 'archived', 'agent': _brief(target), 'replayed': True,
                         'workspace': (target.get('imageWorkspaceCleanupResult')
                                       or ({'state': 'removed', 'bytes': cleaned_image.get('bytes', 0)}
-                                          if cleaned_image else None)), 'worktree': worktree}
+                                          if cleaned_image else None)), 'worktree': worktree,
+                        'unassignedWork': archived.get('unassignedWork', [])}
         if action == 'restore':
             if not archived:
                 return {'status': 'not_archived', 'agent': _brief(target)}
@@ -995,7 +1168,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
                     if a['rootId'] == actor['rootId'] and a['id'] != actor_id
                     and (not a.get('deletedAt') or a['id'] == target['id'])]
             sizes, disk = management_view(rt, team, db=db)
-            blockers = [] if archived else _blockers(rt, db, target)
+            blockers = [] if archived else _blockers(rt, db, target, unassign_work=unassign_work)
             return {'agent': {**_brief(target), 'worktreeDisk': sizes[target['id']]},
                     'disk': disk, 'canArchive': not archived and not blockers,
                     'blockers': blockers, 'schedulerAlive': rt.scheduler.is_alive()}
@@ -1004,15 +1177,16 @@ def manage_agent(rt, actor_id, args, epoch=None):
                             if action == 'recover' else None)
         if action == 'archive' and not archived:
             if (observed != (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
-                    or connection != rt.connection_ids.get(observed[2])):
+                    or connection != rt.connection_ids.get(observed[2])
+                    or server is not rt.servers.get(observed[2]) or rt.closed):
                 raise ValueError('Worker changed during native inspection; inspect it again')
             reason = args.get('reason', '')
             if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
                 raise ValueError('Give an archive reason with 1 to 1000 characters')
-            blockers = _blockers(rt, db, target)
+            blockers = _blockers(rt, db, target, unassign_work=unassign_work)
             if blockers:
                 return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
-            archived_agent = _archive_record(rt, db, target, actor_id, reason, cleanup_pending=True)
+            archived_agent = _archive_record(rt, db, target, actor_id, reason, cleanup_pending=True, unassign_work=unassign_work)
     if action == 'archive':
         if target.get('imageWorkspaceReady'):
             cleanup = _cleanup_image_workspace(rt, target['id'])
@@ -1034,7 +1208,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 rt.put(db, 'agents', current)
         return {'status': 'archived', 'agent': archived_agent,
                 'workspace': cleanup if target.get('imageWorkspace') else None,
-                'worktree': cleanup if not target.get('imageWorkspace') else None}
+                'worktree': cleanup if not target.get('imageWorkspace') else None,
+                'unassignedWork': archived_agent['agentArchive'].get('unassignedWork', [])}
     if action == 'restore':
         if restore_image:
             from codex_workspace_images import create_workspace, exec_prefix
