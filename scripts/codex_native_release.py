@@ -60,17 +60,124 @@ def _same(rt, agent, identity):
 
 
 def _mark(rt, agent_id, identity, phase, **details):
+    release_id = details.pop("_release_id", None)
+    inspection_only = details.pop("_inspection_only", False)
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
         if not _same(rt, agent, identity):
             return False
         release = agent.get("nativeRelease") or {}
+        if release_id is not None and release.get("id") != release_id:
+            return False
+        if inspection_only and (release.get("submittedAt") or release.get("phase") != "checking"):
+            return False
         release.update(phase=phase, **details)
         agent["nativeRelease"] = release
         rt.put(db, "agents", agent)
         if phase == "released":
             rt.loaded.discard(agent_id)
         return True
+
+
+def _actor_scope(rt, actor):
+    account = actor.get("accountKey", "default")
+    return {"id": actor["id"], "epoch": actor["epoch"], "rootId": actor["rootId"],
+            "threadId": actor.get("threadId"), "accountKey": account,
+            "connectionId": rt.connection_ids.get(account)}
+
+
+def _inspection_current(rt, db, agent, release):
+    saved = agent.get("nativeRelease") or {}
+    identity = (release["targetEpoch"], release["threadId"], release["accountKey"],
+                release["connectionId"])
+    if (rt.closed or saved.get("id") != release["id"] or saved.get("submittedAt")
+            or saved.get("phase") != "checking"
+            or not _same(rt, agent, identity)
+            or agent.get("rootId") != release["targetRootId"]
+            or agent.get("parentId") != release["targetParentId"]):
+        raise ValueError("agent changed during native inspection")
+    if release.get("resetBy") is not None:
+        from codex_agent_management import _authorize
+        actor = _authorize(rt, db, release["resetBy"], release["resetActorEpoch"], agent)
+        if _actor_scope(rt, actor) != release["resetActorScope"]:
+            raise ValueError("reset owner changed during native inspection")
+    return identity
+
+
+def _cancel_inspection(rt, agent_id, release, error):
+    # Revoke only this request's unsubmitted inspection, even after Stop.
+    with rt.lock, rt.db() as db:
+        agent = rt.agent(agent_id, db)
+        saved = agent.get("nativeRelease") or {}
+        if (saved.get("id") == release["id"] and not saved.get("submittedAt")
+                and saved.get("phase") == "checking"):
+            saved.update(phase="blocked", resetPending=False, error=str(error)[:300])
+            rt.put(db, "agents", agent)
+
+
+def _release_checked(rt, agent_id, identity, server, release):
+    from codex_runtime import ResponseTimeout
+
+    try:
+        native = server.call("thread/read", {"threadId": identity[1], "includeTurns": False}, timeout=10)["thread"]
+        native_status = native.get("status", {}).get("type")
+        if native.get("id") != identity[1] or native_status not in {"idle", "notLoaded"}:
+            raise ValueError("native thread is active or its status is unknown")
+        if native_status == "notLoaded":
+            if _mark(rt, agent_id, identity, "released", _release_id=release["id"],
+                     _inspection_only=True,
+                     nativeStatus="notLoaded", releasedAt=time.time(), closedAt=time.time(),
+                     resetPending=False, error=None):
+                return {"status": "released", "nativeStatus": "notLoaded",
+                        "note": "Native session closure is confirmed."}
+            _cancel_inspection(rt, agent_id, release, "agent changed after native inspection")
+            return {"status": "unknown", "reason": "agent changed after native inspection"}
+        terminals = server.call("thread/backgroundTerminals/list",
+                                {"threadId": identity[1], "limit": 1}, timeout=10)
+        if not isinstance(terminals.get("data"), list) or terminals["data"] or terminals.get("nextCursor"):
+            raise ValueError("native background command is active")
+        queued = server.call("thread/queue/list", {"threadId": identity[1]}, timeout=10)
+        if not isinstance(queued.get("data"), list) or queued["data"] or queued.get("nextCursor"):
+            raise ValueError("native input is pending")
+    except Exception as error:
+        if release.get("resetPending") and isinstance(error, (ResponseTimeout, TimeoutError)):
+            failures = int(release.get("inspectionFailures", 0)) + 1
+            delay = min(300, SCAN_SECONDS * 2 ** min(failures - 1, 4))
+            if _mark(rt, agent_id, identity, "checking", _release_id=release["id"],
+                     _inspection_only=True,
+                     error=str(error)[:300], resetPending=True, inspectionFailures=failures,
+                     inspectionPhase="inspection_wait", nextAttemptAt=time.time() + delay):
+                return {"status": "waiting", "reason": str(error)[:300]}
+        _cancel_inspection(rt, agent_id, release, error)
+        return {"status": "blocked", "reason": str(error)[:300]}
+    try:
+        with rt.lock, rt.db() as db:
+            agent = rt.agent(agent_id, db)
+            _inspection_current(rt, db, agent, release)
+            blocker = _local_blocker(rt, db, agent)
+            if blocker:
+                raise ValueError(blocker)
+            agent["nativeRelease"].update(phase="unsubscribing", submittedAt=time.time())
+            agent["nativeRelease"].pop("inspectionPhase", None)
+            rt.put(db, "agents", agent)
+    except ValueError as error:
+        _cancel_inspection(rt, agent_id, release, error)
+        return {"status": "blocked", "reason": str(error)[:300]}
+    try:
+        result = server.call("thread/unsubscribe", {"threadId": identity[1]}, timeout=10)
+        if result.get("status") not in {"unsubscribed", "notSubscribed", "notLoaded"}:
+            raise RuntimeError("native unsubscribe response is not confirmed")
+    except Exception as error:
+        _mark(rt, agent_id, identity, "unknown", _release_id=release["id"], error=str(error)[:300])
+        return {"status": "unknown", "reason": str(error)[:300]}
+    if not _mark(rt, agent_id, identity, "released", _release_id=release["id"],
+                 releasedAt=time.time(), nativeStatus=result["status"], error=None,
+                 resetPending=bool(release.get("resetPending") and result["status"] != "notLoaded"),
+                 **({"closedAt": time.time()} if result["status"] == "notLoaded" else {})):
+        return {"status": "unknown", "reason": "agent changed after unsubscribe"}
+    return {"status": "released", "nativeStatus": result["status"],
+            "note": ("Native session closure is confirmed." if result["status"] == "notLoaded"
+                     else "Codex can keep this idle session and its tool processes until its configured idle window ends (60 seconds by default).")}
 
 
 def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None, now=None):
@@ -83,9 +190,13 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
     try:
         with rt.lock, rt.db() as db:
             agent = rt.agent(agent_id, db)
+            actor = None
             if actor_id is not None:
                 from codex_agent_management import _authorize
-                _authorize(rt, db, actor_id, actor_epoch, agent)
+                actor = _authorize(rt, db, actor_id, actor_epoch, agent)
+            previous = agent.get("nativeRelease") or {}
+            if previous.get("phase") in {"unknown", "unsubscribing"}:
+                return {"status": "unknown", "reason": previous.get("error") or "native release acknowledgement pending"}
             account = agent.get("accountKey", "default")
             identity = (agent["epoch"], agent.get("threadId"), account,
                         rt.connection_ids.get(account))
@@ -104,67 +215,51 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
             server = rt.servers.get(account)
             if server is None:
                 return {"status": "blocked", "reason": "owning account is offline"}
-            release = {"id": uuid.uuid4().hex, "phase": "checking", "threadId": identity[1], "accountKey": account,
-                       "connectionId": identity[3], "at": now}
+            release = {"id": uuid.uuid4().hex, "phase": "checking",
+                       "threadId": identity[1], "accountKey": account, "connectionId": identity[3], "at": now,
+                       "targetEpoch": identity[0], "targetRootId": agent.get("rootId"),
+                       "targetParentId": agent.get("parentId")}
             if reason is not None:
-                release.update(resetReason=reason, resetBy=actor_id, resetPending=True)
+                release.update(resetReason=reason, resetBy=actor_id, resetPending=True,
+                               inspectionPhase="inspecting",
+                               resetActorEpoch=actor["epoch"] if actor else None,
+                               resetActorScope=_actor_scope(rt, actor) if actor else None)
             agent["nativeRelease"] = release
             rt.put(db, "agents", agent)
-        try:
-            native = server.call("thread/read", {"threadId": identity[1], "includeTurns": False}, timeout=10)["thread"]
-            native_status = native.get("status", {}).get("type")
-            if native.get("id") != identity[1] or native_status not in {"idle", "notLoaded"}:
-                raise ValueError("native thread is active or its status is unknown")
-            if native_status == "notLoaded":
-                if _mark(rt, agent_id, identity, "released", nativeStatus="notLoaded",
-                         releasedAt=time.time(), closedAt=time.time(), resetPending=False, error=None):
-                    return {"status": "released", "nativeStatus": "notLoaded",
-                            "note": "Native session closure is confirmed."}
-                return {"status": "unknown", "reason": "agent changed after native inspection"}
-            if native_status == "idle":
-                terminals = server.call("thread/backgroundTerminals/list",
-                                        {"threadId": identity[1], "limit": 1}, timeout=10)
-                if not isinstance(terminals.get("data"), list) or terminals["data"] or terminals.get("nextCursor"):
-                    raise ValueError("native background command is active")
-            queued = server.call("thread/queue/list", {"threadId": identity[1]}, timeout=10)
-            if not isinstance(queued.get("data"), list) or queued["data"] or queued.get("nextCursor"):
-                raise ValueError("native input is pending")
-        except Exception as error:
-            _mark(rt, agent_id, identity, "blocked", error=str(error)[:300], resetPending=False)
-            return {"status": "blocked", "reason": str(error)[:300]}
-        with rt.lock, rt.db() as db:
-            agent = rt.agent(agent_id, db)
-            if actor_id is not None:
-                from codex_agent_management import _authorize
-                _authorize(rt, db, actor_id, actor_epoch, agent)
-            blocker = _local_blocker(rt, db, agent)
-            if not _same(rt, agent, identity) or blocker:
-                return {"status": "blocked", "reason": blocker or "agent changed during native inspection"}
-            agent["nativeRelease"].update(phase="unsubscribing", submittedAt=time.time())
-            rt.put(db, "agents", agent)
-        try:
-            result = server.call("thread/unsubscribe", {"threadId": identity[1]}, timeout=10)
-            if result.get("status") not in {"unsubscribed", "notSubscribed", "notLoaded"}:
-                raise RuntimeError("native unsubscribe response is not confirmed")
-        except Exception as error:
-            _mark(rt, agent_id, identity, "unknown", error=str(error)[:300])
-            return {"status": "unknown", "reason": str(error)[:300]}
-        if not _mark(rt, agent_id, identity, "released", releasedAt=time.time(),
-                     nativeStatus=result["status"], error=None,
-                     resetPending=bool(reason is not None and result["status"] != "notLoaded"),
-                     **({"closedAt": time.time()} if result["status"] == "notLoaded" else {})):
-            return {"status": "unknown", "reason": "agent changed after unsubscribe"}
-        return {"status": "released", "nativeStatus": result["status"],
-                "note": ("Native session closure is confirmed." if result["status"] == "notLoaded"
-                         else "Codex can keep this idle session and its tool processes until its configured idle window ends (60 seconds by default).")}
+        return _release_checked(rt, agent_id, identity, server, release)
     finally:
         guard.release()
 
 
 def reconcile_unknown(rt, agent):
-    """Retry only the idempotent unsubscribe before a later thread/resume."""
+    """Settle captured resets from closure proof; retain legacy unsubscribe retries."""
     release = agent.get("nativeRelease") or {}
     if release.get("phase") not in {"unknown", "checking", "unsubscribing"}:
+        return
+    if "resetActorEpoch" in release:
+        from codex_runtime import ResponseTimeout
+        with rt.lock, rt.db() as db:
+            current = rt.agent(agent["id"], db)
+            saved = current.get("nativeRelease") or {}
+            if (isinstance(release.get("id"), str) and release["id"]
+                    and saved.get("id") == release["id"]):
+                if saved.get("phase") in {"released", "resumed"}:
+                    return
+                identity = (saved.get("targetEpoch"), saved.get("threadId"),
+                            saved.get("accountKey"), saved.get("connectionId"))
+                closed_at = saved.get("closedAt")
+                if (not rt.closed and _same(rt, current, identity)
+                        and current.get("rootId") == saved.get("targetRootId")
+                        and current.get("parentId") == saved.get("targetParentId")
+                        and not saved.get("resetPending")
+                        and isinstance(closed_at, (int, float)) and not isinstance(closed_at, bool)
+                        and closed_at >= max(saved.get("at", 0), saved.get("submittedAt", 0))):
+                    saved.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at, error=None)
+                    rt.put(db, "agents", current)
+                    rt.loaded.discard(agent["id"])
+                    return
+        raise ResponseTimeout("Native release outcome remains unknown; wait for exact native closure")
+    if release.get("phase") == "checking" and release.get("inspectionPhase"):
         return
     account = agent.get("accountKey", "default")
     identity = (agent["epoch"], agent.get("threadId"), account, rt.connection_ids.get(account))
@@ -213,8 +308,32 @@ def _retry_reset(rt, agent_id):
         with rt.lock, rt.db() as db:
             agent = rt.agent(agent_id, db)
             release = agent.get("nativeRelease") or {}
-            if not release.get("resetPending") or release.get("phase") not in {"unknown", "checking", "unsubscribing"}:
+            if not release.get("resetPending"):
                 return
+            if "resetActorEpoch" in release and release.get("submittedAt"):
+                return
+            inspection = (release.get("phase") == "checking" and
+                          release.get("inspectionPhase") in {"inspecting", "inspection_wait"})
+            if inspection:
+                if release.get("nextAttemptAt", 0) > time.time():
+                    return
+                try:
+                    identity = _inspection_current(rt, db, agent, release)
+                    blocker = _local_blocker(rt, db, agent)
+                    if blocker:
+                        raise ValueError(blocker)
+                    server = rt.servers.get(identity[2])
+                    if server is None or agent_id not in rt.loaded or agent.get("deletedAt"):
+                        raise ValueError("owning native session is no longer available")
+                except ValueError as error:
+                    release.update(phase="blocked", resetPending=False, error=str(error)[:300])
+                    rt.put(db, "agents", agent)
+                    return
+            elif release.get("phase") not in {"unknown", "checking", "unsubscribing"}:
+                return
+        if inspection:
+            _release_checked(rt, agent_id, identity, server, release)
+            return
         try:
             reconcile_unknown(rt, agent)
         except Exception:

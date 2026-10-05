@@ -12,13 +12,14 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_agent_management import manage_agent
-from codex_native_release import IDLE_SECONDS, release_agent, tick
+from codex_native_release import IDLE_SECONDS, _retry_reset, reconcile_unknown, release_agent, tick
 from codex_native_sweep import sweep
-from codex_runtime import PreparationPending, Runtime
+from codex_runtime import PreparationPending, ResponseTimeout, Runtime
 
 spec = importlib.util.spec_from_file_location("runtime_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -116,6 +117,32 @@ class NativeReleaseContract(unittest.TestCase):
             current = self.rt.agent(agent["id"], db)
             current["lastEvent"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
             self.rt.put(db, "agents", current)
+
+    def waiting_reset(self, lead, worker, method="thread/read"):
+        original = self.rt.server.call
+
+        def timeout(read_method, params, timeout=60):
+            if read_method == method:
+                self.rt.server.calls.append((read_method, params))
+                raise ResponseTimeout(read_method + " response timed out; outcome unknown")
+            return original(read_method, params, timeout)
+
+        with patch.object(self.rt.server, "call", timeout):
+            result = manage_agent(self.rt, lead["id"], {
+                "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"},
+                epoch=self.rt.agent(lead["id"])["epoch"])
+        self.assertEqual(result["status"], "waiting")
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            saved = current["nativeRelease"]
+            saved["nextAttemptAt"] = 0
+            self.rt.put(db, "agents", current)
+        return saved
+
+    def release_calls(self, before):
+        return [(method, params) for method, params in self.rt.server.calls[before:]
+                if method in {"thread/read", "thread/backgroundTerminals/list", "thread/queue/list",
+                              "thread/unsubscribe"}]
 
     def test_release_timing_and_resume(self):
         lead = self.lead()
@@ -325,6 +352,331 @@ class NativeReleaseContract(unittest.TestCase):
         self.assertEqual(result["status"], "released")
         self.assertTrue(self.rt.agent(worker["id"])["nativeRelease"]["resetPending"])
 
+    def test_read_timeout_retains_reset_and_retries_full_preflight_once(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        original = self.rt.server.call
+        failed = False
+
+        def call(method, params, timeout=60):
+            nonlocal failed
+            if method == "thread/read" and not failed:
+                failed = True
+                self.rt.server.calls.append((method, params))
+                raise ResponseTimeout("thread/read response timed out; outcome unknown")
+            return original(method, params, timeout)
+
+        before = len(self.rt.server.calls)
+        with patch.object(self.rt.server, "call", call):
+            result = manage_agent(self.rt, lead["id"], {
+                "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"},
+                epoch=lead["epoch"])
+            self.assertEqual(result["status"], "waiting")
+            saved = self.rt.agent(worker["id"])["nativeRelease"]
+            self.assertEqual(saved["phase"], "checking")
+            self.assertEqual(saved["inspectionPhase"], "inspection_wait")
+            self.assertTrue(saved["resetPending"])
+            self.assertNotIn("submittedAt", saved)
+            self.assertEqual(saved["resetActorEpoch"], lead["epoch"])
+            self.assertEqual(saved["targetEpoch"], worker["epoch"])
+            self.assertGreaterEqual(saved["nextAttemptAt"], saved["at"] + 30)
+            self.assertFalse(any(method == "thread/unsubscribe"
+                                 for method, _ in self.rt.server.calls[before:]))
+            _retry_reset(self.rt, worker["id"])
+            self.assertEqual(len(self.release_calls(before)), 1)
+            with self.rt.lock, self.rt.db() as db:
+                current = self.rt.agent(worker["id"], db)
+                current["nativeRelease"]["nextAttemptAt"] = 0
+                self.rt.put(db, "agents", current)
+            _retry_reset(self.rt, worker["id"])
+        release = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertEqual(release["id"], saved["id"])
+        self.assertEqual(release["at"], saved["at"])
+        self.assertEqual(release["resetReason"], "Reset cells")
+        self.assertEqual(release["resetBy"], lead["id"])
+        self.assertEqual(release["phase"], "released")
+        self.assertEqual([method for method, _ in self.release_calls(before)], [
+            "thread/read", "thread/read", "thread/backgroundTerminals/list", "thread/queue/list",
+            "thread/unsubscribe"])
+        _retry_reset(self.rt, worker["id"])
+        self.assertEqual(sum(method == "thread/unsubscribe"
+                             for method, _ in self.rt.server.calls[before:]), 1)
+
+    def test_each_read_only_preflight_timeout_repeats_all_checks(self):
+        lead = self.lead()
+        for method in ("thread/backgroundTerminals/list", "thread/queue/list"):
+            with self.subTest(method=method):
+                worker = self.worker(lead)
+                saved = self.waiting_reset(lead, worker, method)
+                before = len(self.rt.server.calls)
+                _retry_reset(self.rt, worker["id"])
+                self.assertEqual([call[0] for call in self.release_calls(before)], [
+                    "thread/read", "thread/backgroundTerminals/list", "thread/queue/list",
+                    "thread/unsubscribe"])
+                self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"]["id"], saved["id"])
+
+    def test_inspection_retry_rejects_changed_scope_before_native_calls(self):
+        cases = (("target", "epoch", 1), ("target", "threadId", "replacement-thread"),
+                 ("target", "accountKey", "replacement-account"),
+                 ("target", "rootId", "replacement-root"), ("target", "parentId", "replacement-parent"),
+                 ("target", "inFlight", True), ("actor", "epoch", 1),
+                 ("actor", "autoWake", False), ("actor", "threadId", "replacement-actor-thread"),
+                 ("actor", "accountKey", "replacement-actor-account"),
+                 ("actor", "rootId", "replacement-actor-root"), ("connection", "default", "replacement-connection"))
+        for owner, field, value in cases:
+            with self.subTest(owner=owner, field=field):
+                lead = self.lead()
+                worker = self.worker(lead)
+                saved = self.waiting_reset(lead, worker)
+                before = len(self.rt.server.calls)
+                old_connection = self.rt.connection_ids["default"]
+                if owner == "connection":
+                    self.rt.connection_ids[field] = value
+                else:
+                    with self.rt.lock, self.rt.db() as db:
+                        key = lead["id"] if owner == "actor" else worker["id"]
+                        current = self.rt.agent(key, db)
+                        current[field] = value
+                        self.rt.put(db, "agents", current)
+                try:
+                    _retry_reset(self.rt, worker["id"])
+                    release = self.rt.agent(worker["id"])["nativeRelease"]
+                    self.assertEqual(release["id"], saved["id"])
+                    self.assertEqual(release["phase"], "blocked")
+                    self.assertFalse(release["resetPending"])
+                    self.assertEqual(self.release_calls(before), [])
+                finally:
+                    self.rt.connection_ids["default"] = old_connection
+
+    def test_stop_during_retry_preflight_prevents_unsubscribe(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        original = self.rt.server.call
+        before = len(self.rt.server.calls)
+
+        def stop_after_read(method, params, timeout=60):
+            result = original(method, params, timeout)
+            if method == "thread/queue/list":
+                self.rt.stop(worker["id"])
+            return result
+
+        with patch.object(self.rt.server, "call", stop_after_read):
+            _retry_reset(self.rt, worker["id"])
+        current = self.rt.agent(worker["id"])
+        self.assertEqual(current["nativeRelease"]["id"], saved["id"])
+        self.assertFalse(current["nativeRelease"]["resetPending"])
+        self.assertFalse(any(method == "thread/unsubscribe"
+                             for method, _ in self.rt.server.calls[before:]))
+
+    def test_retry_preserves_native_command_and_pending_input_blockers(self):
+        lead = self.lead()
+        for kind in ("terminal", "queue", "unknown_input", "unknown_task"):
+            with self.subTest(kind=kind):
+                worker = self.worker(lead)
+                self.waiting_reset(lead, worker)
+                before = len(self.rt.server.calls)
+                if kind == "terminal":
+                    self.rt.server.terminals = [{"processId": "still-running"}]
+                elif kind == "queue":
+                    self.rt.server.queue = [{"id": "accepted-input"}]
+                else:
+                    with self.rt.lock, self.rt.db() as db:
+                        if kind == "unknown_input":
+                            db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", (
+                                "unknown-reset-" + worker["id"], worker["id"], "user", "x", "uncertain",
+                                time.time(), worker["epoch"], None, None))
+                        else:
+                            self.rt.put(db, "tasks", {"id": "unknown-reset-" + worker["id"],
+                                                       "agent": worker["id"], "status": "unknown"})
+                try:
+                    _retry_reset(self.rt, worker["id"])
+                    self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"]["phase"], "blocked")
+                    self.assertFalse(any(method == "thread/unsubscribe"
+                                         for method, _ in self.rt.server.calls[before:]))
+                    if kind in {"unknown_input", "unknown_task"}:
+                        self.assertEqual(self.release_calls(before), [])
+                finally:
+                    self.rt.server.terminals = []
+                    self.rt.server.queue = []
+
+    def test_reset_does_not_replace_unknown_unsubscribe_or_reopen_old_blocked(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.rt.server.unsubscribe_fail_once = True
+        result = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"})
+        self.assertEqual(result["status"], "unknown")
+        saved = self.rt.agent(worker["id"])["nativeRelease"]
+        before = len(self.rt.server.calls)
+        again = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Second reset"})
+        self.assertEqual(again["status"], "unknown")
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], saved)
+        self.assertEqual(self.release_calls(before), [])
+        _retry_reset(self.rt, worker["id"])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], saved)
+        self.assertEqual(self.release_calls(before), [])
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"] = {"id": "old-blocked", "phase": "blocked", "resetPending": False,
+                                        "error": "thread/read response timed out; outcome unknown"}
+            self.rt.put(db, "agents", current)
+        _retry_reset(self.rt, worker["id"])
+        self.assertEqual(self.release_calls(before), [])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"]["id"], "old-blocked")
+
+    def test_captured_unknown_release_closes_then_send_does_not_repeat_unsubscribe(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.rt.server.unsubscribe_fail_once = True
+        result = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"})
+        self.assertEqual(result["status"], "unknown")
+        saved = self.rt.agent(worker["id"])["nativeRelease"]
+        self.rt.server.closed_threads.add(worker["threadId"])
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": worker["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(worker["id"])["nativeRelease"].get("closedAt"))
+        closed = self.rt.agent(worker["id"])["nativeRelease"]
+        self.assertFalse(closed["resetPending"])
+        before = len(self.rt.server.calls)
+        self.rt.send(worker["id"], "Continue after exact native closure", "closed-reset-once")
+        fixture.eventually(lambda: self.rt.delivery_receipt("closed-reset-once")["status"] == "delivered")
+        methods = [method for method, params in self.rt.server.calls[before:]
+                   if params.get("threadId") == worker["threadId"]]
+        self.assertEqual(methods.count("thread/unsubscribe"), 0)
+        self.assertEqual(methods.count("thread/resume"), 1)
+        self.assertEqual(methods.count("turn/start"), 1)
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"]["id"], saved["id"])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"]["closedAt"], closed["closedAt"])
+
+    def test_captured_unknown_release_keeps_hold_without_closed_proof(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.rt.server.unsubscribe_fail_once = True
+        result = manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"})
+        self.assertEqual(result["status"], "unknown")
+        saved = self.rt.agent(worker["id"])["nativeRelease"]
+        before = len(self.rt.server.calls)
+        with self.assertRaises(ResponseTimeout):
+            reconcile_unknown(self.rt, self.rt.agent(worker["id"]))
+        self.assertEqual(self.release_calls(before), [])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], saved)
+
+    def test_captured_closed_release_rejects_changed_scope_and_invalid_proof(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.rt.server.unsubscribe_fail_once = True
+        manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"})
+        original = self.rt.agent(worker["id"])
+        cases = (("agent", "epoch", worker["epoch"] + 1),
+                 ("agent", "threadId", "replacement-thread"),
+                 ("agent", "accountKey", "replacement-account"),
+                 ("agent", "rootId", "replacement-root"),
+                 ("agent", "parentId", "replacement-parent"),
+                 ("release", "connectionId", "replacement-connection"),
+                 ("release", "closedAt", True),
+                 ("release", "closedAt", original["nativeRelease"]["at"] - 1),
+                 ("release", "resetPending", True),
+                 ("release", "id", None))
+        before = len(self.rt.server.calls)
+        for scope, field, value in cases:
+            with self.subTest(scope=scope, field=field):
+                current = json.loads(json.dumps(original))
+                current["nativeRelease"].update(closedAt=time.time(), resetPending=False)
+                (current if scope == "agent" else current["nativeRelease"])[field] = value
+                with self.rt.lock, self.rt.db() as db:
+                    self.rt.put(db, "agents", current)
+                with self.assertRaises(ResponseTimeout):
+                    reconcile_unknown(self.rt, current)
+                self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], current["nativeRelease"])
+                self.assertEqual(self.release_calls(before), [])
+
+    def test_captured_closed_release_does_not_replace_a_newer_receipt(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        self.rt.server.unsubscribe_fail_once = True
+        manage_agent(self.rt, lead["id"], {
+            "action": "reset_tools", "agent_id": worker["id"], "reason": "Reset cells"})
+        stale = self.rt.agent(worker["id"])
+        with self.rt.lock, self.rt.db() as db:
+            current = self.rt.agent(worker["id"], db)
+            current["nativeRelease"].update(id="replacement-release", closedAt=time.time(), resetPending=False)
+            self.rt.put(db, "agents", current)
+        before = len(self.rt.server.calls)
+        with self.assertRaises(ResponseTimeout):
+            reconcile_unknown(self.rt, stale)
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], current["nativeRelease"])
+        self.assertEqual(self.release_calls(before), [])
+
+    def test_read_retry_never_overwrites_a_submitted_receipt(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        original = self.rt.server.call
+        receipt = []
+
+        def receipt_during_read(method, params, timeout=60):
+            if method == "thread/read":
+                with self.rt.lock, self.rt.db() as db:
+                    current = self.rt.agent(worker["id"], db)
+                    current["nativeRelease"].update(phase="unknown", submittedAt=time.time(),
+                                                    error="original unsubscribe outcome unknown")
+                    receipt.append(dict(current["nativeRelease"]))
+                    self.rt.put(db, "agents", current)
+                raise ResponseTimeout("late read timeout")
+            return original(method, params, timeout)
+
+        with patch.object(self.rt.server, "call", receipt_during_read):
+            _retry_reset(self.rt, worker["id"])
+        self.assertEqual(self.rt.agent(worker["id"])["nativeRelease"], receipt[0])
+        self.assertEqual(receipt[0]["id"], saved["id"])
+
+    def test_read_retry_has_bounded_backoff_and_keeps_original_request(self):
+        lead = self.lead()
+        worker = self.worker(lead)
+        saved = self.waiting_reset(lead, worker)
+        original = self.rt.server.call
+
+        def timeout(method, params, timeout=60):
+            if method == "thread/read":
+                raise ResponseTimeout("read response pending")
+            return original(method, params, timeout)
+
+        with patch.object(self.rt.server, "call", timeout):
+            for failure in range(2, 8):
+                began = time.time()
+                _retry_reset(self.rt, worker["id"])
+                current = self.rt.agent(worker["id"])["nativeRelease"]
+                self.assertEqual(current["id"], saved["id"])
+                self.assertEqual(current["inspectionFailures"], failure)
+                delay = min(300, 30 * 2 ** min(failure - 1, 4))
+                self.assertGreaterEqual(current["nextAttemptAt"], began + delay)
+                self.assertLess(current["nextAttemptAt"], time.time() + delay + 1)
+                with self.rt.lock, self.rt.db() as db:
+                    agent = self.rt.agent(worker["id"], db)
+                    agent["nativeRelease"]["nextAttemptAt"] = 0
+                    self.rt.put(db, "agents", agent)
+        self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
+
+    def test_tick_retries_at_most_two_exact_reset_requests(self):
+        lead = self.lead()
+        workers = [self.worker(lead) for _ in range(3)]
+        saved = {worker["id"]: self.waiting_reset(lead, worker) for worker in workers}
+        before = len(self.rt.server.calls)
+        tick(self.rt, now=time.time() + 31)
+        fixture.eventually(lambda: len([method for method, _ in self.rt.server.calls[before:]
+                                        if method == "thread/unsubscribe"]) == 2)
+        fixture.eventually(lambda: not self.rt._native_release_pending)
+        self.assertEqual(sum(method == "thread/unsubscribe"
+                             for method, _ in self.rt.server.calls[before:]), 2)
+        releases = [self.rt.agent(worker["id"])["nativeRelease"] for worker in workers]
+        self.assertEqual(sum(release["phase"] == "checking" for release in releases), 1)
+        for worker, release in zip(workers, releases):
+            self.assertEqual(release["id"], saved[worker["id"]]["id"])
+
     def test_sweep_releases_untracked_loaded_thread(self):
         self.rt.connect()
         self.rt.server.loaded_threads.add("orphan")
@@ -392,10 +744,11 @@ class NativeReleaseContract(unittest.TestCase):
 
     def test_sweep_is_bounded_per_tick(self):
         self.rt.connect()
-        self.rt.server.loaded_threads.update({"orphan-1", "orphan-2", "orphan-3"})
-        self.assertEqual(sweep(self.rt), 2)
-        self.assertEqual(len(self.rt.server.loaded_threads), 1)
-        self.assertEqual(sweep(self.rt), 1)
+        with self.rt.lock:
+            self.rt.server.loaded_threads.update({"orphan-1", "orphan-2", "orphan-3"})
+            self.assertEqual(sweep(self.rt), 2)
+            self.assertEqual(len(self.rt.server.loaded_threads), 1)
+            self.assertEqual(sweep(self.rt), 1)
 
     def test_sweep_keeps_background_terminal_and_native_queue(self):
         self.rt.connect()
