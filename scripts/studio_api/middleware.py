@@ -9,9 +9,15 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TypeAlias
 
+from starlette.datastructures import QueryParams
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
+from studio_api.schema import (
+    API_SCHEMA_HASH_HEADER,
+    API_SCHEMA_HASH_PARAM,
+    API_SCHEMA_MISMATCH_HEADER,
+)
 
 ASGIHandler: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
 FEDERATION_PATHS = frozenset({
@@ -23,6 +29,7 @@ ASSET_BODY_LIMIT = 28 * 1024 * 1024
 VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
 FEDERATION_BODY_LIMIT = 256 * 1024
 REQUEST_READ_TIMEOUT_SECONDS = 10.0
+API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
 
 
 class HeaderView:
@@ -111,8 +118,15 @@ def _error_response(status: int, error: str) -> tuple[Message, Message]:
     return start, {"type": "http.response.body", "body": body}
 
 
-async def _reject(send: Send, status: int, error: str) -> None:
+async def _reject(
+    send: Send,
+    status: int,
+    error: str,
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> None:
     start, body = _error_response(status, error)
+    if headers:
+        start["headers"].extend(headers)
     await send(start)
     await send(body)
 
@@ -144,9 +158,71 @@ class RequestBoundary:
         headers = HeaderView(scope.get("headers", []))
         federation = method == "POST" and path in FEDERATION_PATHS
         write = method not in {"GET", "HEAD", "OPTIONS"}
+        renderer_hash = headers.get(API_SCHEMA_HASH_HEADER)
         if not self._trusted(scope, headers, write=write, federation=federation):
             error = "Local origin and session token required" if write else "Local origin required"
             await _reject(send, 403, error)
+            return
+
+        schema_hash: str | None = None
+        if path.startswith("/api/"):
+            stream_hash = None
+            if path == "/api/sync/stream":
+                query = scope.get("query_string", b"").decode("latin-1")
+                stream_hash = QueryParams(query).get(API_SCHEMA_HASH_PARAM)
+                if renderer_hash is not None:
+                    stream_hash = renderer_hash
+            needs_hash = (write and renderer_hash is not None) or stream_hash is not None
+            try:
+                if needs_hash:
+                    schema_hash = await asyncio.wait_for(
+                        self.context.get_api_schema_hash(),
+                        timeout=API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS,
+                    )
+                else:
+                    schema_hash = self.context.peek_api_schema_hash()
+            except Exception:
+                import logging
+
+                if needs_hash or renderer_hash is not None:
+                    logging.getLogger(__name__).exception(
+                        "Studio API schema identity is unavailable"
+                    )
+                    await _reject(
+                        send,
+                        503,
+                        "Studio API schema identity is unavailable; restart Studio.",
+                    )
+                    return
+                # Hashless callers continue exactly as during warm-up even if
+                # the optional identity task has failed.
+                schema_hash = None
+
+            if schema_hash is not None:
+                raw_send = send
+
+                async def send_with_schema_hash(message: Message) -> None:
+                    if message["type"] == "http.response.start":
+                        response_headers = [
+                            (name, value)
+                            for name, value in message.get("headers", [])
+                            if name.lower() != API_SCHEMA_HASH_HEADER.lower().encode()
+                        ]
+                        response_headers.append(
+                            (API_SCHEMA_HASH_HEADER.lower().encode(), schema_hash.encode())
+                        )
+                        message = {**message, "headers": response_headers}
+                    await raw_send(message)
+
+                send = send_with_schema_hash
+
+        if write and renderer_hash is not None and renderer_hash != schema_hash:
+            await _reject(
+                send,
+                426,
+                "Studio was updated. Reload this tab to continue.",
+                [(API_SCHEMA_MISMATCH_HEADER.lower().encode(), b"1")],
+            )
             return
 
         if method not in {"POST", "PUT", "PATCH"}:

@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, cast
 import uvicorn
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+# Snapshot disk identity before importing the application modules whose loaded
+# Python code defines the OpenAPI document.
+import codex_backend_identity
+
 from studio_api.app import create_app
 from studio_api.context import ApiContext, RemoteAccessContract
 
@@ -26,12 +30,14 @@ LISTEN_BACKLOG = socket.SOMAXCONN
 UNIX_SOCKET_NAME = "canvas.sock"
 UNIX_SOCKET_MODE = 0o600
 UVICORN_LOG_CONFIG = None
+API_SCHEMA_HASH_START_DELAY_SECONDS = 0.25
 
 
 class _StudioUvicornServer(uvicorn.Server):
     def __init__(self, config: uvicorn.Config, context: ApiContext) -> None:
         super().__init__(config)
         self.context = context
+        self.schema_hash_start_scheduled = False
 
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
@@ -40,6 +46,14 @@ class _StudioUvicornServer(uvicorn.Server):
 
     async def on_tick(self, counter: int) -> bool:
         should_exit = await super().on_tick(counter)
+        # Let the first ordinary read finish before the CPU-heavy OpenAPI build
+        # starts. Gated requests can still start and await the shared future.
+        if not self.schema_hash_start_scheduled:
+            self.schema_hash_start_scheduled = True
+            asyncio.get_running_loop().call_later(
+                API_SCHEMA_HASH_START_DELAY_SECONDS,
+                self.context.start_api_schema_hash,
+            )
         if self.context.runtime is not None and time.monotonic() - self.context._maintenance_last >= 3600:
             await asyncio.to_thread(_run_maintenance, self.context)
         return should_exit
@@ -93,7 +107,14 @@ class BoundServer:
     daemon_threads = True
     unix_server: BoundServer | None = None
 
-    def __init__(self, sock: socket.socket, app: ASGIApp, context: ApiContext, *, owned_unix: tuple[int, int] | None = None) -> None:
+    def __init__(
+        self,
+        sock: socket.socket,
+        app: ASGIApp,
+        context: ApiContext,
+        *,
+        owned_unix: tuple[int, int] | None = None,
+    ) -> None:
         self.socket = sock
         self.app = app
         self.context = context
@@ -207,7 +228,12 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
     from codex_remote import RemoteAccess
 
     remote = cast(RemoteAccessContract, RemoteAccess(canvas.root, public_origin))  # type: ignore[no-untyped-call]
-    context = ApiContext(canvas, remote=remote, unix_socket=unix_socket)
+    context = ApiContext(
+        canvas,
+        remote=remote,
+        unix_socket=unix_socket,
+        backend_build=codex_backend_identity.BACKEND_BUILD,
+    )
     app = create_app(context)
     tcp_socket = _bind_tcp(port)
     context.server_port = int(tcp_socket.getsockname()[1])
@@ -219,6 +245,7 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
         tcp = BoundServer(tcp_socket, app, context)
         tcp.unix_server = unix_handle
         context.initialize()
+        # Hash generation starts in serve_forever after the bound sockets are ready.
         return CanvasServer(tcp, unix_handle, context)
     except BaseException:
         if unix_handle is not None:

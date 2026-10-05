@@ -9,6 +9,9 @@ import uuid
 
 sys.dont_write_bytecode = True
 root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root / 'tests'))
+from test_isolation import isolate_api_schema_cache
+isolate_api_schema_cache()
 sys.path.insert(0, str(root / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime

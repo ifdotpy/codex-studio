@@ -32,7 +32,6 @@ with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
             )
 
         protocol_response = get("/api/sync/protocol")
-        api_schema = protocol_response.headers.get("X-Studio-API-Schema")
         protocol = json.load(protocol_response)
         assert protocol["protocolVersion"] == 3
         assert protocol["supportedVersions"] == [3]
@@ -60,13 +59,10 @@ with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
             finally:
                 connection.close()
 
-        unix_status, unix_headers, unix_body = get_unix("/api/sync/protocol")
+        unix_status, _, unix_body = get_unix("/api/sync/protocol")
         assert unix_status == 200
         assert json.loads(unix_body)["supportedVersions"] == [3]
-        unix_schema = unix_headers.get("X-Studio-API-Schema")
         unix_parameters = {"protocol": 3, "resources": json.dumps([{"kind": "state"}], separators=(",", ":"))}
-        if unix_schema:
-            unix_parameters["apiSchema"] = unix_schema
         unix_query = urllib.parse.urlencode(unix_parameters)
         unix_status, _, unix_body = get_unix("/api/sync/stream?" + unix_query, read_lines=10)
         assert unix_status == 200
@@ -74,8 +70,6 @@ with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
 
         resources = json.dumps([{"kind": "state"}], separators=(",", ":"))
         parameters = {"protocol": 3, "resources": resources}
-        if api_schema:
-            parameters["apiSchema"] = api_schema
         query = urllib.parse.urlencode(parameters)
         path = "/api/sync/stream?" + query
 

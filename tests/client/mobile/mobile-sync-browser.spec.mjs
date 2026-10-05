@@ -1,7 +1,12 @@
 // Real RxDB and EventSource, with an isolated server and simulated PWA lifecycle.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("mobile sync browser", async ({ page }) => {
   const { createServer } = await import(
@@ -25,7 +30,7 @@ test("mobile sync browser", async ({ page }) => {
           server.middlewares.use("/api/sync/stream", (_request, response) => {
             response.setHeader("Content-Type", "text/event-stream");
             response.setHeader("Cache-Control", "no-cache");
-            response.write(`data: ${revision}\n\n`);
+            response.write(apiSchemaHandshakeSse());
             opened++;
             streamScopes.push(
               new URL(_request.url, "http://localhost").searchParams.get(
@@ -145,7 +150,15 @@ test("mobile sync browser", async ({ page }) => {
     const beforeBurst = pulls.length;
     revision = 2;
     for (let index = 0; index < 30; index++)
-      for (const stream of streams) stream.write(`data: ${revision}\n\n`);
+      for (const stream of streams)
+        stream.write(
+          protocol3SseEvent("heartbeat", {
+            protocol: 3,
+            workspaceId,
+            epoch: "fixture-epoch",
+            revision,
+          }),
+        );
     await page.waitForFunction(
       () =>
         window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&

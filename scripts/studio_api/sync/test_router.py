@@ -24,6 +24,7 @@ from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery
 from studio_api.responses import install_error_response_docs
+from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD
 from studio_api.sync.router import create_router
 from studio_api.sync.resources.hub import ResourceHub
 from studio_api.sync.resources.models import (
@@ -153,6 +154,7 @@ class ConnectedRequest(Request):
 
 class ContextStub:
     def __init__(self) -> None:
+        self.api_schema_hash = "server-schema"
         self.store = StoreStub()
         self.canvas = type("CanvasStub", (), {"root": "/nonexistent-canvas-root"})()
         self.runtime = RuntimeStub()
@@ -173,6 +175,15 @@ class ContextStub:
 
     def sync(self) -> StoreStub:
         return self.store
+
+    async def get_api_schema_hash(self) -> str:
+        return self.api_schema_hash
+
+    def peek_api_schema_hash(self) -> str:
+        return self.api_schema_hash
+
+    def start_api_schema_hash(self) -> None:
+        return None
 
     def resource_hub(self) -> ResourceHub:
         return self.hub
@@ -282,12 +293,46 @@ class SyncRouterTests(unittest.TestCase):
         context = ContextStub()
         resources = json.dumps([{"kind": "transcript", "agentId": "agent-a"}], separators=(",", ":"))
         body = self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        events = [line[7:] for line in body.splitlines() if line.startswith("event: ")]
+        self.assertEqual(events[:2], ["resources", "token-rates"])
+        self.assertNotIn("api-schema", events)
         self.assertIn("event: resources", body)
         self.assertIn('"reason":"initial"', body)
         self.assertIn('"kind":"transcript","agentId":"agent-a"', body)
         self.assertIn("event: token-rates", body)
         self.assertIn('"turnId":"turn-a"', body)
         self.assertIn('"epoch":"', body)
+
+    def test_mismatching_schema_stream_sends_only_handshake_without_subscribing(self) -> None:
+        context = ContextStub()
+        with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
+            responses = [
+                make_client(context).get(
+                    f"/api/sync/stream?protocol=3&{API_SCHEMA_HASH_PARAM}={value}&resources=invalid"
+                )
+                for value in ("foreign", "%C3%A9", "")
+            ]
+        for response in responses:
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+            body = response.text
+            self.assertEqual(body.count("event:"), 1)
+            self.assertIn("event: api-schema", body)
+            payload = json.loads(body.split("data: ", 1)[1].split("\n", 1)[0])
+            self.assertEqual(payload["hash"], context.api_schema_hash)
+            self.assertIs(payload[API_SCHEMA_MISMATCH_FIELD], True)
+        subscribe.assert_not_called()
+
+    def test_matching_schema_stream_starts_with_handshake(self) -> None:
+        context = ContextStub()
+        with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:
+            equal = self.read_stream(
+                context,
+                f"/api/sync/stream?protocol=3&{API_SCHEMA_HASH_PARAM}=server-schema&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D",
+            )
+        events = [line[7:] for line in equal.splitlines() if line.startswith("event: ")]
+        self.assertEqual(events[:3], ["api-schema", "resources", "token-rates"])
+        self.assertEqual(subscribe.call_count, 1)
 
     def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
         context = ContextStub()

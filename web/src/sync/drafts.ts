@@ -5,7 +5,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { saved, save } from "../api";
+import { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } from "../api";
 import { startDraftReplication, syncDatabase } from "./client";
 
 import { encodeDraftPayload } from "./draftPayload";
@@ -340,6 +340,7 @@ export function useSyncedDrafts() {
     [reportLocalError],
   );
   const flushDrafts = useCallback(() => {
+    if (isApiSchemaMismatch()) return Promise.resolve();
     if (flushing.current) return flushing.current;
     flushing.current = (async () => {
       let connecting = false;
@@ -511,7 +512,7 @@ export function useSyncedDrafts() {
       start();
     };
     const start = () => {
-      if (stopped || starting || started) return;
+      if (stopped || isApiSchemaMismatch() || starting || started) return;
       clearTimeout(retry);
       starting = true;
       void syncDatabase()
@@ -587,13 +588,22 @@ export function useSyncedDrafts() {
     };
     window.addEventListener("online", onOnline);
     const writeTimer = setInterval(() => {
+      if (isApiSchemaMismatch()) return;
       void flushDrafts();
     }, 3000);
+    const stopForSchemaMismatch = onApiSchemaMismatch(() => {
+      stopped = true;
+      clearTimeout(retry);
+      clearInterval(writeTimer);
+      unsubscribe();
+      cancel();
+    });
     return () => {
       stopped = true;
       clearTimeout(retry);
       clearInterval(writeTimer);
       stopResume();
+      stopForSchemaMismatch();
       window.removeEventListener("online", onOnline);
       retryDraftBootstrap.current = () => {};
       unsubscribe();

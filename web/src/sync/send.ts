@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { syncGet, syncPost, ApiError, errorText, refreshSession } from "../api";
+import {
+  isApiSchemaMismatch,
+  onApiSchemaMismatch,
+  syncGet,
+  syncPost,
+  ApiError,
+  ApiSchemaMismatchError,
+  errorText,
+  refreshSession,
+} from "../api";
 import type { PostBody, PostResult } from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
@@ -96,9 +105,15 @@ export const intentionResult = (value: Intention): SendResult =>
         status: value.status,
         error: value.error,
       };
+export function retainQueuedSchemaMismatch(
+  value: Intention,
+  error: unknown,
+): Intention {
+  return { ...value, error: errorText(error) };
+}
 const removalFence = (workspaceId: string, id: string) =>
   `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
-async function deliver(doc: any): Promise<SendResult> {
+export async function deliver(doc: any): Promise<SendResult> {
   let value: Intention = JSON.parse(doc.getLatest().payload);
   if (value.status !== "queued" || !navigator.onLine)
     return intentionResult(value);
@@ -183,6 +198,17 @@ async function deliver(doc: any): Promise<SendResult> {
     });
     return intentionResult(JSON.parse(current.payload));
   } catch (error) {
+    if (error instanceof ApiSchemaMismatchError) {
+      const current = await doc.incrementalModify((record: any) => {
+        const stored: Intention = JSON.parse(record.payload);
+        if (stored.status !== "queued") return record;
+        return {
+          ...record,
+          payload: JSON.stringify(retainQueuedSchemaMismatch(stored, error)),
+        };
+      });
+      return intentionResult(JSON.parse(current.payload));
+    }
     // A lost response is retried only at the existing idempotent message endpoint.
     if (
       !(error instanceof ApiError) ||
@@ -378,7 +404,7 @@ export function useOutbox() {
     let queuedIdentity = "";
     let drainAgain = false;
     const drain = async () => {
-      if (stop || !navigator.onLine) return;
+      if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
       if (draining) {
         drainAgain = true;
         return;
@@ -396,9 +422,9 @@ export function useOutbox() {
         ];
         let nextRoom = 0;
         const worker = async () => {
-          while (!stop && nextRoom < rooms.length) {
+          while (!stop && !isApiSchemaMismatch() && nextRoom < rooms.length) {
             const room = rooms[nextRoom++];
-            while (!stop) {
+            while (!stop && !isApiSchemaMismatch()) {
               // Re-read after acceptance so a message saved during HTTP does
               // not wait for the polling timer. Preserve order within each chat.
               const doc = queuedDocuments(await db.outbox.find().exec()).find(
@@ -417,12 +443,12 @@ export function useOutbox() {
         await Promise.all(
           Array.from({ length: Math.min(4, rooms.length) }, worker),
         );
-        if (!stop) setError("");
+        if (!stop && !isApiSchemaMismatch()) setError("");
       } catch (e) {
         if (!stop) setError(errorText(e));
       } finally {
         draining = false;
-        if (drainAgain && !stop) void drain();
+        if (drainAgain && !stop && !isApiSchemaMismatch()) void drain();
       }
     };
     let subscribing = false,
@@ -460,14 +486,18 @@ export function useOutbox() {
       void subscribe();
       void drain();
     };
-    void subscribe();
     const timer = setInterval(resume, 5000);
+    void subscribe();
+    const stopForSchemaMismatch = onApiSchemaMismatch(() => {
+      clearInterval(timer);
+    });
     const stopResume = onResume(resume);
     return () => {
       stop = true;
       clearInterval(timer);
       unsubscribe();
       stopResume();
+      stopForSchemaMismatch();
     };
   }, []);
   return { entries, error };

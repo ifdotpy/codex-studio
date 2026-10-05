@@ -19,15 +19,21 @@ an already accepted write retain their own request identities and lifecycles.
 
 [Python resource models](../scripts/studio_api/sync/resources/models.py) own the
 closed resource union and named event envelopes. OpenAPI publishes those models;
-`npm run api:generate` emits both TypeScript declarations and standalone runtime
-validators. `npm run api:check` rejects stale output. Renderer handlers validate
-incoming JSON as unknown before using it. Do not maintain a second handwritten
-wire schema or cast incoming JSON to a generated type.
+`npm run api:generate` emits TypeScript declarations and the SHA-256 identity of
+the canonical OpenAPI JSON. `npm run api:check` rejects stale output. API
+responses include the server identity. Hash-bearing protocol-3 connections begin
+with an `api-schema` event; mismatches get only that handshake before close.
+Hashless non-renderer clients retain the existing event sequence. Mutating
+requests with a present mismatching hash receive a marked 426. A mismatch stops
+resource and draft synchronization and message delivery until the renderer
+updates. Stream payloads are not walked against generated
+runtime validators; handlers retain structural preconditions and workspace,
+epoch, revision, and ordering checks.
 
 The existing native EventSource transport and RxDB projection cache remain in
 use. Adding a separate query cache is unnecessary for this contract. FastAPI
-owns SSE framing; Ajv compiles the Python/OpenAPI schemas at build time so the
-browser needs no schema compiler or dynamic code evaluation.
+owns SSE framing; the renderer and server compare the same generated schema
+identity before continuing with live updates.
 
 ### Subscription and notification
 
@@ -55,7 +61,7 @@ invalidate that projection. Queues and pending references are
 bounded; overflow requires explicit reconciliation rather than silent loss.
 
 Where browser coordination is available, one stream owner combines the active
-subscriptions from tabs and distributes validated events. Without that
+subscriptions from tabs and distributes stream events. Without that
 coordination, a tab may open its own stream. Neither case enables HTTP polling.
 Unused subscriptions and their source watchers are released. A new owner requests
 peer subscriptions again. Peer heartbeats do not replay unchanged resource

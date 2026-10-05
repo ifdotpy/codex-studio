@@ -16,6 +16,11 @@ from pydantic import TypeAdapter, ValidationError
 
 from studio_api.models import ErrorResponse
 from studio_api.responses import register_route_components
+from studio_api.schema import (
+    API_SCHEMA_HASH_HEADER,
+    API_SCHEMA_HASH_PARAM,
+    API_SCHEMA_MISMATCH_FIELD,
+)
 from studio_api.sync.models import (
     DraftPushRequest,
     SyncIdentityResponse,
@@ -124,6 +129,13 @@ def _resource_event(
     )
 
 
+def _schema_event(payload: dict[str, object]) -> bytes:
+    return format_sse_event(
+        event="api-schema",
+        data_str=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 def _stream_response(content: AsyncIterator[bytes]) -> StreamingResponse:
     headers = {
         "Cache-Control": "no-cache, no-transform",
@@ -216,6 +228,14 @@ def create_router(context: ApiContext) -> APIRouter:
                                 "resources": "ResourceChangeEvent",
                                 "heartbeat": "ResourceHeartbeatEvent",
                                 "token-rates": "ResourceTokenRatesEvent",
+                                "api-schema": {
+                                    "type": "object",
+                                    "required": ["hash"],
+                                    "properties": {
+                                        "hash": {"type": "string"},
+                                        API_SCHEMA_MISMATCH_FIELD: {"type": "boolean"},
+                                    },
+                                },
                             },
                         }
                     }
@@ -236,6 +256,19 @@ def create_router(context: ApiContext) -> APIRouter:
             return cast(StreamingResponse, response)
 
         if protocol_value == "3" or header_version == "3":
+            renderer_hash = request.headers.get(API_SCHEMA_HASH_HEADER)
+            if renderer_hash is None:
+                renderer_hash = request.query_params.get(API_SCHEMA_HASH_PARAM)
+            server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
+            if renderer_hash is not None and renderer_hash != server_hash:
+                async def schema_mismatch_event() -> AsyncIterator[bytes]:
+                    payload = {
+                        "hash": server_hash,
+                        API_SCHEMA_MISMATCH_FIELD: True,
+                    }
+                    yield _schema_event(payload)
+
+                return _stream_response(schema_mismatch_event())
             resources_json = _first(request, "resources", "") or ""
             if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:
                 return cast(StreamingResponse, context.send(
@@ -284,6 +317,8 @@ def create_router(context: ApiContext) -> APIRouter:
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
                 try:
+                    if renderer_hash is not None:
+                        yield _schema_event({"hash": server_hash})
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):

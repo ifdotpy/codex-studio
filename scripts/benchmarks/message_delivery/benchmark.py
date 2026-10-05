@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,12 @@ import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
+
+# Benchmarks create an in-process Studio API server; keep its runtime schema
+# cache outside the user's normal cache even when invoked directly.
+_TEST_API_CACHE_ROOT = tempfile.mkdtemp(prefix="codex-studio-benchmark-cache-")
+os.environ["XDG_CACHE_HOME"] = _TEST_API_CACHE_ROOT
+atexit.register(shutil.rmtree, _TEST_API_CACHE_ROOT, ignore_errors=True)
 
 DEFAULT_AGENT_COUNTS = (1, 8, 32)
 DEFAULT_MESSAGES_PER_AGENT = 8
@@ -179,15 +187,9 @@ class SyncClient(threading.Thread):
 
     def run(self):
         try:
-            with urllib.request.urlopen(
-                self.base + "/api/sync/protocol",
-                timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline)),
-            ) as protocol_response:
-                api_schema = protocol_response.headers.get("X-Studio-API-Schema")
-            parameters = {"protocol": 3, "resources": self.resources}
-            if api_schema:
-                parameters["apiSchema"] = api_schema
-            query = urllib.parse.urlencode(parameters)
+            query = urllib.parse.urlencode(
+                {"protocol": 3, "resources": self.resources}
+            )
             request = urllib.request.Request(self.base + "/api/sync/stream?" + query,
                                              headers={"Accept": "text/event-stream"})
             with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
