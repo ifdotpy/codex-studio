@@ -5781,6 +5781,20 @@ export interface components {
       scope?: string | null;
       status: components["schemas"]["LiveUpdateState"];
     };
+    /** LocalRoomParticipantDto */
+    LocalRoomParticipantDto: {
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /**
+       * Role
+       * @enum {string}
+       */
+      role: "lead" | "agent";
+      /** Status */
+      status?: string | null;
+    };
     /** LockMetricSummary */
     LockMetricSummary: {
       /** Max */
@@ -5914,7 +5928,7 @@ export interface components {
     /** MonitorEntityDto */
     MonitorEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent: string;
       /** Bytes */
       bytes?: number | null;
       /** Cancelrequested */
@@ -5922,7 +5936,7 @@ export interface components {
       /** Command */
       command?: string | null;
       /** Created */
-      created?: number | null;
+      created: number;
       /** Cwd */
       cwd?: string | null;
       /** Durationms */
@@ -9795,7 +9809,9 @@ export interface components {
       /** Localmembers */
       localMembers?: string[] | null;
       /** Localparticipants */
-      localParticipants?: components["schemas"]["JsonValue"][] | null;
+      localParticipants?:
+        | components["schemas"]["LocalRoomParticipantDto"][]
+        | null;
       /** Members */
       members?: string[] | null;
       /** Name */
