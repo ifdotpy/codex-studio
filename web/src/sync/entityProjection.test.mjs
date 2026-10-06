@@ -542,14 +542,28 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
           payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
           seq: 7,
         },
-        entityRow("project", "p", { id: "p", name: "P2" }, 8),
+        {
+          id: "entity:agent:missing-id",
+          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
+          seq: 8,
+        },
+        {
+          id: "entity:agent:null-value",
+          payload: JSON.stringify({
+            collection: "agent",
+            id: "x",
+            value: null,
+          }),
+          seq: 9,
+        },
+        entityRow("project", "p", { id: "p", name: "P2" }, 10),
       ],
       true,
     );
     assert.equal(changed.threads[0].name, "A2");
     assert.equal(changed.runtime.projects[0].name, "P2");
     assert.equal(changed.chats, initial.chats);
-    assert.equal(reports.length, 4);
+    assert.equal(reports.length, 6);
     assert.ok(
       reports.every(
         ([message, fields]) =>
@@ -578,14 +592,28 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
           payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
           seq: 7,
         },
-        entityRow("project", "p", { id: "p", name: "P2" }, 8),
+        {
+          id: "entity:agent:missing-id",
+          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
+          seq: 8,
+        },
+        {
+          id: "entity:agent:null-value",
+          payload: JSON.stringify({
+            collection: "agent",
+            id: "x",
+            value: null,
+          }),
+          seq: 9,
+        },
+        entityRow("project", "p", { id: "p", name: "P2" }, 10),
       ],
       true,
     );
     assert.equal(repeated, changed);
     assert.equal(
       reports.length,
-      4,
+      6,
       "the same invalid row versions report once",
     );
   } finally {

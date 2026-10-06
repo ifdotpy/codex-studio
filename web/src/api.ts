@@ -357,6 +357,7 @@ type SyncEntityPersister = (
   documents: SyncEntityDocument[],
 ) => Promise<void>;
 let syncEntityPersister: SyncEntityPersister | undefined;
+const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
 
 export function registerSyncEntityPersister(
   persist: SyncEntityPersister,
@@ -373,26 +374,27 @@ async function syncDocuments(
 ): Promise<void> {
   if (!value?._syncEntities?.length || typeof window === "undefined") return;
   const targetWorkspaceId = workspaceId ?? workspace;
-  try {
-    await syncEntityPersister?.(targetWorkspaceId, value._syncEntities);
-  } catch (error) {
-    save(`codex-sync-full-pull:${targetWorkspaceId}`, true);
-    console.error(
-      "Mutation entity persistence failed; the next pull will be full",
-      {
+  if (syncEntityPersister) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        syncEntityPersister(targetWorkspaceId, value._syncEntities),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("IndexedDB persistence timed out")),
+            SYNC_ENTITY_PERSIST_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      console.error("Mutation entity persistence failed", {
         workspaceId: targetWorkspaceId,
         error: error instanceof Error ? error.message : String(error),
-      },
-    );
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  window.dispatchEvent(
-    new CustomEvent("codex-sync-entities", {
-      detail: {
-        workspaceId: targetWorkspaceId,
-        documents: value._syncEntities,
-      },
-    }),
-  );
 }
 
 async function performGet<Path extends PathsFor<"get">>(

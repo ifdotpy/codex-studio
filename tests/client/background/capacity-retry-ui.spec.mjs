@@ -35,7 +35,6 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       env: {
         ...process.env,
         CAPACITY_UI_FIXTURE: "1",
-        RICH_PREVIEW_UI_FIXTURE: "1",
       },
     },
   );

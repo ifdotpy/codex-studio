@@ -36,8 +36,17 @@ import type {
 type TranscriptPageData = GetResult<"/api/transcript">;
 type LegacyAgent = LegacySnapshot["threads"][number];
 type LegacyRoom = NonNullable<LegacySnapshot["runtime"]>["rooms"][number];
+type LegacyComplaint = NonNullable<
+  LegacySnapshot["runtime"]
+>["complaints"][number];
 type RendererRoomRadio = NonNullable<Room["radio"]>;
 type RoomRadioActive = NonNullable<RendererRoomRadio["active"]>;
+
+export function legacyComplaintNeedsUserResponse(
+  complaint: Pick<LegacyComplaint, "recipient" | "needsResponse">,
+): boolean {
+  return complaint.recipient === "user" && complaint.needsResponse === true;
+}
 
 function legacyRoomRadioIdentity(
   identity: Array<string | number | null>,
@@ -165,7 +174,10 @@ function legacyStateSnapshot(data: LegacySnapshot): Snapshot {
       rooms: runtime?.rooms?.map(legacyRoomForRenderer) ?? [],
       tasks: runtime?.tasks ?? [],
       monitors: runtime?.monitors ?? [],
-      complaints: runtime?.complaints ?? [],
+      complaints: (runtime?.complaints ?? []).map((complaint) => ({
+        ...complaint,
+        needsUserResponse: legacyComplaintNeedsUserResponse(complaint),
+      })),
       requests: runtime?.requests ?? [],
       rules: runtime?.rules ?? [],
       projects: runtime?.projects ?? [],

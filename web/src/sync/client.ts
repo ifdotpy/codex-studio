@@ -20,7 +20,6 @@ import {
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
-import type { components } from "../generated/api";
 import {
   watchResourceChanges,
   watchResourceConnection,
@@ -53,15 +52,6 @@ export type SyncDocument = {
   seq: number;
   _deleted?: boolean;
 };
-type SyncEntitiesEventDetail = {
-  workspaceId: string;
-  documents: components["schemas"]["SyncEntity"][];
-};
-declare global {
-  interface WindowEventMap {
-    "codex-sync-entities": CustomEvent<SyncEntitiesEventDetail>;
-  }
-}
 class WorkspaceMismatchError extends Error {
   constructor() {
     super("The server workspace changed. Reload to synchronize.");
@@ -180,16 +170,15 @@ async function open() {
   return { db, workspaceId, verifyWorkspace };
 }
 export function syncDatabase() {
-  return (pending ??= open().catch((error) => {
-    pending = undefined;
-    throw error;
-  }));
+  // Keep a failed open memoized so each mutation does not retry a broken DB.
+  // Reloading is the recovery path after a permanent open failure.
+  return (pending ??= open());
 }
 
 if (typeof window !== "undefined")
   registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
     const { db, workspaceId } = await syncDatabase();
-    if (targetWorkspaceId !== workspaceId) return;
+    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
     for (const document of documents)
       if (document.id.startsWith("entity:"))
         await persistProjection(db.projections, document);
@@ -663,12 +652,6 @@ async function acquireProjection(
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
-        const fullPullKey = `codex-sync-full-pull:${workspaceId}`;
-        const forceFullPull =
-          remoteScope === "state:entities:v1" &&
-          saved<boolean>(fullPullKey, false);
-        if (forceFullPull)
-          resetReadySeq = await resetEntityProjection(db.projections);
         do {
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
@@ -901,7 +884,6 @@ async function acquireProjection(
             payload: "ready",
             seq: resetReadySeq ?? 1,
           });
-          if (forceFullPull) save(fullPullKey, false);
         }
       })()
         .catch((error) => {

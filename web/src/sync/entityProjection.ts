@@ -84,6 +84,8 @@ function parseEntityPayload(payload: string): ParsedEntityPayload {
   const collection = parsed.collection;
   if (typeof collection !== "string")
     return { invalidCollection: "non-string" };
+  if (typeof parsed.id !== "string" || parsed.value === null)
+    return { invalidCollection: collection };
   switch (collection) {
     case "agent":
     case "room":

@@ -174,14 +174,8 @@ describe("OpenAPI transport facade", () => {
     ],
     ["empty body without Content-Length", () => new Response(null)],
   ] as const)(
-    "resolves an empty successful POST (%s) without dispatching sync",
+    "resolves an empty successful POST (%s)",
     async (_label, response) => {
-      const events = new EventTarget();
-      const syncEvents: CustomEvent[] = [];
-      events.addEventListener("codex-sync-entities", (event) => {
-        syncEvents.push(event as CustomEvent);
-      });
-      vi.stubGlobal("window", events);
       vi.stubGlobal(
         "fetch",
         vi.fn(async () => response()),
@@ -190,33 +184,8 @@ describe("OpenAPI transport facade", () => {
       await expect(
         post("/api/sync/drafts", { rows: [] }),
       ).resolves.toBeUndefined();
-      expect(syncEvents).toEqual([]);
     },
   );
-
-  it("dispatches sync entities from a successful POST response", async () => {
-    const events = new EventTarget();
-    const syncEvents: CustomEvent[] = [];
-    events.addEventListener("codex-sync-entities", (event) => {
-      syncEvents.push(event as CustomEvent);
-    });
-    vi.stubGlobal("window", events);
-    const documents = [
-      { id: "entity:projects:/work", seq: 4, payload: "{}", _deleted: false },
-    ];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => Response.json({ _syncEntities: documents })),
-    );
-
-    await post("/api/sync/drafts", { rows: [] });
-
-    expect(syncEvents).toHaveLength(1);
-    expect(syncEvents[0]?.detail).toEqual({
-      workspaceId: "workspace-a",
-      documents,
-    });
-  });
 
   it("waits for mutation entities to persist before resolving the POST", async () => {
     const events = new EventTarget();
@@ -271,12 +240,8 @@ describe("OpenAPI transport facade", () => {
     }
   });
 
-  it("keeps a committed mutation result and marks a full pull when persistence fails", async () => {
+  it("keeps a committed mutation result and reports persistence failures", async () => {
     vi.stubGlobal("window", new EventTarget());
-    const values = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
-      setItem: (key: string, value: string) => values.set(key, value),
-    });
     const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
     const documents = [
       {
@@ -303,10 +268,57 @@ describe("OpenAPI transport facade", () => {
       ).resolves.toMatchObject({
         _syncEntities: documents,
       });
-      expect(values.get("codex-sync-full-pull:workspace-a")).toBe("true");
       expect(diagnostic).toHaveBeenCalledWith(
-        "Mutation entity persistence failed; the next pull will be full",
+        "Mutation entity persistence failed",
         expect.objectContaining({ workspaceId: "workspace-a" }),
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it("bounds a stalled mutation entity persistence wait", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          _syncEntities: [
+            {
+              id: "entity:workspace:current",
+              seq: 5,
+              payload: "{}",
+              _deleted: false,
+            },
+          ],
+        }),
+      ),
+    );
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    let markStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const unregister = registerSyncEntityPersister(async () => {
+      markStarted();
+      await new Promise<void>(() => {});
+    });
+    try {
+      let settled = false;
+      const request = post("/api/sync/drafts", { rows: [] }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await started;
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(request).resolves.toMatchObject({
+        _syncEntities: expect.any(Array),
+      });
+      expect(settled).toBe(true);
+      expect(diagnostic).toHaveBeenCalledWith(
+        "Mutation entity persistence failed",
+        expect.objectContaining({ error: "IndexedDB persistence timed out" }),
       );
     } finally {
       unregister();
