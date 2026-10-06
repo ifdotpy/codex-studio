@@ -2,10 +2,23 @@ import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
-import type { RxCollection, RxDocumentData } from "rxdb";
+import type { RxCollection, RxDocument, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
-import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
+import {
+  applyEntityRows,
+  emptyEntityProjection,
+  type EntityRow,
+} from "./entityProjection";
+import {
+  syncGet,
+  syncPost,
+  ApiError,
+  saved,
+  save,
+  setWorkspace,
+  type GetResult,
+} from "../api";
+import type { Snapshot } from "../types";
 import {
   watchResourceChanges,
   watchResourceConnection,
@@ -966,8 +979,26 @@ async function acquireProjection(
   }
 }
 
+type ProjectionPayload = Snapshot | GetResult<"/api/transcript"> | null;
+
+export function watchProjection(
+  scope: "state",
+  accept: (payload: Snapshot | null) => void,
+  fail: (error: unknown) => void,
+): Promise<() => void>;
+export function watchProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: GetResult<"/api/transcript"> | null) => void,
+  fail: (error: unknown) => void,
+): Promise<() => void>;
+export function watchProjection(
+  scope: string,
+  accept: (payload: ProjectionPayload) => void,
+  fail: (error: unknown) => void,
+): Promise<() => void>;
 export async function watchProjection(
   scope: string,
+  // Overload implementation bridge; public signatures above remain scope-specific.
   accept: (payload: any | null) => void,
   fail: (e: unknown) => void,
 ) {
@@ -983,17 +1014,15 @@ export async function watchProjection(
           const projection = emptyEntityProjection();
           let ready = false;
           let entitiesLoaded = false;
-          let latestRows: any[] = [];
+          let latestRows: EntityRow[] = [];
           const publishCurrent = () => {
             if (!ready || !entitiesLoaded) return;
             const next = applyEntityRows(projection, latestRows, true);
             if (next) accept(next);
           };
-          const publish = (documents: any[]) => {
+          const publish = (documents: RxDocument<SyncDocument>[]) => {
             entitiesLoaded = true;
-            latestRows = documents.map((document) =>
-              document.toJSON ? document.toJSON() : document,
-            );
+            latestRows = documents.map((document) => document.toJSON());
             publishCurrent();
           };
           const entities = db.projections
@@ -1001,8 +1030,8 @@ export async function watchProjection(
             .$.subscribe(publish);
           const marker = db.projections
             .findOne("state:entities:ready")
-            .$.subscribe((document: any) => {
-              const row = document?.toJSON ? document.toJSON() : document;
+            .$.subscribe((document) => {
+              const row = document?.toJSON();
               ready = row?.payload === "ready" && !row?._deleted;
               publishCurrent();
             });
@@ -1013,7 +1042,7 @@ export async function watchProjection(
             },
           };
         })()
-      : db.projections.findOne(scope).$.subscribe((doc: any) => {
+      : db.projections.findOne(scope).$.subscribe((doc) => {
           if (!id) {
             accept(doc ? JSON.parse(doc.payload) : null);
             return;
@@ -1459,7 +1488,23 @@ export async function startDraftReplication(
 
 // Reopen a subscription after an initial connection failure, without a page reload.
 export function subscribeProjection(
+  scope: "state",
+  accept: (payload: Snapshot | null) => void,
+  report: (error: unknown | null) => void,
+): () => void;
+export function subscribeProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: GetResult<"/api/transcript"> | null) => void,
+  report: (error: unknown | null) => void,
+): () => void;
+export function subscribeProjection(
   scope: string,
+  accept: (payload: ProjectionPayload) => void,
+  report: (error: unknown | null) => void,
+): () => void;
+export function subscribeProjection(
+  scope: string,
+  // Overload implementation bridge; public signatures above remain scope-specific.
   accept: (payload: any | null) => void,
   report: (error: unknown | null) => void,
 ) {

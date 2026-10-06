@@ -145,7 +145,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             result["overview"] = {
                 key: _bounded(value, key)
                 for key, value in overview.items()
-                if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId"}
+                if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId", "resultFile"}
             }
     return cast(JsonValue, model.model_validate(result).model_dump(mode="json", exclude_unset=True))
 
@@ -292,30 +292,63 @@ def retire_closed_requests(db):
     return len(rows)
 
 
-def upgrade_agent_organization(db):
-    """Restore existing sidebar metadata without replacing derived agent fields."""
-    if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone():
+def upgrade_agent_organization(db, snapshot=None):
+    """Restore sidebar metadata and reproject widened entities by migration version."""
+    marker = db.execute(
+        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
+    version = int(marker[0]) if marker else 0
+    if version >= 2:
         return 0
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
         return 0
     changed = 0
-    for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
-        record = json.loads(raw)
-        values = {field: record.get(field, default) for field, default in (
-            ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
-        changed += bool(patch(db, 'agent', key, values))
-    db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1')")
+    if version < 1:
+        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+            record = json.loads(raw)
+            values = {field: record.get(field, default) for field, default in (
+                ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
+            changed += bool(patch(db, 'agent', key, values))
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1') "
+                   "ON CONFLICT(key) DO UPDATE SET value='1'")
+    if snapshot is not None:
+        changed += upgrade_renderer_fields(db, snapshot)
+        db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
+    return changed
+
+
+def upgrade_renderer_fields(db, snapshot):
+    """Reproject current rows as part of the existing entity upgrade."""
+    if callable(snapshot):
+        snapshot = snapshot()
+    runtime = snapshot.get("runtime") or {}
+    threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
+    for item in runtime.get("agents", []) or []:
+        if item.get("id"):
+            threads[item["id"]] = {**threads.get(item["id"], {}), **item}
+    changed = sum(bool(put(db, "agent", key, value, bool(value.get("deletedAt"))))
+                  for key, value in threads.items())
+    for name, collection in (("rooms", "room"), ("complaints", "complaint"),
+                             ("projects", "project"), ("peerTeams", "peerTeam")):
+        for value in runtime.get(name, []) or []:
+            if value.get("id"):
+                changed += bool(put(db, collection, str(value["id"]), value))
+    meta = {field: runtime[field] for field in
+            ("connected", "nativeNotices", "projectOrganizationVersion", "peerTeamsVersion",
+             "tasksHistoryLimit", "rateLimits", "rateLimitsByAccount", "sidebarOrder")
+            if field in runtime}
+    meta["stateDir"] = snapshot.get("stateDir", "")
+    changed += bool(put(db, "workspace", "current", meta))
     return changed
 
 
 def seed(db, snapshot):
     """Seed once from the compatible view while the caller holds a write lock."""
-    upgrade_agent_organization(db)
+    if callable(snapshot):
+        snapshot = snapshot()
+    upgrade_agent_organization(db, snapshot)
     if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone():
         return
     # Callers pass a builder: the full snapshot is costly and seeding runs once.
-    if callable(snapshot):
-        snapshot = snapshot()
     runtime = snapshot.get("runtime") or {}
     threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
     for agent in runtime.get("agents", []):

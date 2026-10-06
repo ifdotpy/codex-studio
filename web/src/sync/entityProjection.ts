@@ -1,3 +1,20 @@
+import type {
+  AgentEntityDto,
+  ChatEntityDto,
+  ComplaintEntityDto,
+  EdgeEntityDto,
+  EventEntityDto,
+  MonitorEntityDto,
+  PeerTeamEntityDto,
+  ProjectEntityDto,
+  RequestEntityDto,
+  RoomEntityDto,
+  RuleEntityDto,
+  SyncEntityPayload,
+  TaskEntityDto,
+  WorkEntityDto,
+  WorkspaceEntityDto,
+} from "../generated/api";
 import type { Snapshot } from "../types";
 
 export type EntityRow = {
@@ -7,18 +24,142 @@ export type EntityRow = {
   _deleted?: boolean;
 };
 
-type EntityValue = { collection: string; id: string; value: any };
+type EntityCollection = SyncEntityPayload["collection"];
+type EntityFor<C extends EntityCollection> = Extract<
+  SyncEntityPayload,
+  { collection: C }
+>["value"];
+type EntityValues = { [C in EntityCollection]: Map<string, EntityFor<C>> };
+type EntityRowState = {
+  seq: number;
+  collection?: EntityCollection;
+  entityId?: string;
+  deleted?: boolean;
+};
+
 export type EntityProjection = {
-  rows: Map<
-    string,
-    { seq: number; collection: string; entityId: string; deleted?: boolean }
-  >;
-  values: Map<string, Map<string, any>>;
+  rows: Map<string, EntityRowState>;
+  values: EntityValues;
   snapshot: Snapshot | null;
 };
 
+function emptyEntityValues(): EntityValues {
+  return {
+    agent: new Map<string, AgentEntityDto>(),
+    room: new Map<string, RoomEntityDto>(),
+    task: new Map<string, TaskEntityDto>(),
+    monitor: new Map<string, MonitorEntityDto>(),
+    complaint: new Map<string, ComplaintEntityDto>(),
+    request: new Map<string, RequestEntityDto>(),
+    rule: new Map<string, RuleEntityDto>(),
+    project: new Map<string, ProjectEntityDto>(),
+    peerTeam: new Map<string, PeerTeamEntityDto>(),
+    chat: new Map<string, ChatEntityDto>(),
+    edge: new Map<string, EdgeEntityDto>(),
+    event: new Map<string, EventEntityDto>(),
+    work: new Map<string, WorkEntityDto>(),
+    workspace: new Map<string, WorkspaceEntityDto>(),
+  };
+}
+
+/**
+ * The server validates each canonical entity payload before storing and
+ * returning it, and the schema-version gate keeps this generated union in sync.
+ */
+function parseEntityPayload(payload: string): SyncEntityPayload {
+  return JSON.parse(payload) as SyncEntityPayload;
+}
+
+function entityValues<C extends EntityCollection>(
+  values: EntityValues,
+  collection: C,
+): EntityFor<C>[] {
+  return [...values[collection].values()];
+}
+
+function projectSnapshotCollections(
+  prior: Snapshot | null,
+  changed: ReadonlySet<EntityCollection>,
+  values: EntityValues,
+): Snapshot {
+  const agents =
+    prior && !changed.has("agent")
+      ? prior.runtime.agents
+      : entityValues(values, "agent");
+  const chats =
+    prior && !changed.has("chat") ? prior.chats : entityValues(values, "chat");
+  const edges =
+    prior && !changed.has("edge") ? prior.edges : entityValues(values, "edge");
+  const rooms =
+    prior && !changed.has("room")
+      ? prior.runtime.rooms
+      : entityValues(values, "room");
+  const tasks =
+    prior && !changed.has("task")
+      ? prior.runtime.tasks
+      : entityValues(values, "task");
+  const monitors =
+    prior && !changed.has("monitor")
+      ? prior.runtime.monitors
+      : entityValues(values, "monitor");
+  const complaints =
+    prior && !changed.has("complaint")
+      ? prior.runtime.complaints
+      : entityValues(values, "complaint");
+  const requests =
+    prior && !changed.has("request")
+      ? prior.runtime.requests
+      : entityValues(values, "request");
+  const rules =
+    prior && !changed.has("rule")
+      ? prior.runtime.rules
+      : entityValues(values, "rule");
+  const projects =
+    prior && !changed.has("project")
+      ? prior.runtime.projects
+      : entityValues(values, "project");
+  const peerTeams =
+    prior && !changed.has("peerTeam")
+      ? prior.runtime.peerTeams
+      : entityValues(values, "peerTeam");
+  const events =
+    prior && !changed.has("event")
+      ? prior.runtime.events
+      : entityValues(values, "event");
+  const work =
+    prior && !changed.has("work")
+      ? prior.runtime.work
+      : entityValues(values, "work");
+  const workspace = values.workspace.get("current");
+  const runtime = {
+    ...workspace,
+    agents,
+    rooms,
+    tasks,
+    monitors,
+    complaints,
+    requests,
+    rules,
+    projects,
+    peerTeams,
+    events,
+    work,
+  };
+
+  return {
+    ...prior,
+    token: "",
+    stateDir: workspace?.stateDir ?? prior?.stateDir ?? "",
+    threads: agents,
+    chats,
+    nodes: [...agents, ...chats],
+    edges,
+    runtime,
+  };
+}
+
 export function emptyEntityProjection(): EntityProjection {
-  return { rows: new Map(), values: new Map(), snapshot: null };
+  return { rows: new Map(), values: emptyEntityValues(), snapshot: null };
 }
 
 /** Apply only rows whose server sequence changed. Unchanged entity values and
@@ -28,7 +169,7 @@ export function applyEntityRows(
   rows: EntityRow[],
   ready: boolean,
 ): Snapshot | null {
-  const changed = new Set<string>();
+  const changed = new Set<EntityCollection>();
   const seen = new Set<string>();
   // Stryker disable next-line BooleanLiteral: when no tombstone is added, prior applies preserve the 4096-tombstone cap, so a cleanup scan cannot prune a row.
   let addedTombstone = false;
@@ -40,61 +181,96 @@ export function applyEntityRows(
     const oldCollection = previous?.collection;
     const oldEntityId = previous?.entityId;
     if (row._deleted) {
-      if (oldCollection) {
-        state.values.get(oldCollection)!.delete(oldEntityId!);
+      if (oldCollection && oldEntityId !== undefined) {
+        state.values[oldCollection].delete(oldEntityId);
         changed.add(oldCollection);
       }
       state.rows.delete(row.id);
       state.rows.set(row.id, {
         seq: row.seq,
-        collection: oldCollection || "",
-        entityId: oldEntityId || "",
+        ...(oldCollection ? { collection: oldCollection } : {}),
+        ...(oldEntityId === undefined ? {} : { entityId: oldEntityId }),
         deleted: true,
       });
       addedTombstone = true;
       continue;
     }
-    let parsed: EntityValue;
-    try {
-      parsed = JSON.parse(row.payload);
-    } catch {
-      continue;
-    }
-    if (typeof parsed.collection !== "string" || typeof parsed.id !== "string")
-      continue;
+    const payload = parseEntityPayload(row.payload);
     if (
       oldCollection &&
-      (oldCollection !== parsed.collection || oldEntityId !== parsed.id)
+      oldEntityId !== undefined &&
+      (oldCollection !== payload.collection || oldEntityId !== payload.id)
     ) {
-      state.values.get(oldCollection)!.delete(oldEntityId!);
+      state.values[oldCollection].delete(oldEntityId);
       changed.add(oldCollection);
     }
-    let collection = state.values.get(parsed.collection);
-    if (!collection)
-      state.values.set(parsed.collection, (collection = new Map()));
-    collection.set(parsed.id, parsed.value);
+    switch (payload.collection) {
+      case "agent":
+        state.values.agent.set(payload.id, payload.value);
+        break;
+      case "room":
+        state.values.room.set(payload.id, payload.value);
+        break;
+      case "task":
+        state.values.task.set(payload.id, payload.value);
+        break;
+      case "monitor":
+        state.values.monitor.set(payload.id, payload.value);
+        break;
+      case "complaint":
+        state.values.complaint.set(payload.id, payload.value);
+        break;
+      case "request":
+        state.values.request.set(payload.id, payload.value);
+        break;
+      case "rule":
+        state.values.rule.set(payload.id, payload.value);
+        break;
+      case "project":
+        state.values.project.set(payload.id, payload.value);
+        break;
+      case "peerTeam":
+        state.values.peerTeam.set(payload.id, payload.value);
+        break;
+      case "chat":
+        state.values.chat.set(payload.id, payload.value);
+        break;
+      case "edge":
+        state.values.edge.set(payload.id, payload.value);
+        break;
+      case "event":
+        state.values.event.set(payload.id, payload.value);
+        break;
+      case "work":
+        state.values.work.set(payload.id, payload.value);
+        break;
+      case "workspace":
+        state.values.workspace.set(payload.id, payload.value);
+        break;
+      default: {
+        const exhaustive: never = payload;
+        throw new Error(`Unknown entity payload: ${exhaustive}`);
+      }
+    }
     state.rows.set(row.id, {
       seq: row.seq,
-      collection: parsed.collection,
-      entityId: parsed.id,
+      collection: payload.collection,
+      entityId: payload.id,
     });
-    changed.add(parsed.collection);
+    changed.add(payload.collection);
   }
   // RxDB find queries omit tombstones. Missing IDs therefore represent deletes.
-  const missing: Array<
-    [
-      string,
-      { seq: number; collection: string; entityId: string; deleted?: boolean },
-    ]
-  > = [];
+  const missing: Array<[string, EntityRowState]> = [];
   for (const [rowId, previous] of state.rows) {
     if (seen.has(rowId)) continue;
     if (previous.deleted) continue;
     missing.push([rowId, previous]);
   }
   for (const [rowId, previous] of missing) {
-    state.values.get(previous.collection)!.delete(previous.entityId);
-    changed.add(previous.collection);
+    if (previous.collection && previous.entityId !== undefined) {
+      state.values[previous.collection].delete(previous.entityId);
+      changed.add(previous.collection);
+    }
     state.rows.delete(rowId);
     state.rows.set(rowId, { ...previous, deleted: true });
     addedTombstone = true;
@@ -110,50 +286,8 @@ export function applyEntityRows(
   }
   if (!ready) return null;
   const prior = state.snapshot;
-  const list = (name: string) =>
-    prior && !changed.has(name)
-      ? (prior.runtime as any)[`${name}s`] || []
-      : [...(state.values.get(name)?.values() || [])];
-  const agents = list("agent");
-  const chats = list("chat");
-  const runtime: Record<string, any> = prior ? { ...prior.runtime } : {};
-  const keys: Record<string, string> = {
-    agent: "agents",
-    room: "rooms",
-    task: "tasks",
-    monitor: "monitors",
-    complaint: "complaints",
-    request: "requests",
-    rule: "rules",
-    project: "projects",
-    peerTeam: "peerTeams",
-    event: "events",
-    work: "work",
-  };
-  for (const [collection, key] of Object.entries(keys)) {
-    if (changed.has(collection) || !prior) {
-      runtime[key] = collection === "agent" ? agents : list(collection);
-    }
-  }
-  const workspace = state.values.get("workspace")?.get("current") || {};
-  if (changed.has("workspace") || !prior) {
-    Object.assign(runtime, workspace);
-  }
-  const next: Snapshot =
-    prior && !changed.size
-      ? prior
-      : ({
-          token: "",
-          stateDir: workspace.stateDir || "",
-          threads: agents,
-          chats,
-          nodes: [...agents, ...chats],
-          edges:
-            changed.has("edge") || !prior
-              ? [...(state.values.get("edge")?.values() || [])]
-              : (prior as any).edges,
-          runtime,
-        } as unknown as Snapshot);
+  if (prior && !changed.size) return prior;
+  const next = projectSnapshotCollections(prior, changed, state.values);
   state.snapshot = next;
   return next;
 }

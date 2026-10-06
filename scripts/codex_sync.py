@@ -440,7 +440,8 @@ class SyncStore:
         markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
             "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
         if ('seeded' not in markers
-                or ('runtime_agents' in tables and 'agent_organization_fields' not in markers)
+                or ('runtime_agents' in tables and
+                    int(markers.get('agent_organization_fields', '0')) < 2)
                 or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
             return True
         if 'runtime_events' in tables:

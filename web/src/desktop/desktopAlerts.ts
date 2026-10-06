@@ -59,7 +59,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
             : "Open the chat to check the error.",
       );
   }
-  for (const request of data.runtime?.requests ?? []) {
+  for (const request of data.runtime.requests) {
     if (request.status !== "pending" || request.deferred) continue;
     const question = request.params?.questions?.[0]?.question;
     add(
@@ -70,9 +70,9 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
       request.id,
     );
   }
-  for (const complaint of data.runtime?.complaints ?? []) {
+  for (const complaint of data.runtime.complaints) {
     if (
-      complaint.needsResponse &&
+      complaint.needsUserResponse &&
       (complaint.recipient === "user" ||
         (!complaint.recipient && complaint.author === complaint.leadId))
     )

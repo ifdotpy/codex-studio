@@ -24,13 +24,99 @@ import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
-import { snapshotAgentFromMutation } from "./hooks/snapshotAgentFromMutation";
 import type { GetResult } from "./api";
-import type { Message, Agent, Json } from "./types";
-type StateSnapshot = GetResult<"/api/state">;
+import type {
+  Agent,
+  Json,
+  LegacySnapshot,
+  Message,
+  Room,
+  Snapshot,
+} from "./types";
 type TranscriptPageData = GetResult<"/api/transcript">;
+type LegacyAgent = LegacySnapshot["threads"][number];
+type LegacyRoom = NonNullable<LegacySnapshot["runtime"]>["rooms"][number];
+type RendererRoomRadio = NonNullable<Room["radio"]>;
+type RoomRadioActive = NonNullable<RendererRoomRadio["active"]>;
+
+function legacyRoomRadioIdentity(
+  identity: Array<string | number | null>,
+): RoomRadioActive["identity"] | null {
+  const [roomId, revision, sequence] = identity;
+  if (
+    identity.length !== 3 ||
+    (roomId !== null && typeof roomId !== "string") ||
+    (revision !== null && typeof revision !== "number") ||
+    typeof sequence !== "number"
+  )
+    return null;
+  return [roomId, revision, sequence];
+}
+
+function legacyRoomForRenderer(room: LegacyRoom): Room {
+  const radio = room.radio;
+  if (!radio) return { ...room, radio };
+
+  const active = radio.active;
+  const activeIdentity = active && legacyRoomRadioIdentity(active.identity);
+  const seen: NonNullable<RendererRoomRadio["seen"]> = {};
+  for (const [member, cursor] of Object.entries(radio.seen ?? {})) {
+    const identity = legacyRoomRadioIdentity(cursor.identity);
+    if (identity) seen[member] = { ...cursor, identity };
+  }
+  return {
+    ...room,
+    radio: {
+      ...radio,
+      active:
+        active && activeIdentity
+          ? { ...active, identity: activeIdentity }
+          : null,
+      seen,
+    },
+  };
+}
+
+function legacyAgentForRenderer(agent: LegacyAgent): Agent {
+  const { workspaceOperation, ...fields } = agent;
+  return {
+    ...fields,
+    workspaceOperation:
+      typeof workspaceOperation === "string" ? workspaceOperation : null,
+  };
+}
+
+/** Adapt only the temporary /api/state bootstrap into the renderer entity shape. */
+function legacyStateSnapshot(data: LegacySnapshot): Snapshot {
+  const runtime = data.runtime;
+  return {
+    token: data.token,
+    stateDir: data.stateDir,
+    threads: data.threads.map(legacyAgentForRenderer),
+    chats: data.chats,
+    nodes: data.nodes.map((node) =>
+      node.kind === "chat" ? node : legacyAgentForRenderer(node),
+    ),
+    edges: data.edges,
+    runtime: {
+      ...runtime,
+      agents: (runtime?.agents ?? data.threads).map(legacyAgentForRenderer),
+      rooms: runtime?.rooms.map(legacyRoomForRenderer) ?? [],
+      tasks: runtime?.tasks ?? [],
+      monitors: runtime?.monitors ?? [],
+      complaints: runtime?.complaints ?? [],
+      requests: runtime?.requests ?? [],
+      rules: runtime?.rules ?? [],
+      projects: runtime?.projects ?? [],
+      peerTeams: runtime?.peerTeams ?? [],
+      events: runtime?.events ?? [],
+      work: runtime?.work ?? [],
+    },
+  };
+}
+
 export function useSnapshot() {
-  const [data, setData] = useState<StateSnapshot | null>(null),
+  const [data, setData] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [transportError, setTransportError] = useState("");
@@ -57,14 +143,13 @@ export function useSnapshot() {
       if (currentScope.current !== expectedScope)
         throw new Error("The workspace changed before the new chat opened.");
       // A fresh draft has no native thread. Existing-thread retries await its projection.
-      const confirmed = snapshotAgentFromMutation(agent);
       setCreated((old) => ({
         scope: expectedScope,
         agents: [
           ...(old.scope === expectedScope ? old.agents : []).filter(
             (a) => a.id !== agent.id,
           ),
-          confirmed,
+          agent,
         ],
       }));
     },
@@ -150,7 +235,12 @@ export function useSnapshot() {
               query: { view: "chat" },
             });
             if (request !== generation.current) return;
-            setData({ ...legacy, token: session.token });
+            setData(
+              legacyStateSnapshot({
+                ...legacy,
+                token: session.token,
+              }),
+            );
           }
         }
         if (request !== generation.current) return;
@@ -249,7 +339,12 @@ export function useSnapshot() {
             void syncGet("/api/state", { query: { view: "chat" } })
               .then((legacy) => {
                 sessionToken.current = legacy.token || sessionToken.current;
-                setData({ ...legacy, token: sessionToken.current });
+                setData(
+                  legacyStateSnapshot({
+                    ...legacy,
+                    token: sessionToken.current,
+                  }),
+                );
               })
               .catch((fallbackError) => setError(errorText(fallbackError)));
           }

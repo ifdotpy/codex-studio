@@ -351,23 +351,13 @@ const payloadRow = (rowId, collection, entityId, value, seq) => ({
   seq,
 });
 
-it("projects only valid entity rows and preserves server sequence ordering", () => {
+it("projects entity rows and preserves server sequence ordering", () => {
   const state = emptyEntityProjection();
   const initial = applyEntityRows(
     state,
     [
       { id: "state:ready", payload: "ignored", seq: 1 },
-      {
-        id: "other:agent",
-        payload: JSON.stringify({ collection: "agent", id: "outside" }),
-        seq: 1,
-      },
-      { id: "entity:agent:a", payload: "{", seq: 1 },
-      {
-        id: "entity:agent:b",
-        payload: JSON.stringify({ collection: 2, id: "b" }),
-        seq: 1,
-      },
+      { id: "other:agent", payload: "ignored", seq: 1 },
       entityRow("agent", "a", { id: "a", name: "A" }, 2),
     ],
     true,
@@ -384,23 +374,138 @@ it("projects only valid entity rows and preserves server sequence ordering", () 
   );
   assert.equal(unchanged, initial, "equal and older sequences are ignored");
   assert.deepEqual(unchanged.threads, [{ id: "a", name: "A" }]);
-  const invalidId = applyEntityRows(
+  const unchangedForIrrelevantRows = applyEntityRows(
     state,
     [
       entityRow("agent", "a", { id: "a", name: "A" }, 2),
-      {
-        id: "entity:agent:bad",
-        payload: JSON.stringify({ collection: "agent", id: 3 }),
-        seq: 3,
-      },
+      { id: "other:agent", payload: "ignored", seq: 3 },
     ],
     true,
   );
   assert.equal(
-    invalidId,
+    unchangedForIrrelevantRows,
     initial,
-    "an invalid entity ID does not change the snapshot",
+    "rows outside the entity range do not change the snapshot",
   );
+});
+
+it("projects every collection and preserves other collection identities", () => {
+  const collections = [
+    "agent",
+    "room",
+    "task",
+    "monitor",
+    "complaint",
+    "request",
+    "rule",
+    "project",
+    "peerTeam",
+    "chat",
+    "edge",
+    "event",
+    "work",
+    "workspace",
+  ];
+  const runtimeNames = {
+    agent: "agents",
+    room: "rooms",
+    task: "tasks",
+    monitor: "monitors",
+    complaint: "complaints",
+    request: "requests",
+    rule: "rules",
+    project: "projects",
+    peerTeam: "peerTeams",
+    chat: "chats",
+    edge: "edges",
+    event: "events",
+    work: "work",
+    workspace: null,
+  };
+  const state = emptyEntityProjection();
+  const first = applyEntityRows(
+    state,
+    collections.map((collection, index) =>
+      entityRow(
+        collection,
+        collection === "workspace" ? "current" : collection,
+        { id: collection, name: collection },
+        index + 1,
+      ),
+    ),
+    true,
+  );
+  for (const [collection, runtimeName] of Object.entries(runtimeNames)) {
+    if (collection === "chat") assert.equal(first.chats.length, 1);
+    else if (collection === "edge") assert.equal(first.edges.length, 1);
+    else if (collection === "agent") assert.equal(first.threads.length, 1);
+    else if (runtimeName) assert.equal(first.runtime[runtimeName].length, 1);
+  }
+
+  const priorArrays = new Map(
+    collections.map((collection) => {
+      if (collection === "chat") return [collection, first.chats];
+      if (collection === "edge") return [collection, first.edges];
+      if (collection === "agent") return [collection, first.threads];
+      const name = runtimeNames[collection];
+      return [collection, name ? first.runtime[name] : null];
+    }),
+  );
+  const changed = applyEntityRows(
+    state,
+    [
+      ...collections
+        .slice(0, -1)
+        .map((collection, index) =>
+          entityRow(
+            collection,
+            collection,
+            { id: collection, name: collection },
+            index + 1,
+          ),
+        ),
+      entityRow("project", "project", { id: "project", name: "changed" }, 20),
+      entityRow("workspace", "current", { stateDir: "/tmp/state" }, 14),
+    ],
+    true,
+  );
+  for (const [collection, priorArray] of priorArrays) {
+    if (collection === "workspace") continue;
+    const nextArray =
+      collection === "chat"
+        ? changed.chats
+        : collection === "edge"
+          ? changed.edges
+          : collection === "agent"
+            ? changed.threads
+            : changed.runtime[runtimeNames[collection]];
+    if (collection === "project") assert.notEqual(nextArray, priorArray);
+    else
+      assert.equal(nextArray, priorArray, `${collection} identity is stable`);
+  }
+});
+
+it("keeps chats after an unrelated entity update", () => {
+  const state = emptyEntityProjection();
+  const initial = applyEntityRows(
+    state,
+    [
+      entityRow("chat", "c", { id: "c", title: "Shared chat" }, 1),
+      entityRow("agent", "a", { id: "a", name: "A" }, 2),
+    ],
+    true,
+  );
+  const chats = initial.chats;
+  const updated = applyEntityRows(
+    state,
+    [
+      entityRow("chat", "c", { id: "c", title: "Shared chat" }, 1),
+      entityRow("agent", "a", { id: "a", name: "Updated A" }, 3),
+    ],
+    true,
+  );
+  assert.equal(updated.chats, chats);
+  assert.deepEqual(updated.chats, [{ id: "c", title: "Shared chat" }]);
 });
 
 it("moves replaced entities between collections and removes rows omitted by RxDB", () => {
@@ -419,7 +524,7 @@ it("moves replaced entities between collections and removes rows omitted by RxDB
   assert.deepEqual(moved.threads, []);
   assert.deepEqual(moved.runtime.projects, [{ id: "p", name: "P" }]);
   assert.equal(state.rows.get("entity:agent:a").deleted, true);
-  assert.deepEqual(state.values.get("agent").size, 0);
+  assert.deepEqual(state.values.agent.size, 0);
 
   const removed = applyEntityRows(state, [], true);
   assert.deepEqual(removed.runtime.projects, []);
@@ -444,8 +549,6 @@ it("handles explicit deletes, unseen tombstones, and re-created rows", () => {
   assert.deepEqual(snapshot.threads, [{ id: "a" }]);
   assert.deepEqual(state.rows.get("entity:chat:c"), {
     seq: 2,
-    collection: "",
-    entityId: "",
     deleted: true,
   });
 
@@ -530,7 +633,7 @@ it("updates stable entities in place and relocates changed entity IDs", () => {
     { id: "b", name: "B" },
     { id: "renamed", name: "A3" },
   ]);
-  assert.equal(state.values.get("agent").has("a"), false);
+  assert.equal(state.values.agent.has("a"), false);
 });
 
 it("moves a stable server row between entity collections", () => {
@@ -673,31 +776,22 @@ it("does not reapply unchanged workspace fields over a changed collection", () =
     state,
     [
       entityRow("agent", "a1", { id: "a1", name: "A" }, 1),
-      entityRow(
-        "workspace",
-        "current",
-        { agents: [{ id: "workspace-value" }] },
-        2,
-      ),
+      entityRow("workspace", "current", { stateDir: "/workspace" }, 2),
     ],
     true,
   );
-  assert.deepEqual(initial.runtime.agents, [{ id: "workspace-value" }]);
+  assert.deepEqual(initial.runtime.agents, [{ id: "a1", name: "A" }]);
   const updated = applyEntityRows(
     state,
     [
       entityRow("agent", "a1", { id: "a1", name: "A2" }, 3),
-      entityRow(
-        "workspace",
-        "current",
-        { agents: [{ id: "workspace-value" }] },
-        2,
-      ),
+      entityRow("workspace", "current", { stateDir: "/workspace" }, 2),
     ],
     true,
   );
 
   assert.deepEqual(updated.runtime.agents, [{ id: "a1", name: "A2" }]);
+  assert.equal(updated.runtime.stateDir, "/workspace");
 });
 
 it("maps all runtime collections and carries workspace and edge data into snapshots", () => {

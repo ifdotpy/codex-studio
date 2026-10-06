@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { errorText, get, type ApiReadMetadata, type GetResult } from "../api";
-import type { BackgroundTask } from "../types";
 import { watchResourceReads } from "./watchResourceReads";
 
 type TaskFeed = GetResult<"/api/workspace/tasks">;
@@ -20,7 +19,7 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
     let busy = false;
     let cursor: { updated: number; id: string } | undefined;
     let etag: string | undefined;
-    let tasks = new Map<string, BackgroundTask>();
+    let tasks = new Map<string, TaskFeed["tasks"][number]>();
 
     const load = async () => {
       if (!alive || busy) return;
@@ -41,7 +40,7 @@ export function useWorkspaceTaskFeed(opened: boolean, leadId?: string) {
           etag = metadata.etag || etag;
           if (metadata.notModified || result === undefined) break;
           if (result.reset || cursor === undefined) tasks = new Map();
-          for (const task of result.tasks || []) tasks.set(task.id, task);
+          for (const task of result.tasks) tasks.set(task.id, task);
           cursor = result.cursor ?? undefined;
           more = !!result.hasMoreChanges;
           if (tasks.size > 100) {

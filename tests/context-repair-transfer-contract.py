@@ -12,6 +12,7 @@ import unittest
 spec = importlib.util.spec_from_file_location('wait_fixture', Path(__file__).with_name('context-repair-wait-contract.py'))
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
 repair, eventually = f.repair, f.eventually
+from entity_test_support import context_repair_wait
 
 
 class TransferRepair(f.ContextWait):
@@ -44,9 +45,10 @@ class TransferRepair(f.ContextWait):
                 ('transfer-input',a['id'],'followup','Continue the existing work.','pending',2,a['epoch'],None,None))
         a = self.agent_update(a,status='queued',inFlight=False,startAttempt={'id':'transfer-start','events':['transfer-input'],
             'epoch':a['epoch'],'accountKey':'default','submitted':False,'settingsFixed':True})
-        self.agent_update(a,contextRepairWait={'source':repair._identity(a),'events':['transfer-input'],
-            'action':None,'actionRequestId':None,'actionIdentity':None,'nextCheckAt':0,
-            'error':'Context repair needs a terminal native turn; native status: idle'})
+        self.agent_update(a,contextRepairWait=context_repair_wait(
+            'Context repair needs a terminal native turn; native status: idle',
+            source=repair._identity(a), events=['transfer-input'], scope='native',
+            action=None, actionRequestId=None, actionIdentity=None))
         self.runtime.dispatch()
         eventually(lambda:self.runtime.agent(a['id']).get('turnId')=='resumed-turn')
         current=self.runtime.agent(a['id'])

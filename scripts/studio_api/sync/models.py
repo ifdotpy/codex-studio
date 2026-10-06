@@ -166,6 +166,9 @@ class ContextRepairWaitDto(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     error: str
     scope: str
+    source: dict[str, JsonValue]
+    events: list[str]
+    nextCheckAt: int | float
     at: float | None = None
     readOnly: bool | None = None
     action: str | None = None
@@ -663,6 +666,14 @@ class AgentEntityDto(ContractModel):
     projectFolder: str | None = None
     projectFolderRevision: int | None = None
     project: str | None = None
+    epoch: int | None = None
+    lastCompletedTurnStatus: AgentStatus | None = None
+    capacityRetry: CapacityRetryDto | None = None
+    usageResume: UsageResumeDto | None = None
+    contextRepairWait: ContextRepairWaitDto | None = None
+    lastEvent: str | None = None
+    accountTransferId: str | None = None
+    workspaceOperation: str | None = None
 
 
 class StartOutcomeHoldDto(ContractModel):
@@ -884,6 +895,8 @@ class RoomEntityDto(ContractModel):
     peerTeamId: str | None = None
     peerTeamName: str | None = None
     lastMessage: RoomLastMessage | None = None
+    peerLabel: str | None = None
+    localMembers: list[str] | None = None
 
 
 class RemoteRoomMember(ContractModel):
@@ -1014,11 +1027,9 @@ class ComplaintEntityDto(ContractModel):
     leadName: str | None = None
     title: str | None = None
     status: ComplaintStatus | None = None
-    needsResponse: bool | None = None
+    needsUserResponse: bool | None = None
     created: float | None = None
     readAt: float | None = None
-    leadStopped: bool | None = None
-    leadDeleted: bool | None = None
     recipient: Literal["user", "lead"] | None = None
     version: int | None = None
 
@@ -1032,6 +1043,9 @@ class ComplaintResponseDto(ContractModel):
 
 
 class SnapshotComplaintDto(ComplaintEntityDto):
+    leadStopped: bool | None = None
+    leadDeleted: bool | None = None
+    needsResponse: bool | None = None
     updated: float | None = None
     text: str | None = None
     responses: list[ComplaintResponseDto] | None = None
@@ -1150,6 +1164,8 @@ class ProjectEntityDto(ContractModel):
     peerTeamsRevision: int | None = None
     folders: list[ProjectFolder] | None = None
     peerTeams: list[ProjectPeerTeamDto] | None = None
+    workerBaseRef: str | None = None
+    workerBaseRevision: int | None = None
 
 
 class PeerTeamEntityDto(ContractModel):

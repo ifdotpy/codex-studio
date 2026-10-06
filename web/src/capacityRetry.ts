@@ -1,6 +1,8 @@
 import type { Agent } from "./types";
 
-type CapacityRetry = NonNullable<Agent["capacityRetry"]> & { id: string };
+export type CapacityRetry = NonNullable<Agent["capacityRetry"]> & {
+  id: string;
+};
 
 function hasRetryId(
   retry: NonNullable<Agent["capacityRetry"]>,
