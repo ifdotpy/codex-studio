@@ -101,19 +101,44 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   await card("Remove one")
     .getByRole("button", { name: "Remove sending message", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "Remove sending messages", exact: true })
-    .waitFor();
-  // The first cancellation committed, but its response was lost. Retry that
-  // same removal without a new command identity, even after the queue moves on.
-  await card("Remove one")
-    .getByRole("button", { name: "Remove sending message", exact: true })
-    .click();
+  await expect(
+    page.getByRole("button", { name: "Remove sending messages", exact: true }),
+  ).toHaveCount(0);
+  // Sync can remove the control after the first cancellation commits.
+  // Retry the exact saved command even when that control is already gone.
+  await expect.poll(() => mutations.length).toBe(1);
+  const savedCancellation = await page.evaluate(() => {
+    const keys = Object.keys(localStorage).filter((key) =>
+      key.startsWith("studio-remove-sending:"),
+    );
+    return keys.map((key) => JSON.parse(localStorage.getItem(key)));
+  });
+  assert.deepEqual(savedCancellation, [mutations[0]]);
+  assert.equal(
+    await page.evaluate(
+      async ({ token, body }) => {
+        const response = await fetch("/api/queue", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "X-Canvas-Token": token,
+          },
+          body: JSON.stringify(body),
+        });
+        return response.status;
+      },
+      { token: initial.token, body: savedCancellation[0] },
+    ),
+    200,
+  );
   await card("Remove one").waitFor({ state: "hidden" });
   assert.equal(mutations[0].request_id, mutations[1].request_id);
-  await page
-    .getByRole("button", { name: "Remove sending messages", exact: true })
-    .click();
+  const removeSecond = card("Remove two").getByRole("button", {
+    name: "Remove sending message",
+    exact: true,
+  });
+  await expect(removeSecond).toBeEnabled({ timeout: 20_000 });
+  await removeSecond.click();
   await card("Remove two").waitFor({ state: "hidden" });
   assert.deepEqual(
     (await queue(lead.id)).items.map((item) => item.text),
@@ -176,6 +201,6 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   );
   expect(errors).toEqual([]);
   console.log(
-    `PASS: one message, whole chat, all chats, preserved after-turn queue, reload, restore without resending, and exact cancellation retry. ${evidence}`,
+    `PASS: individual message controls, all chats, preserved after-turn queue, reload, restore without resending, and exact cancellation retry. ${evidence}`,
   );
 });
