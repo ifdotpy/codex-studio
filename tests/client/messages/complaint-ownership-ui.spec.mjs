@@ -57,7 +57,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     responses: [],
     authorName: author === "lead" ? "Release lead" : "Worker",
     leadName: "Release lead",
-    needsResponse: true,
+    needsUserResponse: recipient === "user",
   });
   const user = record("owner", "lead", "user");
   const assigned = record("worker-request", "worker", "lead");
@@ -138,7 +138,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         at: 3,
       });
       user.status = payload.status;
-      user.needsResponse = false;
+      user.needsUserResponse = false;
       if (mode === "lost") {
         mode = "retry";
         await route.abort("failed");

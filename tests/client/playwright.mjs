@@ -204,8 +204,11 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotRoomDto"]} SnapshotRoomDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotTaskDto"]} SnapshotTaskDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotProjectDto"]} SnapshotProjectDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotComplaintDto"]} SnapshotComplaintDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["AgentOverview"]} AgentOverview */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["AgentEntityDto"]} AgentEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ComplaintEntityDto"]} ComplaintEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ProjectEntityDto"]} ProjectEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["RoomEntityDto"]} RoomEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkspaceEntityDto"]} WorkspaceEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["RuntimeSnapshot"]} RuntimeSnapshot */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["RuleSnapshotDto"]} RuleSnapshotDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkSnapshotDto"]} WorkSnapshotDto */
@@ -217,8 +220,7 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["RequestEntityDto"]} RequestEntityDto */
 
 /**
- * Keep this view limited to fields in AgentEntityDto. Snapshot-only fields are
- * intentionally available only from readLegacySnapshotForS2Assertions().
+ * Keep this view limited to fields in AgentEntityDto.
  * @typedef {Pick<SnapshotAgentDto,
  *   "id" | "name" | "manualName" | "status" | "source" | "kind" |
  *   "parentId" | "rootId" | "threadId" | "orchestratorId" | "orchestratorName" |
@@ -241,13 +243,16 @@ export const browserExecutablePath =
  *   "statusDetail" | "lastAnswer" | "lastCompletedTurn" | "nextTurnSettingsSupported" |
  *   "readStateSupported" | "pinned" | "archived" | "projectFolder" |
  *   "projectFolderRevision" | "project"
- * > & { overview?: Omit<AgentOverview, "resultFile"> | null }} TestAgent */
+ * > & Pick<AgentEntityDto,
+ *   "epoch" | "lastCompletedTurnStatus" | "capacityRetry" | "usageResume" |
+ *   "contextRepairWait" | "lastEvent" | "accountTransferId" | "workspaceOperation"
+ * > & { overview?: AgentEntityDto["overview"] | null }} TestAgent */
 
-/** @typedef {Pick<SnapshotRoomDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage">} TestRoom */
+/** @typedef {Pick<SnapshotRoomDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage"> & Pick<RoomEntityDto, "peerLabel" | "localMembers">} TestRoom */
 /** @typedef {Pick<SnapshotTaskDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
-/** @typedef {Pick<SnapshotProjectDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams">} TestProject */
-/** @typedef {Pick<SnapshotComplaintDto, "id" | "leadId" | "author" | "status" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleSnapshotDto[], work: WorkSnapshotDto[], nativeNotices: RuntimeSnapshot["nativeNotices"], sidebarOrder: RuntimeSnapshot["sidebarOrder"], rateLimits: RuntimeSnapshot["rateLimits"], rateLimitsByAccount: RuntimeSnapshot["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
+/** @typedef {Pick<SnapshotProjectDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams"> & Pick<ProjectEntityDto, "workerBaseRef" | "workerBaseRevision">} TestProject */
+/** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleSnapshotDto[], work: WorkSnapshotDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: RuntimeSnapshot["nativeNotices"], sidebarOrder: RuntimeSnapshot["sidebarOrder"], rateLimits: RuntimeSnapshot["rateLimits"], rateLimitsByAccount: RuntimeSnapshot["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: SnapshotChatGroupDto[], edges: SnapshotEdgeDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
 
 /** @typedef {Record<string, JsonValue>} JsonObject */
@@ -377,6 +382,19 @@ export async function readTestState(origin) {
     requests,
     rules,
     work,
+    connected: /** @type {WorkspaceEntityDto["connected"]} */ (
+      get("workspace", "current")?.connected
+    ),
+    peerTeamsVersion: /** @type {WorkspaceEntityDto["peerTeamsVersion"]} */ (
+      get("workspace", "current")?.peerTeamsVersion
+    ),
+    projectOrganizationVersion:
+      /** @type {WorkspaceEntityDto["projectOrganizationVersion"]} */ (
+        get("workspace", "current")?.projectOrganizationVersion
+      ),
+    tasksHistoryLimit: /** @type {WorkspaceEntityDto["tasksHistoryLimit"]} */ (
+      get("workspace", "current")?.tasksHistoryLimit
+    ),
     get nativeNotices() {
       return /** @type {RuntimeSnapshot["nativeNotices"]} */ (
         get("workspace", "current")?.nativeNotices
@@ -416,7 +434,7 @@ export async function readTestState(origin) {
   });
 }
 
-/** @type {(keyof RuntimeSnapshot | "stateDir")[]} */
+/** @type {(keyof WorkspaceEntityDto)[]} */
 const entityWorkspaceKeys = [
   "connected",
   "nativeNotices",
@@ -432,17 +450,11 @@ const entityWorkspaceKeys = [
 /** @type {Set<keyof SnapshotAgentDto>} */
 const snapshotOnlyAgentKeys = new Set([
   "activeTools",
-  "accountTransferId",
-  "capacityRetry",
   "compactionsObservedOnly",
   "complaintsPresented",
-  "contextRepairWait",
   "cyberAccessProgram",
-  "epoch",
   "events",
   "executionSettingsAccountKey",
-  "lastEvent",
-  "lastCompletedTurnStatus",
   "maxAgents",
   "maxAgentsExplicit",
   "nativeEffort",
@@ -455,10 +467,8 @@ const snapshotOnlyAgentKeys = new Set([
   "profileInstructions",
   "tokenBudget",
   "turnEpoch",
-  "usageResume",
   "usageResumeEnabled",
   "wave",
-  "workspaceOperation",
   "workerBaseBehindMain",
   "workerBaseCommit",
   "workerBaseMainRef",
@@ -490,8 +500,8 @@ function generatedSyncPullResponse(response) {
 }
 
 /**
- * Build the entity values from a legacy fixture without serializing its derived
- * snapshot-only fields.
+ * Build entity values from a fixture, omitting fields that the entity contract
+ * does not expose.
  * @param {StateSnapshot} snapshot
  * @returns {{ collection: string, id: string, value: JsonValue }[]}
  */
@@ -519,6 +529,8 @@ function entityValuesFromSnapshot(snapshot) {
       "updated",
       "accountKey",
       "accountRevision",
+      "workerBaseRef",
+      "workerBaseRevision",
     ]),
   );
   append("request", runtime.requests);
@@ -539,6 +551,8 @@ function entityValuesFromSnapshot(snapshot) {
       "peerTeamId",
       "peerTeamName",
       "lastMessage",
+      "peerLabel",
+      "localMembers",
     ]),
   );
   append("agent", runtime.agents, (row) => {
@@ -598,11 +612,6 @@ function entityValuesFromSnapshot(snapshot) {
         "phase",
         "resetPending",
       ]);
-    if (isJsonObject(entity.overview)) {
-      const overview = { ...entity.overview };
-      delete overview.resultFile;
-      entity.overview = overview;
-    }
     return entity;
   });
   append("task", runtime.tasks);
@@ -610,7 +619,6 @@ function entityValuesFromSnapshot(snapshot) {
   append("complaint", runtime.complaints, (row) => {
     const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
     delete entity.needsResponse;
-    delete entity.title;
     return entity;
   });
   append("peerTeam", runtime.peerTeams);
@@ -1209,17 +1217,4 @@ export async function stubEntityState(page, snapshot, contract) {
     );
   };
   return { update };
-}
-
-/**
- * Temporary path for assertions whose fields are being promoted by S2.
- * Keep every remaining GET /api/state in client specs behind this function.
- * @param {string} origin
- * @returns {Promise<StateSnapshot>}
- */
-export async function readLegacySnapshotForS2Assertions(origin) {
-  const response = await fetch(new URL("/api/state", origin));
-  return /** @type {Promise<StateSnapshot>} */ (
-    readJson(response, "/api/state")
-  );
 }

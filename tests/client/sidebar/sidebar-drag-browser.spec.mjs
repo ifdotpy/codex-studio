@@ -1,6 +1,5 @@
 import {
   readTestState,
-  readLegacySnapshotForS2Assertions,
   test,
   expect,
   spawnFixture as spawn,
@@ -299,9 +298,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     assert.equal(await row("Team source").count(), 0);
     const repeated = await post(conversionBodies[0]);
     assert.equal(repeated.status, 200);
-    const finalLegacy = await readLegacySnapshotForS2Assertions(url);
+    const finalState = await state();
     assert.equal(
-      finalLegacy.runtime.agents.find((a) => a.id === moved.id).epoch,
+      finalState.runtime.agents.find((a) => a.id === moved.id).epoch,
       moved.epoch,
     );
     expect(errors).toEqual([]);

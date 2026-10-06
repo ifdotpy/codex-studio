@@ -9,7 +9,7 @@ import {
   legacySnapshotRoute,
   entityPullFixtureForRequest,
   entityPullFixture,
-  readLegacySnapshotForS2Assertions,
+  readTestState,
   readFixtureSyncContract,
   spawnFixture,
   stubEntityState,
@@ -53,11 +53,19 @@ test("entity fixture contract matches the real sync backend", async () => {
     assert.equal(response.status, 200, `${path} status`);
     return response.json();
   };
-  const [identity, protocol, snapshot] = await Promise.all([
+  const [identity, protocol, state] = await Promise.all([
     get("/api/sync/identity"),
     get("/api/sync/protocol"),
-    readLegacySnapshotForS2Assertions(origin),
+    readTestState(origin),
   ]);
+  const snapshot = {
+    token: state.token,
+    stateDir: state.stateDir,
+    threads: state.threads,
+    chats: state.chats,
+    edges: state.edges,
+    runtime: state.runtime,
+  };
   assert.deepEqual(identity, syncIdentityFixture(identity.workspaceId));
   assert.deepEqual(
     protocol,
@@ -408,7 +416,7 @@ test("shared entity stub converges on one matching stream", async ({
     });
   });
   const origin = `http://127.0.0.1:${port}`;
-  const snapshot = await readLegacySnapshotForS2Assertions(origin);
+  const snapshot = await readTestState(origin);
   const syncContract = await readFixtureSyncContract(origin);
   const requests = [];
   const pullScopes = [];
