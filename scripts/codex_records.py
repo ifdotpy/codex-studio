@@ -1039,7 +1039,7 @@ class CleanedImageWorkspaceRecord(TypedDict):
     head: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
     bytes: NotRequired[int]
-    collect: NotRequired[JsonObject]
+    collect: NotRequired["ImageWorkspaceCollectResultRecord"]
 
 
 class ImageWorkspaceCleanupResultRecord(TypedDict):
@@ -1047,7 +1047,97 @@ class ImageWorkspaceCleanupResultRecord(TypedDict):
     bytes: NotRequired[int]
     reason: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
-    collect: NotRequired[JsonObject]
+    collect: NotRequired["ImageWorkspaceCollectResultRecord"]
+
+
+class ImageWorkspaceRepositoryState(TypedDict):
+    path: str
+    startCommit: str
+    branch: str
+    snapshotCommit: NotRequired[str | None]
+    dirtyPaths: NotRequired[list[str]]
+    head: NotRequired[str]
+    restoreHeads: NotRequired[dict[str, str]]
+
+
+class ImageWorkspaceBaseState(TypedDict):
+    state: NotRequired[str]
+    version: NotRequired[str]
+    image: NotRequired[str]
+    token: NotRequired[str | int | None]
+    repoRoot: NotRequired[str]
+    repoKey: NotRequired[str]
+    excludes: NotRequired[list[str]]
+    repositories: NotRequired[list[ImageWorkspaceRepositoryState]]
+    dirtyPaths: NotRequired[dict[str, list[str]]]
+    protectedRefs: NotRequired[list[JsonObject]]
+    error: NotRequired[str | None]
+    refreshError: NotRequired[str]
+    refreshFailedAt: NotRequired[float]
+    failedAt: NotRequired[float]
+
+
+class ImageWorkspaceBaseStaging(TypedDict):
+    root: NotRequired[str]
+    token: NotRequired[str | int | None]
+    versionPath: str
+    image: NotRequired[str]
+    mount: NotRequired[str]
+    version: NotRequired[str]
+    refresh: NotRequired[bool]
+
+
+class ImageWorkspaceAgentState(TypedDict):
+    state: NotRequired[str]
+    repoRoot: NotRequired[str]
+    repoKey: NotRequired[str]
+    baseVersion: NotRequired[str]
+    baseImage: NotRequired[str]
+    image: NotRequired[str]
+    mount: NotRequired[str]
+    repoPath: NotRequired[str]
+    branch: NotRequired[str]
+    startCommit: NotRequired[str | None]
+    snapshotCommit: NotRequired[str | None]
+    token: NotRequired[str | int | None]
+    repositories: NotRequired[list[ImageWorkspaceRepositoryState]]
+    mounted: NotRequired[bool]
+    restore: NotRequired[bool]
+    restoreHeads: NotRequired[dict[str, str]]
+    created: NotRequired[float]
+
+
+class ImageWorkspaceMount(TypedDict):
+    mount: str
+    repoPath: str
+    branch: NotRequired[str | None]
+    startCommit: NotRequired[str | None]
+    snapshotCommit: NotRequired[str | None]
+
+
+class ImageWorkspaceCollectRepositoryRecord(TypedDict):
+    path: str
+    state: NotRequired[str]
+    rawRef: NotRequired[str]
+    head: NotRequired[str]
+    commit: NotRequired[str]
+    branch: NotRequired[str]
+
+
+class ImageWorkspaceCollectResultRecord(TypedDict):
+    state: NotRequired[str]
+    path: NotRequired[str]
+    conflict: NotRequired[str]
+    conflicts: NotRequired[list[JsonValue]]
+    rawRef: NotRequired[str]
+    branch: NotRequired[str]
+    commit: NotRequired[str]
+    repositories: NotRequired[list[ImageWorkspaceCollectRepositoryRecord]]
+
+
+class ImageWorkspaceRemovalResultRecord(TypedDict):
+    freedBytes: int
+    state: str
 
 
 class NativeToolSourceRecord(TypedDict):
@@ -1156,7 +1246,7 @@ class AgentRecord(TypedDict):
     imageWorkspaceNoticeSent: NotRequired[str | None]
     imageWorkspaceNoticeText: NotRequired[str | None]
     imageWorkspaceNoticeError: NotRequired[str | None]
-    imageWorkspaceCollect: NotRequired[JsonObject]
+    imageWorkspaceCollect: NotRequired[ImageWorkspaceCollectResultRecord]
     concurrency: NotRequired[int]
     maxAgents: NotRequired[int]
     maxAgentsExplicit: NotRequired[bool]
@@ -1464,10 +1554,67 @@ class ProjectRecord(TypedDict):
     accountKeys: NotRequired[list[str]]
     folders: NotRequired[list[JsonValue]]
     organizationRevision: NotRequired[int]
-    peerTeams: NotRequired[list[JsonValue]]
+    peerTeams: NotRequired[list["PeerTeamRecord"]]
     peerTeamsRevision: NotRequired[int]
     workerBaseRef: NotRequired[str]
     workerBaseRevision: NotRequired[int]
+
+
+class PeerTeamRecord(TypedDict):
+    id: str
+    name: str
+    members: list[str]
+    projectPath: NotRequired[str]
+    revision: NotRequired[int]
+
+
+class FederationPeerRecord(TypedDict):
+    stateId: str
+    label: NotRequired[str]
+    origin: NotRequired[str]
+    publicKey: NotRequired[str]
+    status: NotRequired[str]
+    localApproved: NotRequired[bool]
+    remoteApproved: NotRequired[bool]
+    whoisStatus: NotRequired[str]
+    whoisUser: NotRequired[str | None]
+    created: NotRequired[float]
+    updated: NotRequired[float]
+    lastError: NotRequired[str | None]
+
+
+class FederationIdentityRecord(TypedDict):
+    id: str
+    publicKey: str
+    privateKey: NotRequired[str]
+    created: NotRequired[float]
+    user: NotRequired[str | None]
+
+
+class FederationInviteRecord(TypedDict):
+    id: str
+    tokenHash: str
+    expires: float
+    created: float
+    stateId: NotRequired[str]
+    origin: NotRequired[str]
+    publicKey: NotRequired[str]
+    whoisUser: NotRequired[str | None]
+    usedAt: NotRequired[float]
+
+
+class FederationOutboxRecord(TypedDict):
+    id: str
+    peerId: str
+    messageId: str
+    kind: str
+    payload: JsonObject
+    messageHash: str
+    created: float
+    attempts: NotRequired[int]
+    nextAttempt: NotRequired[float]
+    deliveredAt: NotRequired[float]
+    error: NotRequired[str | None]
 
 
 class AccountTransferRequestRecord(TypedDict):

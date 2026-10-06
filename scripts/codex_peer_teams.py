@@ -4,28 +4,35 @@ import json
 import time
 import uuid
 from pathlib import Path
+import sqlite3
+from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping
 
+from codex_records import AgentRecord, PeerTeamRecord, ProjectRecord, RecordStore
 from codex_work import text_field
 
+if TYPE_CHECKING:
+    from codex_runtime import Runtime
 
-def _path(value):
+
+def _path(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return str(Path(value).expanduser().resolve())
 
 
-def _lead(agent, path):
+def _lead(agent: AgentRecord, path: str | Path) -> bool:
     return (agent.get('isLead') is True and not agent.get('deletedAt')
             and agent.get('parentId') is None and agent.get('rootId') == agent.get('id')
             and _path(agent.get('cwd')) == path)
 
 
-def _agents(db):
+def _agents(db: sqlite3.Connection) -> dict[str, AgentRecord]:
     return {row['id']: row for row in
             (json.loads(item[0]) for item in db.execute('SELECT record FROM runtime_agents'))}
 
 
-def _members(db, ids):
+def _members(db: sqlite3.Connection, ids: Iterable[str]) -> dict[str, AgentRecord]:
     # Snapshots run under the shared runtime lock. Decode only team members,
     # not every agent record.
     ids = sorted(set(ids))
@@ -35,11 +42,11 @@ def _members(db, ids):
     return {row['id']: row for row in (json.loads(item[0]) for item in rows)}
 
 
-def _teams(project, agents):
+def _teams(project: ProjectRecord, agents: dict[str, AgentRecord]) -> list[PeerTeamRecord]:
     path = _path(project.get('path'))
     if path is None:
         return []
-    result = []
+    result: list[PeerTeamRecord] = []
     for team in project.get('peerTeams', []):
         members = [key for key in team['members'] if key in agents and _lead(agents[key], path)]
         if len(set(members)) >= 2:
@@ -49,14 +56,15 @@ def _teams(project, agents):
     return result
 
 
-def snapshot(runtime, db):
+def snapshot(runtime: RecordStore, db: sqlite3.Connection) -> list[PeerTeamRecord]:
     projects = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_projects')]
     agents = _members(db, (key for project in projects for team in project.get('peerTeams', [])
                            for key in team['members']))
     return [team for project in projects for team in _teams(project, agents)]
 
 
-def sync_entities(runtime, db, project_paths=None):
+def sync_entities(runtime: RecordStore, db: sqlite3.Connection,
+                  project_paths: set[str] | None = None) -> int:
     """Keep durable peer-team rows equal to the live snapshot projection."""
     from codex_sync_entities import put as sync_entity_put
 
@@ -78,7 +86,7 @@ def sync_entities(runtime, db, project_paths=None):
         rows = db.execute("SELECT id,deleted,payload FROM sync_entities WHERE collection='peerTeam' "
                           "AND json_extract(payload,'$.value.projectPath') IN (" +
                           (','.join('?' for _ in paths - {None}) or "NULL") + ")",
-                          tuple(sorted(paths - {None}))).fetchall() if paths - {None} else []
+                          tuple(sorted(paths - {None}))).fetchall() if paths - {None} else []  # type: ignore[type-var]  # typed-narrowing: only non-None normalized paths reach SQL parameters
     existing = {row[0]: (bool(row[1]), json.loads(row[2]).get('value', {}).get('projectPath')
                           if row[2] else None) for row in rows}
     for team_id, team in current.items():
@@ -91,7 +99,7 @@ def sync_entities(runtime, db, project_paths=None):
     return len(current)
 
 
-def peer_pair_allowed(db, left_id, right_id):
+def peer_pair_allowed(db: sqlite3.Connection, left_id: str, right_id: str) -> bool:
     if left_id == right_id:
         return False
     rows = db.execute('SELECT record FROM runtime_agents WHERE id IN (?,?)',
@@ -110,7 +118,8 @@ def peer_pair_allowed(db, left_id, right_id):
                for team in _teams(json.loads(row[0]), agents))
 
 
-def peers_for(runtime, db, viewer):
+def peers_for(runtime: RecordStore, db: sqlite3.Connection,
+              viewer: Mapping[str, object] | str) -> list[AgentRecord]:
     viewer_id = viewer.get('id') if isinstance(viewer, dict) else viewer
     ids = {key for team in snapshot(runtime, db) if viewer_id in team['members']
            for key in team['members'] if key != viewer_id}
@@ -118,7 +127,7 @@ def peers_for(runtime, db, viewer):
     return [agents[key] for key in sorted(ids)]
 
 
-def manage(runtime, data):
+def manage(runtime: "Runtime", data: Any) -> Any:
     action = data.get('action')
     if action == 'convert':
         from codex_peer_conversion import convert
@@ -138,7 +147,7 @@ def manage(runtime, data):
     except (ValueError, TypeError, AttributeError):
         raise ValueError('Supply a team ID') from None
     request_id = text_field(data.get('request_id'), 'a request ID', 255)
-    name, members = None, None
+    name, members = None, None  # type: tuple[str | None, list[str] | None]
     if action == 'save':
         name = text_field(data.get('name'), 'a team name', 80)
         members = data.get('members')
@@ -158,8 +167,7 @@ def manage(runtime, data):
         if revision != current:
             raise ValueError('Peer teams changed. Reload before saving')
         agents = _agents(db)
-        teams = [{key: team[key] for key in ('id', 'name', 'members')}
-                 for team in _teams(project, agents)]
+        teams: list[PeerTeamRecord] = [{key: team[key] for key in ('id', 'name', 'members')} for team in _teams(project, agents)]  # type: ignore[misc]  # typed-narrowing: these selected keys form the persisted peer team record
         if action == 'move':
             member = text_field(data.get('member'), 'a lead chat ID', 255)
             if member not in agents or not _lead(agents[member], path):
@@ -176,19 +184,19 @@ def manage(runtime, data):
                 target['members'].append(member)
             teams = [team for team in teams if len(team['members']) >= 2]
         elif action == 'save':
-            for key in members:
+            for key in members:  # type: ignore[union-attr]  # typed-narrowing: the save branch validates members as a list
                 if key not in agents or not _lead(agents[key], path):
                     raise ValueError('Select live lead chats from this project only')
             for team in teams:
-                if team['id'] != team_id and set(team['members']).intersection(members):
+                if team['id'] != team_id and set(team['members']).intersection(members):  # type: ignore[arg-type]  # typed-narrowing: the save branch validates members as a list
                     raise ValueError('A chat already belongs to another peer team')
-            replacement = {'id': team_id, 'name': name, 'members': list(members)}
-            teams = [replacement if team['id'] == team_id else team for team in teams]
+            replacement = {'id': team_id, 'name': name, 'members': list(members)}  # type: ignore[arg-type]  # typed-narrowing: validated save fields are strings
+            teams = [replacement if team['id'] == team_id else team for team in teams]  # type: ignore[misc]  # typed-narrowing: validated save fields form a peer team record
             if not any(team['id'] == team_id for team in teams):
-                teams.append(replacement)
+                teams.append(replacement)  # type: ignore[arg-type]  # typed-narrowing: validated save fields form a peer team record
         else:
             teams = [team for team in teams if team['id'] != team_id]
-        project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())
+        project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'projects', project)
         sync_entities(runtime, db, {path})
-        return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)
+        return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)  # type: ignore[arg-type]  # typed-suspect: project receipt shape is not a WorkViewRecord
