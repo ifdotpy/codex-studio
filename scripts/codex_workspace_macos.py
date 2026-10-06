@@ -445,9 +445,6 @@ class Backend:
                 if any(rel == item or item in rel.parents for item in excluded):
                     continue
                 if rel == Path('.'):
-                    _rsync_folder(root, target, excludes)
-                    scan_paths.add('.')
-                    did_copy = True
                     continue
                 source, dest = root / rel, target / rel
                 changed_paths.add(rel.as_posix() or '.')

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
 
@@ -220,6 +221,28 @@ class WorkspaceCopyTests(unittest.TestCase):
         self.assertFalse((target / 'file').is_symlink())
         self.assertEqual((target / 'file').read_bytes(), b'new copy')
         self.assertEqual(victim.read_bytes(), b'keep')
+
+    def test_macos_root_event_does_not_rescan_without_must_scan_flag(self):
+        import codex_workspace_macos as macos
+
+        target = self.root / 'root-event-target'
+        target.mkdir()
+        events = [(str(self.folder), 0, 1)]
+        with mock.patch.object(macos, '_read_events', return_value=(events, 1)), \
+                mock.patch.object(macos, '_rsync_folder') as rsync:
+            macos.Backend().sync_delta(self.folder, target, 0, excludes=())
+        rsync.assert_not_called()
+
+    def test_macos_root_must_scan_event_rescans_folder(self):
+        import codex_workspace_macos as macos
+
+        target = self.root / 'root-scan-target'
+        target.mkdir()
+        events = [(str(self.folder), 0x1, 1)]
+        with mock.patch.object(macos, '_read_events', return_value=(events, 1)), \
+                mock.patch.object(macos, '_rsync_folder') as rsync:
+            macos.Backend().sync_delta(self.folder, target, 0, excludes=())
+        rsync.assert_called_once()
 
     def test_failed_base_retries_when_requested(self):
         self.backend.fail_copy_once = True
