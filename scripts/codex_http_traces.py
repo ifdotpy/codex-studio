@@ -27,7 +27,7 @@ _ARCHIVE_CHECKED = None
 _STARTED_AT = time.time()
 _UNTRACKED = 0
 # Only these constant routes can identify the global connection error.
-_ROUTES = frozenset(("/api/state", "/api/session", "/api/sync/identity",
+_ROUTES = frozenset(("/api/session", "/api/state", "/api/sync/identity",
                      "/api/sync/pull"))
 
 

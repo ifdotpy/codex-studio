@@ -71,7 +71,14 @@ def fault_server(callback):
         return original_connect(sock, address)
 
     try:
-        with patch.object(socket.socket, "connect", guarded_connect):
+        with patch.object(socket.socket, "connect", guarded_connect), patch.dict(os.environ, {
+            "HTTP_PROXY": "http://127.0.0.1:9",
+            "HTTPS_PROXY": "http://127.0.0.1:9",
+            "http_proxy": "http://127.0.0.1:9",
+            "https_proxy": "http://127.0.0.1:9",
+            "NO_PROXY": "",
+            "no_proxy": "",
+        }):
             yield origin, server, attempts
     finally:
         server.shutdown()
@@ -164,6 +171,30 @@ class CodexAPIClientContracts(unittest.TestCase):
                 codex_api_client.pull_entities(origin)
             self.assertNotIn("backend may be older", str(raised.exception))
 
+        def missing_endpoint(_method, _path, _handler):
+            return 404, {"detail": "Not Found"}, "application/json"
+
+        with fault_server(missing_endpoint) as (origin, _server, _attempts):
+            with self.assertRaisesRegex(ValueError, "backend may be older"):
+                codex_api_client.pull_entities(origin)
+
+    def test_wrong_token_and_unavailable_backend_have_truthful_errors(self):
+        def unauthorized(_method, _path, _handler):
+            return 401, {"error": "Invalid session token"}, "application/json"
+
+        with fault_server(unauthorized) as (origin, _server, _attempts):
+            with self.assertRaisesRegex(codex_api_client.StudioHTTPError,
+                                        "rejected the session token"):
+                codex_api_client.studio_json(origin, "/api/messages", "wrong-token")
+
+        unavailable = socket.socket()
+        unavailable.bind(("127.0.0.1", 0))
+        port = unavailable.getsockname()[1]
+        unavailable.close()
+        with self.assertRaises(OSError) as raised:
+            codex_api_client.session_token(f"http://127.0.0.1:{port}", timeout=1)
+        self.assertRegex(str(raised.exception), "urlopen error|Connection refused")
+
     def test_non_json_response_is_named_as_non_json(self):
         def route(_method, _path, _handler):
             return 200, b"not-json", "text/plain"
@@ -211,9 +242,9 @@ class CodexAPIClientContracts(unittest.TestCase):
                     status = exit_code.code
             self.assertEqual(status, 0, errors.getvalue())
             rows = json.loads(output.getvalue())
-            self.assertEqual([row["id"] for row in rows], ["a-agent", "b-agent", "z-agent", identity(
-                "wave", "run", "wave-thread", "Wave Worker")])
-            wave = rows[-1]
+            self.assertEqual([row["id"] for row in rows], [identity(
+                "wave", "run", "wave-thread", "Wave Worker"), "a-agent", "b-agent", "z-agent"])
+            wave = rows[0]
             self.assertEqual(wave, {
                 "id": identity("wave", "run", "wave-thread", "Wave Worker"),
                 "name": "Wave Worker", "parent": "a-agent", "status": "running",
@@ -246,8 +277,7 @@ class CodexAPIClientContracts(unittest.TestCase):
         with fault_server(route) as (origin, server, attempts), \
                 patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
                 patch.object(sys, "argv", [str(SCRIPT), "--url", origin, "configure", "lead",
-                                            "--concurrency", "3", "--request-id", "saved",
-                                            "--expected-mode-revision", "8"]), \
+                                            "--concurrency", "3"]), \
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
@@ -256,16 +286,194 @@ class CodexAPIClientContracts(unittest.TestCase):
                 status = exit_code.code
         self.assertEqual(status, 0, errors.getvalue())
         self.assertEqual(json.loads(output.getvalue()), {"ok": True, "requestId": "saved"})
-        self.assertIn("retry with --request-id saved", errors.getvalue())
+        self.assertIn("retry with --request-id ", errors.getvalue())
         post = next(request for request in server.requests if request[0] == "POST")
         self.assertEqual(post[1], "/api/conversation")
         self.assertEqual(post[2]["subagent_concurrency"], 3)
         self.assertEqual(post[2]["expected_mode_revision"], 8)
+        self.assertTrue(post[2]["request_id"])
+        self.assertIn(post[2]["request_id"], errors.getvalue())
         self.assertEqual(len(attempts), 3)
         self.assertTrue(all(
             token == "test-token" for _, path, token in server.headers
             if path != "/api/session"
         ))
+
+    def test_control_list_prefers_current_wave_file_and_merges_graph_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            status_path = state / "codex-swarm-status.wave.json"
+
+            def write_status(status):
+                status_path.write_text(json.dumps([{
+                    "wave": "wave", "runId": "run", "threadId": "wave-thread",
+                    "name": "Wave Worker", "turnStatus": status,
+                    "launcherPid": os.getpid(), "createdAt": 1,
+                }]), encoding="utf-8")
+
+            wave_id = identity("wave", "run", "wave-thread", "Wave Worker")
+            alias = {"id": "graph-alias", "name": "Alias", "threadId": "wave-thread",
+                     "parentId": "lead-thread", "source": "registered", "createdAt": 1}
+            child = {"id": "wave-child", "name": "Child", "threadId": "child-thread",
+                     "parentId": "graph-alias", "status": "running", "source": "managed",
+                     "createdAt": 4}
+            stale_wave = {"id": wave_id, "name": "Old wave", "threadId": "wave-thread",
+                          "status": "old-status", "source": "app-server", "createdAt": 1}
+            stale_reference = {"id": "old-lead-reference", "name": "Old lead",
+                               "source": "orchestrator-reference", "status": "unknown"}
+            entities = [stale_wave, stale_reference, alias, child]
+
+            def list_agents():
+                def route(_method, path, _handler):
+                    if path == "/api/session":
+                        return 200, {"token": "test-token"}, "application/json"
+                    if path == "/api/desktop":
+                        return 200, {"stateDir": directory}, "application/json"
+                    docs = [entity("agent", agent["id"], agent, seq)
+                            for seq, agent in enumerate(entities, 1)]
+                    return 200, page(docs, len(docs), len(docs)), "application/json"
+
+                output, errors = io.StringIO(), io.StringIO()
+                with fault_server(route) as (origin, _server, _attempts), \
+                        patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
+                        patch.object(sys, "argv", [str(SCRIPT), "--url", origin, "list"]), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    try:
+                        runpy.run_path(str(SCRIPT), run_name="__main__")
+                        status = 0
+                    except SystemExit as exit_code:
+                        status = exit_code.code
+                self.assertEqual(status, 0, errors.getvalue())
+                return json.loads(output.getvalue()), errors.getvalue()
+
+            write_status("running")
+            rows, error = list_agents()
+            by_id = {row["id"]: row for row in rows}
+            self.assertEqual(len(rows), len(by_id))
+            self.assertNotIn("graph-alias", by_id)
+            self.assertNotIn("old-lead-reference", by_id)
+            self.assertEqual(by_id[wave_id]["name"], "Wave Worker")
+            self.assertEqual(by_id[wave_id]["status"], "running")
+            self.assertEqual(by_id["wave-child"]["parent"], wave_id)
+            self.assertEqual(error, "")
+
+            write_status("completed")
+            rows, error = list_agents()
+            by_id = {row["id"]: row for row in rows}
+            self.assertEqual(by_id[wave_id]["status"], "completed")
+            self.assertEqual(len(rows), len(by_id))
+            self.assertEqual(error, "")
+
+            status_path.unlink()
+            rows, error = list_agents()
+            by_id = {row["id"]: row for row in rows}
+            self.assertNotIn(wave_id, by_id)
+            self.assertNotIn("old-lead-reference", by_id)
+            self.assertIn("graph-alias", by_id)
+            self.assertEqual(by_id["wave-child"]["parent"], "graph-alias")
+            self.assertEqual(len(rows), len(by_id))
+            self.assertEqual(error, "")
+
+    def test_bad_status_files_are_one_line_notes_and_preserve_entities(self):
+        cases = ((b"{invalid", None), (json.dumps([{"name": "missing thread"}]).encode(), None),
+                 (json.dumps([]).encode(), 0))
+        for data, mode in cases:
+            with self.subTest(data=data, mode=mode), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "codex-swarm-status.bad.json"
+                path.write_bytes(data)
+                if mode is not None:
+                    path.chmod(mode)
+
+                def route(_method, endpoint, _handler):
+                    if endpoint == "/api/session":
+                        return 200, {"token": "token"}, "application/json"
+                    if endpoint == "/api/desktop":
+                        return 200, {"stateDir": directory}, "application/json"
+                    agent = {"id": "runtime", "name": "Runtime", "status": "running"}
+                    return 200, page([entity("agent", "runtime", agent, 1)], 1, 1), "application/json"
+
+                output, errors = io.StringIO(), io.StringIO()
+                with fault_server(route) as (origin, _server, _attempts), \
+                        patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
+                        patch.object(sys, "argv", [str(SCRIPT), "--url", origin, "list"]), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    try:
+                        runpy.run_path(str(SCRIPT), run_name="__main__")
+                        status = 0
+                    except SystemExit as exit_code:
+                        status = exit_code.code
+                self.assertEqual(status, 0, errors.getvalue())
+                self.assertEqual([row["id"] for row in json.loads(output.getvalue())], ["runtime"])
+                self.assertEqual(errors.getvalue(),
+                    "codex-control: file-backed wave threads are not available from this machine\n")
+
+    def test_list_survives_desktop_without_state_directory_or_unavailable_endpoint(self):
+        for desktop_response in ((200, {"other": "field"}), (404, {"error": "not found"})):
+            with self.subTest(desktop_response=desktop_response):
+                def route(_method, path, _handler):
+                    if path == "/api/session":
+                        return 200, {"token": "token"}, "application/json"
+                    if path == "/api/desktop":
+                        return desktop_response[0], desktop_response[1], "application/json"
+                    agent = {"id": "runtime", "name": "Runtime", "status": "running"}
+                    return 200, page([entity("agent", "runtime", agent, 1)], 1, 1), "application/json"
+
+                output, errors = io.StringIO(), io.StringIO()
+                with fault_server(route) as (origin, _server, _attempts), \
+                        patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
+                        patch.object(sys, "argv", [str(SCRIPT), "--url", origin, "list"]), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    try:
+                        runpy.run_path(str(SCRIPT), run_name="__main__")
+                        status = 0
+                    except SystemExit as exit_code:
+                        status = exit_code.code
+                self.assertEqual(status, 0, errors.getvalue())
+                self.assertEqual(json.loads(output.getvalue())[0]["id"], "runtime")
+                self.assertEqual(errors.getvalue(),
+                    "codex-control: file-backed wave threads are not available from this machine\n")
+
+    def test_incomplete_http_reads_are_one_line_errors_for_list_configure_and_send(self):
+        from http.client import IncompleteRead
+
+        for argv in (("list",), ("configure", "lead", "--concurrency", "2"),
+                     ("send", "lead", "hello")):
+            with self.subTest(argv=argv):
+                output, errors = io.StringIO(), io.StringIO()
+                with patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
+                        patch.object(codex_api_client, "open_request",
+                                     side_effect=IncompleteRead(b"partial", 20)), \
+                        patch.object(sys, "argv", [str(SCRIPT), "--url", "http://127.0.0.1:43123", *argv]), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    try:
+                        runpy.run_path(str(SCRIPT), run_name="__main__")
+                        status = 0
+                    except SystemExit as exit_code:
+                        status = exit_code.code
+                self.assertEqual(status, 1)
+                self.assertIn("incomplete response", errors.getvalue())
+                self.assertNotIn("Traceback", errors.getvalue())
+
+    def test_http_error_with_json_list_body_has_no_secondary_attribute_error(self):
+        def route(_method, path, _handler):
+            if path == "/api/session":
+                return 200, {"token": "token"}, "application/json"
+            return 500, ["server error"], "application/json"
+
+        output, errors = io.StringIO(), io.StringIO()
+        with fault_server(route) as (origin, _server, _attempts), \
+                patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
+                patch.object(sys, "argv", [str(SCRIPT), "--url", origin, "send", "lead", "hello"]), \
+                redirect_stdout(output), redirect_stderr(errors):
+            try:
+                runpy.run_path(str(SCRIPT), run_name="__main__")
+                status = 0
+            except SystemExit as exit_code:
+                status = exit_code.code
+        self.assertEqual(status, 1)
+        self.assertIn("HTTP Error 500", errors.getvalue())
+        self.assertNotIn("AttributeError", errors.getvalue())
+        self.assertNotIn("Traceback", errors.getvalue())
 
     def test_control_list_keeps_entity_agents_when_remote_wave_files_are_unreadable(self):
         def route(_method, path, _handler):

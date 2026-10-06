@@ -201,7 +201,7 @@ class TeamChatIsolation(unittest.TestCase):
             for command in (['send', 'other', 'Forbidden'], ['transcript', 'other'], ['list']):
                 with self.subTest(variable=variable, command=command), patch.dict(os.environ, {variable: 'worker'}), \
                         patch.object(sys, 'argv', ['codex-control', *command]), \
-                        patch.object(codex_api_client, 'urlopen',
+                        patch.object(codex_api_client, 'open_request',
                                      side_effect=AssertionError('network escape')) as network, \
                         patch.object(socket, 'create_connection',
                                      side_effect=AssertionError('socket escape')) as connect, \

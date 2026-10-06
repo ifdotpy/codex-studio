@@ -24,7 +24,7 @@ class ControlRequests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
                 patch.object(sys, "argv", [str(SCRIPT), *arguments]), \
-                patch.object(codex_api_client, "urlopen", side_effect=error, return_value=response) as network, \
+                patch.object(codex_api_client, "open_request", side_effect=error, return_value=response) as network, \
                 patch.object(socket, "create_connection",
                              side_effect=AssertionError("network escape")) as connect, \
                 patch.object(socket.socket, "connect",

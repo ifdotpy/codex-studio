@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from http.client import IncompleteRead
+import ipaddress
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 
 SESSION_ENDPOINT = "/api/session"
@@ -13,6 +16,7 @@ ENTITY_PULL_ENDPOINT = "/api/sync/pull"
 ENTITY_SCOPE = "state:entities:v1"
 ENTITY_PAGE_SIZE = 500
 ENTITY_PULL_MAX_PAGES = 100
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
 
 
 class StudioHTTPError(ValueError):
@@ -22,6 +26,20 @@ class StudioHTTPError(ValueError):
         self.detail = detail
 
 
+def open_request(request: Request, *, timeout: float):
+    """Open loopback Studio directly; only remote API URLs use environment proxies."""
+    host = urlsplit(request.full_url).hostname
+    is_loopback = host == "localhost"
+    if host and not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+    if is_loopback:
+        return _DIRECT_OPENER.open(request, timeout=timeout)
+    return urlopen(request, timeout=timeout)
+
+
 def request_json(url: str, path: str, data: object = None, token: str = "", *, timeout: float = 90) -> object:
     """Preserve codex-control's JSON and session-token request behavior."""
     request = Request(
@@ -29,11 +47,15 @@ def request_json(url: str, path: str, data: object = None, token: str = "", *, t
         data=json.dumps(data).encode() if data is not None else None,
         headers={"Content-Type": "application/json", "X-Canvas-Token": token},
     )
-    with urlopen(request, timeout=timeout) as response:
-        try:
-            return json.loads(response.read())
-        except (UnicodeDecodeError, ValueError) as error:
-            raise ValueError(f"Studio answered with non-JSON for {path}") from error
+    try:
+        with open_request(request, timeout=timeout) as response:
+            body = response.read()
+    except IncompleteRead as error:
+        raise ValueError(f"Studio returned an incomplete response for {path}") from error
+    try:
+        return json.loads(body)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f"Studio answered with non-JSON for {path}") from error
 
 
 def studio_json(url: str, path: str, token: str = "", *, timeout: float = 90) -> object:
@@ -45,7 +67,7 @@ def studio_json(url: str, path: str, token: str = "", *, timeout: float = 90) ->
         try:
             body = json.loads(error.read())
             detail = (body.get("error") or body.get("detail")) if isinstance(body, dict) else None
-        except (UnicodeDecodeError, ValueError, OSError):
+        except (IncompleteRead, UnicodeDecodeError, ValueError, OSError):
             detail = None
             non_json = True
         finally:
