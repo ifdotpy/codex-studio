@@ -25,6 +25,8 @@ repository or change its license without explicit authorization.
 
 ## Code checks
 
+Run `npm run typecheck:runtime` (or `python3 scripts/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
+
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
 `npm ci`. Activate the required pre-commit hook once per clone with
 `git config --local core.hooksPath .githooks`. The hook checks staged JavaScript,

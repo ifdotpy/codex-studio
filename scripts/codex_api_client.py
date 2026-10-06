@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from http.client import IncompleteRead
+from http.client import HTTPResponse, IncompleteRead
 import ipaddress
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -26,7 +26,7 @@ class StudioHTTPError(ValueError):
         self.detail = detail
 
 
-def open_request(request: Request, *, timeout: float):
+def open_request(request: Request, *, timeout: float) -> HTTPResponse:
     """Open loopback Studio directly; only remote API URLs use environment proxies."""
     host = urlsplit(request.full_url).hostname
     is_loopback = host == "localhost"
@@ -36,8 +36,10 @@ def open_request(request: Request, *, timeout: float):
         except ValueError:
             pass
     if is_loopback:
-        return _DIRECT_OPENER.open(request, timeout=timeout)
-    return urlopen(request, timeout=timeout)
+        response: HTTPResponse = _DIRECT_OPENER.open(request, timeout=timeout)
+    else:
+        response = urlopen(request, timeout=timeout)
+    return response
 
 
 def request_json(url: str, path: str, data: object = None, token: str = "", *, timeout: float = 90) -> object:

@@ -505,3 +505,5 @@ The old broadcast becomes a private room for the original tree and keeps its
 messages. New broadcasts use the destination's broadcast room.
 The action saves one receipt with the exact request body. A retry with the same
 request ID returns that receipt. A different body with that ID is refused.
+
+Runtime typing is checked with `npm run typecheck:runtime` (equivalent to `python3 scripts/codex_python.py --mypy`). The strict mypy ratchet is not part of the pre-commit hook.

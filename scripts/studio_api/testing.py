@@ -89,12 +89,16 @@ def read_runtime_state(runtime: Any, *, include_work: bool = True, db: Any = Non
     This is the single compatibility point to replace when the legacy snapshot
     implementation is removed.
     """
-    return runtime.snapshot(include_work=include_work, db=db)
+    snapshot: dict[str, Any] = runtime.snapshot(include_work=include_work, db=db)
+    return snapshot
 
 
 def read_session_token(get_json: JsonReader) -> str:
     """Read the CSRF token from the session endpoint."""
-    return get_json("/api/session")["token"]
+    token = get_json("/api/session")["token"]
+    if not isinstance(token, str):
+        raise AssertionError("Session response is missing a string token")
+    return token
 
 
 def read_legacy_snapshot_field(read_snapshot: SnapshotReader, *path: str | int) -> Any:
