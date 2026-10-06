@@ -144,6 +144,7 @@ def account_notice(runtime, db, method, p, account_key, connection_id):
     key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
     if not text:
         db.execute('DELETE FROM runtime_native_notices WHERE id=?', (key,))
+        runtime.sync_workspace_volatile(db)
         return
     runtime.put(db, 'native_notices', {'id': key, 'accountKey': account_key, 'connectionId': connection_id,
                 'message': text, 'details': p.get('details'), 'at': time.time()})
@@ -151,6 +152,7 @@ def account_notice(runtime, db, method, p, account_key, connection_id):
     db.execute("DELETE FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=? AND id NOT IN "
                "(SELECT id FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=? "
                "ORDER BY json_extract(record,'$.at') DESC LIMIT 50)", (account_key, account_key))
+    runtime.sync_workspace_volatile(db)
 
 
 def account_notices(runtime, db):

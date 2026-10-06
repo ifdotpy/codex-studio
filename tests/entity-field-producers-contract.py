@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 root = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("runtime_fixture", root / "tests/runtime-contract.py")
@@ -219,10 +219,18 @@ class EntityFieldProducers(unittest.TestCase):
         self.assertFalse(self.entity("workspace", "current")["connected"])
 
     def test_workspace_native_notices_update_on_desktop_change(self):
-        notice = {"id": "notice", "message": "Reconnect"}
-        with patch("codex_runtime.account_notices", return_value=[notice]):
-            self.runtime._publish_desktop_resource()
-        self.assertEqual(self.entity("workspace", "current")["nativeNotices"], [notice])
+        connection_id = "native-notice-connection"
+        self.runtime.connection_ids["default"] = connection_id
+        self.runtime.offline_accounts.discard("default")
+        self.runtime.notification({"method": "mcpServer/oauthLogin/completed", "params": {
+            "name": "Fixture tool", "success": False, "error": "Sign-in expired"}},
+            "default", connection_id)
+        notices = self.entity("workspace", "current")["nativeNotices"]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["message"], "Fixture tool: Sign-in expired")
+        self.runtime.notification({"method": "mcpServer/oauthLogin/completed", "params": {
+            "name": "Fixture tool", "success": True}}, "default", connection_id)
+        self.assertEqual(self.entity("workspace", "current")["nativeNotices"], [])
 
     def test_peer_team_save_writes_entity(self):
         peer = self.runtime.create({"name": "Peer", "cwd": self.path,
