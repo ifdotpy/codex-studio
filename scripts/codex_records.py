@@ -5,7 +5,12 @@ remain separate contracts; known disagreements are checked in
 ``test_codex_records.py``.
 """
 
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Literal, NotRequired, Protocol, TypedDict, overload
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Iterable
 
 
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -52,6 +57,12 @@ class StartModelSettingsRecord(TypedDict):
     status: NotRequired[str]
 
 
+class StartActionIdentityRecord(TypedDict):
+    accountKey: str
+    threadId: str
+    epoch: int
+
+
 class StartAttemptRecord(TypedDict):
     id: NotRequired[str]
     epoch: NotRequired[int]
@@ -69,7 +80,7 @@ class StartAttemptRecord(TypedDict):
     settingsFixed: NotRequired[bool]
     supervisorIdentity: NotRequired[SupervisorIdentityRecord | None]
     modelSettings: NotRequired[StartModelSettingsRecord]
-    actionIdentity: NotRequired[str]
+    actionIdentity: NotRequired["StartActionIdentityRecord"]
     actionRequestId: NotRequired[str]
     capacityRetryId: NotRequired[str]
     claudeInputRequest: NotRequired[JsonObject]
@@ -317,8 +328,23 @@ class UsageResumeRecord(TypedDict):
     id: NotRequired[str]
     status: NotRequired[UsageResumeStatusValue]
     cause: NotRequired[UsageResumeCauseValue]
-    dueAt: NotRequired[float]
-    reason: NotRequired[str]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str]
+    epoch: NotRequired[int]
+    turnId: NotRequired[str]
+    failedAt: NotRequired[float]
+    authAttempt: NotRequired[int]
+    authRefreshMarker: NotRequired[str | None]
+    dueAt: NotRequired[float | None]
+    plannedAt: NotRequired[float | None]
+    resetAt: NotRequired[float | None]
+    proofAt: NotRequired[float]
+    startedAt: NotRequired[float]
+    lastCheckedAt: NotRequired[float | None]
+    waitingForAuth: NotRequired[bool]
+    reason: NotRequired[str | None]
+    updatedAt: NotRequired[float]
+    taskClaims: NotRequired[list[str]]
 
 
 class AgentActivityRecord(TypedDict):
@@ -341,6 +367,12 @@ class AgentNativeStatusRecord(TypedDict):
     error: NotRequired[str | JsonObject | None]
 
 
+class NativeNameIdentityRecord(TypedDict):
+    accountKey: str
+    threadId: str | None
+    name: str
+
+
 class NativeNameSyncedRecord(TypedDict):
     accountKey: NotRequired[str]
     name: NotRequired[str]
@@ -348,7 +380,7 @@ class NativeNameSyncedRecord(TypedDict):
 
 
 class NativeNameFailureRecord(TypedDict):
-    identity: NotRequired[JsonObject]
+    identity: NotRequired[NativeNameIdentityRecord]
     error: NotRequired[JsonValue]
     attempts: NotRequired[int]
     retryAt: NotRequired[float]
@@ -545,6 +577,117 @@ class WorkspaceOperationAgentRecord(TypedDict):
     turnId: NotRequired[str]
 
 
+class WorkspaceWaitRecord(TypedDict):
+    attemptId: NotRequired[str]
+    at: NotRequired[float]
+    events: NotRequired[list[JsonValue]]
+    blockers: NotRequired[list[JsonValue]]
+
+
+class CleanedWorktreeRecord(TypedDict):
+    branch: NotRequired[str]
+    bytes: NotRequired[int | None]
+    head: NotRequired[str]
+    identity: NotRequired[list[JsonValue]]
+    relative: NotRequired[str]
+    repo: NotRequired[str]
+    root: NotRequired[str]
+    missing: NotRequired[bool]
+    note: NotRequired[str]
+
+
+class DeliveredModeRecord(TypedDict):
+    epoch: NotRequired[list[str | int | None]]
+    version: NotRequired[str]
+    revision: NotRequired[int]
+
+
+class ParkReceiptRecord(TypedDict):
+    event: NotRequired[str]
+    epoch: NotRequired[int]
+    sequence: NotRequired[int]
+    cancelledAtEpoch: NotRequired[int]
+
+
+class TurnRecoveryRecord(TypedDict):
+    at: NotRequired[float]
+    turnId: NotRequired[str | None]
+    latestTurnId: NotRequired[str | None]
+    outcome: NotRequired[str]
+    source: NotRequired[str]
+    attemptId: NotRequired[str]
+
+
+class BudgetWaitRecord(TypedDict):
+    attemptId: NotRequired[str]
+    agentId: NotRequired[str]
+    accountKey: NotRequired[str]
+    epoch: NotRequired[int]
+    threadId: NotRequired[str]
+    events: NotRequired[list[JsonValue]]
+    action: NotRequired[bool | str | None]
+    actionRequestId: NotRequired[str]
+    actionIdentity: NotRequired[StartActionIdentityRecord]
+    error: NotRequired[str]
+    at: NotRequired[float]
+    status: NotRequired[str]
+    finishedAt: NotRequired[float]
+    admission: NotRequired[JsonValue]
+
+
+class CleanedImageWorkspaceRecord(TypedDict):
+    repo: NotRequired[str]
+    relative: NotRequired[str]
+    branch: NotRequired[str]
+    head: NotRequired[str]
+    restoreHeads: NotRequired[dict[str, str]]
+    bytes: NotRequired[int]
+    collect: NotRequired[JsonObject]
+
+
+class ImageWorkspaceCleanupResultRecord(TypedDict):
+    state: NotRequired[str]
+    bytes: NotRequired[int]
+    reason: NotRequired[str]
+    restoreHeads: NotRequired[dict[str, str]]
+    collect: NotRequired[JsonObject]
+
+
+class NativeToolSourceRecord(TypedDict):
+    threadId: NotRequired[str]
+    epoch: NotRequired[int]
+    digest: NotRequired[str]
+
+
+class NativeToolUpdateRecord(TypedDict):
+    status: NotRequired[str]
+    message: NotRequired[str]
+    source: NotRequired[NativeToolSourceRecord]
+
+
+class PortableHistorySourceRecord(TypedDict):
+    agentId: NotRequired[str]
+    accountKey: NotRequired[str]
+    epoch: NotRequired[int]
+    threadId: NotRequired[str]
+
+
+class PortableHistoryRecord(TypedDict):
+    version: NotRequired[int]
+    path: NotRequired[str]
+    sha256: NotRequired[str]
+    bytes: NotRequired[int]
+    counts: NotRequired[dict[str, int]]
+    source: NotRequired[PortableHistorySourceRecord]
+    transferId: NotRequired[str]
+
+
+class AgentDraftRecord(TypedDict):
+    text: NotRequired[str]
+    prefixText: NotRequired[str]
+    assets: NotRequired[list[JsonValue]]
+
+
 class AgentRecord(TypedDict):
     """JSON object stored in ``runtime_agents.record`` after mode projection."""
 
@@ -604,7 +747,7 @@ class AgentRecord(TypedDict):
     tokenBudget: NotRequired[int | None]
     usageResumeEnabled: NotRequired[bool]
     contextUsage: NotRequired[ContextUsageRecord | None]
-    activeTools: NotRequired[list[JsonValue]]
+    activeTools: NotRequired[list[ActiveToolRecord]]
     activity: NotRequired[AgentActivityRecord | None]
     activityPhase: NotRequired[str]
     nativeStatus: NotRequired[AgentNativeStatusRecord | NativeStatusValue | None]
@@ -643,9 +786,9 @@ class AgentRecord(TypedDict):
     capacityRetryCount: NotRequired[int]
     usageResume: NotRequired[UsageResumeRecord]
     budgetBlocked: NotRequired[JsonObject]
-    budgetStartWait: NotRequired[JsonObject]
-    budgetActionWait: NotRequired[JsonObject]
-    lastBudgetWait: NotRequired[JsonObject]
+    budgetStartWait: NotRequired[BudgetWaitRecord]
+    budgetActionWait: NotRequired[BudgetWaitRecord]
+    lastBudgetWait: NotRequired[BudgetWaitRecord]
     claudeInputRequest: NotRequired[JsonObject]
     claudePreInputRetry: NotRequired[JsonObject]
     claudeOptions: NotRequired[JsonObject]
@@ -667,30 +810,31 @@ class AgentRecord(TypedDict):
     lastCompletedTurnStatus: NotRequired[AgentStatusValue | None]
     lastCompletedTurnError: NotRequired[JsonValue]
     lastUpdated: NotRequired[float]
-    turnRecovery: NotRequired[JsonObject]
+    turnRecovery: NotRequired[TurnRecoveryRecord]
     connectionCheck: NotRequired[ConnectionCheckRecord]
     readState: NotRequired[ReadStateRecord]
     parkedEvent: NotRequired[str]
-    parkAfterTurn: NotRequired[JsonObject]
-    parkReceipt: NotRequired[JsonObject]
+    parkAfterTurn: NotRequired[bool]
+    parkReceipt: NotRequired[ParkReceiptRecord]
     parkSequence: NotRequired[int]
-    cancelledPark: NotRequired[JsonObject]
+    cancelledPark: NotRequired[ParkReceiptRecord]
     liveSteerAttempt: NotRequired[JsonObject]
     liveSteerRejectedTurnId: NotRequired[str]
     steerRejectedTurnId: NotRequired[str]
     queueNotice: NotRequired[JsonObject]
     workspaceOperation: NotRequired[str | None]
+    workspaceReservationId: NotRequired[str]
     checkpointHistoryHead: NotRequired[str]
     restoredCheckpoint: NotRequired[str]
     worktreeCleanup: NotRequired[WorktreeCleanupRecord]
-    cleanedWorktree: NotRequired[JsonObject]
-    lastWorkspaceWait: NotRequired[JsonObject]
+    cleanedWorktree: NotRequired[CleanedWorktreeRecord]
+    lastWorkspaceWait: NotRequired[WorkspaceWaitRecord]
     workerBaseRef: NotRequired[str | None]
     workerBaseCommit: NotRequired[str | None]
     workerBaseBehindMain: NotRequired[int | None]
     workerBaseMainRef: NotRequired[str | None]
     accountHistory: NotRequired[list[JsonValue]]
-    deliveredMode: NotRequired[JsonObject]
+    deliveredMode: NotRequired[DeliveredModeRecord]
     agentMode: NotRequired[AgentModeValue]
     agentModeRevision: NotRequired[int]
     agentModeSupported: NotRequired[bool]
@@ -724,6 +868,17 @@ class AgentRecord(TypedDict):
     reviewArchiveError: NotRequired[str]
     reviewArchiveNextAt: NotRequired[float]
     reviewArchiveScheduled: NotRequired[str]
+    authResumeAttempt: NotRequired[int]
+    cleanedImageWorkspace: NotRequired[CleanedImageWorkspaceRecord]
+    imageWorkspaceCleanupResult: NotRequired[ImageWorkspaceCleanupResultRecord]
+    imageWorkspaceBaseError: NotRequired[str]
+    nativeToolRefreshId: NotRequired[str]
+    nativeToolUpdate: NotRequired[NativeToolUpdateRecord]
+    portableHistory: NotRequired[PortableHistoryRecord]
+    queueMutationRevision: NotRequired[int]
+    forkedFrom: NotRequired[str]
+    sourceMessage: NotRequired[str]
+    draft: NotRequired[AgentDraftRecord]
 
 
 class WorkArchiveRecord(TypedDict):
@@ -838,6 +993,13 @@ class WorkspaceOperationRecord(TypedDict):
     source: NotRequired[JsonObject]
 
 
+class RoomLastMessageRecord(TypedDict):
+    seq: int
+    text: str
+    created: float
+    sender: str
+
+
 class RoomRecord(TypedDict):
     id: str
     kind: Literal["broadcast", "private", "shared", "federated"]
@@ -845,237 +1007,69 @@ class RoomRecord(TypedDict):
     rootId: NotRequired[str]
     updated: float
     userHidden: bool
+    customName: NotRequired[str]
+    projectPath: NotRequired[str]
+    created: NotRequired[float]
+    name: NotRequired[str]
+    lastMessage: NotRequired[RoomLastMessageRecord | None]
 
 
-class RuntimeHost(Protocol):
-    """Runtime surface consumed by mixins; intentionally excludes implementation state."""
+# Parallel slice rule: helpers that take Runtime annotate it as the quoted name
+# "Runtime" imported under TYPE_CHECKING. A mixin declares a local Protocol
+# extending RecordStore with only the accurately typed host attributes it uses.
+# Do not add a shared catch-all runtime protocol here.
+class RecordStore(Protocol):
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["agents"], *, shared: Literal[True]) -> tuple[AgentRecord, ...]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["agents"], *, shared: Literal[False] = False) -> list[AgentRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["agents"], *, shared: bool) -> list[AgentRecord] | tuple[AgentRecord, ...]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["work"], *, shared: bool = False) -> list[WorkRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["checkpoints"], *, shared: bool = False) -> list[CheckpointRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["complaints"], *, shared: bool = False) -> list[ComplaintRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["projects"], *, shared: bool = False) -> list[ProjectRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["account_transfers"], *, shared: bool = False) -> list[AccountTransferRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], *, shared: bool = False) -> list[WorkspaceOperationRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["rooms"], *, shared: bool = False) -> list[RoomRecord]: ...
 
-    WORKSPACE_OPERATION_ACTIVE: Any
-    _accepted_archive_index_ready: Any
-    _accepted_archive_scan_after: Any
-    _accepted_archive_tick_at: Any
-    _analytics_history_cursor: Any
-    _analytics_history_guard: Any
-    _analytics_history_ids: Any
-    _analytics_history_paths: Any
-    _analytics_history_record: Any
-    _analytics_history_save: Any
-    _analytics_history_schema_ready: Any
-    _analytics_rollout_path: Any
-    _archive_accepted_owner: Any
-    _archive_child_result_event: Any
-    _archive_work_result: Any
-    _check_search_rows_batch: Any
-    _delete_search_next: Any
-    _finish_accepted_action: Any
-    _image_file_size: Any
-    _index_search_next: Any
-    _list_tool_requests: Any
-    _read_image_file: Any
-    _release_work_after: Any
-    _request_agent_states: Any
-    _run_accepted_archive: Any
-    _search_cleanup_batch: Any
-    _search_excerpt: Any
-    _search_migration_batch: Any
-    _search_migration_run: Any
-    _search_migration_verify_and_switch: Any
-    _search_phase: Any
-    _stage_event_resources: Any
-    _token_rate_observation_batch: Any
-    _token_rate_observation_limit: Any
-    _turn_recovery_busy: Any
-    _turn_recovery_checked: Any
-    _turn_recovery_results: Any
-    _work_action: Any
-    _work_continuation_pending: Any
-    _workspace_complaints: Any
-    _workspace_idle_snapshot: Any
-    _workspace_operation: Any
-    _workspace_operation_id: Any
-    _workspace_operations: Any
-    _workspace_provider_rejected: Any
-    _workspace_provider_result: Any
-    _workspace_records: Any
-    _workspace_requests: Any
-    _workspace_restore_signature: Any
-    _workspace_rules: Any
-    _workspace_source: Any
-    _workspace_work: Any
-    accounts: Any
-    analytics: Any
-    analytics_agent: Any
-    analytics_budget_capture: Any
-    analytics_connection: Any
-    analytics_detail_page: Any
-    analytics_event: Any
-    analytics_history_db: Any
-    analytics_history_health: Any
-    analytics_history_init: Any
-    analytics_history_start: Any
-    analytics_history_step: Any
-    analytics_history_thread: Any
-    analytics_limit_changed: Any
-    analytics_model_payload: Any
-    analytics_read_connection: Any
-    analytics_safe: Any
-    analytics_store_item: Any
-    analytics_turn_errors: Any
-    answer: Any
-    apply_orphan_recovery: Any
-    apply_turn_recovery: Any
-    assert_workspace_available: Any
-    asset_record: Any
-    asset_view: Any
-    baseline_missing: Any
-    branch_locked: Any
-    cache_input_tokens: Any
-    cache_pairs: Any
-    cancel_monitor: Any
-    capability_cache: Any
-    capacity_check: Any
-    capacity_retry: Any
-    capacity_run: Any
-    capacity_save: Any
-    capacity_started: Any
-    capacity_wait: Any
-    capture_checkpoint: Any
-    changed: Any
-    chat_rooms: Any
-    checked_actor: Any
-    checked_actor_in_own_db: Any
-    checkpoint_after_turn: Any
-    checkpoint_capture: Any
-    checkpoint_summary: Any
-    child_stopped_event: Any
-    closed: Any
-    complaint_message: Any
-    complaint_needs_response: Any
-    complaint_recipient: Any
-    connect: Any
-    connection_current: Any
-    connection_ids: Any
-    continuation_work_claims: Any
-    continuation_work_claims_valid: Any
-    count: Any
-    create: Any
-    db: Any
-    db_path: Any
-    defer_preparation: Any
-    delivery_executor: Any
-    deltas: Any
-    dispatch_active_slots: Any
-    duration_values: Any
-    durations: Any
-    enqueue: Any
-    enqueue_recovery_event: Any
-    exact: Any
-    failed: Any
-    file_fingerprint: Any
-    finish_tool_request: Any
-    git: Any
-    hold_unknown_start: Any
-    index_item: Any
-    input_measurements: Any
-    item: Any
-    legacy: Any
-    limit: Any
-    limits: Any
-    loaded: Any
-    lock: Any
-    low_workers_tick: Any
-    metrics: Any
-    model_known_context: Any
-    model_page: Any
-    model_peers_directory: Any
-    model_saved_message: Any
-    monitor: Any
-    monitor_auto_approved: Any
-    named_agents: Any
-    new_thread_params: Any
-    notification: Any
-    offline_accounts: Any
-    operation_receipt: Any
-    output_measurements: Any
-    panel_guidance: Any
-    parent_event: Any
-    peak_context: Any
-    peak_percent: Any
-    percent: Any
-    permanent_worker_hold: Any
-    points: Any
-    pool: Any
-    preparation_settings: Any
-    prepare: Any
-    prepare_locks: Any
-    profiles: Any
-    progress_file: Any
-    project_account: Any
-    project_directory: Any
-    project_room_ids: Any
-    project_worker_base: Any
-    projects: Any
-    rate_limits_for: Any
-    read_db: Any
-    recent_monitors: Any
-    recent_tasks: Any
-    reconcile_orphan_busy: Any
-    reconcile_start_receipt: Any
-    recovery_pool: Any
-    remember_role_text: Any
-    reported_change_files: Any
-    reported_changes: Any
-    reported_plan: Any
-    restore_absent_start: Any
-    role_guidance: Any
-    role_update: Any
-    root: Any
-    rule_finished: Any
-    rule_owner_recovery_pending: Any
-    rules_action: Any
-    run_native_action: Any
-    run_rule: Any
-    run_turn_recovery: Any
-    save_receipt: Any
-    search_is_indexed: Any
-    search_migration_error: Any
-    search_migration_last_batch_bytes: Any
-    search_migration_thread: Any
-    send: Any
-    servers: Any
-    setup_search_rows: Any
-    snapshot_tree: Any
-    start_accepted: Any
-    submit_reserved: Any
-    sync_agent_rooms: Any
-    task_brief: Any
-    task_detail: Any
-    team_agents: Any
-    thread_config: Any
-    tool_definitions: Any
-    tool_request: Any
-    tool_request_actor: Any
-    tool_request_key: Any
-    tool_result: Any
-    unanswered_complaints: Any
-    usage_resume_auth_marker: Any
-    usage_resume_cancel: Any
-    usage_resume_record: Any
-    usage_resume_save: Any
-    values: Any
-    width: Any
-    work_action: Any
-    work_by_id: Any
-    work_dependency_statuses: Any
-    work_dependent_records: Any
-    work_records: Any
-    work_view: Any
-    worker_defaults: Any
-    workspace_blockers: Any
-    workspace_path: Any
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["agents"], record: AgentRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["work"], record: WorkRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["checkpoints"], record: CheckpointRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["complaints"], record: ComplaintRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["projects"], record: ProjectRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["account_transfers"], record: AccountTransferRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], record: WorkspaceOperationRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
-    def agent(self, agent_id: str, db: Any = ...) -> AgentRecord: ...
-
-    def records(self, db: Any, table: str = "agents", *, shared: bool = False) -> Any: ...
-
-    def put(self, db: Any, table: str, record: Any, **kwargs: Any) -> None: ...
+    def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> AgentRecord: ...
+    def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False, include_id: str | None = None) -> list[AgentRecord]: ...
+    def named_agents(self, db: "sqlite3.Connection", agent_ids: "Iterable[object]") -> dict[str, AgentRecord]: ...
+    @staticmethod
+    def account_agents(db: "sqlite3.Connection", account_key: str) -> list[AgentRecord]: ...
+    @staticmethod
+    def thread_agents(db: "sqlite3.Connection", account_key: str, thread_id: str) -> list[AgentRecord]: ...
+    @staticmethod
+    def pending_restart_agents(db: "sqlite3.Connection") -> list[AgentRecord]: ...
+    @staticmethod
+    def descendant_agents(db: "sqlite3.Connection", root_id: str) -> list[AgentRecord]: ...
+    @staticmethod
+    def release_work_agents(db: "sqlite3.Connection") -> list[AgentRecord]: ...
+    def scheduler_agents(self, db: "sqlite3.Connection") -> list[AgentRecord]: ...
+    def agent_entity_view(self, db: "sqlite3.Connection", record: AgentRecord) -> dict[str, object]: ...
+    def chat_rooms(self, db: "sqlite3.Connection", viewer: str | None = None, room_id: str | None = None, *, include_last_message: bool | None = None, include_peer_teams: bool = False) -> list[RoomRecord]: ...

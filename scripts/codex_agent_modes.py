@@ -1,5 +1,12 @@
 """Per-chat subagent concurrency and its derived delegation mode."""
 import time
+from typing import TYPE_CHECKING, Any
+
+from codex_records import AgentRecord
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_runtime import Runtime
 
 DEFAULT_SUBAGENT_CONCURRENCY = 32
 MAX_SUBAGENT_CONCURRENCY = 512
@@ -11,7 +18,7 @@ DEFAULT_GLOBAL_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS
 CONCURRENCY_SCHEMA_VERSION = 2
 
 
-def concurrency(agent):
+def concurrency(agent: AgentRecord) -> int:
     """Read the canonical limit, migrating old mode-only records in memory."""
     if agent.get('subagentConcurrencyVersion', 0) < CONCURRENCY_SCHEMA_VERSION:
         if agent.get('agentMode') == 'single':
@@ -21,7 +28,7 @@ def concurrency(agent):
     return 0 if agent.get('agentMode') == 'single' else DEFAULT_SUBAGENT_CONCURRENCY
 
 
-def mode_fields(agent):
+def mode_fields(agent: AgentRecord) -> AgentRecord:
     if agent.get('isLead'):
         limit = concurrency(agent)
         agent['concurrency'] = limit
@@ -35,23 +42,23 @@ def mode_fields(agent):
     return agent
 
 
-def global_concurrency_limit():
+def global_concurrency_limit() -> int:
     """Global process resource ceiling; per-chat limits remain separate."""
     import os
     return max(1, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', str(DEFAULT_GLOBAL_CONCURRENCY))))
 
 
-def assert_delegation(root):
+def assert_delegation(root: AgentRecord) -> None:
     if concurrency(root) == 0:
         raise ValueError('Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent.')
 
 
-def assert_worker_input(runtime, db, target):
+def assert_worker_input(runtime: "Runtime", db: "sqlite3.Connection", target: AgentRecord) -> None:
     if target['id'] != target['rootId']:
         assert_delegation(runtime.agent(target['rootId'], db))
 
 
-def change_mode(runtime, key, data):
+def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentRecord:
     """Apply new limit requests and exact legacy mode retries atomically."""
     new_request = 'subagent_concurrency' in data
     legacy_request = 'agent_mode' in data
@@ -78,13 +85,13 @@ def change_mode(runtime, key, data):
     if not isinstance(request, str) or not 1 <= len(request) <= 200:
         raise ValueError('A subagent concurrency request id is required')
     with runtime.lock, runtime.db() as db:
-        agent = runtime.checked_actor(db, key)
+        agent = runtime.checked_actor(db, key)  # type: ignore[no-untyped-call]
         if not agent.get('isLead') or agent['rootId'] != key:
             raise ValueError('Change agent mode on the lead chat')
         body = ({'operation': 'subagent_concurrency', 'agent': key, 'concurrency': limit,
                  'expectedRevision': revision} if new_request else
                 {'operation': 'agent_mode', 'agent': key, 'mode': mode, 'expectedRevision': revision})
-        signature, previous = runtime.operation_receipt(db, request, body)
+        signature, previous = runtime.operation_receipt(db, request, body)  # type: ignore[no-untyped-call]
         if previous is not None:
             return mode_fields(agent)
         current = concurrency(agent)
@@ -103,20 +110,20 @@ def change_mode(runtime, key, data):
         if changed or agent.get('maxAgents') != prior_max_agents:
             runtime.put(db, 'agents', mode_fields(agent))
         canonical = mode_fields(runtime.agent(key, db))
-        runtime.save_receipt(db, request, signature,
+        runtime.save_receipt(db, request, signature,  # type: ignore[no-untyped-call]
                              {'applied': True, 'concurrency': concurrency(canonical),
                               'agentMode': canonical['agentMode'],
                               'agentModeRevision': canonical.get('agentModeRevision', 0)})
         if limit > 0:
             from codex_runtime import git_toplevel
-            repo = git_toplevel(canonical.get('cwd', ''))
+            repo = git_toplevel(canonical.get('cwd', ''))  # type: ignore[no-untyped-call]
             if repo:
-                supported, reason = runtime.image_workspace_support(repo)
+                supported, reason = runtime.image_workspace_support(repo)  # type: ignore[no-untyped-call]
                 if supported:
                     canonical['imageWorkspaceBaseRepo'] = repo
                     runtime.put(db, 'agents', canonical)
                     try:
-                        runtime.start_image_base(repo)
+                        runtime.start_image_base(repo)  # type: ignore[no-untyped-call]
                         canonical.pop('imageWorkspaceBaseError', None)
                     except Exception as error:
                         canonical['imageWorkspaceBaseError'] = str(error)[:1200]
@@ -128,7 +135,7 @@ def change_mode(runtime, key, data):
         return canonical
 
 
-def guidance(root):
+def guidance(root: AgentRecord) -> str:
     limit = concurrency(root)
     revision = root.get('agentModeRevision', 0)
     mode = 'Single' if limit == 0 else 'Multi'
@@ -143,7 +150,7 @@ def guidance(root):
     return f'[Studio subagent concurrency, revision {revision}] {text}'
 
 
-def tool_mode_context(runtime, actor_id, result, key=None):
+def tool_mode_context(runtime: "Runtime", actor_id: str, result: dict[str, Any], key: str | None = None) -> dict[str, Any]:
     # Keep a stable policy attachment for each result, revision and compaction
     # epoch. Suppress later results only after confirmed response delivery.
     with runtime.lock, runtime.db() as db:
@@ -151,12 +158,12 @@ def tool_mode_context(runtime, actor_id, result, key=None):
         from codex_efficiency import digest, packed
         actor = runtime.agent(actor_id, db)
         root = mode_fields(runtime.agent(actor['rootId'], db))
-        epoch, _, known = runtime.model_known_context(db, actor)
+        epoch, _, known = runtime.model_known_context(db, actor)  # type: ignore[no-untyped-call]
         text = guidance(root)
-        version = digest(text)
+        version = digest(text)  # type: ignore[no-untyped-call]
         db.execute('CREATE TABLE IF NOT EXISTS runtime_model_modes '
                    '(agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version))')
-        identity = digest([epoch, version])
+        identity = digest([epoch, version])  # type: ignore[no-untyped-call]
         row = db.execute('SELECT record FROM runtime_model_modes WHERE agent=? AND request=? AND version=?',
                          (actor_id, key, identity)).fetchone() if key else None
         if row:
@@ -166,7 +173,7 @@ def tool_mode_context(runtime, actor_id, result, key=None):
                       'text': text if known.get('agentMode') != version else None}
             if key and record['text']:
                 db.execute('INSERT INTO runtime_model_modes VALUES (?,?,?,?)',
-                           (actor_id, key, identity, packed(record)))
+                           (actor_id, key, identity, packed(record)))  # type: ignore[no-untyped-call]
         if not record['text']:
             return result
         return {**result, 'contentItems': [*result.get('contentItems', []),

@@ -61,7 +61,9 @@ AGENT_FIELD_GROUPS = {
         sandbox startOutcomeHold steerRejectedTurnId supervisorRestore tokenBudget tokenUsageAccounting
         turnEpoch turnRecovery usageResume usageResumeEnabled workerBaseBehindMain workerBaseCommit
         workerBaseMainRef workerBaseRef workerBaseStatus workspaceOperation worktreeCleanup worktreeReady
-        worktreeWarning
+        worktreeWarning authResumeAttempt cleanedImageWorkspace imageWorkspaceCleanupResult
+        imageWorkspaceBaseError nativeToolRefreshId nativeToolUpdate portableHistory
+        queueMutationRevision workspaceReservationId forkedFrom sourceMessage draft
     """.split()),
     "derived": frozenset("""
         canSend empty hasApproval hasQuestion hasUnread kind lastReadAt launcherAlive nativeError
@@ -192,6 +194,9 @@ class AgentRecordContractTests(unittest.TestCase):
         self.assertEqual(shared | private, record_fields)
         self.assertEqual(shared | derived, entity_fields)
 
+    def test_derived_group_cannot_contain_stored_fields(self) -> None:
+        self.assertFalse(AGENT_FIELD_GROUPS["derived"] & set(AgentRecord.__annotations__))
+
     def test_entity_shared_fields_accept_the_declared_stored_types(self) -> None:
         stored = get_type_hints(AgentRecord)
         exceptions = {"nativeRelease", "startAttempt"}
@@ -201,6 +206,18 @@ class AgentRecordContractTests(unittest.TestCase):
                     _compatible(stored[name], AgentEntityDto.model_fields[name].annotation),
                     f"stored {name}: {stored[name]!r} is incompatible with "
                     f"AgentEntityDto: {AgentEntityDto.model_fields[name].annotation!r}",
+                )
+
+    def test_entity_compatibility_does_not_drop_stored_none(self) -> None:
+        self.assertFalse(_compatible(str | None, str))
+        self.assertTrue(_compatible(str | None, str | None))
+        exceptions = {"nativeRelease", "startAttempt"}
+        for name, annotation in get_type_hints(AgentRecord).items():
+            if (name not in exceptions and type(None) in _union_members(annotation)
+                    and name in AgentEntityDto.model_fields):
+                self.assertTrue(
+                    _compatible(annotation, AgentEntityDto.model_fields[name].annotation),
+                    f"DTO narrows nullable stored field {name}",
                 )
 
     def test_closed_literals_match_wire_enums_and_status_sets(self) -> None:
