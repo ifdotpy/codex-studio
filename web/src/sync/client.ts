@@ -16,6 +16,7 @@ import {
   saved,
   save,
   setWorkspace,
+  registerSyncEntityPersister,
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
@@ -186,17 +187,12 @@ export function syncDatabase() {
 }
 
 if (typeof window !== "undefined")
-  window.addEventListener("codex-sync-entities", (event) => {
-    const detail = event.detail;
-    void syncDatabase()
-      .then(async ({ db, workspaceId }) => {
-        if (detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents) {
-          if (!document.id.startsWith("entity:")) continue;
-          await persistProjection(db.projections, document);
-        }
-      })
-      .catch(() => {});
+  registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
+    const { db, workspaceId } = await syncDatabase();
+    if (targetWorkspaceId !== workspaceId) return;
+    for (const document of documents)
+      if (document.id.startsWith("entity:"))
+        await persistProjection(db.projections, document);
   });
 
 async function pull(
@@ -667,6 +663,12 @@ async function acquireProjection(
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
+        const fullPullKey = `codex-sync-full-pull:${workspaceId}`;
+        const forceFullPull =
+          remoteScope === "state:entities:v1" &&
+          saved<boolean>(fullPullKey, false);
+        if (forceFullPull)
+          resetReadySeq = await resetEntityProjection(db.projections);
         do {
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
@@ -899,6 +901,7 @@ async function acquireProjection(
             payload: "ready",
             seq: resetReadySeq ?? 1,
           });
+          if (forceFullPull) save(fullPullKey, false);
         }
       })()
         .catch((error) => {

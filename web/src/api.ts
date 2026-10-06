@@ -351,15 +351,44 @@ type SyncEnvelope = {
   _syncEntities?: components["schemas"]["SyncEntity"][] | null;
 };
 
-function syncDocuments(
+type SyncEntityDocument = components["schemas"]["SyncEntity"];
+type SyncEntityPersister = (
+  workspaceId: string,
+  documents: SyncEntityDocument[],
+) => Promise<void>;
+let syncEntityPersister: SyncEntityPersister | undefined;
+
+export function registerSyncEntityPersister(
+  persist: SyncEntityPersister,
+): () => void {
+  syncEntityPersister = persist;
+  return () => {
+    if (syncEntityPersister === persist) syncEntityPersister = undefined;
+  };
+}
+
+async function syncDocuments(
   value: SyncEnvelope | null | undefined,
   workspaceId: string | undefined,
-) {
+): Promise<void> {
   if (!value?._syncEntities?.length || typeof window === "undefined") return;
+  const targetWorkspaceId = workspaceId ?? workspace;
+  try {
+    await syncEntityPersister?.(targetWorkspaceId, value._syncEntities);
+  } catch (error) {
+    save(`codex-sync-full-pull:${targetWorkspaceId}`, true);
+    console.error(
+      "Mutation entity persistence failed; the next pull will be full",
+      {
+        workspaceId: targetWorkspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
   window.dispatchEvent(
     new CustomEvent("codex-sync-entities", {
       detail: {
-        workspaceId: workspaceId ?? workspace,
+        workspaceId: targetWorkspaceId,
         documents: value._syncEntities,
       },
     }),
@@ -465,7 +494,7 @@ export async function post<Path extends PathsFor<"post">>(
     if (!("data" in result)) return undefined as PostResult<Path>;
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
-    syncDocuments(result.data as PostResult<Path>, options.workspaceId);
+    await syncDocuments(result.data as PostResult<Path>, options.workspaceId);
     return result.data as PostResult<Path>;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();

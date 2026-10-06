@@ -5,6 +5,7 @@ import {
   apiDownload,
   get,
   post,
+  registerSyncEntityPersister,
   refreshSession,
   setToken,
   setWorkspace,
@@ -215,6 +216,101 @@ describe("OpenAPI transport facade", () => {
       workspaceId: "workspace-a",
       documents,
     });
+  });
+
+  it("waits for mutation entities to persist before resolving the POST", async () => {
+    const events = new EventTarget();
+    vi.stubGlobal("window", events);
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 5,
+        payload: JSON.stringify({
+          collection: "workspace",
+          id: "current",
+          value: {
+            sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
+          },
+        }),
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ _syncEntities: documents })),
+    );
+    let releasePersistence = () => {};
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    let markPersisterStarted = () => {};
+    const persisterStarted = new Promise<void>((resolve) => {
+      markPersisterStarted = resolve;
+    });
+    const unregister = registerSyncEntityPersister(
+      async (workspaceId, rows) => {
+        expect(workspaceId).toBe("workspace-a");
+        expect(rows).toEqual(documents);
+        markPersisterStarted();
+        await persistence;
+      },
+    );
+    try {
+      let settled = false;
+      const request = post("/api/sync/drafts", { rows: [] }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await persisterStarted;
+      expect(settled).toBe(false);
+      releasePersistence();
+      await request;
+      expect(settled).toBe(true);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps a committed mutation result and marks a full pull when persistence fails", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const values = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      setItem: (key: string, value: string) => values.set(key, value),
+    });
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 5,
+        payload: JSON.stringify({
+          collection: "workspace",
+          id: "current",
+          value: {},
+        }),
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ _syncEntities: documents })),
+    );
+    const unregister = registerSyncEntityPersister(async () => {
+      throw new Error("IndexedDB write failed");
+    });
+    try {
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).resolves.toMatchObject({
+        _syncEntities: documents,
+      });
+      expect(values.get("codex-sync-full-pull:workspace-a")).toBe("true");
+      expect(diagnostic).toHaveBeenCalledWith(
+        "Mutation entity persistence failed; the next pull will be full",
+        expect.objectContaining({ workspaceId: "workspace-a" }),
+      );
+    } finally {
+      unregister();
+    }
   });
 
   it("does not apply the default read deadline to POST writes", async () => {
