@@ -5,9 +5,19 @@ import json
 import math
 import time
 import uuid
+from typing import TYPE_CHECKING, Protocol
+
+from codex_records import RecordStore
+
+if TYPE_CHECKING:
+    import sqlite3
+    from contextlib import AbstractContextManager
+    from typing import Callable
+
+    from codex_records import AgentRecord, JsonObject, ToolRequestRecord
 
 
-def request_tools(tool, text):
+def request_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["JsonObject"]:
     return [tool(
         "orchestration_request",
         "Recover your tool request by request_id or callId before retrying an uncertain mutation. "
@@ -19,7 +29,7 @@ def request_tools(tool, text):
     )]
 
 
-def _arguments(message):
+def _arguments(message: "JsonObject") -> tuple["JsonObject", "JsonObject"]:
     params = message.get("params", {})
     args = params.get("arguments", {})
     if isinstance(args, str):
@@ -29,7 +39,7 @@ def _arguments(message):
     return params, args
 
 
-def _prefix(account, thread):
+def _prefix(account: str, thread: str | None) -> str:
     return (str(account) + ":" if account != "default" else "") + str(thread) + ":"
 
 
@@ -59,7 +69,7 @@ _MESSAGE_REJECTIONS = {
 }
 
 
-def request_read_only(tool, args):
+def request_read_only(tool: str, args: "JsonObject") -> bool:
     if not isinstance(args, dict):
         return False
     return (tool in _READ_TOOLS
@@ -67,7 +77,7 @@ def request_read_only(tool, args):
             or tool == "orchestration_request" and args.get("action", "list") in {"list", "get"})
 
 
-def request_result_outcome(record, result):
+def request_result_outcome(record: "ToolRequestRecord", result: "JsonObject") -> str:
     if result.get("success") is True:
         return "applied"
     if result.get("success") is not False:
@@ -103,15 +113,15 @@ def request_result_outcome(record, result):
     return "unknown"
 
 
-def _cancel_result(record, message):
+def _cancel_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
     return {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
         "requestId": record["id"], "stage": "cancelled", "outcome": "not_applied",
         "cancelRequested": record.get("cancelRequested", False), "message": message,
     })}]}
 
 
-def _spawned_ids(result):
-    ids = []
+def _spawned_ids(result: "JsonObject") -> list[str]:
+    ids: list[str] = []
     if not isinstance(result, dict):
         return ids
     for item in result.get("contentItems", []):
@@ -132,7 +142,7 @@ def _spawned_ids(result):
     return list(dict.fromkeys(ids))
 
 
-def operation_receipt_evidence(db, key):
+def operation_receipt_evidence(db: "sqlite3.Connection", key: str) -> "JsonObject | None":
     """Read committed operation evidence without asserting tool completion."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts'").fetchone():
         return None
@@ -143,8 +153,38 @@ def operation_receipt_evidence(db, key):
             "operationResult": json.loads(row[0])}
 
 
+class RequestLock(Protocol):
+    def __enter__(self) -> object: ...
+    def __exit__(self, *args: object) -> object: ...
+    def _is_owned(self) -> bool: ...
+
+
+class RequestRuntime(RecordStore, Protocol):
+    lock: RequestLock
+    closed: bool
+    connection_ids: dict[str, str | None]
+    offline_accounts: set[str]
+
+    def db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
+    def connection_current(self, account_key: str, connection_id: str | None = None) -> bool: ...
+    def checked_actor(self, db: "sqlite3.Connection", actor: str | None = None) -> "AgentRecord": ...
+    def tool_request_actor(self, db: "sqlite3.Connection", thread_id: str | None,
+                           account_key: str) -> "AgentRecord | None": ...
+    def tool_request_key(self, message: "JsonObject", account_key: str = "default") -> str: ...
+    def tool_request(self, key: str, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None": ...
+    def tool_result(self, db: "sqlite3.Connection", key: str) -> "JsonObject | None": ...
+    def finish_tool_request(self, key: str, result: "JsonObject", outcome: str | None = None,
+                            db: "sqlite3.Connection | None" = None, *,
+                            prepared_record: "ToolRequestRecord | None" = None) -> "ToolRequestRecord | None": ...
+    def _refresh_tool_request(self, db: "sqlite3.Connection",
+                              record: "ToolRequestRecord") -> "ToolRequestRecord": ...
+    def _request_agent_states(self, db: "sqlite3.Connection",
+                              record: "ToolRequestRecord") -> list["JsonObject"]: ...
+    def _list_tool_requests(self, actor_id: str) -> "JsonObject": ...
+
+
 class RequestMixin:
-    def tool_request_actor(self, db, thread_id, account_key):
+    def tool_request_actor(self: "RequestRuntime", db: "sqlite3.Connection", thread_id: str | None, account_key: str) -> "AgentRecord | None":
         if not thread_id:
             return None
         row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
@@ -156,7 +196,7 @@ class RequestMixin:
         from codex_agent_modes import mode_fields
         return mode_fields(json.loads(row[0]))
 
-    def setup_tool_requests(self, db):
+    def setup_tool_requests(self: "RequestRuntime", db: "sqlite3.Connection") -> None:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_tool_request_actor
@@ -182,7 +222,7 @@ class RequestMixin:
             self.put(db, "tool_requests", record)
 
     @staticmethod
-    def tool_request_key(message, account_key="default"):
+    def tool_request_key(message: "JsonObject", account_key: str = "default") -> str:
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
         name, identity_args = params.get("tool"), args
@@ -194,7 +234,7 @@ class RequestMixin:
             call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:"}[name] + request_id
         return _prefix(account_key, params.get("threadId")) + call
 
-    def tool_request(self, key, db=None):
+    def tool_request(self: "RequestRuntime", key: str, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None":
         if db is None:
             with self.lock, self.db() as own:
                 return self.tool_request(key, own)
@@ -204,14 +244,14 @@ class RequestMixin:
         from codex_payloads import resolve_record, state_root
         return resolve_record(state_root(self), json.loads(row[0]))
 
-    def tool_result(self, db, key):
+    def tool_result(self: "RequestRuntime", db: "sqlite3.Connection", key: str) -> "JsonObject | None":
         row = db.execute("SELECT result FROM runtime_tool_results WHERE id=?", (key,)).fetchone()
         if row is None:
             return None
         from codex_payloads import resolve_result, state_root
         return resolve_result(state_root(self), row[0])
 
-    def transcript_tool_result(self, db, actor, item):
+    def transcript_tool_result(self: "RequestRuntime", db: "sqlite3.Connection", actor: "AgentRecord", item: "JsonObject") -> None:
         """Recover a missing native completion from the exact durable receipt."""
         if item.get("title") != "dynamicToolCall":
             return
@@ -261,7 +301,8 @@ class RequestMixin:
                        contentItems=content)
         item["text"] = json.dumps(payload, ensure_ascii=False)
 
-    def reserve_tool_request(self, message, account_key="default", connection_id=None):
+    def reserve_tool_request(self: "RequestRuntime", message: "JsonObject", account_key: str = "default",
+                             connection_id: str | None = None) -> ToolRequestRecord | None:
         reservation_started = time.monotonic_ns()
         params, args = _arguments(message)
         key = self.tool_request_key(message, account_key)
@@ -324,7 +365,7 @@ class RequestMixin:
                 self.put(db, "tool_requests", record)
             return record
 
-    def begin_tool_request(self, key):
+    def begin_tool_request(self: "RequestRuntime", key: str) -> bool:
         with self.lock, self.db() as db:
             record = self.tool_request(key, db)
             if not record or record["stage"] != "queued" or record.get("cancelRequested"):
@@ -338,7 +379,9 @@ class RequestMixin:
             self.put(db, "tool_requests", record)
             return True
 
-    def finish_tool_request(self, key, result, outcome=None, db=None, *, prepared_record=None):
+    def finish_tool_request(self: "RequestRuntime", key: str, result: "JsonObject", outcome: str | None = None,
+                            db: "sqlite3.Connection | None" = None, *,
+                            prepared_record: "ToolRequestRecord | None" = None) -> "ToolRequestRecord":
         """Save a completion; prepared_record is internal list snapshot evidence."""
         if db is None:
             with self.lock, self.db() as own:
@@ -382,7 +425,8 @@ class RequestMixin:
         self.put(db, "tool_requests", record)
         return record
 
-    def _refresh_tool_request(self, db, record):
+    def _refresh_tool_request(self: "RequestRuntime", db: "sqlite3.Connection",
+                              record: "ToolRequestRecord") -> "ToolRequestRecord":
         from codex_payloads import resolve_record, state_root
         record = resolve_record(state_root(self), record)
         if record["outcome"] not in {"applied", "not_applied"}:
@@ -391,7 +435,8 @@ class RequestMixin:
                 return self.finish_tool_request(record["id"], result, db=db)
         return record
 
-    def reconcile_tool_requests(self, db, agent_id):
+    def reconcile_tool_requests(self: "RequestRuntime", db: "sqlite3.Connection",
+                                agent_id: str) -> "JsonObject":
         rows = db.execute("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
                           "AND json_extract(record,'$.outcome') NOT IN ('applied','not_applied')", (agent_id,)).fetchall()
         reconciled, unknown = [], []
@@ -415,7 +460,8 @@ class RequestMixin:
                 unknown.append(after["id"])
         return {"reconciled": reconciled, "unknown": unknown}
 
-    def _request_agent_states(self, db, record):
+    def _request_agent_states(self: "RequestRuntime", db: "sqlite3.Connection",
+                              record: "ToolRequestRecord") -> list["JsonObject"]:
         agents = []
         for agent_id in record.get("agentIds", []):
             row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
@@ -427,7 +473,7 @@ class RequestMixin:
                            "deleted": bool(agent.get("deletedAt"))})
         return agents
 
-    def _list_tool_requests(self, actor_id):
+    def _list_tool_requests(self: "RequestRuntime", actor_id: str) -> "JsonObject":
         """Read receipt metadata and reconcile exact pending snapshots."""
         from codex_payloads import resolve_record, resolve_result, state_root
         if self.lock._is_owned():
@@ -476,7 +522,7 @@ class RequestMixin:
                                 if k not in {"result", "signature", "_payloadBlobs"}})
             return {"requests": records}
 
-    def request_action(self, actor_id, data):
+    def request_action(self: "RequestRuntime", actor_id: str, data: "JsonObject") -> "JsonObject":
         if not isinstance(data, dict) or set(data) - {"action", "request_id"}:
             raise ValueError("Unsupported request fields")
         action = data.get("action", "list")

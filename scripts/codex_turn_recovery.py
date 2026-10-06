@@ -6,13 +6,33 @@ from concurrent.futures import Future
 from datetime import datetime
 import json
 import time
+from typing import TYPE_CHECKING, Protocol
+
+from codex_records import RecordStore
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Iterable
+    from contextlib import AbstractContextManager
+    from threading import Event
+    from typing import Callable
+
+    from codex_records import AgentRecord, JsonObject, JsonValue
+
+
+    class _TurnCallbacks(Protocol):
+        def empty(self) -> bool: ...
+
+
+    class _TurnSupervisorProcess(Protocol):
+        def call(self, method: str) -> "JsonObject": ...
 
 START_PACE_WINDOW_SECONDS = 90
 START_PACE_LIMIT = 4
 UNKNOWN_START_HOLD_SECONDS = 600
 
 
-def recent_account_starts(agents, now=None):
+def recent_account_starts(agents: "Iterable[AgentRecord]", now: float | None = None) -> dict[str, int]:
     """Count recent Codex starts that still lack a native turn identity."""
     now = time.time() if now is None else now
     counts = {}
@@ -31,19 +51,19 @@ def recent_account_starts(agents, now=None):
     return counts
 
 
-def read_native_turn(server, thread_id, turn_id):
+def read_native_turn(server: "TurnRecoveryServer", thread_id: str, turn_id: str) -> "JsonObject | None":
     """Read all items of one exact turn without loading other turns' bodies."""
     from codex_native_errors import NativeRpcError
 
     deadline = time.monotonic() + 20
 
-    def read(method, params):
+    def read(method, params):  # type: (str, JsonObject) -> JsonObject
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError('Native turn history read timed out')
         return server.call(method, params, timeout=min(10, remaining))
 
-    def turn_page(params):
+    def turn_page(params):  # type: (JsonObject) -> JsonObject
         page = read('thread/turns/list', params)
         if not isinstance(page, dict) or not isinstance(page.get('data'), list):
             raise ValueError('Native turn history returned an invalid page')
@@ -58,7 +78,7 @@ def read_native_turn(server, thread_id, turn_id):
             ids.add(turn['id'])
         return page
 
-    def full_turn(turn):
+    def full_turn(turn):  # type: (JsonObject) -> JsonObject
         if turn.get('itemsView', 'full') != 'full':
             raise ValueError('Native turn history did not return all target items')
         items, known = [], {}
@@ -66,7 +86,7 @@ def read_native_turn(server, thread_id, turn_id):
             add_item(items, known, item)
         return {**turn, 'items': items}
 
-    def add_item(items, known, item):
+    def add_item(items, known, item):  # type: (list[JsonObject], dict[str, JsonObject], JsonObject) -> None
         if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
                 or not item['id'] or not isinstance(item.get('type'), str) or not item['type']
                 or item.get('turnId', turn_id) != turn_id
@@ -142,13 +162,13 @@ def read_native_turn(server, thread_id, turn_id):
         seen.add(cursor)
 
 
-def orphan_busy(agent):
+def orphan_busy(agent: "AgentRecord") -> bool:
     """A busy flag with no native turn and no Studio start cannot be cleared by any notification."""
     return bool(agent.get('inFlight') and not agent.get('turnId') and not agent.get('startAttempt')
                 and agent.get('threadId') and not agent.get('deletedAt'))
 
 
-def unconfirmed_start(agent):
+def unconfirmed_start(agent: "AgentRecord") -> bool:
     """A submitted start needs its exact input receipt before another dispatch."""
     attempt = agent.get('startAttempt') or {}
     held = (agent.get('startOutcomeHold') or {}).get('stage') == 'held'
@@ -166,8 +186,63 @@ def unconfirmed_start(agent):
                 and not attempt.get('observedTurnId'))
 
 
+class TurnRecoveryServer(Protocol):
+    callbacks: "_TurnCallbacks | None"
+    proc: "_TurnSupervisorProcess | None"
+    supervisor_mode: bool
+
+    def call(self, method: str, params: "JsonObject", timeout: float = ...) -> "JsonObject": ...
+    def after_events(self, callback: "Callable[[], object]") -> object: ...
+
+
+class TurnRecoveryExecutor(Protocol):
+    def submit(self, fn: "Callable[..., object]", *args: object) -> "Future[object]": ...
+
+
+class TurnRecoveryRuntime(RecordStore, Protocol):
+    lock: "AbstractContextManager[object]"
+    closed: bool
+    servers: dict[str, TurnRecoveryServer]
+    offline_accounts: set[str]
+    recovery_pool: TurnRecoveryExecutor
+    connection_ids: dict[str, str | None]
+    changed: "Event"
+    loaded: set[str]
+    _turn_recovery_busy: bool
+    _turn_recovery_checked: dict[str, float]
+    _turn_recovery_results: dict[str, "JsonObject"]
+
+    def db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
+    def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> "AgentRecord": ...
+    def connection_current(self, account_key: str, connection_id: str | None = None) -> bool: ...
+    def start_accepted(self, key: str, attempt: "JsonObject", result: "JsonObject") -> object: ...
+    def child_stopped_event(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                            status: str, reason: str, event_id: str) -> object: ...
+    def _token_rate_observation_batch(self) -> "AbstractContextManager[object]": ...
+    def _token_rate_observation_limit(self) -> int: ...
+    def notification(self, message: "JsonObject", account: str,
+                     connection_id: str | None = None) -> object: ...
+    def queue_turn_recovery(self, agents: "list[AgentRecord]",
+                            *, force_id: str | None = None) -> None: ...
+    def run_turn_recovery(self, key: str) -> "JsonObject": ...
+    def reconcile_turn(self, key: str) -> "JsonObject": ...
+    def reconcile_start_receipt(self, server: TurnRecoveryServer, agent: "AgentRecord",
+                                expected: "JsonObject", connection: str | None) -> "JsonObject": ...
+    def restore_absent_start(self, server: TurnRecoveryServer, expected: "JsonObject",
+                             connection: str | None) -> "JsonObject": ...
+    def hold_unknown_start(self, server: TurnRecoveryServer, expected: "JsonObject",
+                           connection: str | None) -> "JsonObject": ...
+    def reconcile_orphan_busy(self, server: TurnRecoveryServer, agent: "AgentRecord",
+                              expected: "JsonObject", connection: str | None) -> "JsonObject": ...
+    def apply_orphan_recovery(self, expected: "JsonObject", connection: str | None,
+                              latest: "JsonObject | None") -> "JsonObject": ...
+    def apply_turn_recovery(self, expected: "JsonObject", connection: str | None,
+                            native_state: str, turn: "JsonObject") -> "JsonObject": ...
+
+
 class TurnRecoveryMixin:
-    def queue_turn_recovery(self, agents, *, force_id=None):
+    def queue_turn_recovery(self: "TurnRecoveryRuntime", agents: "list[AgentRecord]",
+                            *, force_id: str | None = None) -> None:
         """At most one native probe occupies the existing recovery executor."""
         now = time.time()
         with self.lock:
@@ -205,7 +280,7 @@ class TurnRecoveryMixin:
                 self._turn_recovery_busy = False
                 raise
 
-    def run_turn_recovery(self, key):
+    def run_turn_recovery(self: "TurnRecoveryRuntime", key: str) -> "JsonObject":
         try:
             result = self.reconcile_turn(key)
             with self.lock:
@@ -217,7 +292,7 @@ class TurnRecoveryMixin:
             with self.lock:
                 self._turn_recovery_busy = False
 
-    def reconcile_turn(self, key):
+    def reconcile_turn(self: "TurnRecoveryRuntime", key: str) -> "JsonObject":
         """Read native state without loading a thread, starting a turn, or stopping work."""
         with self.lock, self.db() as db:
             a = self.agent(key, db)
@@ -251,7 +326,7 @@ class TurnRecoveryMixin:
             if state not in {'idle', 'notLoaded'} or not turn or turn.get('status') not in {'completed', 'failed', 'interrupted'}:
                 return {'status': 'unconfirmed'}
             result = Future()
-            def apply():
+            def apply():  # type: () -> None
                 try:
                     result.set_result(self.apply_turn_recovery(expected, connection, state, turn))
                 except Exception as error:
@@ -263,7 +338,9 @@ class TurnRecoveryMixin:
             # A failed read is not a failed turn. Retain the recorded state and receipt.
             return {'status': 'unconfirmed', 'error': str(error)}
 
-    def reconcile_start_receipt(self, server, a, expected, connection):
+    def reconcile_start_receipt(self: "TurnRecoveryRuntime", server: "TurnRecoveryServer",
+                                a: "AgentRecord", expected: "JsonObject",
+                                connection: str | None) -> "JsonObject":
         """Read an exact start receipt without replay or an idle-state inference."""
         attempt = a['startAttempt']
         from codex_connection_recovery import supervisor_identity
@@ -316,7 +393,7 @@ class TurnRecoveryMixin:
                     raise ValueError('Native start history repeated its page cursor')
                 seen.add(cursor)
             result = Future()
-            def apply():
+            def apply():  # type: () -> None
                 try:
                     with self.lock:
                         current = self.agent(a['id'])
@@ -343,7 +420,8 @@ class TurnRecoveryMixin:
         except Exception as error:
             return {'status': 'unconfirmed', 'error': str(error)}
 
-    def restore_absent_start(self, server, expected, connection):
+    def restore_absent_start(self: "TurnRecoveryRuntime", server: "TurnRecoveryServer",
+                             expected: "JsonObject", connection: str | None) -> "JsonObject":
         """Return an exact batch only after the old native child is gone and idle history is complete."""
         a = expected
         try:
@@ -354,7 +432,7 @@ class TurnRecoveryMixin:
                         or status.get('activeFlags')):
                     return {'status': 'unconfirmed'}
             result = Future()
-            def apply():
+            def apply():  # type: () -> None
                 try:
                     with self.lock, self.db() as db:
                         current = self.agent(a['id'], db)
@@ -390,7 +468,8 @@ class TurnRecoveryMixin:
         except Exception as error:
             return {'status': 'unconfirmed', 'error': str(error)}
 
-    def hold_unknown_start(self, server, expected, connection):
+    def hold_unknown_start(self: "TurnRecoveryRuntime", server: "TurnRecoveryServer",
+                           expected: "JsonObject", connection: str | None) -> "JsonObject":
         """Stop showing a perpetual start while preserving the unresolved native input."""
         try:
             callbacks = getattr(server, 'callbacks', None)
@@ -412,7 +491,7 @@ class TurnRecoveryMixin:
                         or status.get('type') not in {'idle', 'notLoaded'} or status.get('activeFlags')):
                     return {'status': 'unconfirmed'}
             result = Future()
-            def apply():
+            def apply():  # type: () -> None
                 try:
                     with self.lock, self.db() as db:
                         current = self.agent(expected['id'], db)
@@ -443,9 +522,11 @@ class TurnRecoveryMixin:
         except Exception as error:
             return {'status': 'unconfirmed', 'error': str(error)}
 
-    def reconcile_orphan_busy(self, server, a, expected, connection):
+    def reconcile_orphan_busy(self: "TurnRecoveryRuntime", server: "TurnRecoveryServer",
+                              a: "AgentRecord", expected: "JsonObject",
+                              connection: str | None) -> "JsonObject":
         """Clear a busy flag only when native is idle and its last turn already completed here."""
-        def idle():
+        def idle():  # type: () -> bool
             thread = server.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=5)['thread']
             if thread.get('id') != a['threadId']:
                 raise ValueError('Native thread identity changed')
@@ -461,7 +542,7 @@ class TurnRecoveryMixin:
             if latest is not None and latest.get('status') not in {'completed', 'failed', 'interrupted'}:
                 return {'status': 'unconfirmed'}
             result = Future()
-            def apply():
+            def apply():  # type: () -> None
                 try:
                     result.set_result(self.apply_orphan_recovery(expected, connection, latest))
                 except Exception as error:
@@ -471,7 +552,8 @@ class TurnRecoveryMixin:
         except Exception as error:
             return {'status': 'unconfirmed', 'error': str(error)}
 
-    def apply_orphan_recovery(self, expected, connection, latest):
+    def apply_orphan_recovery(self: "TurnRecoveryRuntime", expected: "JsonObject",
+                              connection: str | None, latest: "JsonObject | None") -> "JsonObject":
         account = expected.get('accountKey') or 'default'
         with self.lock, self.db() as db:
             a = self.agent(expected['id'], db)
@@ -495,7 +577,9 @@ class TurnRecoveryMixin:
             self.changed.set()
             return {'status': 'reconciled', 'turnId': None, 'outcome': 'idle'}
 
-    def apply_turn_recovery(self, expected, connection, native_state, turn):
+    def apply_turn_recovery(self: "TurnRecoveryRuntime", expected: "JsonObject",
+                            connection: str | None, native_state: str,
+                            turn: "JsonObject") -> "JsonObject":
         account = expected.get('accountKey') or 'default'
         with self._token_rate_observation_batch():
             with self.lock:

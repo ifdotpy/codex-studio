@@ -93,6 +93,12 @@ class StartAttemptRecord(TypedDict):
     reviewTarget: NotRequired[JsonObject]
 
 
+class NativeTurnRecord(TypedDict):
+    id: NotRequired[str]
+    status: NotRequired[str]
+    error: NotRequired[JsonObject | None]
+
+
 class RestartRecoveryRecord(TypedDict):
     stage: NotRequired[str]
     at: NotRequired[float]
@@ -322,6 +328,7 @@ class CapacityRetryRecord(TypedDict):
     turnId: NotRequired[str]
     updatedAt: NotRequired[float]
     accountKey: NotRequired[str]
+    waits: NotRequired[int]
 
 
 class UsageResumeRecord(TypedDict):
@@ -347,6 +354,47 @@ class UsageResumeRecord(TypedDict):
     taskClaims: NotRequired[list[str]]
 
 
+class RateLimitWindowRecord(TypedDict):
+    usedPercent: NotRequired[int | float]
+    resetsAt: NotRequired[int | float]
+
+
+class RateLimitBucketRecord(TypedDict):
+    primary: NotRequired[RateLimitWindowRecord]
+    secondary: NotRequired[RateLimitWindowRecord]
+    individualLimit: NotRequired[dict[str, int | float]]
+    rateLimitReachedType: NotRequired[JsonValue]
+    spendControlReached: NotRequired[bool]
+
+
+class RateLimitDataRecord(TypedDict):
+    rateLimits: NotRequired[RateLimitBucketRecord | None]
+    rateLimitsByLimitId: NotRequired[dict[str, RateLimitBucketRecord]]
+    ordinaryUsageAllowed: NotRequired[bool]
+
+
+class RateLimitSnapshotRecord(TypedDict):
+    data: NotRequired[RateLimitDataRecord | None]
+    error: NotRequired[JsonValue]
+    stale: NotRequired[bool]
+    accountKey: NotRequired[str]
+    at: NotRequired[int | float | None]
+
+
+class AccountDataRecord(TypedDict):
+    home: str
+    provider: NotRequired[str]
+
+
+class AccountSnapshotRecord(TypedDict):
+    accounts: NotRequired[list[JsonObject]]
+    archivedAccounts: NotRequired[list[JsonObject]]
+    defaultAccountKey: NotRequired[str]
+    logins: NotRequired[list[JsonValue]]
+    supportsDisconnect: NotRequired[bool]
+    supportsDelete: NotRequired[bool]
+
+
 class RequestQuestionFieldRecord(TypedDict):
     id: NotRequired[str]
     question: NotRequired[str]
@@ -367,6 +415,16 @@ class RequestParamsRecord(TypedDict):
     itemId: NotRequired[str]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
+
+
+class RequestAnswerValuesRecord(TypedDict):
+    answers: NotRequired[list[JsonValue]]
+
+
+class RequestAnswerDataRecord(TypedDict):
+    answers: NotRequired[dict[str, RequestAnswerValuesRecord]]
+    content: NotRequired[JsonObject]
+    decision: NotRequired[str]
 
 
 class RequestPreviewRecord(TypedDict):
@@ -396,7 +454,7 @@ class RequestRecord(TypedDict):
     connectionId: NotRequired[str]
     epoch: NotRequired[int]
     turnId: NotRequired[str]
-    rpcId: NotRequired[str]
+    rpcId: NotRequired[str | int]
     preview: NotRequired[RequestPreviewRecord]
     answerSignature: NotRequired[str]
     answeredAt: NotRequired[float]
@@ -476,11 +534,16 @@ class RuleRecord(TypedDict):
 class ToolRequestTimingRecord(TypedDict):
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[float]
+    callbackStartedAt: NotRequired[int | float]
     executionQueueDelayMs: NotRequired[float]
+    handlerEndedAt: NotRequired[int]
+    handlerStartedAt: NotRequired[int]
     queueDelayMs: NotRequired[float]
+    reservationBeganAt: NotRequired[int]
     reservationDelayMs: NotRequired[float]
-    wireReceivedAt: NotRequired[float]
+    reservationEndedAt: NotRequired[int]
+    reservationLockedAt: NotRequired[int]
+    wireReceivedAt: NotRequired[int | float]
 
 
 class ToolRequestRecord(TypedDict):
@@ -513,11 +576,11 @@ class ToolRequestRecord(TypedDict):
     supervisor: NotRequired[JsonObject]
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[float]
+    callbackStartedAt: NotRequired[int | float]
     executionQueueDelayMs: NotRequired[float]
     queueDelayMs: NotRequired[float]
     reservationDelayMs: NotRequired[float]
-    wireReceivedAt: NotRequired[float]
+    wireReceivedAt: NotRequired[int | float]
 
 
 class AgentActivityRecord(TypedDict):
