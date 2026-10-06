@@ -69,6 +69,12 @@ class FakeRuntime:
     def touch_ui(self, _agent_id):
         pass
 
+    def sync_workspace_volatile(self, _db):
+        # Account notice routing tests use a deliberately minimal in-memory
+        # database without sync_entities; entity projection is covered by the
+        # Runtime notification producer contract.
+        pass
+
     def items(self, agent_id):
         return [json.loads(row[0]) for row in self.connection.execute(
             "SELECT record FROM runtime_items WHERE agent=?", (agent_id,))]

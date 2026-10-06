@@ -30,8 +30,9 @@ class Store(WorkMixin, WorkspaceMixin):
         self.lock = threading.RLock()
         self.accounts = AccountStore(root)
         with self.db() as db:
-            for table in ('agents', 'projects', 'tasks', 'messages'):
-                db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+            for table in ('agents', 'projects', 'events', 'tasks', 'messages'):
+                columns = ", created REAL" if table == 'events' else ""
+                db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT NOT NULL{columns})')
             db.execute('CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT, result TEXT)')
             ensure_sync_entity_tables(db)
 
@@ -52,9 +53,6 @@ class Store(WorkMixin, WorkspaceMixin):
 
     @staticmethod
     def records(db, table):
-        if table == 'events' and not db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
-            return []
         return [json.loads(row[0]) for row in db.execute(f'SELECT record FROM runtime_{table}')]
 
 

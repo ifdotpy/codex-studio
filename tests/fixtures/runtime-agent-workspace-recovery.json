@@ -1,4 +1,59 @@
 {
+  "agentEntityRowsAdvanced": ["lead-0", "lead-1"],
+  "closeEntityFieldsChanged": {
+    "a-grandchild": [
+      "archived",
+      "canSend",
+      "concurrency",
+      "kind",
+      "launcherAlive",
+      "nextTurnSettingsSupported",
+      "overview",
+      "pinned",
+      "projectFolderRevision",
+      "readStateSupported",
+      "source"
+    ],
+    "a-worker": [
+      "archived",
+      "canSend",
+      "concurrency",
+      "kind",
+      "launcherAlive",
+      "nextTurnSettingsSupported",
+      "overview",
+      "pinned",
+      "projectFolderRevision",
+      "readStateSupported",
+      "source"
+    ],
+    "b-worker": [
+      "archived",
+      "canSend",
+      "concurrency",
+      "kind",
+      "launcherAlive",
+      "nextTurnSettingsSupported",
+      "overview",
+      "pinned",
+      "projectFolderRevision",
+      "readStateSupported",
+      "source"
+    ],
+    "lead-2": [
+      "archived",
+      "canSend",
+      "empty",
+      "kind",
+      "launcherAlive",
+      "nextTurnSettingsSupported",
+      "pinned",
+      "projectFolderRevision",
+      "readStateSupported",
+      "source"
+    ]
+  },
+  "closeEntityRowsAdvanced": ["a-grandchild", "a-worker", "b-worker", "lead-2"],
   "agents": {
     "lead-0": {
       "autoWake": false,
@@ -40,10 +95,6 @@
   "pendingInput": {
     "agent": "lead-1",
     "status": "pending"
-  },
-  "syncSequenceDelta": {
-    "lead-0": 0,
-    "lead-1": 0
   },
   "syncedAgents": {
     "lead-0": {

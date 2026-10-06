@@ -244,7 +244,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             connection.execute("INSERT INTO runtime_agents VALUES (?,?)", ("agent-a", json.dumps(agent)))
 
             @contextmanager
-            def database():
+            def database(*, busy_timeout=None):
                 staged = {connection: {}}
                 overflow = {connection: False}
                 local.after_commit_resources = staged
@@ -580,7 +580,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             """)
 
             @contextmanager
-            def database():
+            def database(*, busy_timeout=None):
                 staged: dict[object, dict[str, ResourceRef]] = {connection: {}}
                 overflow: dict[object, bool] = {connection: False}
                 local.after_commit_resources = staged
@@ -794,7 +794,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             ensure_tables(db_connection)
 
             @contextmanager
-            def database():
+            def database(*, busy_timeout=None):
                 yield db_connection
 
             runtime.db = database

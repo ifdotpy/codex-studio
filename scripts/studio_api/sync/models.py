@@ -166,9 +166,6 @@ class ContextRepairWaitDto(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     error: str
     scope: str
-    source: dict[str, JsonValue]
-    events: list[str]
-    nextCheckAt: int | float
     at: float | None = None
     readOnly: bool | None = None
     action: str | None = None
@@ -261,6 +258,37 @@ class UsageResumeDto(ContractModel):
     reason: str | None = None
     updatedAt: float | None = None
     taskClaims: list[str] | None = None
+
+
+class AgentEntityCapacityRetryDto(ContractModel):
+    """Capacity retry state consumed by the entity-backed renderer."""
+    id: str
+    threadId: str | None
+    epoch: int | None
+    accountKey: str | None
+    status: str
+    updatedAt: float
+    dueAt: float | None
+    acceptedTurnId: str | None = None
+    claimedAt: float | None = None
+    reason: str | None = None
+
+
+class AgentEntityUsageResumeDto(ContractModel):
+    """Usage resume fields rendered in notices and recovery controls."""
+    id: str
+    status: str
+    cause: str
+    reason: str | None
+    updatedAt: float
+    plannedAt: float | None
+    dueAt: float | None
+
+
+class AgentEntityContextRepairWaitDto(ContractModel):
+    """Context repair wait fields rendered in native notices."""
+    scope: str
+    error: str
 
 
 class RequestQuestionOptionDto(ContractModel):
@@ -667,10 +695,10 @@ class AgentEntityDto(ContractModel):
     projectFolderRevision: int | None = None
     project: str | None = None
     epoch: int | None = None
-    lastCompletedTurnStatus: AgentStatus | None = None
-    capacityRetry: CapacityRetryDto | None = None
-    usageResume: UsageResumeDto | None = None
-    contextRepairWait: ContextRepairWaitDto | None = None
+    lastCompletedTurnStatus: str | None = None
+    capacityRetry: AgentEntityCapacityRetryDto | None = None
+    usageResume: AgentEntityUsageResumeDto | None = None
+    contextRepairWait: AgentEntityContextRepairWaitDto | None = None
     lastEvent: str | None = None
     accountTransferId: str | None = None
     workspaceOperation: str | None = None
@@ -694,11 +722,106 @@ class TurnRecoveryDto(ContractModel):
     latestTurnId: str | None = None
 
 
-class SnapshotAgentDto(AgentEntityDto):
+class SnapshotAgentDto(ContractModel):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
+    id: str
+    name: str | None = None
+    manualName: bool | None = None
+    status: AgentStatus | None = None
+    source: AgentSource | None = None
+    parentId: str | None = None
+    rootId: str | None = None
+    threadId: str | None = None
+    orchestratorId: str | None = None
+    orchestratorName: str | None = None
+    isLead: bool | None = None
+    role: AgentRole | None = None
+    sharedRoomId: str | None = None
+    model: str | None = None
+    provider: AgentProvider | None = None
+    # Reasoning effort levels come from the selected model's capability catalog.
+    effort: str | None = None
+    fastMode: bool | None = None
+    concurrency: int | None = None
+    accountKey: str | None = None
+    cwd: str | None = None
+    worktree: bool | str | None = None
+    worktreePreparation: Literal["waiting", "preparing"] | None = None
+    imageWorkspace: bool | None = None
+    imageWorkspaceReady: bool | None = None
+    imageWorkspacePhase: str | None = None
+    imageWorkspaceError: str | None = None
+    imageWorkspaceRepo: str | None = None
+    imageWorkspaceBaseRepo: str | None = None
     imageWorkspaceRelative: str | None = None
     imageWorkspaceStartCommit: str | None = None
+    created: float | None = None
+    updated: float | None = None
+    turnId: str | None = None
+    turnStatus: AgentStatus | None = None
+    inFlight: bool | None = None
+    compactions: int | None = None
+    tokensUsed: int | None = None
+    contextUsage: ContextUsageDto | None = None
+    error: NativeProviderError | str | None = None
+    tail: str | None = None
+    canSend: bool | None = None
+    launcherAlive: bool | None = None
+    empty: bool | None = None
+    yoloMode: bool | None = None
+    agentMode: AgentMode | None = None
+    agentModeRevision: int | None = None
+    agentModeSupported: bool | None = None
+    subagentConcurrencyVersion: int | None = None
+    workerDefaults: WorkerDefaultsDto | None = None
+    reviewDefaults: ReviewDefaultsDto | None = None
+    parkedEvent: str | None = None
+    pendingSettings: ExecutionSettingsDto | None = None
+    pendingSettingsAccountKey: str | None = None
+    queuedSettings: ExecutionSettingsDto | None = None
+    quickCreate: JsonValue | None = None
+    nativeThreadBlock: NativeThreadBlockDto | None = None
+    daybreakEnabled: bool | None = None
+    accountTransfer: AccountTransferSummaryDto | None = None
+    convertedFromLead: ConvertedFromLeadDto | None = None
+    overview: AgentOverview | None = None
+    nativeRelease: SnapshotNativeRelease | None = None
+    activity: AgentActivity | None = None
+    nativeStatus: AgentNativeStatus | AgentNativeStatusValue | None = None
+    nativeSafetyBuffering: NativeSafetyBufferingDto | None = None
+    nativeSafetyRetry: NativeSafetyRetryDto | None = None
+    nativeTurnError: NativeTurnErrorDto | None = None
+    connectionCheck: ConnectionCheckDto | None = None
+    readState: ReadStateDto | None = None
+    nativeLimitErrorAt: float | None = None
+    startAttempt: SnapshotStartAttempt | None = None
+    panelVersion: int | None = None
+    panelDataVersion: int | None = None
+    unreadCount: int | None = None
+    lastReadAt: float | None = None
+    deletedAt: float | None = None
+    autoWake: bool | None = None
+    voiceState: JsonValue | None = None
+    nativeError: str | None = None
+    retryAt: float | None = None
+    hasUnread: bool | None = None
+    hasQuestion: bool | None = None
+    hasApproval: bool | None = None
+    statusDetail: str | None = None
+    lastAnswer: str | None = None
+    lastCompletedTurn: str | None = None
+    nextTurnSettingsSupported: bool | None = None
+    readStateSupported: bool | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+    projectFolder: str | None = None
+    projectFolderRevision: int | None = None
+    project: str | None = None
+    lastCompletedTurnStatus: AgentStatus | None = None
+    capacityRetry: CapacityRetryDto | None = None
+    usageResume: UsageResumeDto | None = None
+    contextRepairWait: ContextRepairWaitDto | None = None
     imageWorkspaceSnapshotCommit: str | None = None
     imageWorkspaceMount: str | None = None
     imageWorkspaceNoticeSent: str | None = None
@@ -712,7 +835,6 @@ class SnapshotAgentDto(AgentEntityDto):
     wave: str | None = None
     runId: str | None = None
     launcherPid: int | None = None
-    launcherAlive: bool | None = None
     events: int | None = None
     graphAlias: str | None = None
     reportedAt: float | None = None
@@ -747,7 +869,6 @@ class SnapshotAgentDto(AgentEntityDto):
     accountTransferState: JsonValue | None = None
     nativeFailureHold: JsonValue | None = None
     supervisorRestore: JsonValue | None = None
-    lastCompletedTurnStatus: AgentStatus | None = None
     activityPhase: str | None = None
     nativeToolCatalog: SnapshotNativeToolCatalogDto | None = None
     nativeNameFailure: SnapshotNativeNameFailureDto | None = None
@@ -764,13 +885,10 @@ class SnapshotAgentDto(AgentEntityDto):
     budgetActionWait: JsonValue | None = None
     budgetBlocked: JsonValue | None = None
     cancelledPark: JsonValue | None = None
-    capacityRetry: CapacityRetryDto | None = None
-    usageResume: UsageResumeDto | None = None
     claudeOptions: JsonValue | None = None
     complaintMisses: int | None = None
     complaintsPresented: list[str] | None = None
     content: str | None = None
-    contextRepairWait: ContextRepairWaitDto | None = None
     cyberAccessProgram: str | None = None
     decision: str | None = None
     delivery: JsonValue | None = None
@@ -784,7 +902,6 @@ class SnapshotAgentDto(AgentEntityDto):
     liveSteerRejectedTurnId: str | None = None
     livenessCommand: str | None = None
     nativeReview: JsonValue | None = None
-    nativeSafetyRetry: NativeSafetyRetryDto | None = None
     nativeToolRefreshId: str | None = None
     nativeToolUpdate: JsonValue | None = None
     nextTurn: JsonValue | None = None
@@ -1042,10 +1159,21 @@ class ComplaintResponseDto(ContractModel):
     at: float
 
 
-class SnapshotComplaintDto(ComplaintEntityDto):
+class SnapshotComplaintDto(ContractModel):
+    id: str
+    leadId: str | None = None
+    author: str | None = None
+    authorName: str | None = None
+    leadName: str | None = None
+    title: str | None = None
+    status: ComplaintStatus | None = None
+    needsResponse: bool | None = None
+    created: float | None = None
+    readAt: float | None = None
     leadStopped: bool | None = None
     leadDeleted: bool | None = None
-    needsResponse: bool | None = None
+    recipient: Literal["user", "lead"] | None = None
+    version: int | None = None
     updated: float | None = None
     text: str | None = None
     responses: list[ComplaintResponseDto] | None = None

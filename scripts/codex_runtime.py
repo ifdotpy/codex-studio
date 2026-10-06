@@ -95,6 +95,7 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
     "imageWorkspaceRepo", "imageWorkspaceBaseRepo",
 )
+_WORKSPACE_REFRESH_DIAGNOSTICS_SEEN: set[str] = set()
 WORKTREE_DISK_AGENT_RESOURCE_FIELDS = (
     "cwd", "worktree", "worktreeReady", "deletedAt", "imageWorkspace",
     "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceRepo",
@@ -2986,7 +2987,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_entity_put(db, collection, str(record["id"]), self.complaint_entity_view(db, record))  # type: ignore[no-untyped-call]
             elif table == "work":
                 sync_entity_put(db, collection, str(record["id"]), record)  # type: ignore[no-untyped-call]
-                owners = {result.get("agent") for result in record.get("results", [])
+                owners = {result.get("agent") for source in (previous, record) if source
+                          for result in source.get("results", [])
                           if isinstance(result, dict) and isinstance(result.get("agent"), str)}
                 for owner in owners:
                     row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner,)).fetchone()
@@ -3004,7 +3006,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 for complaint_id, raw in rows:
                     complaint = json.loads(raw)
                     sync_entity_put(db, "complaint", complaint_id,
+<<<<<<< HEAD
                                     self.complaint_entity_view(db, complaint))  # type: ignore[no-untyped-call]
+=======
+                                    self.complaint_entity_view(db, complaint))
+>>>>>>> codex-agent/b8f972ad-8dfa-5bd5-9aac-16d1036d53ee
             if table == "agents" and previous is not None and (
                 previous.get("deletedAt") != record.get("deletedAt")
             ):
@@ -3025,6 +3031,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if table == "agents":
             self.mark_agent_records_changed(record["id"])  # type: ignore[no-untyped-call]
             self.touch_ui(record["id"], db, publish_resource=False)  # type: ignore[no-untyped-call]
+            if previous is not None and any(previous.get(key) != record.get(key)
+                                             for key in ("deletedAt", "cwd", "isLead", "parentId", "rootId")):
+                from codex_peer_teams import sync_entities as sync_peer_team_entities
+                sync_peer_team_entities(self, db, {previous.get("cwd"), record.get("cwd")})
         elif table == "work":
             # Work ownership and status retain deleted owners in the scheduler roster.
             self.__dict__.pop("_scheduler_agent_roster", None)
@@ -3174,6 +3184,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_claude_controls import retire_idle_bridge
                     if retire_idle_bridge(self, account_key, account, server):
                         server = None
+                        # The pinned control module retires the bridge by
+                        # mutating servers directly; publish that source change
+                        # before attempting the replacement connection.
+                        self.refresh_workspace_volatile()
                 if (self.factory is AppServer and provider == "codex" and selected is None
                         and (server is None or account_key in self.offline_accounts)):
                     needs_executable = True
@@ -3183,6 +3197,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         server.close()
                         self.servers.pop(account_key, None)
                         server = None
+                        self.refresh_workspace_volatile()
                     if server is None:
                         desktop_changed = True
                         connection_id = uid()
@@ -3236,6 +3251,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         startup_memory_mark("account-server-start:" + account_key)
             if not needs_executable:
                 if desktop_changed:
+                    self.refresh_workspace_volatile()
                     self._publish_desktop_resource()
                 return server
             if needs_executable:
@@ -3243,8 +3259,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 selected = executable_for(self)
 
     def _publish_desktop_resource(self) -> None:
-        with self.lock, self.db() as db:
-            self.sync_workspace_volatile(db)
         from studio_api.sync.resources.models import DesktopResource, ResourceRef
 
         resource = ResourceRef(DesktopResource(kind="desktop"))
@@ -3260,15 +3274,58 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Keep volatile workspace entity fields current with their live sources."""
         try:
             row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
-        except sqlite3.OperationalError:
+            if not row or row[1] or not row[0]:
+                return False
+            from codex_sync_entities import put as sync_entity_put
+            value = json.loads(row[0]).get("value") or {}
+            value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
+            value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
+            return sync_entity_put(db, "workspace", "current", value)
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                if getattr(error, "sqlite_errorcode", None) is not None else ("locked" in message or "busy" in message)
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
             return False
-        if not row or row[1] or not row[0]:
+        except Exception as error:
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
             return False
-        from codex_sync_entities import put as sync_entity_put
-        value = json.loads(row[0]).get("value") or {}
-        value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
-        value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
-        return sync_entity_put(db, "workspace", "current", value)
+
+    @staticmethod
+    def _workspace_refresh_diagnostic(error_kind):
+        if error_kind in _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN:
+            return
+        _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN.add(error_kind)
+        print("workspace entity refresh skipped (" + error_kind + ")", file=sys.stderr)
+
+    def refresh_workspace_volatile(self):
+        """Refresh volatile workspace state after an asynchronous source update."""
+        if not self.lock.acquire(blocking=False):
+            self._workspace_refresh_diagnostic("runtime-lock-busy")
+            return False
+        try:
+            with self.db(busy_timeout=0) as db:
+                return self.sync_workspace_volatile(db)
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            code = getattr(error, "sqlite_errorcode", None)
+            busy = ((code & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                    if code is not None else ("locked" in message or "busy" in message))
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        except Exception as error:
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        finally:
+            self.lock.release()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -3654,6 +3711,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if voice:
             voice.disconnected_native(account_key, connection_id)
         if desktop_changed:
+            self.refresh_workspace_volatile()
             self._publish_desktop_resource()
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
@@ -7962,29 +8020,42 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def complaint_summaries(self, db):
         complaints = self.records(db, "complaints")
-        result = [self.complaint_entity_view(db, c) | {"text": c["text"], "responses": c["responses"]}
+        agent_ids = sorted({value for complaint in complaints
+                            for value in (complaint.get("author"), complaint.get("leadId"))
+                            if isinstance(value, str) and value != "user"})
+        agents = {}
+        if agent_ids:
+            marks = ",".join("?" for _ in agent_ids)
+            agents = {agent["id"]: agent for agent in
+                      (json.loads(row[0]) for row in db.execute(
+                          f"SELECT record FROM runtime_agents WHERE id IN ({marks})", agent_ids))}
+        result = [self.complaint_entity_view(db, c, agents) | {"text": c["text"], "responses": c["responses"]}
                   for c in complaints]
         for summary, source in zip(result, complaints):
+            # Keep the legacy snapshot payload stable; needsUserResponse is an
+            # entity-only, viewer-independent replacement for the old rule.
+            summary.pop("needsUserResponse", None)
             summary["needsResponse"] = self.complaint_needs_response(source)
-            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (source.get("leadId"),)).fetchone()
-            lead = json.loads(row[0]) if row else {}
+            lead = agents.get(source.get("leadId"), {})
             summary["leadStopped"] = not lead.get("autoWake", False)
             summary["leadDeleted"] = bool(lead.get("deletedAt"))
-        return sorted(result, key=lambda c: (not self.complaint_needs_response(c), -c["updated"]))
+        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
-    def complaint_entity_view(self, db, complaint):
+    def complaint_entity_view(self, db, complaint, agents=None):
         """Build viewer-independent complaint entity fields from their named sources."""
-        ids = sorted({value for value in (complaint.get("author"), complaint.get("leadId"))
-                      if isinstance(value, str) and value != "user"})
-        agents = {a["id"]: a for a in (json.loads(row[0]) for row in db.execute(
-            "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
-        user_view = {**complaint, "recipient": "user", "responses": complaint.get("responses") or []}
+        if agents is None:
+            ids = sorted({value for value in (complaint.get("author"), complaint.get("leadId"))
+                          if isinstance(value, str) and value != "user"})
+            agents = {a["id"]: a for a in (json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
         return {
             **{key: complaint.get(key) for key in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
             "title": str(complaint.get("text") or "")[:140],
             "recipient": "user" if complaint.get("recipient") == "user" else "lead",
             "version": complaint.get("version"),
-            "needsUserResponse": self.complaint_needs_response(user_view),
+            "needsUserResponse": (complaint.get("recipient") == "user"
+                                  and self.complaint_needs_response(
+                                      {**complaint, "recipient": "user"})),
             "authorName": agents.get(complaint.get("author"), {}).get(
                 "name", "You" if complaint.get("author") == "user" else complaint.get("author")),
             "leadName": agents.get(complaint.get("leadId"), {}).get("name", complaint.get("leadId")),

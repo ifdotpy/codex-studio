@@ -15,7 +15,6 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import Runtime
-from entity_test_support import capacity_retry, context_repair_wait, usage_resume
 
 spec = importlib.util.spec_from_file_location("scope_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -119,7 +118,7 @@ class SchedulerAgentScope(unittest.TestCase):
             "missing-terminal-turn": {"startAttempt": completed, "lastCompletedTurn": None},
             "missing-terminal-status": {"startAttempt": completed, "lastCompletedTurnStatus": None},
             "malformed-start-turn": {"startAttempt": {**completed, "turnId": 7}, "lastCompletedTurn": 7},
-            "context-wait": {"contextRepairWait": context_repair_wait(stage="pending")},
+            "context-wait": {"contextRepairWait": {"stage": "pending"}},
             "budget-start": {"budgetStartWait": {"stage": "waiting"}},
             "budget-action": {"budgetActionWait": {"action": "capacity"}},
         }
@@ -190,7 +189,7 @@ class SchedulerAgentScope(unittest.TestCase):
         owner.update(id="archived-work-owner", name="Work owner")
         repair = dict(archived)
         repair.update(id="archived-repair-owner", name="Repair owner",
-                      contextRepairWait=context_repair_wait(stage="pending"))
+                      contextRepairWait={"stage": "pending"})
         stale = dict(archived)
         stale.update(id="archived-stale", name="Archived stale", restartRecovery={"stage": "finished"})
         with self.runtime.lock, self.runtime.db() as db:
@@ -221,8 +220,8 @@ class SchedulerAgentScope(unittest.TestCase):
             "disconnect-marker": {"disconnectRecovery": {"stage": "reconciling"}},
             "context-repair": {"contextRepair": {"phase": "unknown-provider-phase"}},
             "browser-recovery": {"browserRecovery": {"stage": "failed"}},
-            "capacity-retry": {"capacityRetry": capacity_retry(status="failed", attempt=7, due_at=None)},
-            "usage-resume": {"usageResume": usage_resume(status="scheduled", auth_attempt=4)},
+            "capacity-retry": {"capacityRetry": {"status": "failed", "attempt": 7}},
+            "usage-resume": {"usageResume": {"status": "waiting", "attempt": 4}},
             "old-safety-retry": {"nativeSafetyRetry": {"stage": "unknown-provider-stage",
                 "epoch": -1, "accountKey": "old-account"}},
             "last-context-wait": {"lastContextRepairWait": {"stage": "retired"}},

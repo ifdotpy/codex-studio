@@ -29,6 +29,9 @@ class EntityReadLockContract(unittest.TestCase):
             CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT);
             CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,
                                         created REAL,error TEXT);''')
         self.agent = {'id': 'owner', 'rootId': 'owner', 'name': 'Owner', 'status': 'paused', 'deletedAt': None}
@@ -38,10 +41,26 @@ class EntityReadLockContract(unittest.TestCase):
         self.anchor.commit()
         self.statements = []
         self.builds = []
-        def snapshot():
-            self.builds.append(True)
-            return {'runtime': {'agents': [self.agent], 'monitors': [self.monitor]}}
-        self.store = SyncStore(self.connect, snapshot, lambda _key: {})
+        class RuntimeView:
+            def agent_entity_view(_self, _db, record):
+                return record
+
+            def complaint_entity_view(_self, _db, record):
+                return record
+
+            def chat_rooms(_self, _db, room_id=None, include_last_message=None):
+                return []
+
+        class SnapshotOwner:
+            def __init__(_self):
+                _self.runtime = RuntimeView()
+
+            def snapshot(_self):
+                self.builds.append(True)
+                return {'runtime': {'agents': [self.agent], 'monitors': [self.monitor]}}
+
+        self.snapshot_owner = SnapshotOwner()
+        self.store = SyncStore(self.connect, self.snapshot_owner.snapshot, lambda _key: {})
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')
