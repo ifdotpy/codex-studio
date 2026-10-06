@@ -9,7 +9,7 @@ export interface ActionButtonProps
 }
 /** Preserve native button props and accessible names from each caller. */
 export function ActionButton({
-  actionRole = "secondary",
+  actionRole = "quiet",
   ...props
 }: ActionButtonProps) {
   const variant =

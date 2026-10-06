@@ -18,14 +18,14 @@ still apply. Mobile controls retain the existing 44px minimum touch target.
 
 Use `ActionButton` with `actionRole`:
 
-- `primary`: filled indigo, for the main completion action.
-- `secondary` (default): bordered, for other actions.
-- `quiet`: subtle text, for navigation and low-emphasis actions.
+- `primary`: filled indigo, for one main completion action per surface.
+- `secondary`: bordered, opt-in for other form and dialog actions.
+- `quiet` (default): subtle text, for toolbars, headers, sidebars, and navigation.
 - `destructive`: filled red, for a confirmed destructive action.
 
 Native Mantine equivalents are `variant="filled"`, `variant="default"`, and
 `variant="subtle"`. Use `color="red"` for destructive actions. The global Button
-default is now bordered. Explicit variants remain valid. Existing `IconAction`
+default remains subtle and gray. Existing `IconAction`
 under `actions/` preserves the accessible label for icon-only buttons.
 
 ```tsx
