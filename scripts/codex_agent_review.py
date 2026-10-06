@@ -108,7 +108,7 @@ def _existing(
             or review.get('target') != target or not same_args
             or child.get('cwd') != directory):
         raise ValueError('This review request id has different content')
-    return review['response']  # type: ignore[no-any-return]  # Persisted response is emitted as a review result.
+    return review['response']  # type: ignore[no-any-return]  # typed-suspect: Stored response may be malformed
 
 
 def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str) -> dict[str, Any]:
@@ -188,7 +188,7 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
             return value
         except Exception as error:
             # rt.create is the uncertainty boundary even if a later write fails.
-            error.review_child_created = True  # type: ignore[attr-defined]  # Custom exception subclasses may reject this uncertainty marker.
+            error.review_child_created = True  # type: ignore[attr-defined]  # typed-suspect: Custom exception may reject assignment
             raise
 
 
