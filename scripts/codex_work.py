@@ -521,6 +521,9 @@ class WorkMixin:
                 ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_work_owner_status
                 ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
+            CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(
+                COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id)
+                WHERE json_extract(record,'$.archiveIntent.status')='pending';
             CREATE TABLE IF NOT EXISTS runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
@@ -533,6 +536,7 @@ class WorkMixin:
                 id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,
                 cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
         """)
+        self._accepted_archive_index_ready = True
         state = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
         if not state:
             db.execute("INSERT INTO runtime_search_rollout VALUES (1,'building',0,?)", (time.time(),))

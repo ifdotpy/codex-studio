@@ -1719,6 +1719,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.report_unresolved_rule_checks(db)
             startup_memory_mark("monitor-receipt-recovery")
         startup_memory_mark("runtime-migrations-complete")
+        self.prepare_runtime_worker_schema()
         for key in monitor_recovery["acknowledge"]:
             try:
                 acknowledge_monitor_result(self.root, key)
@@ -5113,6 +5114,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                    "json_extract(record,'$.workspaceOperation')!=''")
         return True
 
+    def prepare_runtime_worker_schema(self):
+        """Finish scheduler-owned schema before starting runtime workers."""
+        with self.lock, self.db() as db:
+            self.ensure_dispatch_indexes(db)
+        self._dispatch_indexes_ready = True
+        self._dispatch_busy_input_index_ready = True
+        from codex_account_transfer import transfer_store
+        transfer_store(self)
+
     def dispatch_active_slots(self, db):
         """A busy input keeps its slot until its exact native receipt settles."""
         # UNION sorts both branches and can scan agent history for busy inputs.
@@ -6692,7 +6702,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.store_completed_broadcasts(db, a)
                 self.capacity_completed(db, a, turn, known_capacity_source)
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
-                pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?", (a["id"], a["epoch"])).fetchone()
+                pending = db.execute(
+                    "SELECT 1 FROM runtime_events WHERE agent=? AND status IN "
+                    "('pending','reserved') AND epoch=?",
+                    (a["id"], a["epoch"]),
+                ).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
                 if (not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
