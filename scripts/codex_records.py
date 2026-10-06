@@ -67,7 +67,7 @@ class StartAttemptRecord(TypedDict):
     id: NotRequired[str]
     epoch: NotRequired[int]
     accountKey: NotRequired[str]
-    events: NotRequired[list[JsonValue]]
+    events: NotRequired[list[str]]
     submitted: NotRequired[bool]
     created: NotRequired[float]
     action: NotRequired[str]

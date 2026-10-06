@@ -2,15 +2,21 @@
 import copy
 import hashlib
 import json
+from typing import TYPE_CHECKING, Any, Literal
 
 from codex_native_errors import NativeRpcError, native_thread_block
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord, StartAttemptRecord
+    from codex_runtime import Runtime
 
 
 class ClaudeRetryChanged(ValueError):
     """The original input is safe to retry, but its current scope changed."""
 
 
-def _attempt_receipt(db, agent_id, attempt):
+def _attempt_receipt(db: "sqlite3.Connection", agent_id: str, attempt: Any) -> Any:
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                       "AND name='runtime_execution_attempts'").fetchone():
         return None
@@ -26,7 +32,7 @@ def _attempt_receipt(db, agent_id, attempt):
     return saved if all(saved.get(key) == attempt.get(key) for key in fields) else None
 
 
-def rejected_start_saved(db, agent_id, attempt):
+def rejected_start_saved(db: "sqlite3.Connection", agent_id: str, attempt: Any) -> bool:
     """A late RPC success cannot replace the same request's durable rejection."""
     saved = _attempt_receipt(db, agent_id, attempt)
     receipt = (saved or {}).get('claudeInputRejection') or {}
@@ -35,7 +41,7 @@ def rejected_start_saved(db, agent_id, attempt):
                     ('id', 'epoch', 'accountKey', 'threadId', 'connectionId', 'nativeOperationId', 'events')))
 
 
-def _supervisor_matches(server, expected):
+def _supervisor_matches(server: Any, expected: Any) -> bool:
     if server is None or getattr(server, 'closed', False):
         return False
     if not getattr(server, 'supervisor_mode', False):
@@ -47,13 +53,13 @@ def _supervisor_matches(server, expected):
             and expected.get('generation') == getattr(process, 'generation', None))
 
 
-def _source(agent):
+def _source(agent: "AgentRecord") -> dict[str, Any]:
     return {key: agent.get(key) for key in (
         'cwd', 'rootId', 'parentId', 'role', 'isLead', 'model', 'effort', 'nativeEffort',
         'fastMode', 'yoloMode', 'imageWorkspace', 'imageWorkspaceReady', 'compactions')}
 
 
-def _event_snapshot(db, row):
+def _event_snapshot(db: "sqlite3.Connection", row: Any) -> dict[str, Any] | None:
     saved = db.execute('SELECT kind,text,created FROM runtime_events WHERE id=? AND agent=? AND epoch=?',
                        (row['id'], row['agent'], row['epoch'])).fetchone()
     meta = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (row['id'],)).fetchone()
@@ -62,7 +68,9 @@ def _event_snapshot(db, row):
              'textHash': hashlib.sha256(saved['text'].encode()).hexdigest()} if saved else None)
 
 
-def capture_input(db, agent, rows, params, text):
+def capture_input(
+    db: "sqlite3.Connection", agent: "AgentRecord", rows: list[Any], params: Any, text: str
+) -> dict[str, Any]:
     """Keep the exact input beside its submitted attempt, before native I/O."""
     return {'input': copy.deepcopy(params['input']), 'source': _source(agent),
             'clientUserMessageId': params['clientUserMessageId'],
@@ -73,7 +81,7 @@ def capture_input(db, agent, rows, params, text):
             'textHash': hashlib.sha256(text.encode()).hexdigest()}
 
 
-def _saved_retry(runtime, db, agent):
+def _saved_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> Any:
     marker = agent.get('claudePreInputRetry')
     if (not isinstance(marker, dict) or not agent.get('autoWake') or agent.get('status') == 'paused'
             or runtime.closed or agent.get('provider') != 'claude' or agent.get('deletedAt')
@@ -102,7 +110,7 @@ def _saved_retry(runtime, db, agent):
     return saved
 
 
-def retire_stopped_retry(runtime, db, agent):
+def retire_stopped_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> bool:
     """Retire only cancelled input or an exact unsent retry stopped at its old epoch."""
     marker = agent.get('claudePreInputRetry') or {}
     epoch = marker.get('epoch')
@@ -169,7 +177,9 @@ def retire_stopped_retry(runtime, db, agent):
     return True
 
 
-def retry_batch(runtime, db, agent):
+def retry_batch(
+    runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord"
+) -> list[Any] | None:
     """A rejected batch keeps its original order and cannot absorb new messages."""
     saved = _saved_retry(runtime, db, agent)
     if not saved:
@@ -182,7 +192,9 @@ def retry_batch(runtime, db, agent):
     return [dict(row) for row in rows]
 
 
-def retry_input(runtime, db, agent, rows):
+def retry_input(
+    runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord", rows: list[Any]
+) -> Any:
     """Revalidate the original receipt immediately before this new submission."""
     attempt = agent.get('startAttempt') or {}
     if not attempt.get('claudeRetryOf'):
@@ -209,8 +221,17 @@ def retry_input(runtime, db, agent, rows):
     return request
 
 
-def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None,
-                           account_key=None, connection_id=None):
+def recover_rejected_start(
+    runtime: "Runtime",
+    db: "sqlite3.Connection",
+    agent: "AgentRecord",
+    attempt: "StartAttemptRecord",
+    *,
+    turn: Any = None,
+    error: BaseException | None = None,
+    account_key: str | None = None,
+    connection_id: str | None = None,
+) -> Literal["retry", "held"] | None:
     """Settle one proven rejection in the caller's transaction, without native I/O."""
     events = attempt.get('events')
     account = agent.get('accountKey', 'default')
@@ -272,11 +293,11 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
         if db.execute("SELECT 1 FROM runtime_items WHERE agent=? AND created>=? "
                 "AND json_extract(record,'$.turnId')=? "
                 "AND json_extract(record,'$.role') IN ('assistant','tool') LIMIT 1",
-                (agent['id'], since - 60, turn_id)).fetchone():
+                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # The guard above accepts only int or float timestamps.
             return None
         if db.execute("SELECT 1 FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
                 "AND json_extract(record,'$.created')>=? AND json_extract(record,'$.turnId')=? LIMIT 1",
-                (agent['id'], since - 60, turn_id)).fetchone():
+                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # The guard above accepts only int or float timestamps.
             return None
     rows, metadata = [], []
     for key in events:
@@ -317,15 +338,15 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
     stage = getattr(runtime, '_stage_event_resources', None)
     if stage is not None:
         stage(db, str(agent['id']))
-    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (
+    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (  # type: ignore[misc]  # Dynamic key access erases selected start-attempt field types.
         'id', 'epoch', 'accountKey', 'threadId', 'connectionId', 'nativeOperationId',
         'events', 'submitted', 'supervisorIdentity')}
     agent.pop('startAttempt', None)
     agent.pop('startOutcomeHold', None)
-    agent.update(inFlight=False, turnId=None)
+    agent.update(inFlight=False, turnId=None)  # type: ignore[call-arg]  # typed-update
     if retry:
         agent.pop('nativeFailureHold', None)
-        agent.update(status='queued', error=None)
+        agent.update(status='queued', error=None)  # type: ignore[call-arg]  # typed-update
     else:
-        agent.update(status='failed', nativeFailureHold=True)
+        agent.update(status='failed', nativeFailureHold=True)  # type: ignore[call-arg]  # typed-update
     return 'retry' if retry else 'held'
