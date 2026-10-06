@@ -31,6 +31,39 @@ UNIX_SOCKET_NAME = "canvas.sock"
 UNIX_SOCKET_MODE = 0o600
 UVICORN_LOG_CONFIG = None
 API_SCHEMA_HASH_START_DELAY_SECONDS = 0.25
+GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 2
+SERVER_THREAD_JOIN_TIMEOUT_SECONDS = GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS + 1
+
+
+class ShutdownAwareApp:
+    """Finish an in-flight response when Uvicorn bounds shutdown draining."""
+
+    def __init__(self, app: ASGIApp, shutdown_requested: threading.Event) -> None:
+        self.app = app
+        self.shutdown_requested = shutdown_requested
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response_started = False
+        response_complete = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started, response_complete
+            if message["type"] == "http.response.start":
+                response_started = True
+            elif message["type"] == "http.response.body" and not message.get("more_body", False):
+                response_complete = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracked_send)
+        except asyncio.CancelledError:
+            if not self.shutdown_requested.is_set():
+                raise
+            if response_started and not response_complete:
+                try:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                except (OSError, RuntimeError):
+                    pass
 
 
 class _StudioUvicornServer(uvicorn.Server):
@@ -127,6 +160,7 @@ class BoundServer:
             proxy_headers=False,
             workers=1,
             timeout_keep_alive=5,
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
             limit_max_requests=None,
         ), context)
         self.server_address = sock.getsockname()
@@ -135,6 +169,7 @@ class BoundServer:
         self.owned_socket_identity = owned_unix
         self._closed = False
         self._lock = threading.Lock()
+        self._serve_thread: threading.Thread | None = None
 
     @property
     def address(self) -> object:
@@ -142,37 +177,58 @@ class BoundServer:
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         del poll_interval  # Uvicorn runs the event loop and polling itself.
+        self._serve_thread = threading.current_thread()
         asyncio.run(self.server.serve(sockets=[self.socket]))
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, force: bool = False) -> None:
         self.server.should_exit = True
+        if force:
+            self.server.force_exit = True
 
     def server_close(self) -> None:
+        serving_thread = self._serve_thread
+        if serving_thread is not None and serving_thread is not threading.current_thread():
+            serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            try:
+            if serving_thread is None or not serving_thread.is_alive():
                 self.socket.close()
-            finally:
-                if self.owned_socket_identity is not None:
-                    socket_path = Path(str(self.server_address))
-                    try:
-                        stat = socket_path.stat()
-                        if (stat.st_dev, stat.st_ino) == self.owned_socket_identity:
-                            socket_path.unlink()
-                    except FileNotFoundError:
-                        pass
+            if self.owned_socket_identity is not None:
+                socket_path = Path(str(self.server_address))
+                try:
+                    stat = socket_path.stat()
+                    if (stat.st_dev, stat.st_ino) == self.owned_socket_identity:
+                        socket_path.unlink()
+                except FileNotFoundError:
+                    pass
 
 
 class CanvasServer(BoundServer):
-    def __init__(self, tcp: BoundServer, unix: BoundServer | None, context: ApiContext) -> None:
+    def __init__(
+        self,
+        tcp: BoundServer,
+        unix: BoundServer | None,
+        context: ApiContext,
+        shutdown_requested: threading.Event,
+    ) -> None:
         self.__dict__.update(tcp.__dict__)
         self.unix_server = unix
         self._tcp = tcp
         self._context = context
+        self._shutdown_requested = shutdown_requested
+
+    def shutdown(self, *, force: bool = False) -> None:
+        self._shutdown_requested.set()
+        self._tcp.shutdown(force=force)
+        if self.unix_server is not None:
+            self.unix_server.shutdown(force=force)
 
     def server_close(self) -> None:
+        serving_thread = self._serve_thread
+        if serving_thread is not None and serving_thread is not threading.current_thread():
+            serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
         if self.unix_server is not None:
             self.unix_server.server_close()
         self._tcp.server_close()
@@ -234,19 +290,22 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
         unix_socket=unix_socket,
         backend_build=codex_backend_identity.BACKEND_BUILD,
     )
-    app = create_app(context)
+    shutdown_requested = threading.Event()
+    app = ShutdownAwareApp(create_app(context), shutdown_requested)
     tcp_socket = _bind_tcp(port)
     context.server_port = int(tcp_socket.getsockname()[1])
     unix_handle: BoundServer | None = None
     try:
         if unix_socket:
             unix_socket_fd, identity = _bind_unix(Path(canvas.root) / UNIX_SOCKET_NAME)
-            unix_handle = BoundServer(unix_socket_fd, UnixScopeApp(app), context, owned_unix=identity)
+            unix_handle = BoundServer(
+                unix_socket_fd, UnixScopeApp(app), context, owned_unix=identity,
+            )
         tcp = BoundServer(tcp_socket, app, context)
         tcp.unix_server = unix_handle
         context.initialize()
         # Hash generation starts in serve_forever after the bound sockets are ready.
-        return CanvasServer(tcp, unix_handle, context)
+        return CanvasServer(tcp, unix_handle, context, shutdown_requested)
     except BaseException:
         if unix_handle is not None:
             unix_handle.server_close()

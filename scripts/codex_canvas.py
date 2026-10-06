@@ -607,14 +607,22 @@ def main():
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
-    def terminate(_signal, _frame):
-        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
-                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, terminate)
     runtime = None
     server = None
     updates = None
+    shutdown_requests = 0
+
+    def terminate(_signal, _frame):
+        nonlocal shutdown_requests
+        shutdown_requests += 1
+        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
+        if server is None:
+            raise KeyboardInterrupt
+        server.shutdown(force=shutdown_requests > 1)
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
     try:
         from codex_runtime import Runtime
         canvas = Canvas()
