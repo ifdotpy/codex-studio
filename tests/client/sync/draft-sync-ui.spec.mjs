@@ -357,8 +357,9 @@ test("Draft sync ui", async ({
     await status.waitFor({ timeout: 18000 });
     assert.equal(
       await status.innerText(),
-      "Draft sync paused. Retrying automatically.",
+      "Draft sync paused. Resumes when reconnected or drafts change.",
     );
+    assert.equal(pushFailures, 0, "only the draft pull has failed");
     assert.ok(
       (await status.boundingBox()).height < 50,
       "failure is a compact status",
