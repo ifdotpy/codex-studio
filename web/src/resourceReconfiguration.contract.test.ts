@@ -183,13 +183,13 @@ async function setup(entitySequence = 0) {
   api.setToken("test-token");
   const events = await import("./sync/resourceEvents");
   const acknowledge = events.acknowledgeEntitySequences;
-  // sync/client.ts is mocked; this is its head listener for response envelopes.
-  window.addEventListener("codex-sync-entities", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    const sequences = (detail.documents as { seq: number }[]).map(
-      (document) => document.seq,
+  // Model the registered persister used by sync/client.ts. The API no longer
+  // sends a window event after POST responses; it awaits this persister.
+  api.registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
+    acknowledge(
+      documents.map((document) => document.seq),
+      targetWorkspaceId,
     );
-    acknowledge(sequences, detail.workspaceId);
   });
   api.setWorkspace(workspaceId);
   const post = () =>
