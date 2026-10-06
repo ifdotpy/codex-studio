@@ -125,7 +125,7 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
         # exact actor snapshot authorizes this response before native I/O.
         # A later Stop still revokes new operations and interrupts the turn.
         with runtime.start_lock:
-            if not server.write_lock.acquire(blocking=False):  # type: ignore[union-attr]  # Server was checked for None before native I/O.
+            if not server.write_lock.acquire(blocking=False):  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
                 continue
             try:
                 # A legacy reply can use a random write identity. Recheck its
@@ -147,7 +147,7 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
                 written = runtime.reply({'id': record['rpcId'], 'result': result}, account, connection,
                                         operation_id=operation_id)
             finally:
-                server.write_lock.release()  # type: ignore[union-attr]  # Server was checked for None before native I/O.
+                server.write_lock.release()  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
         if (not isinstance(written, dict) or written.get('accepted') is not True
                 or written.get('duplicate') is not False):
             # A duplicate proves only prior acceptance. Its stdin outcome can
@@ -198,7 +198,7 @@ def _run(runtime: "Runtime", key: str, account: str) -> None:
     try:
         recover(runtime, key)
     except Exception as error:
-        runtime._tool_response_recovery_error = {'at': time.time(), 'agent': key,  # type: ignore[attr-defined]  # Runtime diagnostic state is intentionally dynamic.
+        runtime._tool_response_recovery_error = {'at': time.time(), 'agent': key,  # type: ignore[attr-defined]  # typed-narrowing: Runtime owns dynamic diagnostic state
                                                  'errorType': type(error).__name__}
     finally:
         with runtime.lock:
