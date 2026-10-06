@@ -85,13 +85,13 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
     if not isinstance(request, str) or not 1 <= len(request) <= 200:
         raise ValueError('A subagent concurrency request id is required')
     with runtime.lock, runtime.db() as db:
-        agent = runtime.checked_actor(db, key)  # type: ignore[no-untyped-call]
+        agent = runtime.checked_actor(db, key)
         if not agent.get('isLead') or agent['rootId'] != key:
             raise ValueError('Change agent mode on the lead chat')
         body = ({'operation': 'subagent_concurrency', 'agent': key, 'concurrency': limit,
                  'expectedRevision': revision} if new_request else
                 {'operation': 'agent_mode', 'agent': key, 'mode': mode, 'expectedRevision': revision})
-        signature, previous = runtime.operation_receipt(db, request, body)  # type: ignore[no-untyped-call]
+        signature, previous = runtime.operation_receipt(db, request, body)
         if previous is not None:
             return mode_fields(agent)
         current = concurrency(agent)
@@ -110,20 +110,20 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         if changed or agent.get('maxAgents') != prior_max_agents:
             runtime.put(db, 'agents', mode_fields(agent))
         canonical = mode_fields(runtime.agent(key, db))
-        runtime.save_receipt(db, request, signature,  # type: ignore[no-untyped-call]
+        runtime.save_receipt(db, request, signature,
                              {'applied': True, 'concurrency': concurrency(canonical),
                               'agentMode': canonical['agentMode'],
                               'agentModeRevision': canonical.get('agentModeRevision', 0)})
         if limit > 0:
             from codex_runtime import git_toplevel
-            repo = git_toplevel(canonical.get('cwd', ''))  # type: ignore[no-untyped-call]
+            repo = git_toplevel(canonical.get('cwd', ''))
             if repo:
-                supported, reason = runtime.image_workspace_support(repo)  # type: ignore[no-untyped-call]
+                supported, reason = runtime.image_workspace_support(repo)
                 if supported:
                     canonical['imageWorkspaceBaseRepo'] = repo
                     runtime.put(db, 'agents', canonical)
                     try:
-                        runtime.start_image_base(repo)  # type: ignore[no-untyped-call]
+                        runtime.start_image_base(repo)
                         canonical.pop('imageWorkspaceBaseError', None)
                     except Exception as error:
                         canonical['imageWorkspaceBaseError'] = str(error)[:1200]
@@ -158,12 +158,12 @@ def tool_mode_context(runtime: "Runtime", actor_id: str, result: dict[str, Any],
         from codex_efficiency import digest, packed
         actor = runtime.agent(actor_id, db)
         root = mode_fields(runtime.agent(actor['rootId'], db))
-        epoch, _, known = runtime.model_known_context(db, actor)  # type: ignore[no-untyped-call]
+        epoch, _, known = runtime.model_known_context(db, actor)
         text = guidance(root)
-        version = digest(text)  # type: ignore[no-untyped-call]
+        version = digest(text)
         db.execute('CREATE TABLE IF NOT EXISTS runtime_model_modes '
                    '(agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version))')
-        identity = digest([epoch, version])  # type: ignore[no-untyped-call]
+        identity = digest([epoch, version])
         row = db.execute('SELECT record FROM runtime_model_modes WHERE agent=? AND request=? AND version=?',
                          (actor_id, key, identity)).fetchone() if key else None
         if row:
@@ -173,7 +173,7 @@ def tool_mode_context(runtime: "Runtime", actor_id: str, result: dict[str, Any],
                       'text': text if known.get('agentMode') != version else None}
             if key and record['text']:
                 db.execute('INSERT INTO runtime_model_modes VALUES (?,?,?,?)',
-                           (actor_id, key, identity, packed(record)))  # type: ignore[no-untyped-call]
+                           (actor_id, key, identity, packed(record)))
         if not record['text']:
             return result
         return {**result, 'contentItems': [*result.get('contentItems', []),

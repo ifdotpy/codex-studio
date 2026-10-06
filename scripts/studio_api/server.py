@@ -74,9 +74,9 @@ def _run_maintenance(context: ApiContext) -> None:
         from codex_execution import maintenance
         from codex_voice import prune_audio
 
-        maintenance(runtime)  # type: ignore[no-untyped-call]
+        maintenance(runtime)
         try:
-            prune_audio(context.canvas.root)  # type: ignore[no-untyped-call]
+            prune_audio(context.canvas.root)
         except OSError as error:
             import sys
 
@@ -227,7 +227,7 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
     """Bind sockets before Runtime construction, then expose the FastAPI app."""
     from codex_remote import RemoteAccess
 
-    remote = cast(RemoteAccessContract, RemoteAccess(canvas.root, public_origin))  # type: ignore[no-untyped-call]
+    remote = cast(RemoteAccessContract, RemoteAccess(canvas.root, public_origin))
     context = ApiContext(
         canvas,
         remote=remote,

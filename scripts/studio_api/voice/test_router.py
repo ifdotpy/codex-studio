@@ -245,7 +245,7 @@ class VoiceRouterTests(unittest.TestCase):
         from codex_voice import VoiceStore
 
         with tempfile.TemporaryDirectory() as directory:
-            store = VoiceStore(SqliteVoiceRuntime(directory))  # type: ignore[no-untyped-call]
+            store = VoiceStore(SqliteVoiceRuntime(directory))
             client = TestClient(app_for(FakeContext(store)))
             body = {
                 "agent": "agent-1",
@@ -279,7 +279,7 @@ class VoiceRouterTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             runtime = SqliteVoiceRuntime(directory)
-            store = VoiceStore(runtime)  # type: ignore[no-untyped-call]
+            store = VoiceStore(runtime)
             with runtime.db() as database:
                 database.execute(
                     "INSERT INTO voice_sessions(id,agent,created) VALUES(?,?,?)",
