@@ -16,6 +16,7 @@ class MessageClock(TypedDict):
 
 class ToolResult(TypedDict, total=False):
     contentItems: NotRequired[list["JsonObject"]]
+    success: NotRequired[bool]
 
 
 def clock_stamp(at: float) -> str:

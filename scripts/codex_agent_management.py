@@ -1287,7 +1287,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             missing = _missing_transferred_history(db, current, rt)
         if missing:
             from codex_account_transfer import transfer_store
-            return transfer_store(rt).recover_empty_transferred_thread(target['id'])  # type: ignore[no-any-return]  # typed-narrowing: transfer returns persisted JSON result
+            return transfer_store(rt).recover_empty_transferred_thread(target['id'])
         from codex_context_repair import recover_unconfirmed_inputs
         input_recovery = recover_unconfirmed_inputs(rt, target['id'])
         if input_recovery.get('status') == 'waiting':

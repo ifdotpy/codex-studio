@@ -9,26 +9,31 @@ import json
 import sqlite3
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from codex_records import AgentRecord, BudgetStateRecord, BudgetWaitRecord
+    from codex_runtime import Runtime
 
 
-def _tokens(value):
+def _tokens(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def budget_init(db):
+def budget_init(db: sqlite3.Connection) -> None:
     # Do not use executescript: it commits the caller's reservation transaction.
     db.execute('CREATE TABLE IF NOT EXISTS runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL)')
     db.execute('CREATE INDEX IF NOT EXISTS runtime_budget_usage_agent ON runtime_budget_usage(agent,kind)')
 
 
-def _accounting(state):
+def _accounting(state: "BudgetStateRecord") -> str:
     provisional = (state['noticeSpent'] > state['before'] + state['after'] or state['faults']
                    or state['ambiguousNotices'])
     return 'provisional' if provisional else 'responseRecords'
 
 
-def _save(db, a, state):
+def _save(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord") -> "BudgetStateRecord":
     state['spent'] = max(state['spent'], state['floor'] + state['after'],
                          state['before'] + state['after'], state['noticeSpent'], state['historicalNotices'])
     db.execute('INSERT INTO runtime_budget VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
@@ -52,11 +57,11 @@ def _save(db, a, state):
     return state
 
 
-def _state(db, a):
+def _state(db: sqlite3.Connection, a: "AgentRecord") -> "BudgetStateRecord":
     budget_init(db)
     row = db.execute('SELECT record FROM runtime_budget WHERE id=?', (a['id'],)).fetchone()
     if row:
-        state = json.loads(row[0])
+        state: "BudgetStateRecord" = json.loads(row[0])
         a['tokensUsed'] = state['spent']
         a['tokenUsageAccounting'] = _accounting(state)
         return state
@@ -70,7 +75,8 @@ def _state(db, a):
     return _save(db, a, state)
 
 
-def _capture(db, a, state, p, at, source):
+def _capture(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord",
+             p: dict[str, Any], at: float, source: str) -> None:
     # A new branch receives old native history, not new provider charges.
     if source != 'live' and at < state['created']:
         return
@@ -84,8 +90,8 @@ def _capture(db, a, state, p, at, source):
         fields = ('inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens')
         values = [last.get(field) for field in fields]
         if all(_tokens(value) is not None for value in values):
-            amount = sum(values)
-    identity = [a['id'], a.get('accountKey', 'default')]
+            amount = sum(values)  # type: ignore[arg-type]  # typed-narrowing: Token guards prove integer summation
+    identity: list[Any] = [a['id'], a.get('accountKey', 'default')]
     if exact:
         # Provider response identity survives a native thread fork.
         identity = [a['id'], 'response', response]
@@ -135,16 +141,17 @@ def _capture(db, a, state, p, at, source):
                 if not response:
                     state['ambiguousNotices'].append(key)
             state['noticeSpent'] += max(0, delta)
-            state.update(counter=counter, thread=thread, noticeAt=at, lastAmount=amount)
+            state.update(counter=counter, thread=thread, noticeAt=at, lastAmount=amount)  # type: ignore[call-arg]  # typed-update
 
 
-def budget_capture(db, a, p, *, at=None, source='live'):
+def budget_capture(db: sqlite3.Connection, a: "AgentRecord", p: dict[str, Any], *,
+                   at: float | None = None, source: str = 'live') -> int:
     state = _state(db, a)
     _capture(db, a, state, p, time.time() if at is None else at, source)
     return _save(db, a, state)['spent']
 
 
-def _coverage(db, a, state):
+def _coverage(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord") -> str | None:
     if state['faults']:
         return ', '.join(state['faults'])
     if state['ambiguousNotices']:
@@ -163,7 +170,7 @@ def _coverage(db, a, state):
             continue
     if schema is None:
         return 'Native usage history is unavailable'
-    key = a['id'] + ':' + a.get('accountKey', 'default') + ':' + a['threadId']
+    key = a['id'] + ':' + a.get('accountKey', 'default') + ':' + a['threadId']  # type: ignore[operator]  # typed-narrowing: Earlier guard confirms thread identity
     row = db.execute(f'SELECT record FROM {schema}.analytics_history WHERE id=?', (key,)).fetchone()
     history = json.loads(row[0]) if row else {}
     if history.get('status') != 'current' or history.get('coverage') == 'partial':
@@ -200,7 +207,8 @@ def _coverage(db, a, state):
     return None
 
 
-def budget_status(runtime, db, agent, *, check_coverage=True):
+def budget_status(runtime: "Runtime", db: sqlite3.Connection, agent: "AgentRecord",
+                  *, check_coverage: bool = True) -> dict[str, Any]:
     root = runtime.agent(agent.get('rootId') or agent['id'], db)
     members = [a for a in runtime.team_agents(db, root['id'], include_deleted=True,
                                               include_id=root['id'])
@@ -217,11 +225,12 @@ def budget_status(runtime, db, agent, *, check_coverage=True):
             if reason:
                 incomplete.append({'agentId': member['id'], 'reason': reason})
     return {'rootId': root['id'], 'tokenBudget': root.get('tokenBudget'), 'tokensUsed': spent,
-            'reached': root.get('tokenBudget') is not None and spent >= root['tokenBudget'],
+            'reached': root.get('tokenBudget') is not None and spent >= root['tokenBudget'],  # type: ignore[operator]  # typed-narrowing: Budget presence guard establishes integer
             'incomplete': incomplete}
 
 
-def budget_admission(runtime, db, agent):
+def budget_admission(runtime: "Runtime", db: sqlite3.Connection,
+                     agent: "AgentRecord") -> dict[str, Any]:
     """Check the team immediately before reservation or native submission."""
     root = runtime.agent(agent.get('rootId') or agent['id'], db)
     if root.get('tokenBudget') is None:
@@ -234,15 +243,15 @@ def budget_admission(runtime, db, agent):
     return status
 
 
-def _budget_error(status, agent, message):
+def _budget_error(status: dict[str, Any], agent: "AgentRecord", message: str) -> ValueError:
     error = ValueError(message)
-    error.budgetAdmission = {**status, 'agentId': agent['id'], 'epoch': agent.get('epoch'),
+    error.budgetAdmission = {**status, 'agentId': agent['id'], 'epoch': agent.get('epoch'),  # type: ignore[attr-defined]  # typed-narrowing: Python exceptions accept dynamic attrs
                              'accountKey': agent.get('accountKey', 'default'), 'threadId': agent.get('threadId'),
                              'attemptId': (agent.get('startAttempt') or {}).get('id')}
     return error
 
 
-def _unsubmitted_budget_attempt(agent, attempt_id):
+def _unsubmitted_budget_attempt(agent: "AgentRecord", attempt_id: str | None) -> bool:
     attempt = agent.get('startAttempt') or {}
     return bool(attempt.get('id') == attempt_id and attempt.get('submitted') is False
                 and not attempt.get('turnId') and not attempt.get('observedTurnId')
@@ -255,7 +264,8 @@ def _unsubmitted_budget_attempt(agent, attempt_id):
                 and attempt.get('threadId') in (None, agent.get('threadId')))
 
 
-def defer_budget_start(runtime, agent_id, attempt_id, error, *, unknown=False):
+def defer_budget_start(runtime: "Runtime", agent_id: str, attempt_id: str,
+                       error: BaseException, *, unknown: bool = False) -> bool:
     """Keep only a proven unsubmitted budget denial available for later dispatch."""
     denial = getattr(error, 'budgetAdmission', None)
     if (unknown or type(error) is not ValueError or not isinstance(denial, dict)
@@ -299,17 +309,18 @@ def defer_budget_start(runtime, agent_id, attempt_id, error, *, unknown=False):
                 'actionIdentity': attempt.get('actionIdentity'), 'error': str(error), 'at': time.time(), 'admission': denial}
         # Preserve the first wait receipt when a callback repeats the same denial.
         previous = agent.get(field) or {}
-        if previous.get('attemptId') == attempt_id:
-            wait['at'] = previous['at']
-        agent[field] = wait
-        agent.update(status='queued', inFlight=False, budgetBlocked=str(error), error=str(error))
+        if previous.get('attemptId') == attempt_id:  # type: ignore[attr-defined]  # typed-narrowing: Wait mapping uses string keys
+            wait['at'] = previous['at']  # type: ignore[index]  # typed-narrowing: Matching attempt retains original timestamp
+        agent[field] = wait  # type: ignore[literal-required]  # typed-narrowing: Field selects declared wait key
+        agent.update(status='queued', inFlight=False, budgetBlocked=str(error), error=str(error))  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'agents', agent)
     runtime.changed.set()
     return True
 
 
-def _retire_budget_wait(runtime, db, agent, field, wait):
-    agent.pop(field, None)
+def _retire_budget_wait(runtime: "Runtime", db: sqlite3.Connection, agent: "AgentRecord",
+                        field: str, wait: "BudgetWaitRecord") -> None:
+    agent.pop(field, None)  # type: ignore[misc]  # typed-narrowing: Field selects declared wait key
     agent['lastBudgetWait'] = {**wait, 'status': 'superseded', 'finishedAt': time.time()}
     if agent.get('budgetBlocked') == wait.get('error'):
         agent.pop('budgetBlocked', None)
@@ -326,14 +337,15 @@ def _retire_budget_wait(runtime, db, agent, field, wait):
     runtime.put(db, 'agents', agent)
 
 
-def claim_budget_wait(runtime, db, agent):
+def claim_budget_wait(runtime: "Runtime", db: sqlite3.Connection,
+                      agent: "AgentRecord") -> dict[str, Any] | None:
     """Claim the same attempt after dispatch checks capacity and budget admission.
 
     Return a turn/action job, or None when no valid wait remains. This helper does
     not submit native work. The normal final admission guard still applies.
     """
     current = runtime.agent(agent['id'], db)
-    agent.clear()
+    agent.clear()  # type: ignore[attr-defined]  # typed-narrowing: Replacing complete mutable record intentionally
     agent.update(current)
     field = 'budgetActionWait' if agent.get('budgetActionWait') else 'budgetStartWait'
     wait = agent.get(field)
@@ -365,16 +377,16 @@ def claim_budget_wait(runtime, db, agent):
                 break
             rows.append(dict(row))
     if not valid:
-        _retire_budget_wait(runtime, db, agent, field, wait)
+        _retire_budget_wait(runtime, db, agent, field, wait)  # type: ignore[arg-type]  # typed-narrowing: Guard confirms stored wait mapping
         return None
     for row in rows:
         db.execute("UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'", (row['id'],))
-    agent.pop(field, None)
-    agent['lastBudgetWait'] = {**wait, 'status': 'resumed', 'finishedAt': time.time()}
+    agent.pop(field, None)  # type: ignore[misc]  # typed-narrowing: Field selects declared wait key
+    agent['lastBudgetWait'] = {**wait, 'status': 'resumed', 'finishedAt': time.time()}  # type: ignore[typeddict-item]  # typed-suspect: Stored wait may omit expected fields.
     if agent.get('budgetBlocked') == wait.get('error'):
         agent.pop('budgetBlocked', None)
     if agent.get('error') == wait.get('error'):
         agent['error'] = None
-    agent.update(status='starting', inFlight=True, turnEpoch=agent['epoch'])
+    agent.update(status='starting', inFlight=True, turnEpoch=agent['epoch'])  # type: ignore[call-arg]  # typed-update
     runtime.put(db, 'agents', agent)
     return {'kind': 'action' if wait.get('action') else 'turn', 'agent': agent, 'attempt': dict(attempt), 'rows': rows}

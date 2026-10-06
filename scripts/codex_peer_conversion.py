@@ -1,6 +1,13 @@
 """User-confirmed conversion of an idle peer lead and its tree into workers."""
 import json
 import time
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Collection
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 from codex_agent_modes import assert_delegation
 from codex_peer_teams import _lead, _members, _teams
@@ -8,11 +15,11 @@ from codex_work import text_field
 
 
 # Root ownership fields follow the schemas in WorkMixin and RulesMixin.
-MOVE_FIELDS = {
+MOVE_FIELDS: dict[str, tuple[str, ...]] = {
     'work': ('rootId',), 'plans': ('rootId',), 'annotations': ('rootId',),
     'complaints': ('leadId',), 'event_meta': ('rootId', 'leadId'), 'rules': ('rootId',),
 }
-INDEXES = {
+INDEXES: dict[str, list[tuple[str, str, str | None]]] = {
     'requests': [('runtime_request_agent_status', "json_extract(record,'$.agent'),json_extract(record,'$.status')", None)],
     'rules': [('runtime_rule_agent_inflight', "json_extract(record,'$.agent'),json_extract(record,'$.inFlight')", None)],
     'workspace_operations': [('runtime_workspace_operation_agent_phase', "json_extract(record,'$.agent'),json_extract(record,'$.phase')", None)],
@@ -33,7 +40,7 @@ for _table, _fields in MOVE_FIELDS.items():
             _expression + ' IS NOT NULL'))
 
 
-def setup_indexes(db):
+def setup_indexes(db: "sqlite3.Connection") -> None:
     """Run once at startup, before user actions and the scheduler."""
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for table, indexes in INDEXES.items():
@@ -44,11 +51,11 @@ def setup_indexes(db):
                        + (' WHERE ' + predicate if predicate else ''))
 
 
-def _marks(ids):
+def _marks(ids: "Collection[str]") -> str:
     return ','.join('?' * len(ids))
 
 
-def busy_query(table, ids):
+def busy_query(table: str, ids: "Collection[str]") -> tuple[str, tuple[str, ...]]:
     predicate = "json_extract(record,'$.agent') IN (" + _marks(ids) + ')'
     predicates = {
         'tasks': "json_extract(record,'$.status') IN ('running','starting','approval')",
@@ -62,15 +69,19 @@ def busy_query(table, ids):
             + ' WHERE ' + predicate + ' AND ' + predicates[table] + ' LIMIT 1', tuple(ids))
 
 
-def move_query(table, source_id):
+def move_query(table: str, source_id: str) -> tuple[str, tuple[str, ...]]:
     return ('SELECT record FROM runtime_' + table + ' WHERE ' + ' OR '.join(
         "json_extract(record,'$." + field + "')=?" for field in MOVE_FIELDS[table]),
         (source_id,) * len(MOVE_FIELDS[table]))
 
 
-def rooms_query(roots, ids, radio=False):
+def rooms_query(
+    roots: "Collection[str]", ids: "Collection[str]", radio: bool = False
+) -> tuple[str, tuple[str, ...]]:
     # Pair rooms use member indexes. Longer saved rooms use a narrow partial
     # index, then check every member so no historical membership is omitted.
+    predicates: list[str]
+    params: list[str]
     predicates, params = [], []
     if roots:
         predicates.append("json_extract(record,'$.rootId') IN (" + _marks(roots) + ')')
@@ -89,11 +100,15 @@ def rooms_query(roots, ids, radio=False):
     return query, tuple(params)
 
 
-def _query_records(db, query):
+def _query_records(
+    db: "sqlite3.Connection", query: tuple[str, tuple[str, ...]]
+) -> list[Any]:
     return [json.loads(row[0]) for row in db.execute(*query)]
 
 
-def _idle(runtime, db, agents, tables):
+def _idle(
+    runtime: "Runtime", db: "sqlite3.Connection", agents: list["AgentRecord"], tables: set[str]
+) -> None:
     ids = {agent['id'] for agent in agents}
     for agent in agents:
         name = agent.get('name') or agent['id']
@@ -135,7 +150,7 @@ def _idle(runtime, db, agents, tables):
             raise ValueError('Finish or stop the shared chat exchange before moving')
 
 
-def convert(runtime, data):
+def convert(runtime: "Runtime", data: Any) -> Any:
     # This action is exposed only by the token/origin-checked user HTTP route.
     # Model tools cannot change another root's ownership.
     allowed = {'action', 'path', 'member', 'target', 'expected_revision', 'request_id'}

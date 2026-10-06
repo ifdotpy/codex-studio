@@ -12,6 +12,7 @@ from codex_records import RecordStore
 
 if TYPE_CHECKING:
     import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
     from collections.abc import Iterable
     from contextlib import AbstractContextManager
     from threading import Event
@@ -204,7 +205,7 @@ class TurnRecoveryRuntime(RecordStore, Protocol):
     closed: bool
     servers: dict[str, TurnRecoveryServer]
     offline_accounts: set[str]
-    recovery_pool: TurnRecoveryExecutor
+    recovery_pool: "ThreadPoolExecutor"
     connection_ids: dict[str, str | None]
     changed: "Event"
     loaded: set[str]
@@ -214,7 +215,7 @@ class TurnRecoveryRuntime(RecordStore, Protocol):
 
     def db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
     def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> "AgentRecord": ...
-    def connection_current(self, account_key: str, connection_id: str | None = None) -> bool: ...
+    def connection_current(self, account_key: str, connection_id: str | None) -> bool: ...
     def start_accepted(self, key: str, attempt: "JsonObject", result: "JsonObject") -> object: ...
     def child_stopped_event(self, db: "sqlite3.Connection", agent: "AgentRecord",
                             status: str, reason: str, event_id: str) -> object: ...

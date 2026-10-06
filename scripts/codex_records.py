@@ -5,6 +5,12 @@ remain separate contracts; known disagreements are checked in
 ``test_codex_records.py``.
 """
 
+# A mixin self Protocol must be satisfiable by Runtime. When a slice adds a
+# table overload to RecordStore, it must add the identical overload to Runtime.
+# A helper receiving the runtime uses the narrowest Protocol covering what it
+# uses (RecordStore for record access alone), and the quoted concrete Runtime
+# only when it needs the full class. This lets helpers accept mixin self too.
+
 from typing import Literal, NotRequired, Protocol, TypedDict, overload
 from typing import TYPE_CHECKING
 
@@ -91,6 +97,21 @@ class StartAttemptRecord(TypedDict):
     responseError: NotRequired[JsonValue]
     retiredEvents: NotRequired[list[JsonValue]]
     reviewTarget: NotRequired[JsonObject]
+
+
+class ClaudePreInputRetryRecord(TypedDict):
+    id: NotRequired[str]
+    epoch: NotRequired[int]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str]
+    connectionId: NotRequired[str | None]
+    nativeOperationId: NotRequired[str]
+    events: NotRequired[list[str]]
+    submitted: NotRequired[bool]
+    supervisorIdentity: NotRequired[SupervisorIdentityRecord | None]
+    turnId: NotRequired[str]
+    outcome: NotRequired[Literal["not_applied"]]
+    retry: NotRequired[bool]
 
 
 class NativeTurnRecord(TypedDict):
@@ -238,7 +259,7 @@ class ContextRepairWaitRecord(TypedDict):
 
 class NativeReleaseRecord(TypedDict):
     id: NotRequired[str]
-    phase: NotRequired[NativeReleasePhaseValue]
+    phase: NotRequired[NativeReleasePhaseValue | None]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     connectionId: NotRequired[str]
@@ -250,12 +271,17 @@ class NativeReleaseRecord(TypedDict):
     error: NotRequired[JsonValue]
     nativeStatus: NotRequired[str]
     resetPending: NotRequired[bool]
-    resetActorEpoch: NotRequired[int]
+    resetReason: NotRequired[str]
+    resetActorEpoch: NotRequired[int | None]
+    resetBy: NotRequired[str | None]
+    resetActorScope: NotRequired[JsonObject | None]
+    inspectionFailures: NotRequired[int]
+    supersededAt: NotRequired[float]
     nextAttemptAt: NotRequired[float]
     inspectionPhase: NotRequired[str]
     inspectionError: NotRequired[JsonValue]
     targetEpoch: NotRequired[int]
-    targetParentId: NotRequired[str]
+    targetParentId: NotRequired[str | None]
     targetRootId: NotRequired[str]
 
 
@@ -317,7 +343,7 @@ class CapacityRetryRecord(TypedDict):
     reason: NotRequired[str | None]
     acceptedTurnId: NotRequired[str]
     claimedAt: NotRequired[float]
-    taskClaims: NotRequired[list[JsonValue]]
+    taskClaims: NotRequired[list[str]]
     attempt: NotRequired[int]
     cause: NotRequired[str]
     cwd: NotRequired[str]
@@ -398,6 +424,8 @@ class AccountSnapshotRecord(TypedDict):
 class RequestQuestionFieldRecord(TypedDict):
     id: NotRequired[str]
     question: NotRequired[str]
+    options: NotRequired[list[JsonValue]]
+    multiSelect: NotRequired[bool]
     isSecret: NotRequired[bool]
     writeOnly: NotRequired[bool]
     format: NotRequired[str]
@@ -408,13 +436,34 @@ class RequestSchemaRecord(TypedDict):
     properties: NotRequired[dict[str, RequestQuestionFieldRecord]]
 
 
-class RequestParamsRecord(TypedDict):
-    mode: NotRequired[str]
-    questions: NotRequired[list[RequestQuestionFieldRecord]]
-    requestedSchema: NotRequired[RequestSchemaRecord]
-    itemId: NotRequired[str]
-    threadId: NotRequired[str]
-    turnId: NotRequired[str]
+class QuestionRequestParamsRecord(TypedDict):
+    questions: list[RequestQuestionFieldRecord]
+
+
+class MonitorApprovalParamsRecord(TypedDict):
+    monitorId: str
+    command: str
+    cwd: str
+
+
+class QuestionRequestRecord(TypedDict):
+    id: str
+    method: Literal["agent/asyncQuestion"]
+    agent: str
+    epoch: int
+    turnId: str | None
+    params: QuestionRequestParamsRecord
+    status: Literal["pending"]
+    createdAt: float
+
+
+class MonitorApprovalRequestRecord(TypedDict):
+    id: str
+    method: Literal["monitor/approve"]
+    agent: str
+    params: MonitorApprovalParamsRecord
+    status: Literal["pending"]
+    createdAt: float
 
 
 class RequestAnswerValuesRecord(TypedDict):
@@ -445,17 +494,17 @@ class RequestAnswerRecord(TypedDict):
 
 class RequestRecord(TypedDict):
     id: NotRequired[str]
-    agent: NotRequired[str]
+    agent: NotRequired[str | None]
     method: NotRequired[str]
     status: NotRequired[str]
     createdAt: NotRequired[float]
-    params: NotRequired[RequestParamsRecord]
+    params: NotRequired[JsonObject]
     accountKey: NotRequired[str]
     connectionId: NotRequired[str]
     epoch: NotRequired[int]
-    turnId: NotRequired[str]
+    turnId: NotRequired[str | None]
     rpcId: NotRequired[str | int]
-    preview: NotRequired[RequestPreviewRecord]
+    preview: NotRequired[JsonValue]
     answerSignature: NotRequired[str]
     answeredAt: NotRequired[float]
     answeredBy: NotRequired[str]
@@ -695,15 +744,24 @@ class NativeSafetyBufferingRecord(TypedDict):
 
 
 class NativeSafetyRetryRecord(TypedDict):
-    id: NotRequired[str]
+    agent: NotRequired[str]
+    id: NotRequired[str | None]
     stage: NotRequired[Literal[
         "turns", "items", "interrupt", "verify_turns", "verify_items", "fork",
         "start", "unknown", "running", "failed", "cancelled",
     ]]
     model: NotRequired[str]
-    turnId: NotRequired[str]
+    turnId: NotRequired[str | None]
+    threadId: NotRequired[str | None]
+    sourceThreadId: NotRequired[str | None]
+    connectionId: NotRequired[str]
+    attemptId: NotRequired[str]
+    input: NotRequired[list[JsonValue]]
+    responses: NotRequired[dict[str, JsonValue]]
+    terminalHold: NotRequired[bool]
     created: NotRequired[float]
     updated: NotRequired[float]
+    finished: NotRequired[float]
     epoch: NotRequired[int]
     accountKey: NotRequired[str]
     error: NotRequired[str | None]
@@ -713,6 +771,25 @@ class NativeSafetyRetryRecord(TypedDict):
     rpcMethod: NotRequired[str]
 
 
+class NativeSafetyRetryViewRecord(TypedDict):
+    id: NotRequired[str | None]
+    stage: NotRequired[Literal[
+        "turns", "items", "interrupt", "verify_turns", "verify_items", "fork",
+        "start", "unknown", "running", "failed", "cancelled",
+    ] | None]
+    model: NotRequired[str | None]
+    turnId: NotRequired[str | None]
+    epoch: NotRequired[int | None]
+    accountKey: NotRequired[str | None]
+    created: NotRequired[float | None]
+    updated: NotRequired[float | None]
+    error: NotRequired[str | None]
+    newThreadId: NotRequired[str | None]
+    acceptedTurnId: NotRequired[str | None]
+    requestId: NotRequired[str | None]
+    rpcMethod: NotRequired[str | None]
+
+
 class NativeTurnErrorRecord(TypedDict):
     turnId: NotRequired[str]
     error: NotRequired[JsonObject | None]
@@ -720,7 +797,16 @@ class NativeTurnErrorRecord(TypedDict):
 
 class NativeThreadBlockRecord(TypedDict):
     threadId: NotRequired[str]
-    error: NotRequired[str]
+    error: NotRequired[JsonObject]
+
+
+class NativeNoticeRecord(TypedDict):
+    id: str
+    accountKey: str
+    connectionId: str
+    message: str
+    details: NotRequired[JsonValue]
+    at: float
 
 
 class ConnectionCheckRecord(TypedDict):
@@ -761,12 +847,27 @@ class BrowserRecoveryRequestRecord(TypedDict):
     id: NotRequired[str]
     method: NotRequired[str]
     params: NotRequired[JsonObject]
+    submittedAt: NotRequired[float]
+    receivedAt: NotRequired[float]
 
 
 class BrowserRecoveryRecord(TypedDict):
+    id: NotRequired[str]
     stage: NotRequired[str]
     at: NotRequired[float]
+    itemId: NotRequired[str]
     turnId: NotRequired[str]
+    threadId: NotRequired[str | None]
+    epoch: NotRequired[int]
+    accountKey: NotRequired[str]
+    connectionId: NotRequired[str | None]
+    reason: NotRequired[str]
+    createdAt: NotRequired[float]
+    verifiedAt: NotRequired[float]
+    verificationItem: NotRequired[str]
+    failedAt: NotRequired[float]
+    startedAt: NotRequired[float]
+    resumedAt: NotRequired[float]
     requestId: NotRequired[str]
     nativeRequest: NotRequired[BrowserRecoveryRequestRecord]
     outcome: NotRequired[str]
@@ -914,6 +1015,23 @@ class BudgetWaitRecord(TypedDict):
     admission: NotRequired[JsonValue]
 
 
+class BudgetStateRecord(TypedDict):
+    cutoff: float
+    floor: int
+    spent: int
+    before: int
+    after: int
+    historicalNotices: int
+    noticeSpent: int
+    counter: int | None
+    thread: str | None
+    noticeAt: int | float
+    created: float
+    lastAmount: int | None
+    ambiguousNotices: list[str]
+    faults: list[str]
+
+
 class CleanedImageWorkspaceRecord(TypedDict):
     repo: NotRequired[str]
     relative: NotRequired[str]
@@ -1050,13 +1168,14 @@ class AgentRecord(TypedDict):
     activityPhase: NotRequired[str]
     nativeStatus: NotRequired[AgentNativeStatusRecord | NativeStatusValue | None]
     nativeSafetyBuffering: NotRequired[NativeSafetyBufferingRecord]
-    nativeSafetyRetry: NotRequired[NativeSafetyRetryRecord]
+    nativeSafetyRetry: NotRequired[NativeSafetyRetryViewRecord]
     nativeTurnError: NotRequired[NativeTurnErrorRecord]
+    nativeThreadBlock: NotRequired[NativeThreadBlockRecord]
     nativeFailureHold: NotRequired[bool | JsonObject]
     nativeLimitErrorAt: NotRequired[float]
     nativeNameSynced: NotRequired[NativeNameSyncedRecord | None]
     nativeNameFailure: NotRequired[NativeNameFailureRecord]
-    nativeRelease: NotRequired[NativeReleaseRecord | None]
+    nativeRelease: NotRequired[NativeReleaseRecord]
     startAttempt: NotRequired[StartAttemptRecord]
     startOutcomeHold: NotRequired[JsonObject]
     restartRecovery: NotRequired[RestartRecoveryRecord]
@@ -1083,12 +1202,12 @@ class AgentRecord(TypedDict):
     capacityRetry: NotRequired[CapacityRetryRecord]
     capacityRetryCount: NotRequired[int]
     usageResume: NotRequired[UsageResumeRecord]
-    budgetBlocked: NotRequired[JsonObject]
+    budgetBlocked: NotRequired[str]
     budgetStartWait: NotRequired[BudgetWaitRecord]
     budgetActionWait: NotRequired[BudgetWaitRecord]
     lastBudgetWait: NotRequired[BudgetWaitRecord]
     claudeInputRequest: NotRequired[JsonObject]
-    claudePreInputRetry: NotRequired[JsonObject]
+    claudePreInputRetry: NotRequired[ClaudePreInputRetryRecord]
     claudeOptions: NotRequired[JsonObject]
     nativeResponseTurn: NotRequired[str]
     nativeToolCatalog: NotRequired[JsonObject]
@@ -1485,6 +1604,8 @@ class RecordStore(Protocol):
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["requests"], *, shared: bool = False) -> list[RequestRecord]: ...
     @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["native_notices"], *, shared: bool = False) -> list[NativeNoticeRecord]: ...
+    @overload
     def records(self, db: "sqlite3.Connection", table: Literal["rules"], *, shared: bool = False) -> list[RuleRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["tool_requests"], *, shared: bool = False) -> list[ToolRequestRecord]: ...
@@ -1510,7 +1631,11 @@ class RecordStore(Protocol):
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
-    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["safety_retries"], record: NativeSafetyRetryRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["native_notices"], record: NativeNoticeRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rules"], record: RuleRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload

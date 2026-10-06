@@ -62,9 +62,15 @@ if TYPE_CHECKING:
         AnnotationRecord,
         CheckpointRecord,
         ComplaintRecord,
+        JsonObject,
         JsonValue,
+        MonitorApprovalRequestRecord,
+        NativeNoticeRecord,
+        NativeSafetyRetryRecord,
         ProjectRecord,
         PlanRecord,
+        RequestQuestionFieldRecord,
+        QuestionRequestRecord,
         RequestRecord,
         RoomRecord,
         RuleRecord,
@@ -2513,6 +2519,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["RequestRecord"]: ...
 
     @overload
+    def records(self, db: sqlite3.Connection, table: Literal["native_notices"], *, shared: bool = False) -> list["NativeNoticeRecord"]: ...
+
+    @overload
     def records(self, db: sqlite3.Connection, table: Literal["rules"], *, shared: bool = False) -> list["RuleRecord"]: ...
 
     @overload
@@ -2916,7 +2925,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
@@ -2925,7 +2940,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
         if table in {"checkpoints", "tool_requests"}:
@@ -3444,7 +3459,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._record_supervisor_restore(account, "not_restored", "account_restore_failed",
                                                 type(error).__name__)
 
-    def connection_current(self, account_key, connection_id):
+    def connection_current(self, account_key: str, connection_id: str | None) -> bool:
         return connection_id is None or (
             self.connection_ids.get(account_key) == connection_id
             and account_key not in self.offline_accounts
@@ -6352,7 +6367,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.enqueue_recovery_event(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
         return event_id
 
-    def permanent_worker_hold(self, db, a, operation_id, transition, reason):
+    def permanent_worker_hold(self, db: sqlite3.Connection, a: "AgentRecord", operation_id: str,
+                              transition: str, reason: str) -> None:
         """Save one lead event when an operation removes automatic continuation."""
         if a.get("isLead") or not a.get("parentId"):
             return None
@@ -6800,7 +6816,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if item.get("questions"):
                         request_id = a["id"] + ":question:" + item["id"]
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
-                            questions = [{"id": str(i), "question": q["title"],
+                            questions: list[RequestQuestionFieldRecord] = [{"id": str(i), "question": q["title"],
                                           "options": [{"label": o} if isinstance(o, str) else o for o in q.get("options") or []],
                                           "multiSelect": bool(q.get("multiSelect", q.get("multi_select", False))),
                                           "isSecret": bool(q.get("isSecret"))}
@@ -7100,7 +7116,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ConnectionError("The native request was not admitted because its account connection ended")
-            p = message.get("params", {})
+            p: JsonObject = message.get("params", {})
             request_thread = p.get("threadId")
             a = self.tool_request_actor(db, request_thread, account_key)
             if a and a.get("deletedAt"):
@@ -7126,7 +7142,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
-                 "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}
+                 "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}  # type: RequestRecord
             if a and native_thread_block(a):
                 r["status"] = "blocked"
                 self.put(db, "requests", r)
@@ -9312,7 +9328,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
             if not row:
                 raise ValueError("Unknown request")
-            r = json.loads(row[0])
+            r: RequestRecord = json.loads(row[0])
             if r.get("answerSignature"):
                 if r["answerSignature"] != answer_signature(data):
                     raise ValueError("This request already has a different answer")
@@ -9331,7 +9347,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a = self.agent(r["agent"], db)
                 if a["epoch"] != r["epoch"] or not a["autoWake"]:
                     raise ValueError("This question belongs to a stopped turn")
-                text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
+                text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])  # type: ignore[call-overload,index,misc,operator,union-attr]  # typed-narrowing: Method determines stored params shape
                 from codex_radio import route_question_answer
                 if not route_question_answer(self, db, r, text):
                     db.commit()

@@ -1472,7 +1472,7 @@ class WorkMixin:
                 raise ValueError('Unknown chat organization field')
             if 'read_state' in data:
                 from codex_chat_read_state import read_state
-                return read_state(self, db, a, data)  # type: ignore[no-any-return]  # typed-suspect: imported reader has no declared result shape
+                return read_state(self, db, a, data)
             if 'project_folder' in data:
                 from codex_project_folders import folder_for
                 if not a.get('isLead') or data.get('project_path') != a.get('cwd'):

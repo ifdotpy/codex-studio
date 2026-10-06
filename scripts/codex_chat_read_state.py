@@ -4,11 +4,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sqlite3
-    from codex_records import AgentRecord, ReadStateRecord
-    from codex_runtime import Runtime
+    from codex_records import AgentRecord, ReadStateRecord, RecordStore
 
 
-def read_state(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+def read_state(runtime: "RecordStore", db: "sqlite3.Connection", agent: "AgentRecord",
                data: dict[str, object]) -> "AgentRecord":
     if set(data) - {'id', 'read_state'}:
         raise ValueError('Change read state separately from other chat settings')
