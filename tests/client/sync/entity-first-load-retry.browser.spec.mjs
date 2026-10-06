@@ -29,7 +29,7 @@ async function createFixture(page, options = {}) {
   const streams = new Set();
   let revision = 1;
   const requests = [];
-  const counts = { identity: 0, stream: 0, pull: 0, legacy: 0 };
+  const counts = { identity: 0, stream: 0, pull: 0 };
   const json = (res, status, value) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(value));
@@ -98,9 +98,6 @@ async function createFixture(page, options = {}) {
             maxSeq: 0,
           });
         }
-      } else if (url.pathname === "/api/state") {
-        counts.legacy++;
-        json(res, 404, { error: "Legacy state route is disabled" });
       } else next();
     },
   });
@@ -181,7 +178,7 @@ async function waitForData(page) {
   );
 }
 
-test("first load reports failure without using /api/state and recovers", async ({
+test("first load reports failure and recovers without a legacy request", async ({
   page,
 }) => {
   test.setTimeout(60_000);
@@ -191,7 +188,6 @@ test("first load reports failure without using /api/state and recovers", async (
       () => window.snapshot?.data === null && Boolean(window.snapshot.error),
     );
     assert.notEqual((await page.getByRole("alert").textContent())?.trim(), "");
-    assert.equal(fixture.counts.legacy, 0);
     assert.equal(
       fixture.requests.some((request) => request.includes("/api/state")),
       false,
@@ -199,7 +195,6 @@ test("first load reports failure without using /api/state and recovers", async (
     fixture.setAvailable(true);
     await waitForData(page);
     await page.waitForFunction(() => window.snapshot.error === "");
-    assert.equal(fixture.counts.legacy, 0);
     assert.equal(
       fixture.requests.some((request) => request.includes("/api/state")),
       false,
@@ -218,7 +213,6 @@ test("retries a first identity failure and then loads the entity projection", as
   try {
     await waitForData(page);
     assert.ok(fixture.counts.identity >= 2);
-    assert.equal(fixture.counts.legacy, 0);
   } finally {
     await fixture.close();
   }
@@ -254,7 +248,6 @@ test("keeps the error visible and bounds retries for a permanent 503", async ({
       fixture.counts.pull <= 10,
       `pull retry count=${fixture.counts.pull}`,
     );
-    assert.equal(fixture.counts.legacy, 0);
   } finally {
     await fixture.close();
   }

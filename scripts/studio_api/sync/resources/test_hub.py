@@ -174,6 +174,43 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(version.entitySequenceReset)
         subscription.close()
 
+    async def test_reset_published_during_subscription_gap_is_in_next_baseline(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        hub = ResourceHub("workspace-state-reset-gap", entity_sequence=12)
+
+        first = hub.subscribe([state], loop=loop)
+        second = hub.subscribe([state], loop=loop)
+        self.assertFalse(first.initial.resourceVersions[0].entitySequenceReset)
+        self.assertFalse(second.initial.resourceVersions[0].entitySequenceReset)
+        first.close()
+        second.close()
+
+        hub.publish_entity_sequence(12, reset=True)
+        reopened_a = hub.subscribe([state], loop=loop, reconnect=True)
+        reopened_b = hub.subscribe([state], loop=loop, reconnect=True)
+
+        for reopened in (reopened_a, reopened_b):
+            self.assertEqual(reopened.initial.reason, "reconnect")
+            self.assertEqual(reopened.initial.resourceVersions[0].revision, 12)
+            self.assertTrue(reopened.initial.resourceVersions[0].entitySequenceReset)
+            reopened.close()
+
+        repeated_baseline_a = hub.subscribe([state], loop=loop, reconnect=True)
+        self.assertTrue(
+            repeated_baseline_a.initial.resourceVersions[0].entitySequenceReset
+        )
+        repeated_baseline_a.close()
+
+        hub.publish_entity_sequence(13, [13])
+        baseline_after_commit = hub.subscribe(
+            [state], loop=loop, reconnect=True
+        )
+        self.assertFalse(
+            baseline_after_commit.initial.resourceVersions[0].entitySequenceReset
+        )
+        baseline_after_commit.close()
+
     async def test_entity_sequence_without_frame_does_not_advance_hub_revision(self) -> None:
         loop = asyncio.get_running_loop()
         state = ResourceRef(StateResource(kind="state"))

@@ -222,6 +222,7 @@ class ResourceHub:
         self._revision = 0
         self._entity_sequence = entity_sequence
         self._published_entity_sequence = entity_sequence
+        self._entity_sequence_reset_pending = False
         self._resource_revisions: dict[ResourceKey, int] = {}
         self._progress_watchdog = progress_watchdog
         self._token_rates = token_rates or TokenRateSnapshot(rates={}, teams={})
@@ -294,6 +295,14 @@ class ResourceHub:
             else:
                 reason = "reconnect" if reconnect else "initial"
                 subscription.initial = self._event(reason, list(keyed.values()))
+                if self._entity_sequence_reset_pending:
+                    for resource, version in zip(
+                        subscription.initial.resources,
+                        subscription.initial.resourceVersions,
+                        strict=True,
+                    ):
+                        if _key(resource)[0] == "state":
+                            version.entitySequenceReset = True
                 if token_rates is not None and not self._token_rates_published:
                     self._token_rates = token_rates
                     self._token_rates_published = True
@@ -348,6 +357,9 @@ class ResourceHub:
             reset = reset or len(committed_sequences) > MAX_ENTITY_SEQUENCE_IDS
             if reset:
                 committed_sequences = []
+                self._entity_sequence_reset_pending = True
+            elif committed_sequences:
+                self._entity_sequence_reset_pending = False
             resource = ResourceRef(StateResource(kind="state"))
             key = _key(resource)
             self._advance_revision()

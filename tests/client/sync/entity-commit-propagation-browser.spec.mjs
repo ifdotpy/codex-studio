@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { spawnFixture, test } from "../playwright.mjs";
+import { readTestState, spawnFixture, test } from "../playwright.mjs";
 
 const timestamp = () => performance.timeOrigin + performance.now();
 
@@ -53,6 +53,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
     );
     fixture.once("exit", () => reject(new Error(log)));
   });
+  const origin = `http://127.0.0.1:${port}`;
   const contexts = [
     await browser.newContext(),
     await browser.newContext(),
@@ -136,7 +137,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           });
         } catch {}
       });
-      await page.goto(`http://127.0.0.1:${port}`);
+      await page.goto(origin);
       await page
         .locator("[data-chat]")
         .filter({ hasText: "Release lead" })
@@ -179,11 +180,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
         "a stream URL was reopened unchanged",
       );
     }
-    const leadId = await pages[0].evaluate(async () => {
-      const response = await fetch("/api/state");
-      const state = await response.json();
-      return state.threads.find((agent) => agent.name === "Release lead").id;
-    });
+    const currentState = await readTestState(origin);
+    const leadId = currentState.threads.find(
+      (agent) => agent.name === "Release lead",
+    ).id;
     const results = [];
     const operations = [
       {
