@@ -9,8 +9,8 @@ The source before this change was `cf5d07c1`.
 - The existing bridge aborted a no-input account probe after 22.369 seconds with the 20-second limit.
 - The same bridge completed the extended probe after 33.268 seconds with the correct account.
 - A fresh process completed the same profile and history probe after 674 milliseconds.
-- Both processes used the same SDK and executable content.
-- A CPU-only probe took 3.590 seconds in the old bridge and 0.096 seconds in the ordinary process.
+- Both processes used the same software development kit (SDK) and executable content.
+- A central processing unit (CPU) probe took 3.590 seconds in the old bridge and 0.096 seconds in the ordinary process.
 - A temporary Interactive LaunchAgent completed the same CPU-only probe after 0.0577 seconds.
 - The live recovery and supervisor jobs reported `spawn type = daemon (3)`.
 - Their saved plists already contained `ProcessType = Interactive`.
@@ -48,7 +48,7 @@ They do not identify the exact kernel limit.
 - Restored turn: `376ad2db-6d4f-4ef7-89bf-6d3d97699c18`, completed without error.
 - Claude confirmed context recovery and then ran Bash and Studio tools.
 - The Studio status call completed in 840.65 milliseconds.
-- Claude sent further work to two existing subagents.
+- Claude sent work to an existing subagent and a message to a peer lead.
 - The agent then entered `waiting` after its completed answer.
 
 All three live Claude bridges kept their processes and active generators.

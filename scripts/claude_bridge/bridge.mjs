@@ -343,11 +343,26 @@ async function permissions(s, turn, name, input, options) {
       isOther: true,
       isSecret: false,
     }));
-    const result = await request(
-      "item/tool/requestUserInput",
-      { threadId: s.id, turnId: turn.id, itemId: options.toolUseID, questions },
-      options.signal,
-    );
+    let result;
+    try {
+      result = await request(
+        "item/tool/requestUserInput",
+        {
+          threadId: s.id,
+          turnId: turn.id,
+          itemId: options.toolUseID,
+          questions,
+        },
+        options.signal,
+      );
+    } catch (error) {
+      if (
+        error.message !==
+        "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
+      )
+        throw error;
+      return { behavior: "deny", message: error.message };
+    }
     const answers = Object.fromEntries(
       questions.map((q) => [
         q.question,
@@ -1251,7 +1266,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 17 },
+      capabilities: { claudeVersion: 18 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
