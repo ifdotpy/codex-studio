@@ -2191,6 +2191,8 @@ export interface components {
       data?: components["schemas"]["RateLimitsDataDto"] | null;
       /** Error */
       error?: string | null;
+      /** Processedat */
+      processedAt?: number | null;
       /** Readat */
       readAt?: number | null;
     };
@@ -8601,6 +8603,8 @@ export interface components {
     };
     /** RuleSnapshotDto */
     RuleSnapshotDto: {
+      /** Activeworkers */
+      activeWorkers?: number | null;
       /** Agent */
       agent?: string | null;
       /** Alerted */
@@ -8625,6 +8629,8 @@ export interface components {
       error?: string | null;
       /** Event */
       event?: string | null;
+      /** Eventtext */
+      eventText?: string | null;
       /** Fileactivityat */
       fileActivityAt?: number | null;
       /** Filegeneration */
@@ -8637,6 +8643,22 @@ export interface components {
       /** Intervalseconds */
       intervalSeconds?: number | null;
       kind?: components["schemas"]["RuleKind"] | null;
+      /** Lastat */
+      lastAt?: number | null;
+      /** Lastevent */
+      lastEvent?: string | null;
+      /** Lastexitcode */
+      lastExitCode?: number | null;
+      /** Lastfinished */
+      lastFinished?: number | null;
+      /** Lastoutput */
+      lastOutput?: string | null;
+      /** Laststallerror */
+      lastStallError?: string | null;
+      /** Laststallexitcode */
+      lastStallExitCode?: number | null;
+      /** Laststallfinished */
+      lastStallFinished?: number | null;
       /** Livenesscommand */
       livenessCommand?: string | null;
       /** Lowsince */
@@ -8652,6 +8674,14 @@ export interface components {
       restartCheck?: components["schemas"]["JsonValue"] | null;
       /** Rootid */
       rootId?: string | null;
+      /** Stall Timeout Seconds */
+      stall_timeout_seconds?: number | null;
+      /** Stalleventkey */
+      stallEventKey?: string | null;
+      /** Stallprobe */
+      stallProbe?: boolean | null;
+      /** Stalltext */
+      stallText?: string | null;
       /** Stalltimeoutseconds */
       stallTimeoutSeconds?: number | null;
       /** Stallwakegeneration */
@@ -8659,6 +8689,8 @@ export interface components {
       status?: components["schemas"]["RuleStatus"] | null;
       /** Text */
       text?: string | null;
+      /** Updated */
+      updated?: number | null;
       /** Wakes */
       wakes?: number | null;
     };
@@ -8666,7 +8698,7 @@ export interface components {
      * RuleStatus
      * @enum {string}
      */
-    RuleStatus: "active" | "paused";
+    RuleStatus: "active" | "paused" | "completed";
     /** RuntimeLockOperation */
     RuntimeLockOperation: {
       /** Callsite */
@@ -9436,8 +9468,9 @@ export interface components {
       nativeNameFailure?:
         | components["schemas"]["SnapshotNativeNameFailureDto"]
         | null;
-      /** Nativenamesynced */
-      nativeNameSynced?: boolean | null;
+      nativeNameSynced?:
+        | components["schemas"]["SnapshotNativeNameSyncedDto"]
+        | null;
       nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
       nativeReview?: components["schemas"]["JsonValue"] | null;
       nativeSafetyBuffering?:
@@ -9578,7 +9611,7 @@ export interface components {
       /** Wave */
       wave?: string | null;
       /** Workerbasebehindmain */
-      workerBaseBehindMain?: boolean | null;
+      workerBaseBehindMain?: number | null;
       /** Workerbasecommit */
       workerBaseCommit?: string | null;
       /** Workerbasemainref */
@@ -9696,6 +9729,15 @@ export interface components {
     };
     /** SnapshotNativeNameIdentityDto */
     SnapshotNativeNameIdentityDto: {
+      /** Accountkey */
+      accountKey: string;
+      /** Name */
+      name: string;
+      /** Threadid */
+      threadId: string;
+    };
+    /** SnapshotNativeNameSyncedDto */
+    SnapshotNativeNameSyncedDto: {
       /** Accountkey */
       accountKey: string;
       /** Name */
@@ -11974,6 +12016,10 @@ export interface components {
     WorkSnapshotDto: {
       /** Agent */
       agent?: string | null;
+      archive?: components["schemas"]["JsonValue"] | null;
+      archiveIntent?: components["schemas"]["JsonValue"] | null;
+      /** Archivepending */
+      archivePending?: boolean | null;
       /** Blockedby */
       blockedBy?: string[] | null;
       /** Created */
@@ -11992,6 +12038,8 @@ export interface components {
       id: string;
       /** Owner */
       owner?: string | null;
+      /** Releases */
+      releases?: components["schemas"]["JsonValue"][] | null;
       /** Results */
       results?: components["schemas"]["WorkResultDto"][] | null;
       /** Rootid */
