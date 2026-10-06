@@ -21,7 +21,7 @@ class DeleteInflightContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-delete-inflight-")
         self.addCleanup(self.temp.cleanup)
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.FakeServer)
-        self.addCleanup(self.runtime.close)
+        self.addCleanup(lambda: self.runtime.close())
 
     def slots(self):
         with self.runtime.read_db() as db:
