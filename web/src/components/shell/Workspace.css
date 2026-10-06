@@ -76,14 +76,12 @@
 }
 .workspace-scope {
   display: flex;
-  align-items: end;
-  gap: 12px;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--line, #292b32);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 .workspace-scope .mantine-NativeSelect-root {
-  width: min(320px, 100%);
+  width: min(220px, 100%);
 }
 .workspace-toolbar {
   display: flex;
@@ -263,7 +261,7 @@ button.workspace-row:hover {
   border-radius: 8px;
   overflow: auto;
   max-height: 66dvh;
-  padding: 8px 0;
+  padding: 0;
 }
 .workspace-diff-line {
   display: flex;
@@ -449,8 +447,8 @@ button.workspace-row:hover {
     font-size: 21px;
   }
   .workspace-scope {
-    align-items: end;
-    flex-wrap: wrap;
+    align-items: center;
+    flex-wrap: nowrap;
   }
   .workspace-facts {
     grid-template-columns: minmax(0, 1fr);
@@ -562,7 +560,7 @@ button.workspace-row:hover {
   font-size: var(--studio-text-meta);
 }
 .workspace-scope .mantine-NativeSelect-root {
-  width: min(260px, 100%);
+  width: min(220px, 100%);
 }
 .workspace-tool summary {
   flex-wrap: wrap;
@@ -576,11 +574,20 @@ button.workspace-row:hover {
 .workspace-diff-line.file-header {
   position: sticky;
   top: 0;
-  z-index: 1;
+  left: 0;
+  z-index: 2;
+  width: 100%;
   background: var(--mantine-color-body);
   color: var(--text);
   font-weight: 600;
-  padding-block: 6px;
+  padding: 8px 12px;
+  gap: 12px;
+}
+.workspace-diff-status {
+  color: var(--muted);
+}
+.workspace-diff-line.patch-metadata {
+  color: var(--muted);
 }
 .workspace-messages .workspace-heading {
   margin-bottom: 0;

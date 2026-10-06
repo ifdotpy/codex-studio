@@ -324,6 +324,39 @@ export function Workspace(props: Props) {
                 <div className="workspace-heading">
                   <div>
                     <PanelHeader title={title} help={descriptions[section]} />
+                    {section !== "messages" && section !== "profiles" && (
+                      <div className="workspace-scope">
+                        <NativeSelect
+                          aria-label="Agent"
+                          size="xs"
+                          value={agentId}
+                          onChange={(e) => setAgentId(e.target.value)}
+                        >
+                          <option value="">Select an agent</option>
+                          {props.data.threads
+                            .filter((a) => a.source === "managed")
+                            .map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.isLead ? "Main agent · " : ""}
+                                {a.name}
+                              </option>
+                            ))}
+                        </NativeSelect>
+                        {selected && (
+                          <Button
+                            variant="subtle"
+                            size="compact-xs"
+                            onClick={() => {
+                              props.onSelect(selected.id);
+                              props.onClose();
+                            }}
+                          >
+                            Open chat <ChevronRight size={14} />
+                          </Button>
+                        )}
+                        {pending > 0 && <Loader size={16} />}
+                      </div>
+                    )}
                   </div>
                   {section === "plan" && (
                     <Button
@@ -371,38 +404,6 @@ export function Workspace(props: Props) {
                   >
                     <RefreshCw size={16} />
                   </Button>
-                </div>
-              )}
-              {section !== "messages" && section !== "profiles" && (
-                <div className="workspace-scope">
-                  <NativeSelect
-                    label="Agent"
-                    value={agentId}
-                    onChange={(e) => setAgentId(e.target.value)}
-                  >
-                    <option value="">Select an agent</option>
-                    {props.data.threads
-                      .filter((a) => a.source === "managed")
-                      .map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.isLead ? "Main agent · " : ""}
-                          {a.name}
-                        </option>
-                      ))}
-                  </NativeSelect>
-                  {selected && (
-                    <Button
-                      variant="subtle"
-                      size="xs"
-                      onClick={() => {
-                        props.onSelect(selected.id);
-                        props.onClose();
-                      }}
-                    >
-                      Open chat <ChevronRight size={14} />
-                    </Button>
-                  )}
-                  {pending > 0 && <Loader size={16} />}
                 </div>
               )}
               {needAgent && !selected ? (
@@ -503,7 +504,16 @@ function Changes(c: Context) {
       const newLine =
         inHunk && !hunk && (text.startsWith("+") || text.startsWith(" "));
       if (newLine) line++;
-      return { text, line, path: current, commentable: !!current && newLine };
+      const headerPath = text.startsWith("diff --git ")
+        ? text.match(/ b\/(.*)$/)?.[1] || text.slice(11)
+        : undefined;
+      return {
+        text,
+        line,
+        path: current,
+        headerPath,
+        commentable: !!current && newLine,
+      };
     });
   return (
     <>
@@ -520,7 +530,7 @@ function Changes(c: Context) {
         <>
           <div className="workspace-toolbar">
             <span className="workspace-muted">
-              {files.length} reported files
+              {files.length} reported {files.length === 1 ? "file" : "files"}
               {report?.reportedAt && <> · {date(report.reportedAt)}</>}
             </span>
           </div>
@@ -551,37 +561,49 @@ function Changes(c: Context) {
             >
               {rows.map((row, index) => (
                 <div
-                  className={`workspace-diff-line ${row.text.startsWith("diff --git ") ? "file-header" : ""} ${row.text.startsWith("+") ? "addition" : row.text.startsWith("-") ? "deletion" : row.text.startsWith("@@") ? "hunk" : ""}`}
+                  className={`workspace-diff-line ${row.headerPath ? "file-header" : !row.commentable && !row.text.startsWith("@@") ? "patch-metadata" : ""} ${row.text.startsWith("+") ? "addition" : row.text.startsWith("-") ? "deletion" : row.text.startsWith("@@") ? "hunk" : ""}`}
                   key={index}
                 >
-                  <button
-                    type="button"
-                    disabled={!row.commentable}
-                    aria-label={
-                      row.commentable
-                        ? `Comment on ${row.path} line ${row.line}`
-                        : undefined
-                    }
-                    title={
-                      row.commentable
-                        ? `Comment on line ${row.line}`
-                        : undefined
-                    }
-                    onClick={() =>
-                      setComment({
-                        path: row.path,
-                        line: row.line,
-                        ...(typeof report?.turnId === "string"
-                          ? { turnId: report.turnId }
-                          : {}),
-                        text: "",
-                        id: crypto.randomUUID(),
-                      })
-                    }
-                  >
-                    {row.commentable ? row.line : ""}
-                  </button>
-                  <code>{row.text || " "}</code>
+                  {row.headerPath ? (
+                    <>
+                      <code className="workspace-diff-status">
+                        {files.find((file) => file.path === row.headerPath)
+                          ?.status || "M"}
+                      </code>
+                      <span>{row.headerPath}</span>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={!row.commentable}
+                        aria-label={
+                          row.commentable
+                            ? `Comment on ${row.path} line ${row.line}`
+                            : undefined
+                        }
+                        title={
+                          row.commentable
+                            ? `Comment on line ${row.line}`
+                            : undefined
+                        }
+                        onClick={() =>
+                          setComment({
+                            path: row.path,
+                            line: row.line,
+                            ...(typeof report?.turnId === "string"
+                              ? { turnId: report.turnId }
+                              : {}),
+                            text: "",
+                            id: crypto.randomUUID(),
+                          })
+                        }
+                      >
+                        {row.commentable ? row.line : ""}
+                      </button>
+                      <code>{row.text || " "}</code>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
