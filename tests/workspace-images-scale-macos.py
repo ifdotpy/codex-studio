@@ -112,16 +112,18 @@ def main():
         first_status_seconds = time.monotonic() - status_start
         print(json.dumps({'phase': 'first-git-status', 'paths': count,
                           'seconds': round(first_status_seconds, 3)}), flush=True)
-        if status:
-            raise AssertionError(f'workspace status was not clean after the user staged a file: {status[:200]}')
-        if (agent_root / 'payload/d000/f000000.txt').read_text() != 'user edited this file\n':
-            raise AssertionError("workspace did not include the user's edit")
         root_event_fired = any(pathlib.Path(value).resolve() == folder
                                for value, _flags, _event_id in event_paths)
         print(json.dumps({'paths': count, 'agentStartSeconds': round(agent_start_seconds, 3),
                           'deltaSeconds': round(sum(delta_seconds), 3),
                           'rootEventFired': root_event_fired,
-                          'firstGitStatusSeconds': round(first_status_seconds, 3)}, sort_keys=True))
+                          'firstGitStatusSeconds': round(first_status_seconds, 3)}, sort_keys=True),
+              flush=True)
+        expected_status = ['M  payload/d000/f000000.txt']
+        if status.splitlines() != expected_status:
+            raise AssertionError(f'unexpected workspace status: {status[:200]}')
+        if (agent_root / 'payload/d000/f000000.txt').read_text() != 'user edited this file\n':
+            raise AssertionError("workspace did not include the user's edit")
     finally:
         try:
             images.remove_workspace(agent_id)
