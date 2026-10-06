@@ -7,11 +7,15 @@ import importlib.util
 import json
 import os
 import runpy
+import socket
 import sys
 from pathlib import Path
 import time
 import unittest
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import codex_api_client
 
 spec = importlib.util.spec_from_file_location('team_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -197,11 +201,19 @@ class TeamChatIsolation(unittest.TestCase):
             for command in (['send', 'other', 'Forbidden'], ['transcript', 'other'], ['list']):
                 with self.subTest(variable=variable, command=command), patch.dict(os.environ, {variable: 'worker'}), \
                         patch.object(sys, 'argv', ['codex-control', *command]), \
-                        patch('urllib.request.urlopen') as network, patch('sys.stderr'):
+                        patch.object(codex_api_client, 'urlopen',
+                                     side_effect=AssertionError('network escape')) as network, \
+                        patch.object(socket, 'create_connection',
+                                     side_effect=AssertionError('socket escape')) as connect, \
+                        patch.object(socket.socket, 'connect',
+                                     side_effect=AssertionError('socket escape')) as socket_connect, \
+                        patch('sys.stderr'):
                     with self.assertRaises(SystemExit) as error:
                         runpy.run_path(str(executable), run_name='__main__')
                     self.assertEqual(error.exception.code, 1)
                     network.assert_not_called()
+                    connect.assert_not_called()
+                    socket_connect.assert_not_called()
 
     def test_reserved_foreign_batch_cannot_reach_native_start(self):
         lead, other = self.lead(), self.lead('Other')

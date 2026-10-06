@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import socket
 import sys
 import unittest
 from unittest.mock import patch
@@ -24,12 +25,18 @@ class ControlRequests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
                 patch.object(sys, "argv", [str(SCRIPT), *arguments]), \
                 patch.object(codex_api_client, "urlopen", side_effect=error, return_value=response) as network, \
+                patch.object(socket, "create_connection",
+                             side_effect=AssertionError("network escape")) as connect, \
+                patch.object(socket.socket, "connect",
+                             side_effect=AssertionError("socket escape")) as socket_connect, \
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
                 status = 0
             except SystemExit as exit_code:
                 status = exit_code.code
+        connect.assert_not_called()
+        socket_connect.assert_not_called()
         return status, output.getvalue(), errors.getvalue(), network.call_args_list
 
     def test_receipts_use_the_current_api_and_exact_encoded_identity(self):

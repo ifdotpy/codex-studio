@@ -182,10 +182,16 @@ class RelayRouteTests(unittest.TestCase):
             return response.json()
 
         with (patch.object(relay_client, "request_json", side_effect=request_json),
-              patch("codex_api_client.request_json", side_effect=request_json)):
+              patch("codex_api_client.request_json", side_effect=request_json),
+              patch.object(socket, "create_connection",
+                           side_effect=AssertionError("relay unit test attempted a network escape")) as connect,
+              patch.object(socket.socket, "connect",
+                           side_effect=AssertionError("relay unit test attempted a socket escape")) as socket_connect):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
+        connect.assert_not_called()
+        socket_connect.assert_not_called()
         self.assertEqual(ack.requestId, "response-loss-id")
         self.assertEqual(body_calls[0], body_calls[1])
         self.assertEqual(self.context.hub._revision, 1)
