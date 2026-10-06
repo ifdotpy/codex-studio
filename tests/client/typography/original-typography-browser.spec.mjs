@@ -165,6 +165,14 @@ test("Original Typography Browser", async ({
     await checkOriginal();
     for (const width of [1440, 1920, 390]) {
       await page.setViewportSize({ width, height: 960 });
+      if (width === 390)
+        await page.waitForFunction(() => {
+          const messages = document.querySelector("#messages .message-content");
+          return (
+            messages instanceof HTMLElement &&
+            messages.getBoundingClientRect().width > 200
+          );
+        });
       const geometry = await page.evaluate(() => {
         const messages = document
           .querySelector("#messages .message-content")
