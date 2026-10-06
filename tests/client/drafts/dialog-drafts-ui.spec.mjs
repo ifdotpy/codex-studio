@@ -27,7 +27,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
   import MessageDate from '/src/components/conversation/transcript/MessageDate.tsx';
   import Requests from '/src/components/questions/Requests.tsx';
   const lead={id:'lead',rootId:'lead',name:'Lead',isLead:true,source:'managed'};
-  const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsResponse:true,created:1};
+  const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsUserResponse:true,created:1};
   const request={id:'question',agent:'lead',method:'item/tool/requestUserInput',params:{questions:[{id:'public',question:'Public answer'},{id:'secret',question:'Private answer',isSecret:true}]}};
   const base={stateDir:'workspace-a',token:'fixture',threads:[lead],runtime:{complaints:[complaint]}};
   function Fixture(){const [show,setShow]=useState(false),[workspace,setWorkspace]=useState('workspace-a');

@@ -1,8 +1,7 @@
 import {
   readTestState,
-  readLegacySnapshotForS2Assertions,
-  syncIdentityFixture,
-  entityPullFixtureForRequest,
+  readFixtureSyncContract,
+  stubEntityState,
   test,
   expect,
   spawnFixture as spawn,
@@ -61,9 +60,7 @@ test("Desktop Notifications Ui", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initialEntityState = await readTestState(origin);
-    let snapshot = await readLegacySnapshotForS2Assertions(origin);
-    snapshot.token = initialEntityState.token;
+    let snapshot = await readTestState(origin);
     const response = await fetch(origin + "/api/leads", {
       method: "POST",
       headers: {
@@ -76,9 +73,7 @@ test("Desktop Notifications Ui", async ({
       }),
     });
     assert.equal(response.ok, true, await response.text());
-    const refreshedEntityState = await readTestState(origin);
-    snapshot = await readLegacySnapshotForS2Assertions(origin);
-    snapshot.token = refreshedEntityState.token;
+    snapshot = await readTestState(origin);
     const lead = snapshot.threads.find((a) => a.name === "Release lead");
     const other = snapshot.threads.find((a) => a.name === "Other project");
     assert.ok(other);
@@ -118,24 +113,20 @@ test("Desktop Notifications Ui", async ({
     );
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const backendIdentity = await (
-      await fetch(`${origin}/api/sync/identity`)
-    ).json();
-    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-    const workspaceId = identityResponse.workspaceId;
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identityResponse }),
-    );
     let reads = 0;
-    await page.route("**/api/sync/pull?*", (route) => {
-      reads++;
-      return route.fulfill({
-        json: {
-          workspaceId,
-          ...entityPullFixtureForRequest(snapshot, route.request().url()),
-        },
-      });
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1"
+      )
+        reads++;
     });
+    const entityStub = await stubEntityState(
+      page,
+      snapshot,
+      await readFixtureSyncContract(origin),
+    );
     await page.goto(origin);
     await page
       .locator("#conversation-title")
@@ -143,7 +134,15 @@ test("Desktop Notifications Ui", async ({
       .waitFor();
     const refresh = async () => {
       const before = reads;
-      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      // Stand-in for the entity commit notification absent on this base.
+      await entityStub.update(snapshot, {
+        origin,
+        token: snapshot.token,
+      });
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("online"));
+      });
       const deadline = Date.now() + 12000;
       while (reads <= before && Date.now() < deadline)
         await page.waitForTimeout(100);

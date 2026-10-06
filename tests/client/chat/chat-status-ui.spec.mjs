@@ -1,6 +1,5 @@
 import {
   readTestState,
-  readLegacySnapshotForS2Assertions,
   syncIdentityFixture,
   entityPullFixtureForRequest,
   legacySnapshotRoute,
@@ -65,9 +64,7 @@ test("chat-status-ui", async ({ browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const entityState = await readTestState(origin);
-    const state = await readLegacySnapshotForS2Assertions(origin);
-    state.token = entityState.token;
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     const worker = (index) =>
@@ -108,7 +105,7 @@ test("chat-status-ui", async ({ browser }) => {
         leadId: lead.id,
         author: lead.id,
         recipient: "user",
-        needsResponse: true,
+        needsUserResponse: true,
         status: "open",
         title: "Inbox item without a question",
         created: 1,
