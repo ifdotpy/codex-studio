@@ -557,11 +557,38 @@ class EmptyTransferRecoveryRecord(TypedDict):
     turnId: NotRequired[str]
 
 
+class WorktreeCleanupErrorRecord(TypedDict):
+    message: str
+    at: float
+    by: str
+    stderr: NotRequired[str]
+    errno: NotRequired[int]
+    returncode: NotRequired[int]
+
+
+class WorktreeRegistrationRepairRecord(TypedDict):
+    gitdir: str
+    gitFile: list[int]
+    rootFile: list[int]
+
+
 class WorktreeCleanupRecord(TypedDict):
     path: NotRequired[str]
     phase: NotRequired[str]
     at: NotRequired[float]
-    error: NotRequired[str]
+    error: NotRequired[str | WorktreeCleanupErrorRecord]
+    root: str
+    repo: str
+    relative: str
+    branch: NotRequired[str | None]
+    head: NotRequired[str | None]
+    identity: list[int | float | str | None]
+    gitFile: NotRequired[list[int]]
+    rootFile: NotRequired[list[int]]
+    missing: NotRequired[bool]
+    registrationRepair: NotRequired[WorktreeRegistrationRepairRecord]
+    bytes: NotRequired[int | None]
+    note: NotRequired[str]
 
 
 class WorkspaceOperationAgentRecord(TypedDict):
@@ -585,10 +612,10 @@ class WorkspaceWaitRecord(TypedDict):
 
 
 class CleanedWorktreeRecord(TypedDict):
-    branch: NotRequired[str]
+    branch: NotRequired[str | None]
     bytes: NotRequired[int | None]
-    head: NotRequired[str]
-    identity: NotRequired[list[JsonValue]]
+    head: NotRequired[str | None]
+    identity: NotRequired[list[int | float | str | None]]
     relative: NotRequired[str]
     repo: NotRequired[str]
     root: NotRequired[str]
@@ -692,6 +719,17 @@ class AgentDraftRecord(TypedDict):
     text: NotRequired[str]
     prefixText: NotRequired[str]
     assets: NotRequired[list[JsonValue]]
+
+
+class AccountHistoryRecord(TypedDict):
+    transferId: NotRequired[str]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str | None]
+    targetAccountKey: NotRequired[str]
+    targetThreadId: NotRequired[str]
+    at: NotRequired[float]
+    targetProvider: NotRequired[str]
+    recoveryId: NotRequired[str]
 
 
 class AgentRecord(TypedDict):
@@ -833,13 +871,13 @@ class AgentRecord(TypedDict):
     checkpointHistoryHead: NotRequired[str]
     restoredCheckpoint: NotRequired[str]
     worktreeCleanup: NotRequired[WorktreeCleanupRecord]
-    cleanedWorktree: NotRequired[CleanedWorktreeRecord]
+    cleanedWorktree: NotRequired[WorktreeCleanupRecord]
     lastWorkspaceWait: NotRequired[WorkspaceWaitRecord]
     workerBaseRef: NotRequired[str | None]
     workerBaseCommit: NotRequired[str | None]
     workerBaseBehindMain: NotRequired[int | None]
     workerBaseMainRef: NotRequired[str | None]
-    accountHistory: NotRequired[list[JsonValue]]
+    accountHistory: NotRequired[list[AccountHistoryRecord]]
     deliveredMode: NotRequired[DeliveredModeRecord]
     agentMode: NotRequired[AgentModeValue]
     agentModeRevision: NotRequired[int]
@@ -871,7 +909,7 @@ class AgentRecord(TypedDict):
     preparedContext: NotRequired[PreparedContextRecord]
     profile: NotRequired[JsonObject | None]
     reviewArchiveAttempts: NotRequired[int]
-    reviewArchiveError: NotRequired[str]
+    reviewArchiveError: NotRequired[str | None]
     reviewArchiveNextAt: NotRequired[float]
     reviewArchiveScheduled: NotRequired[str]
     authResumeAttempt: NotRequired[int]
