@@ -803,11 +803,38 @@ class EmptyTransferRecoveryRecord(TypedDict):
     report: NotRequired[JsonObject]
 
 
+class WorktreeCleanupErrorRecord(TypedDict):
+    message: str
+    at: float
+    by: str
+    stderr: NotRequired[str]
+    errno: NotRequired[int]
+    returncode: NotRequired[int]
+
+
+class WorktreeRegistrationRepairRecord(TypedDict):
+    gitdir: str
+    gitFile: list[int]
+    rootFile: list[int]
+
+
 class WorktreeCleanupRecord(TypedDict):
     path: NotRequired[str]
     phase: NotRequired[str]
     at: NotRequired[float]
-    error: NotRequired[str]
+    error: NotRequired[str | WorktreeCleanupErrorRecord]
+    root: str
+    repo: str
+    relative: str
+    branch: NotRequired[str | None]
+    head: NotRequired[str | None]
+    identity: list[int | float | str | None]
+    gitFile: NotRequired[list[int]]
+    rootFile: NotRequired[list[int]]
+    missing: NotRequired[bool]
+    registrationRepair: NotRequired[WorktreeRegistrationRepairRecord]
+    bytes: NotRequired[int | None]
+    note: NotRequired[str]
 
 
 class WorkspaceOperationAgentRecord(TypedDict):
@@ -831,10 +858,10 @@ class WorkspaceWaitRecord(TypedDict):
 
 
 class CleanedWorktreeRecord(TypedDict):
-    branch: NotRequired[str]
+    branch: NotRequired[str | None]
     bytes: NotRequired[int | None]
-    head: NotRequired[str]
-    identity: NotRequired[list[JsonValue]]
+    head: NotRequired[str | None]
+    identity: NotRequired[list[int | float | str | None]]
     relative: NotRequired[str]
     repo: NotRequired[str]
     root: NotRequired[str]
@@ -846,6 +873,12 @@ class DeliveredModeRecord(TypedDict):
     epoch: NotRequired[list[str | int | None]]
     version: NotRequired[str]
     revision: NotRequired[int]
+    text: NotRequired[str | None]
+
+
+class PreparedContextRecord(TypedDict):
+    epoch: NotRequired[list[str | int | None]]
+    versions: NotRequired[dict[str, str]]
 
 
 class ParkReceiptRecord(TypedDict):
@@ -932,6 +965,25 @@ class AgentDraftRecord(TypedDict):
     text: NotRequired[str]
     prefixText: NotRequired[str]
     assets: NotRequired[list[JsonValue]]
+
+
+class AccountHistoryRecord(TypedDict):
+    transferId: NotRequired[str]
+    contextRepairId: NotRequired[str]
+    toolRefreshId: NotRequired[str]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str | None]
+    targetAccountKey: NotRequired[str]
+    targetThreadId: NotRequired[str]
+    at: NotRequired[float]
+    provider: NotRequired[str | None]
+    targetProvider: NotRequired[str | None]
+    recoveryId: NotRequired[str]
+    reason: NotRequired[str]
+    settingsDiscarded: NotRequired[JsonObject]
+    providerOptionsDiscarded: NotRequired[JsonObject]
+    portableHistory: NotRequired[PortableHistoryRecord]
+    sourceHistoryMissing: NotRequired[JsonObject]
 
 
 class AgentRecord(TypedDict):
@@ -1073,13 +1125,13 @@ class AgentRecord(TypedDict):
     checkpointHistoryHead: NotRequired[str]
     restoredCheckpoint: NotRequired[str]
     worktreeCleanup: NotRequired[WorktreeCleanupRecord]
-    cleanedWorktree: NotRequired[CleanedWorktreeRecord]
+    cleanedWorktree: NotRequired[WorktreeCleanupRecord]
     lastWorkspaceWait: NotRequired[WorkspaceWaitRecord]
     workerBaseRef: NotRequired[str | None]
     workerBaseCommit: NotRequired[str | None]
     workerBaseBehindMain: NotRequired[int | None]
     workerBaseMainRef: NotRequired[str | None]
-    accountHistory: NotRequired[list[JsonValue]]
+    accountHistory: NotRequired[list[AccountHistoryRecord]]
     deliveredMode: NotRequired[DeliveredModeRecord]
     agentMode: NotRequired[AgentModeValue]
     agentModeRevision: NotRequired[int]
@@ -1108,10 +1160,10 @@ class AgentRecord(TypedDict):
     complaintsPresented: NotRequired[list[str]]
     lastEvent: NotRequired[str]
     prepareAttempt: NotRequired[str]
-    preparedContext: NotRequired[JsonObject]
+    preparedContext: NotRequired[PreparedContextRecord]
     profile: NotRequired[JsonObject | None]
     reviewArchiveAttempts: NotRequired[int]
-    reviewArchiveError: NotRequired[str]
+    reviewArchiveError: NotRequired[str | None]
     reviewArchiveNextAt: NotRequired[float]
     reviewArchiveScheduled: NotRequired[str]
     authResumeAttempt: NotRequired[int]
@@ -1133,6 +1185,88 @@ class WorkArchiveRecord(TypedDict):
     worktree: NotRequired[JsonObject]
 
 
+class WorkArchiveIntentRecord(TypedDict):
+    id: str
+    status: Literal["pending", "complete", "terminal"]
+    owner: NotRequired[str | None]
+    attempts: NotRequired[int]
+    created: NotRequired[float]
+    schedulerVersion: NotRequired[int]
+    previousId: NotRequired[str]
+    nextAttemptAt: NotRequired[float]
+    lastOutcome: NotRequired[WorkArchiveRecord]
+    updated: NotRequired[float]
+    outcome: NotRequired[WorkArchiveRecord]
+
+
+class WorkResultRecord(TypedDict):
+    id: str
+    agent: str
+    text: str
+    checks: str
+    revision: str
+    files: list[str]
+    created: float
+    resultFile: NotRequired[str]
+    runId: NotRequired[str]
+    attemptId: NotRequired[str | None]
+
+
+class WorkDecisionRecord(TypedDict):
+    decision: Literal["cancel", "accept", "reject"]
+    reason: str
+    by: str
+    owner: NotRequired[str | None]
+    resultId: NotRequired[str]
+    created: float
+
+
+class PlanRecord(TypedDict):
+    id: str
+    rootId: str
+    text: str
+    version: int
+    updated: float | None
+    steps: list[JsonValue]
+
+
+class AnnotationRecord(TypedDict):
+    id: str
+    agent: str
+    rootId: str
+    path: str
+    line: int
+    text: str
+    created: float
+    turnId: NotRequired[str]
+
+
+class QueueMessageRecord(TypedDict):
+    id: str
+    text: str
+    kind: str
+    status: str
+    error: str | None
+    created: float
+    assets: NotRequired[list[JsonObject]]
+    delivery: NotRequired[str]
+    requestedDelivery: NotRequired[str]
+    acceptedAt: NotRequired[float]
+    metadata: NotRequired[str | None]
+
+
+class QueueSnapshotRecord(TypedDict):
+    items: list[QueueMessageRecord]
+    revision: str
+    capabilities: dict[str, bool]
+
+
+class QueueUpdateResultRecord(TypedDict):
+    status: str
+    revision: str
+    capabilities: dict[str, bool]
+
+
 class WorkRecord(TypedDict):
     id: str
     rootId: str
@@ -1145,11 +1279,16 @@ class WorkRecord(TypedDict):
     createdBy: str
     version: int
     dependencies: list[str]
-    decisions: list[JsonValue]
-    results: list[JsonValue]
+    decisions: list[WorkDecisionRecord]
+    results: list[WorkResultRecord]
     archive: NotRequired[WorkArchiveRecord]
-    archiveIntent: NotRequired[JsonObject]
+    archiveIntent: NotRequired[WorkArchiveIntentRecord]
     releases: NotRequired[list[JsonValue]]
+
+
+class WorkViewRecord(WorkRecord):
+    blockedBy: list[str]
+    displayStatus: WorkStatusValue | Literal["blocked"]
 
 
 class CheckpointRecord(TypedDict):
@@ -1328,6 +1467,10 @@ class RecordStore(Protocol):
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["work"], *, shared: bool = False) -> list[WorkRecord]: ...
     @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["plans"], *, shared: bool = False) -> list[PlanRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["annotations"], *, shared: bool = False) -> list[AnnotationRecord]: ...
+    @overload
     def records(self, db: "sqlite3.Connection", table: Literal["checkpoints"], *, shared: bool = False) -> list[CheckpointRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["complaints"], *, shared: bool = False) -> list[ComplaintRecord]: ...
@@ -1350,6 +1493,10 @@ class RecordStore(Protocol):
     def put(self, db: "sqlite3.Connection", table: Literal["agents"], record: AgentRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["work"], record: WorkRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["plans"], record: PlanRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["annotations"], record: AnnotationRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["checkpoints"], record: CheckpointRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
