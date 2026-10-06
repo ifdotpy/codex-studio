@@ -13,6 +13,7 @@ from studio_api.schema import (
     JSON_VALUE_SCHEMA,
     validate_error_responses,
     validate_contract_schemas,
+    openapi_document,
 )
 
 
@@ -304,6 +305,44 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
         self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
         self.assertIn('Status: "idle" | "running";', generated)
+
+    def test_sync_pull_registers_entity_payload_union_and_all_dtos(self) -> None:
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        entity_names = [name for name in schemas if name.endswith("EntityDto")]
+        self.assertEqual(len(entity_names), 14)
+        payload = schemas["SyncEntityPayload"]
+        assert isinstance(payload, dict)
+        variants = payload["oneOf"]
+        assert isinstance(variants, list)
+        self.assertEqual(len(variants), 14)
+        discriminator = payload["discriminator"]
+        assert isinstance(discriminator, dict)
+        self.assertEqual(discriminator["propertyName"], "collection")
+        mapping = discriminator["mapping"]
+        assert isinstance(mapping, dict)
+        self.assertEqual(len(mapping), 14)
+
+    def test_generator_exports_the_named_sync_entity_payload_union(self) -> None:
+        document = sample_document({"type": "string"})
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        schemas["SyncEntityPayload"] = {
+            "oneOf": [
+                {"$ref": "#/components/schemas/AgentEntityDto"},
+                {"$ref": "#/components/schemas/TaskEntityDto"},
+            ]
+        }
+        generated = render(document)
+        self.assertIn(
+            'export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];',
+            generated,
+        )
 
     def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/ResponseContract"})

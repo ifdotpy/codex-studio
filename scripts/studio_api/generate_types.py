@@ -41,11 +41,14 @@ JSON_VALUE_TS_ALIAS = (
 )
 
 
-def _entity_aliases(names: list[str]) -> str:
-    return "".join(
+def _entity_aliases(names: list[str], include_sync_entity_payload: bool = False) -> str:
+    aliases = "".join(
         f'\nexport type {name} = components["schemas"]["{name}"];'
         for name in names
     )
+    if include_sync_entity_payload:
+        aliases += '\nexport type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];'
+    return aliases
 
 
 def _normalize_recursive_json_value(generated: str) -> str:
@@ -68,6 +71,9 @@ def render(document: dict[str, JsonValue]) -> str:
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    include_sync_entity_payload = isinstance(schemas, dict) and "SyncEntityPayload" in schemas
     cache_root = Path(os.environ.get(CACHE_ROOT_ENV, DEFAULT_CACHE_ROOT))
     temp_root = cache_root / OPENAPI_TEMP_DIRECTORY
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -98,7 +104,9 @@ def render(document: dict[str, JsonValue]) -> str:
     if "export interface components" not in generated and "export type components" not in generated:
         raise ValueError("openapi-typescript output is missing the components export")
     generated = _normalize_recursive_json_value(generated)
-    generated += "\n\n" + JSON_VALUE_TS_ALIAS + _entity_aliases(entities) + "\n"
+    generated += "\n\n" + JSON_VALUE_TS_ALIAS + _entity_aliases(
+        entities, include_sync_entity_payload
+    ) + "\n"
     if not FORMATTER_PATH.is_file():
         raise FileNotFoundError("Run npm ci to install the pinned Oxfmt formatter")
     with tempfile.TemporaryDirectory(prefix="format-", dir=temp_root) as temp_name:
