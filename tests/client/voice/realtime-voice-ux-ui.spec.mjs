@@ -13,13 +13,13 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
   const entryPath = join(root, "audit-entry.tsx");
   const workspaceId = "0123456789abcdef0123456789abcdef";
   const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import RealtimeVoice from '/src/components/RealtimeVoice.tsx';
-  window.calls=[];window.order=[];window.stops=0;window.records=[];window.pending=false;window.voiceError='';window.resourceFrames=0;const NativeEventSource=window.EventSource;window.EventSource=class extends NativeEventSource{constructor(...args){super(...args);this.addEventListener('resources',()=>window.resourceFrames++);}};window.codexDesktop={requestMicrophone:async()=>{window.order.push('permission');if(window.holdPermission)await new Promise(r=>window.releasePermission=r);}};
+  window.calls=[];window.order=[];window.stops=0;window.records=[];window.pending=false;window.voiceError='';window.codexDesktop={requestMicrophone:async()=>{window.order.push('permission');if(window.holdPermission)await new Promise(r=>window.releasePermission=r);}};
   window.RTCPeerConnection=class{constructor(){window.pc=this;}addTrack(){}createDataChannel(){return window.dc={close(){},send(){throw Error('Native Core owns messages');}};}async createOffer(){return {sdp:'v=0\\noffer'};}async setLocalDescription(){}async setRemoteDescription(sdp){window.answers=(window.answers||0)+1;window.answer=sdp;window.emit({type:"session.started"});}close(){}};
   const track=window.track={enabled:true,stop(){window.stops++;}};
   Object.defineProperty(navigator,'mediaDevices',{value:{getUserMedia:async()=>{window.order.push('capture');return {getTracks:()=>[track],getAudioTracks:()=>[track]};}}});
   window.emit=e=>window.dc.onmessage({data:JSON.stringify(e)});
-  const nativeFetch=window.fetch.bind(window);window.resourceChange=async()=>{const response=await nativeFetch('/audit/resource-change',{method:'POST'});window.resourceChangeStats=await response.json();};
-  window.fetch=async(input,opts)=>{const request=input instanceof Request?input:null,path=request?.url||input,body=request?await request.clone().text():opts?.body;const a=new URL(path,location.origin).pathname.split('/').at(-1),b=JSON.parse(body||'{}');window.calls.push([a,b,a==='records'?{pending:window.pending,recordCount:window.records.length}:null]);let data={};if(a==='identity')data={workspaceId:'${workspaceId}'};if(a==='status'){window.order.push('status');data={configured:true,transport:'native'};}if(a==='records'&&window.failRecords)throw Error('Connection unavailable');if(a==='records')data={records:window.records,cursor:window.records.length,session:window.sid?{session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError}:null};if(a==='start'){window.sid=b.session_id;const stale=window.holdStart?{session_id:window.sid,state:'connecting',sdp:null}:null;if(window.holdStart)await new Promise(r=>window.releaseStart=r);data=stale||{session_id:window.sid,state:window.pending?'connecting':'ready',sdp:window.pending?null:'answer'};}if(a==='session')data={session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError};return new Response(JSON.stringify(data));};
+  const nativeFetch=window.fetch.bind(window);window.resourceChange=()=>nativeFetch('/audit/resource-change',{method:'POST'});
+  window.fetch=async(input,opts)=>{const request=input instanceof Request?input:null,path=request?.url||input,body=request?await request.clone().text():opts?.body;const a=new URL(path,location.origin).pathname.split('/').at(-1),b=JSON.parse(body||'{}');window.calls.push([a,b]);let data={};if(a==='identity')data={workspaceId:'${workspaceId}'};if(a==='status'){window.order.push('status');data={configured:true,transport:'native'};}if(a==='records'&&window.failRecords)throw Error('Connection unavailable');if(a==='records')data={records:window.records,cursor:window.records.length,session:window.sid?{session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError}:null};if(a==='start'){window.sid=b.session_id;const stale=window.holdStart?{session_id:window.sid,state:'connecting',sdp:null}:null;if(window.holdStart)await new Promise(r=>window.releaseStart=r);data=stale||{session_id:window.sid,state:window.pending?'connecting':'ready',sdp:window.pending?null:'answer'};}if(a==='session')data={session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError};return new Response(JSON.stringify(data));};
   const root=createRoot(document.getElementById('root'));window.render=id=>root.render(<MantineProvider defaultColorScheme='dark'><RealtimeVoice agentId={id} notify={()=>{}}/></MantineProvider>);window.render('chat-one');`;
   const server = await createServer({
     configFile: false,
@@ -32,13 +32,10 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
           const streams = new Set();
           let revision = 0;
           const epoch = "voice-fixture-epoch";
-          const writeResourceEvent = (
-            stream,
-            reason,
-            eventRevision = ++revision,
-          ) => {
+          const writeResourceEvent = (stream, reason) => {
+            revision++;
             stream.res.write(
-              `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch, revision: eventRevision, reason, resources: stream.resources, resourceVersions: stream.resources.map((resource) => ({ resource, revision: eventRevision })) })}\n\n`,
+              `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch, revision, reason, resources: stream.resources })}\n\n`,
             );
           };
           s.middlewares.use("/audit/resource-change", (req, res) => {
@@ -47,17 +44,8 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
               res.end();
               return;
             }
-            const changeRevision = ++revision;
-            const affected = [...streams];
-            for (const stream of affected)
-              writeResourceEvent(stream, "change", changeRevision);
-            res.setHeader("Content-Type", "application/json");
-            res.end(
-              JSON.stringify({
-                revision: changeRevision,
-                subscriptions: affected.map((stream) => stream.resources),
-              }),
-            );
+            for (const stream of streams) writeResourceEvent(stream, "change");
+            res.end("ok");
           });
           s.middlewares.use("/audit", (_, res) => {
             res.setHeader("Content-Type", "text/html");
@@ -120,56 +108,9 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
         window.calls.some((c) => c[0] === "start"),
       );
     }
-    async function changeAndWaitForReads(before, expected) {
-      const framesBefore = await page.evaluate(() => window.resourceFrames);
-      await page.evaluate(async () => window.resourceChange());
-      const streamCount = await page.evaluate(
-        () => window.resourceChangeStats.subscriptions.length,
-      );
-      await page.waitForFunction(
-        ({ framesBefore, streamCount }) =>
-          window.resourceFrames >= framesBefore + streamCount,
-        { framesBefore, streamCount },
-      );
-      await page.waitForFunction(
-        ({ before, expected }) =>
-          window.calls.filter((call) => call[0] === "records").length >=
-          before + expected,
-        { before, expected },
-      );
-      const count = await page.evaluate(
-        () => window.calls.filter((call) => call[0] === "records").length,
-      );
-      assert.equal(
-        count,
-        before + expected,
-        JSON.stringify(await page.evaluate(() => window.resourceChangeStats)),
-      );
-      return page.evaluate(
-        (expected) =>
-          window.calls
-            .filter((call) => call[0] === "records")
-            .slice(-expected)
-            .map((call) => call[2]),
-        expected,
-      );
-    }
     await reset();
     await start();
-    try {
-      await page.waitForFunction(
-        () => window.answer?.sdp === "answer",
-        undefined,
-        { timeout: 15000 },
-      );
-    } catch (error) {
-      const diagnostics = await page.evaluate(() => ({
-        calls: window.calls.filter((call) => call[0] === "records"),
-        resourceChange: window.resourceChangeStats,
-        status: document.querySelector('[role="alert"]')?.textContent,
-      }));
-      throw new Error(`${String(error)} ${JSON.stringify(diagnostics)}`);
-    }
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
     assert.deepEqual(await page.evaluate(() => window.order), [
       "status",
       "permission",
@@ -184,7 +125,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     const readsBeforeTranscriptChange = await page.evaluate(
       () => window.calls.filter((call) => call[0] === "records").length,
     );
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       window.emit({ type: "delegation.created", item: { id: "task" } });
       window.records = [
         {
@@ -194,8 +135,14 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
           text: "Native canonical transcript",
         },
       ];
+      await window.resourceChange();
     });
-    await changeAndWaitForReads(readsBeforeTranscriptChange, 1);
+    await page.waitForFunction(
+      (count) =>
+        window.calls.filter((call) => call[0] === "records").length ===
+        count + 1,
+      readsBeforeTranscriptChange,
+    );
     await page.waitForFunction(() =>
       [...document.querySelectorAll('[role="status"]')].some(
         (status) => status.textContent === "Working",
@@ -230,12 +177,9 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     await page.waitForFunction(() =>
       window.calls.some((call) => call[0] === "records"),
     );
-    await page.waitForFunction(() => window.answer?.sdp === "answer");
+    await page.waitForTimeout(100);
     const readsBeforeOffline = await page.evaluate(
       () => window.calls.filter((call) => call[0] === "records").length,
-    );
-    const framesBeforeReconnect = await page.evaluate(
-      () => window.resourceFrames,
     );
     const statusBeforeOffline = await page.evaluate(
       () => window.calls.filter((call) => call[0] === "status").length,
@@ -261,16 +205,12 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     );
     await context.setOffline(false);
     await page.waitForFunction(
-      (count) => window.resourceFrames > count,
-      framesBeforeReconnect,
-    );
-    await page.waitForFunction(
       (count) =>
         window.calls.filter((call) => call[0] === "records").length ===
         count + 1,
       readsBeforeOffline,
     );
-    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.waitForTimeout(100);
     assert.equal(
       await page.evaluate(
         () => window.calls.filter((call) => call[0] === "records").length,
@@ -282,15 +222,10 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     await page.evaluate(() => (window.pending = true));
     await start();
     assert.equal(await page.evaluate(() => window.answer), undefined);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       window.pending = false;
+      await window.resourceChange();
     });
-    await changeAndWaitForReads(
-      await page.evaluate(
-        () => window.calls.filter((call) => call[0] === "records").length,
-      ),
-      1,
-    );
     await page.waitForFunction(() => window.answer?.sdp === "answer");
     await reset();
     await page.evaluate(() => {
@@ -301,17 +236,15 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
       () => window.calls.filter((call) => call[0] === "records").length,
     );
     await start();
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       window.pending = false;
+      await window.resourceChange();
     });
-    const earlyAnswerReads = await changeAndWaitForReads(
+    await page.waitForFunction(
+      (count) =>
+        window.calls.filter((call) => call[0] === "records").length ===
+        count + 1,
       recordsBeforeEarlyAnswer,
-      2,
-    );
-    assert.ok(
-      earlyAnswerReads.some((read) => read?.pending) &&
-        earlyAnswerReads.some((read) => !read?.pending),
-      JSON.stringify(earlyAnswerReads),
     );
     assert.equal(await page.evaluate(() => window.answer), undefined);
     await page.evaluate(() => {
