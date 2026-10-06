@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+import uuid
 
 spec = importlib.util.spec_from_file_location(
     'claude_admission_fixture', Path(__file__).with_name('claude-pre-admission-receipt-contract.py'))
@@ -18,6 +19,11 @@ SDK = admission.SDK.replace(
 SDK = SDK.replace(
     "let text=input.value.message.content[0].text;",
     """let text=input.value.message.content[0].text;
+     if(text==='post-admission-queued-account-error'){
+      fs.writeFileSync(options.cwd+'/.queued-error-entered','yes');
+      while(!fs.existsSync(options.cwd+'/.queued-error-release'))await new Promise(resolve=>setTimeout(resolve,5));
+      throw Object.assign(new Error('Account validation after input with a queued steer'),{claudeAccountValidationFailed:true,data:{turnStartOutcome:'not_applied',claudePreparationFailure:'account_validation',claudeAccountFailure:'identity_mismatch'}});
+     }
      if(text==='post-admission-auth-error')throw new Error('Claude Code account or subscription changed. Restore the original login.');
      if(text==='post-admission-structured-account-error')throw Object.assign(new Error('Account validation after input'),{claudeAccountValidationFailed:true,data:{turnStartOutcome:'not_applied',claudePreparationFailure:'account_validation',claudeAccountFailure:'identity_mismatch'}});""")
 
@@ -144,6 +150,35 @@ class AccountAdmission(admission.PreAdmission):
                 count = len(self.admissions())
                 self.assertEqual(self.turn(text, text)['turn']['id'], turn)
                 self.assertEqual(len(self.admissions()), count)
+
+    def queued_steer_cannot_reject_admitted_input(self, steer_id):
+        text, key = 'post-admission-queued-account-error', 'initial-nonuuid'
+        turn = self.turn(text, key)['turn']['id']
+        self.wait_file(self.root / '.queued-error-entered')
+        self.assertEqual(len(self.admissions()), 1)
+        self.call('turn/steer', {'threadId': self.thread, 'expectedTurnId': turn,
+                                'clientUserMessageId': steer_id,
+                                'input': [{'type': 'text', 'text': 'queued steer'}]})
+        (self.root / '.queued-error-release').touch()
+        completed = self.completed()
+        self.assertEqual(completed['status'], 'failed')
+        self.assertNotIn('data', completed['error'])
+        saved = self.history()[0]
+        self.assertEqual(saved['startOutcome'], 'accepted')
+        self.assertEqual([item['id'] for item in saved['items']], [key, steer_id])
+        self.assertEqual(len(self.admissions()), 1)
+        self.restart_bridge()
+        self.assertEqual(self.history()[0]['startOutcome'], 'accepted')
+        self.assertEqual(self.turn(text, key)['turn']['id'], turn)
+        self.assertEqual(len(self.admissions()), 1)
+
+    def test_queued_uuid_alias_steer_cannot_reject_admitted_input(self):
+        alias = str(uuid.uuid5(uuid.UUID('8d95e191-763a-4ee2-a462-7d27f981f138'),
+                               'initial-nonuuid'))
+        self.queued_steer_cannot_reject_admitted_input(alias)
+
+    def test_queued_distinct_steer_cannot_reject_admitted_input(self):
+        self.queued_steer_cannot_reject_admitted_input('11111111-1111-4111-8111-111111111111')
 
     def test_bridge_version_identifies_the_account_receipt_guard(self):
         self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 16)

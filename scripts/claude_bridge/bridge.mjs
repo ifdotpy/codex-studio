@@ -494,6 +494,23 @@ async function flags(s, p = {}, live = false) {
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
+  if (
+    (error?.preparationTimedOut === true ||
+      error?.claudeAccountValidationFailed === true) &&
+    error?.data?.turnStartOutcome === "not_applied" &&
+    turn.items[0]?.type === "userMessage" &&
+    typeof turn.clientUserMessageId === "string" &&
+    turn.clientUserMessageId.length > 0 &&
+    active.input.values.some(
+      (input) =>
+        input.studioInputIdentity === turn.clientUserMessageId &&
+        input.uuid === turn.items[0].nativeId &&
+        input.session_id === (s.nativeId || s.id),
+    )
+  ) {
+    // InputQueue removes the message before yielding it to the SDK.
+    turn.startOutcome = "not_applied";
+  }
   turn.status = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
@@ -1142,16 +1159,6 @@ async function startSession(s, active, p) {
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
-    if (
-      !allowed &&
-      active.turn === initial &&
-      (error?.preparationTimedOut === true ||
-        error?.claudeAccountValidationFailed === true) &&
-      error?.data?.turnStartOutcome === "not_applied"
-    ) {
-      // The prompt gate proves this exact input never reached the SDK.
-      initial.startOutcome = "not_applied";
-    }
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
     allowed = false;
@@ -1199,13 +1206,15 @@ function newActive(turn) {
   return active;
 }
 function userMessage(s, turn, blocks, id) {
-  return {
+  const message = {
     type: "user",
     uuid: nativeUserMessageId(id || turn.id),
     session_id: s.nativeId || s.id,
     parent_tool_use_id: null,
     message: { role: "user", content: blocks },
   };
+  Object.defineProperty(message, "studioInputIdentity", { value: id });
+  return message;
 }
 async function handle(method, p) {
   if (commandMethods.has(method)) return commands.handle(method, p);
