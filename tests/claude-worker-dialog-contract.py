@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Settle a forbidden worker question without a fabricated user answer."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import json

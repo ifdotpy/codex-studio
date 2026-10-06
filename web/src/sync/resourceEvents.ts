@@ -6,6 +6,7 @@ import {
 } from "../generated/apiSchema";
 import {
   clearSchemaUpdateAttemptAfterMatch,
+  get,
   isApiSchemaMismatch,
   matchingApiSchemaResponseGeneration,
   markApiSchemaMismatch,
@@ -143,6 +144,7 @@ let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
 let preHandshakeResponseGeneration: number | undefined;
+let identityProbe: AbortController | undefined;
 let lastEpoch: string | undefined;
 let lastRevision: number | undefined;
 let lastHeartbeatRevision: number | undefined;
@@ -576,6 +578,12 @@ function closeSource() {
   activeQueryKey = "";
 }
 
+function cancelIdentityProbe() {
+  const probe = identityProbe;
+  identityProbe = undefined;
+  probe?.abort();
+}
+
 function retryDelay() {
   const ceiling = Math.min(BASE_RETRY_MS * 2 ** retryCount, MAX_RETRY_MS);
   retryCount++;
@@ -618,6 +626,7 @@ function openSource() {
     ? hasTokenRateInterest()
     : tokenRateListeners.size > 0;
   if (!resources.length && !tokenRates) {
+    cancelIdentityProbe();
     closeSource();
     return;
   }
@@ -699,6 +708,7 @@ function openSource() {
           return;
         }
         schemaHandshakeReceived = true;
+        cancelIdentityProbe();
         preHandshakeFailures = 0;
         preHandshakeResponseGeneration = undefined;
         clearSchemaUpdateAttemptAfterMatch();
@@ -733,6 +743,21 @@ function openSource() {
       }
       requireBaselineReconciliation();
       closeSource();
+      if (!connectionOpened && !identityProbe) {
+        // EventSource hides HTTP rejection details. Check the identity once
+        // to distinguish a server rollback from a temporary network failure.
+        const probe = new AbortController();
+        identityProbe = probe;
+        void get("/api/sync/identity", {
+          timeoutMs: 5_000,
+          cache: "no-store",
+          signal: probe.signal,
+        })
+          .catch(() => {})
+          .finally(() => {
+            if (identityProbe === probe) identityProbe = undefined;
+          });
+      }
       scheduleReconnect();
     };
     if (!heartbeatTimeout) {
@@ -749,6 +774,7 @@ function updateOwnerStream() {
   const tokenRates = hasTokenRateInterest();
   const key = JSON.stringify([resources.map(resourceKey), tokenRates]);
   if (!resources.length && !tokenRates) {
+    cancelIdentityProbe();
     closeSource();
     return;
   }
@@ -860,6 +886,7 @@ function startAsOwner() {
 }
 
 function releaseStream() {
+  cancelIdentityProbe();
   const pendingRequest = ownerRequestController;
   ownerRequestController = undefined;
   ownerRequestPending = false;

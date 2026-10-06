@@ -81,6 +81,60 @@ it("sends the generated schema hash and raises mismatch state from an API respon
   expect(requests).toHaveLength(1);
 });
 
+it("blocks later writes when a rollback returns an identity without a schema hash", async () => {
+  stubBrowser();
+  const fetch = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          workspaceId: "workspace",
+          syncProtocol: 2,
+          chatState: true,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const api = await import("./api");
+  const mismatch = vi.fn();
+  api.onApiSchemaMismatch(mismatch);
+
+  await api.syncGet("/api/sync/identity");
+
+  expect(api.isApiSchemaMismatch()).toBe(true);
+  expect(mismatch).toHaveBeenCalledTimes(1);
+  await expect(
+    api.post("/api/messages", {
+      id: "same-message",
+      room: "chat",
+      text: "hello",
+    }),
+  ).rejects.toMatchObject({ name: "ApiSchemaMismatchError" });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it("accepts the identity when its server schema hash matches", async () => {
+  stubBrowser();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({ workspaceId: "workspace", syncProtocol: 2 }),
+        {
+          headers: {
+            "Content-Type": "application/json",
+            [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
+          },
+        },
+      ),
+  );
+  const api = await import("./api");
+
+  await api.syncGet("/api/sync/identity");
+
+  expect(api.isApiSchemaMismatch()).toBe(false);
+});
+
 it("does not treat an unmarked HTTP 426 as an API schema mismatch", async () => {
   stubBrowser();
   vi.stubGlobal(

@@ -71,3 +71,5 @@ The existing launchd jobs still use their old resource policy.
 The saved Interactive policy applies at the next safe service registration.
 This change does not replace the live supervisor or interrupt its agent pipes.
 Old failed input receipts remain unchanged and are not replayed automatically.
+
+The later [live policy repair](2026-10-06-launchd-policy-live-repair.md) records the current recovery, backend, and supervisor policies.

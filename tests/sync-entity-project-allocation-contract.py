@@ -1,4 +1,7 @@
 """Keep agent projection filtering, nested ownership, and truncation stable."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from pathlib import Path
 import statistics
 import sys
