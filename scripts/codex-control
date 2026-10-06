@@ -4,9 +4,12 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from urllib.error import HTTPError
-from codex_api_client import pull_entities, request_json, session_token
+from codex_api_client import desktop_state_dir, pull_entities, request_json, session_token
 from codex_agent_modes import DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY
+from codex_canvas import identity
+from codex_state import effective_status, read_threads
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
@@ -58,6 +61,45 @@ a = p.parse_args()
 def request(path, data=None, token=''):
     return request_json(a.url, path, data, token)
 
+def wave_agents(state_directory, managed_agents):
+    root = os.fspath(state_directory)
+    if not os.path.isdir(root) or not os.access(root, os.R_OK | os.X_OK):
+        print('codex-control: file-backed wave threads are not available from this machine', file=sys.stderr)
+        return []
+    try:
+        rows = read_threads(Path(root))
+    except OSError:
+        print('codex-control: file-backed wave threads are not available from this machine', file=sys.stderr)
+        return []
+    identities = {
+        row['threadId']: identity(row['wave'], row.get('runId'), row['threadId'], row['name'])
+        for row in rows
+    }
+    identities.update({
+        agent['threadId']: agent['id'] for agent in managed_agents
+        if isinstance(agent.get('threadId'), str) and agent.get('threadId')
+    })
+    result = []
+    for row in rows:
+        parent = row.get('orchestratorId') or row.get('parentId')
+        result.append({
+            'id': identity(row['wave'], row.get('runId'), row['threadId'], row['name']),
+            'name': row['name'],
+            'parent': identities.get(parent, parent),
+            'status': effective_status(row),
+            'model': row.get('model'),
+            'accountKey': row.get('accountKey'),
+            'tokens': row.get('tokensUsed'),
+            '_created': row.get('createdAt', row.get('created')),
+        })
+    return result
+
+def agent_order(agent):
+    created = agent.pop('_created', None)
+    if isinstance(created, (int, float)) and not isinstance(created, bool):
+        return (0, created, str(agent.get('id', '')))
+    return (1, str(created or ''), str(agent.get('id', '')))
+
 try:
     if os.environ.get('CODEX_BOARD_OWNER'):
         raise ValueError('CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.')
@@ -71,8 +113,14 @@ try:
         threads = [entity['value'] for entity in pull_entities(a.url, token)
                    if entity['collection'] == 'agent']
     if a.command == 'list':
-        result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
-                   'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in threads]
+        threads.extend(wave_agents(desktop_state_dir(a.url), threads))
+        result = sorted(
+            [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId', t.get('parent')),
+              'status': t['status'], 'model': t.get('model'), 'accountKey': t.get('accountKey'),
+              'tokens': t.get('tokensUsed', t.get('tokens')),
+              '_created': t.get('createdAt', t.get('created', t.get('_created')))} for t in threads],
+            key=agent_order,
+        )
     elif a.command == 'accounts':
         result = request('/api/accounts')
     elif a.command == 'requests':

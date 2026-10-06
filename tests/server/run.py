@@ -32,7 +32,6 @@ LEGACY_SERVER_JS = {
     "tests/portable-smoke.mjs": "safe",
     "tests/state-contract-smoke.mjs": "safe",
     "tests/swarm-retry-contract.mjs": "expensive",
-    "scripts/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
 OPT_IN = {"native", "live", "expensive", "browser"}
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -80,7 +79,6 @@ EXPENSIVE_SUITES = frozenset({
     "tests/swarm-retry-contract.mjs",
     "scripts/benchmarks/message_delivery/test_benchmark.py",
     "scripts/benchmarks/parallel_agents/test_benchmark.py",
-    "scripts/benchmarks/runtime_load/test_runtime_load.py",
 })
 NON_TESTS = {
     "tests/test_isolation.py": "shared fixture helper",
@@ -102,9 +100,6 @@ NON_TESTS = {
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
     "scripts/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
     "scripts/benchmarks/parallel_agents/benchmark.py": "manual benchmark entrypoint",
-    "scripts/benchmarks/runtime_load/server.py": "load-test fixture server",
-    "scripts/benchmarks/runtime_load/run.mjs": "manual load-test entrypoint",
-    "scripts/benchmarks/runtime_load/http_outcomes.mjs": "load-test helper module",
     "scripts/benchmarks/runtime-read-scopes.py": "manual benchmark entrypoint",
     "scripts/benchmarks/scheduler-full-pass-lock.py": "manual benchmark entrypoint",
     "scripts/benchmarks/scheduler-record-lock.py": "manual benchmark entrypoint",

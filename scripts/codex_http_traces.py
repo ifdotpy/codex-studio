@@ -27,7 +27,7 @@ _ARCHIVE_CHECKED = None
 _STARTED_AT = time.time()
 _UNTRACKED = 0
 # Only these constant routes can identify the global connection error.
-_ROUTES = frozenset(("/api/session", "/api/sync/identity",
+_ROUTES = frozenset(("/api/state", "/api/session", "/api/sync/identity",
                      "/api/sync/pull"))
 
 
@@ -78,7 +78,7 @@ def begin(method, target):
             scope = parse_qs(parsed.query, max_num_fields=32).get("scope", [""])[0]
         except ValueError:
             scope = ""
-        entry["scope"] = (scope if scope in {"state:entities:v1", "drafts"}
+        entry["scope"] = (scope if scope in {"state", "state:chat", "state:entities:v1", "drafts"}
                           else "transcript" if scope.startswith("transcript:") else "unknown")
     with _LOCK:
         if len(_ACTIVE) >= ACTIVE_LIMIT:

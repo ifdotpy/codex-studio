@@ -14,9 +14,9 @@ Its local tests must cover successful delivery and failure reporting.
 - [Message delivery](message_delivery/README.md): how long synthetic agent
   messages take to reach a local HTTP client through sync invalidation and pulls
   or the direct transcript stream, with and without concurrent history import.
-- [Active workers and browser tabs](runtime_load/README.md): a reproducible
-  workload with 256 emulated active workers across eight browser tabs, including
-  agent messages, streamed output, tool events, and UI delivery measurements.
+- The runtime-load benchmark is retired because its check fixture could not run
+  and the harness depended on the legacy `/api/state` snapshot. Its historical
+  measurements remain in `docs/verification/2026-10-01-runtime-latency.md`.
 - [Analytics parser](../analytics/README.md#benchmark): how long it takes to
   translate a batch of journal records. This component-local benchmark stays
   next to the parser it measures.

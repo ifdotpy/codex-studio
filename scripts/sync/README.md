@@ -26,14 +26,7 @@ events are transient invalidations, not durable projection cursors.
 
 ```sh
 python3 -B -m unittest discover -s scripts/sync/tests -v
-python3 -B scripts/sync/benchmarks/benchmark.py --check
-python3 -B scripts/sync/benchmarks/benchmark.py --iterations 300
 ```
 
-The isolated benchmark reports p50/p95/p99 pull latency, serialized payload
-bytes, and snapshot build count for analytics-only churn and real state writes.
-It verifies that analytics-only commits emit no state documents and each UI
-write emits one changed state document. Production invalidation uses SQLite
-`data_version`, so the measured rebuild count includes the effects of unrelated
-commits; it is not a scoped-invalidation benchmark. Results do not represent a
-live database, native session, or production latency guarantee.
+The snapshot benchmark was retired when its callers moved to entity-scoped
+pulls. Historical measurements remain in the dated verification records.

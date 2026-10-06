@@ -12,6 +12,14 @@ DESKTOP_ENDPOINT = "/api/desktop"
 ENTITY_PULL_ENDPOINT = "/api/sync/pull"
 ENTITY_SCOPE = "state:entities:v1"
 ENTITY_PAGE_SIZE = 500
+ENTITY_PULL_MAX_PAGES = 100
+
+
+class StudioHTTPError(ValueError):
+    def __init__(self, message: str, status_code: int, detail: str | None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
 
 
 def request_json(url: str, path: str, data: object = None, token: str = "", *, timeout: float = 90) -> object:
@@ -22,7 +30,10 @@ def request_json(url: str, path: str, data: object = None, token: str = "", *, t
         headers={"Content-Type": "application/json", "X-Canvas-Token": token},
     )
     with urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+        try:
+            return json.loads(response.read())
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ValueError(f"Studio answered with non-JSON for {path}") from error
 
 
 def studio_json(url: str, path: str, token: str = "", *, timeout: float = 90) -> object:
@@ -30,11 +41,15 @@ def studio_json(url: str, path: str, token: str = "", *, timeout: float = 90) ->
     try:
         return request_json(url, path, token=token, timeout=timeout)
     except HTTPError as error:
+        non_json = False
         try:
-            body = json.load(error)
-            detail = body.get("error") if isinstance(body, dict) else None
-        except (ValueError, OSError):
+            body = json.loads(error.read())
+            detail = (body.get("error") or body.get("detail")) if isinstance(body, dict) else None
+        except (UnicodeDecodeError, ValueError, OSError):
             detail = None
+            non_json = True
+        finally:
+            error.close()
         if error.code == 401:
             message = f"Studio rejected the session token for {path} (HTTP {error.code})"
         elif error.code == 403:
@@ -48,7 +63,9 @@ def studio_json(url: str, path: str, token: str = "", *, timeout: float = 90) ->
             message = f"Studio request to {path} failed (HTTP {error.code})"
         if isinstance(detail, str) and detail:
             message += f": {detail}"
-        raise ValueError(message) from error
+        if non_json:
+            message += "; server answered with non-JSON"
+        raise StudioHTTPError(message, error.code, detail if isinstance(detail, str) else None) from error
 
 
 def session_token(url: str, *, timeout: float = 90) -> str:
@@ -72,13 +89,19 @@ def desktop_state_dir(url: str, *, timeout: float = 90) -> str:
 def pull_entities(url: str, token: str = "", *, timeout: float = 90) -> list[dict[str, object]]:
     """Read all entity values using bounded pages from the entity pull scope."""
     after = 0
-    entities: list[dict[str, object]] = []
+    pages = 0
+    latest: dict[tuple[str, str], tuple[int, dict[str, object] | None]] = {}
     while True:
+        if pages >= ENTITY_PULL_MAX_PAGES:
+            raise ValueError(
+                f"Studio entity pull exceeded its {ENTITY_PULL_MAX_PAGES}-page limit "
+                f"at checkpoint {after}"
+            )
         path = f"{ENTITY_PULL_ENDPOINT}?scope={ENTITY_SCOPE}&after={after}&limit={ENTITY_PAGE_SIZE}"
         try:
             response = studio_json(url, path, token, timeout=timeout)
-        except ValueError as error:
-            if "HTTP 400" in str(error):
+        except StudioHTTPError as error:
+            if error.status_code == 400 and error.detail == "Invalid sync scope":
                 raise ValueError(
                     f"Studio does not support the {ENTITY_SCOPE} pull scope; "
                     "the backend may be older than this client"
@@ -95,8 +118,8 @@ def pull_entities(url: str, token: str = "", *, timeout: float = 90) -> list[dic
                 or not isinstance(maximum, int)):
             raise ValueError("Studio entity pull returned an invalid page")
         for document in documents:
-            if not isinstance(document, dict) or document.get("_deleted") is True:
-                continue
+            if not isinstance(document, dict):
+                raise ValueError("Studio entity pull returned an invalid document")
             payload = document.get("payload")
             if not isinstance(payload, str):
                 raise ValueError("Studio entity pull returned an invalid entity payload")
@@ -107,9 +130,19 @@ def pull_entities(url: str, token: str = "", *, timeout: float = 90) -> list[dic
             if (not isinstance(entity, dict) or not isinstance(entity.get("collection"), str)
                     or not isinstance(entity.get("id"), str) or not isinstance(entity.get("value"), dict)):
                 raise ValueError("Studio entity pull returned an invalid entity value")
-            entities.append(entity)
+            document_sequence = document.get("seq")
+            if isinstance(document_sequence, bool) or not isinstance(document_sequence, int):
+                raise ValueError("Studio entity pull returned an invalid document sequence")
+            key = (entity["collection"], entity["id"])
+            previous = latest.get(key)
+            if previous is None or document_sequence >= previous[0]:
+                latest[key] = (
+                    document_sequence,
+                    None if document.get("_deleted") is True else entity,
+                )
+        pages += 1
         if sequence >= maximum:
-            return entities
+            return [entry for _, entry in latest.values() if entry is not None]
         if sequence <= after:
             raise ValueError("Studio entity pull did not advance its checkpoint")
         after = sequence

@@ -77,8 +77,8 @@ class ResourceRelayClient:
             except HTTPError as error:
                 if error.code < 500 and error.code != 429:
                     try:
-                        body = json.loads(error.read())
-                        detail = body.get("error") if isinstance(body, dict) else None
+                        error_body = json.loads(error.read())
+                        detail = error_body.get("error") if isinstance(error_body, dict) else None
                     except (OSError, UnicodeDecodeError, ValueError):
                         detail = None
                     raise NotifyCommittedWriteError(

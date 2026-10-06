@@ -22,7 +22,8 @@ from either bootstrap endpoint means the connected backend may be older than
 this client. After a committed write it
 retries the same notification identity and payload once, after a 100 ms delay,
 on transport errors, HTTP 429, or server errors. The notification path can take
-up to about 15.1 seconds. A final failure is reported as a committed source
+up to about 20.1 seconds, including both five-second bootstrap reads and two
+five-second POST attempts with the retry delay. A final failure is reported as a committed source
 write with an unconfirmed invalidation; callers must not repeat the source
 operation to recover it. The error directs the operator to reconnect the event
 stream, which receives the server's full baseline. No durable command or
