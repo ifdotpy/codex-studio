@@ -61,7 +61,6 @@ type ProjectionSnapshotFields = {
 };
 
 export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };
-export type LegacySnapshot = GetResult<"/api/state">;
 export type FederationPeer = components["schemas"]["FederationPeer"];
 export type FederationRoom = components["schemas"]["FederationRoom"];
 export type FederationSnapshot = components["schemas"]["FederationSnapshot"];

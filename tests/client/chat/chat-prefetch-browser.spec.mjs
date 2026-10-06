@@ -195,7 +195,7 @@ test("Chat prefetch browser", async ({
     );
     await page.evaluate(async () => {
       stops.push(
-        await client.watchProjection(
+        client.subscribeTranscriptProjection(
           "transcript:a",
           (value) => values.push(value),
           () => {},
@@ -472,7 +472,7 @@ test("Chat prefetch browser", async ({
     documents.set("transcript:active", doc("active", 10));
     await second.evaluate(async () => {
       window.activeValues = [];
-      window.stopActive = await client.watchProjection(
+      window.stopActive = client.subscribeTranscriptProjection(
         "transcript:active",
         (value) => activeValues.push(value),
         () => {},
@@ -524,7 +524,7 @@ test("Chat prefetch browser", async ({
         configurable: true,
         value: false,
       });
-      window.stop = await client.watchProjection(
+      window.stop = client.subscribeTranscriptProjection(
         "transcript:race",
         () => {},
         () => {},
