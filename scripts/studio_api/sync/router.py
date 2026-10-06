@@ -198,13 +198,13 @@ def create_router(context: ApiContext) -> APIRouter:
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
         for document in projection.get("documents", []):
             if scope == "state:entities:v1" and not document.get("_deleted"):
-                from codex_sync_entities import validate_entity_payload
+                from codex_sync_entities import response_entity_payload
 
                 payload = document.get("payload")
                 if not isinstance(payload, str):
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
                 try:
-                    validate_entity_payload(payload)
+                    document["payload"], document["_deleted"] = response_entity_payload(payload)
                 except ValidationError:
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
         return context.send(request, {**projection, "generation": store.generation()})

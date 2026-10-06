@@ -215,6 +215,56 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
 
 
 class SyncRouterTests(unittest.TestCase):
+    def test_entity_pull_retires_legacy_agent_alias_and_preserves_canonical_chat(self) -> None:
+        context = ContextStub()
+        legacy = json.dumps({
+            "collection": "agent", "id": "chat-a",
+            "value": {"id": "chat-a", "kind": "chat", "name": "Historical chat", "tail": "reply"},
+        })
+        limits = {"accountKey": "default", "at": 1.0, "processedAt": 2.0}
+        workspace = json.dumps({
+            "collection": "workspace", "id": "current",
+            "value": {"rateLimits": limits, "rateLimitsByAccount": {"default": limits}},
+        })
+        canonical = json.dumps({"collection": "chat", "id": "chat-a", "value": {
+            "id": "chat-a", "kind": "chat", "name": "Canonical chat", "members": ["lead-a"],
+        }})
+        documents = [
+            {"id": "entity:chat:chat-a", "payload": canonical, "seq": 6, "_deleted": False},
+            {"id": "entity:agent:chat-a", "payload": legacy, "seq": 7, "_deleted": False},
+            {"id": "entity:workspace:current", "payload": workspace, "seq": 8, "_deleted": False},
+        ]
+        projection = {"workspaceId": "workspace-a", "documents": documents,
+                      "checkpoint": {"seq": 8}, "maxSeq": 8, "initialHigh": 8}
+        with patch.object(context.store, "pull", return_value=projection):
+            response = make_client(context).get(
+                "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["checkpoint"], {"seq": 8})
+        self.assertEqual(body["documents"][0], documents[0])
+        self.assertEqual(body["documents"][0]["payload"], canonical)
+        row = body["documents"][1]
+        self.assertEqual(row["id"], "entity:agent:chat-a")
+        self.assertEqual(row["seq"], 7)
+        self.assertTrue(row["_deleted"])
+        self.assertEqual(row["payload"], legacy)
+        self.assertEqual(body["documents"][2]["payload"], workspace)
+
+    def test_entity_pull_keeps_invalid_public_data_failure(self) -> None:
+        context = ContextStub()
+        projection = {"workspaceId": "workspace-a", "documents": [{
+            "id": "entity:agent:a", "seq": 1, "_deleted": False,
+            "payload": json.dumps({"collection": "agent", "id": "a", "value": {
+                "id": "a", "kind": "chat", "name": 42,
+            }}),
+        }], "checkpoint": {"seq": 1}, "maxSeq": 1}
+        with patch.object(context.store, "pull", return_value=projection):
+            response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"error": "Invalid sync entity payload"})
+
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))

@@ -685,6 +685,12 @@ class TurnRecoveryDto(ContractModel):
     latestTurnId: str | None = None
 
 
+class SnapshotNativeNameSyncedDto(ContractModel):
+    accountKey: str
+    threadId: str
+    name: str
+
+
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
@@ -719,7 +725,7 @@ class SnapshotAgentDto(AgentEntityDto):
     tokenUsageAccounting: Literal["provisional", "responseRecords"] | None = None
     workerBaseRef: str | None = None
     workerBaseCommit: str | None = None
-    workerBaseBehindMain: bool | None = None
+    workerBaseBehindMain: int | None = None
     workerBaseMainRef: str | None = None
     nativeEffort: str | None = None
     needsTitle: bool | None = None
@@ -729,7 +735,7 @@ class SnapshotAgentDto(AgentEntityDto):
     lastContextRepairCheck: dict[str, JsonValue] | None = None
     lastContextRepairWait: dict[str, JsonValue] | None = None
     connectionRecovery: dict[str, JsonValue] | None = None
-    nativeNameSynced: bool | None = None
+    nativeNameSynced: SnapshotNativeNameSyncedDto | None = None
     capacity: JsonValue | None = None
     transfer: JsonValue | None = None
     accountTransferState: JsonValue | None = None
@@ -1092,6 +1098,7 @@ class RuleKind(ContractStrEnum):
 class RuleStatus(ContractStrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
+    COMPLETED = "completed"
 
 
 class RuleSnapshotDto(RuleEntityDto):
@@ -1122,6 +1129,21 @@ class RuleSnapshotDto(RuleEntityDto):
     alerted: bool | None = None
     error: str | None = None
     restartCheck: JsonValue | None = None
+    lastAt: float | None = None
+    lastExitCode: int | None = None
+    lastOutput: str | None = None
+    lastFinished: float | None = None
+    activeWorkers: int | None = None
+    updated: float | None = None
+    stall_timeout_seconds: int | None = None
+    eventText: str | None = None
+    stallProbe: bool | None = None
+    stallEventKey: str | None = None
+    stallText: str | None = None
+    lastStallFinished: float | None = None
+    lastStallExitCode: int | None = None
+    lastStallError: str | None = None
+    lastEvent: str | None = None
 
 
 class ProjectFolder(ContractModel):
@@ -1227,6 +1249,10 @@ class WorkSnapshotDto(WorkEntityDto):
     createdBy: str | None = None
     blockedBy: list[str] | None = None
     displayStatus: str | None = None
+    archive: JsonValue | None = None
+    archivePending: bool | None = None
+    archiveIntent: JsonValue | None = None
+    releases: list[JsonValue] | None = None
 
 
 class RateLimitWindowDto(ContractModel):
@@ -1266,6 +1292,7 @@ class AccountRateLimitsDto(ContractModel):
     accountKey: str
     at: float | None
     readAt: float | None = None
+    processedAt: float | None = None
     data: RateLimitsDataDto | None = None
     error: str | None = None
 

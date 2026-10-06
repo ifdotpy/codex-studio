@@ -428,14 +428,16 @@ class ApiContext:
             self.resource_hub()
 
     def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
+        from studio_api.sync.projection import project_snapshot
+
         if self.runtime:
             with self.runtime.read_db() as db:
                 runtime_value = self.runtime.snapshot(include_work=include_work, db=db)  # type: ignore[no-untyped-call]
-                return cast(dict[str, JsonValue], {
+                return project_snapshot(cast(dict[str, JsonValue], {
                     **self.canvas.snapshot(runtime_snapshot=runtime_value, db=db),  # type: ignore[no-untyped-call]
                     "runtime": runtime_value,
-                })
-        return cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None})  # type: ignore[no-untyped-call]
+                }))
+        return project_snapshot(cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None}))  # type: ignore[no-untyped-call]
 
     def entity_sequence(self) -> int | None:
         """Read the sync cursor without constructing services or mutating state."""
