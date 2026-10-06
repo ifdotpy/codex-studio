@@ -602,6 +602,20 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
 
     return create_server(canvas, port, public_origin, unix_socket)
 
+
+def _close_shutdown_resources(updates, server, runtime, completed):
+    """Close each backend resource once so cleanup can resume after interruption."""
+    if updates is not None and not completed["updates"]:
+        updates.close()
+        completed["updates"] = True
+    if server is not None and not completed["server"]:
+        server.shutdown()
+        server.server_close()
+        completed["server"] = True
+    if runtime is not None and not completed["runtime"]:
+        runtime.close()
+        completed["runtime"] = True
+
 def main():
     raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
@@ -615,12 +629,19 @@ def main():
     cleanup_started = False
     cleanup_completed = False
     shutdown_prepared = False
+    shutdown_cleanup_pending = False
+    serve_wait_finished = False
+    cleanup_steps = {"updates": False, "server": False, "runtime": False}
     def terminate(_signal, _frame):
-        nonlocal shutdown_requests, shutdown_signal
+        nonlocal shutdown_requests, shutdown_signal, shutdown_cleanup_pending, serve_wait_finished
         shutdown_requests += 1
         shutdown_signal = _signal
-        if shutdown_requests >= 3 and cleanup_started and not cleanup_completed:
-            os.write(2, b"Codex Canvas: cleanup abandoned after third shutdown signal\n")
+        if shutdown_requests >= 3 and (cleanup_started or shutdown_cleanup_pending) and not cleanup_completed:
+            message = (
+                "Codex Canvas: cleanup abandoned after third shutdown signal "
+                f"pid={os.getpid()} signal={_signal} at={time.time():.6f}\n"
+            ).encode("ascii")
+            os.write(2, message)
             signal.signal(_signal, signal.SIG_DFL)
             os.kill(os.getpid(), _signal)
         if cleanup_started:
@@ -631,6 +652,7 @@ def main():
         # During Runtime construction there is no event loop to shut down. Let
         # KeyboardInterrupt unwind construction and reach the normal cleanup.
         if runtime is None:
+            shutdown_cleanup_pending = True
             raise KeyboardInterrupt
         if server is not None:
             # The event loop observes this lock-free flag on its next Uvicorn
@@ -639,7 +661,12 @@ def main():
         # Preserve the established second-signal behavior: interrupt the main
         # wait so its finally block closes resources and Python exits normally.
         if shutdown_requests > 1:
-            raise KeyboardInterrupt
+            shutdown_cleanup_pending = True
+            if not serve_wait_finished:
+                # Set this before raising so a signal at the edge of the outer
+                # finally cannot raise a second KeyboardInterrupt through it.
+                serve_wait_finished = True
+                raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
@@ -660,21 +687,25 @@ def main():
         if not server.shutdown_requested.is_set():
             print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
         if not server.shutdown_requested.is_set():
-            server.serve_forever(poll_interval=0.5)
+            try:
+                server.serve_forever(poll_interval=0.5)
+            finally:
+                serve_wait_finished = True
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
-        cleanup_started = True
-        if updates:
-            updates.close()
-        if server:
-            server.shutdown()
-            server.server_close()
-        if runtime:
-            runtime.close()
-    cleanup_completed = True
+        # The retry loop is inside the finally so a KeyboardInterrupt injected
+        # before the first close step is caught and cleanup is entered again.
+        # Per-resource completion flags make completed steps idempotent.
+        while not cleanup_completed:
+            try:
+                cleanup_started = True
+                _close_shutdown_resources(updates, server, runtime, cleanup_steps)
+                cleanup_completed = True
+            except KeyboardInterrupt:
+                continue
     if shutdown_requests:
         print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
                           "signal": shutdown_signal, "at": time.time(),

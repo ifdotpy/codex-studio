@@ -39,26 +39,29 @@ class ShutdownEvent:
     """A shutdown flag that can wake stream generators on each server loop."""
 
     def __init__(self) -> None:
-        # These fields use copy-on-write snapshots so set() is safe when called
-        # by a Python signal handler interrupting async_event() on this thread.
+        # Signal handlers only write _requested directly; they never take this
+        # lock. Other callers synchronize registration with listener delivery.
         self._requested = False
         self._notified = False
         self._async_events: tuple[
             tuple[asyncio.AbstractEventLoop, asyncio.Event], ...
         ] = ()
+        self._lock = threading.Lock()
 
     def is_set(self) -> bool:
         return self._requested
 
     def async_event(self) -> asyncio.Event:
         loop = asyncio.get_running_loop()
-        listeners = self._async_events
-        event = next((candidate for registered_loop, candidate in listeners
-                      if registered_loop is loop), None)
-        if event is None:
-            event = asyncio.Event()
-            self._async_events = (*listeners, (loop, event))
-        if self._requested:
+        with self._lock:
+            listeners = self._async_events
+            event = next((candidate for registered_loop, candidate in listeners
+                          if registered_loop is loop), None)
+            if event is None:
+                event = asyncio.Event()
+                self._async_events = (*listeners, (loop, event))
+            requested = self._requested or self._notified
+        if requested:
             event.set()
         return event
 
@@ -67,10 +70,11 @@ class ShutdownEvent:
         self.notify_listeners()
 
     def notify_listeners(self) -> None:
-        if self._notified:
-            return
-        self._notified = True
-        listeners = self._async_events
+        with self._lock:
+            if self._notified:
+                return
+            self._notified = True
+            listeners = self._async_events
         for loop, event in listeners:
             try:
                 loop.call_soon_threadsafe(event.set)
@@ -79,7 +83,7 @@ class ShutdownEvent:
 
 
 class ShutdownAwareApp:
-    """Finish an in-flight response when Uvicorn bounds shutdown draining."""
+    """End event streams cleanly and abort other responses on forced drain."""
 
     def __init__(self, app: ASGIApp, shutdown_requested: ShutdownEvent) -> None:
         self.app = app
@@ -88,11 +92,21 @@ class ShutdownAwareApp:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         response_started = False
         response_complete = False
+        event_stream = False
 
         async def tracked_send(message: Message) -> None:
-            nonlocal response_started, response_complete
+            nonlocal response_started, response_complete, event_stream
             if message["type"] == "http.response.start":
                 response_started = True
+                content_type = next(
+                    (value for name, value in message.get("headers", ())
+                     if name.lower() == b"content-type"),
+                    b"",
+                )
+                event_stream = (
+                    content_type.split(b";", 1)[0].strip().lower()
+                    == b"text/event-stream"
+                )
             elif message["type"] == "http.response.body" and not message.get("more_body", False):
                 response_complete = True
             await send(message)
@@ -106,11 +120,14 @@ class ShutdownAwareApp:
         except asyncio.CancelledError:
             if not self.shutdown_requested.is_set():
                 raise
-            if response_started and not response_complete:
+            if event_stream and response_started and not response_complete:
                 try:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
                 except (OSError, RuntimeError):
                     pass
+            # For all other responses, returning without the final body makes
+            # Uvicorn close the transport. This preserves an observable client
+            # error for truncated downloads without a protocol traceback.
 
 
 class _StudioUvicornServer(uvicorn.Server):

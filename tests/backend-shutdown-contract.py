@@ -37,6 +37,7 @@ class BackendShutdownContract(unittest.TestCase):
         startup_delay: float = 0,
         updates_delay: float = 0,
         cleanup_delay: float = 0,
+        interrupt_cleanup_before_step: bool = False,
     ) -> tuple[subprocess.Popen[str], Path]:
         env = os.environ.copy()
         for key, leaf in (
@@ -101,6 +102,18 @@ def fixture_runtime_close(self):
         time.sleep({cleanup_delay!r})
     return original_runtime_close(self)
 Runtime.close = fixture_runtime_close
+if {interrupt_cleanup_before_step!r}:
+    import codex_canvas
+    original_cleanup = codex_canvas._close_shutdown_resources
+    cleanup_calls = 0
+    def interrupt_before_cleanup_step(*args, **kwargs):
+        global cleanup_calls
+        if cleanup_calls == 0:
+            cleanup_calls += 1
+            Path({str(marker)!r}).write_text('cleanup interrupted before first step')
+            raise KeyboardInterrupt
+        return original_cleanup(*args, **kwargs)
+    codex_canvas._close_shutdown_resources = interrupt_before_cleanup_step
 sys.argv = [{str(ROOT / 'scripts/codex-canvas')!r}, '--port', {str(port)!r}]
 from codex_canvas import main
 main()
@@ -138,7 +151,8 @@ main()
                 return output
             if process.poll() is not None:
                 break
-        self.fail(f"backend did not announce its ready port: {output}")
+        stderr = process.stderr.read() if process.poll() is not None and process.stderr else ""
+        self.fail(f"backend did not announce its ready port: {output}\nstderr: {stderr}")
 
     def open_streams(self, port: int, count: int, *, read_initial: bool = True):
         connections = []
@@ -166,7 +180,10 @@ main()
             if marker.exists():
                 return
             if process.poll() is not None:
-                raise AssertionError(f"backend exited before reaching marker: {process.returncode}")
+                stderr = process.stderr.read() if process.stderr else ""
+                raise AssertionError(
+                    f"backend exited before reaching marker: {process.returncode}\nstderr: {stderr}"
+                )
             time.sleep(0.01)
         raise AssertionError(f"backend did not reach marker: {marker}")
 
@@ -181,6 +198,7 @@ main()
         startup_delay: float = 0,
         updates_delay: float = 0,
         cleanup_delay: float = 0,
+        interrupt_cleanup_before_step: bool = False,
         first_signal: int = signal.SIGTERM,
     ) -> tuple[float, int, str, str]:
         with tempfile.TemporaryDirectory(prefix="backend-shutdown-") as directory:
@@ -190,6 +208,7 @@ main()
                 root, port, handler_delay=handler_delay, startup_delay=startup_delay,
                 updates_delay=updates_delay,
                 cleanup_delay=cleanup_delay,
+                interrupt_cleanup_before_step=interrupt_cleanup_before_step,
             )
             streams = []
             request_thread: threading.Thread | None = None
@@ -294,6 +313,8 @@ main()
                             ("shutdown-test:chat",),
                         ).fetchone()[0]
                     self.assertEqual(row_count, 0 if second_signal_delay is not None else 1)
+                if interrupt_cleanup_before_step:
+                    self.assertEqual(marker.read_text(), "cleanup interrupted before first step")
                 restart_capture = None
                 if not startup_delay:
                     with sqlite3.connect(database) as db:
@@ -386,8 +407,12 @@ main()
         elapsed, _, _, _ = self.run_shutdown(handler_delay=30)
         self.assertGreaterEqual(elapsed, 29)
 
-    def test_first_signal_during_runtime_construction_does_not_announce_url(self):
-        self.run_shutdown(startup_delay=6)
+    def test_first_signal_during_runtime_construction_exits_promptly(self):
+        elapsed, _, _, _ = self.run_shutdown(startup_delay=6)
+        self.assertLess(elapsed, 1.5, "the first signal interrupts Runtime construction")
+
+    def test_interrupted_cleanup_reenters_before_first_close_step(self):
+        self.run_shutdown(interrupt_cleanup_before_step=True)
 
     def test_second_signal_during_update_startup_exits_promptly(self):
         for delay in (0.1, 1.0, 3.0):
@@ -412,6 +437,7 @@ main()
                 self.assertEqual(process.returncode, -signal.SIGINT, stderr)
                 self.assertLess(elapsed, 3)
                 self.assertIn("cleanup abandoned after third shutdown signal", stderr)
+                self.assertRegex(stderr, r"cleanup abandoned after third shutdown signal pid=\d+ signal=2 at=\d+\.\d+")
                 self.assertNotRegex(stderr, r"Traceback|Exception in")
                 self.assertFalse((root / "state" / "canvas.sock").exists())
                 print(json.dumps({
