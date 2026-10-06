@@ -282,7 +282,7 @@ class RuntimeContract(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: self.runtime.new_lead(request), range(8)))
         self.assertEqual({a['id'] for a in results}, {first['id']})
-        self.assertEqual(len(self.snapshot()['agents']), 1)
+        self.assertEqual(len(self.runtime.team(first['id'])['agents']), 1)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.new_lead(request)['id'], first['id'])

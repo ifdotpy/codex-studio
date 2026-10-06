@@ -236,7 +236,7 @@ class HistoryContract(unittest.TestCase):
                 self.runtime.branch_conversation(lead['id'],request)
         self.assertEqual(len(calls),1)
         self.assertEqual(self.runtime.agent(lead['id'])['threadId'],lead['threadId'])
-        self.assertEqual(len(self.runtime.snapshot()['agents']),1)
+        self.assertEqual(len(self.runtime.team(lead['id'])['agents']),1)
 
     def test_unknown_native_branch_result_never_forks_again(self):
         lead = self.start(self.lead())

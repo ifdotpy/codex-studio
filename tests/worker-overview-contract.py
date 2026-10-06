@@ -62,7 +62,7 @@ class WorkerOverviewContract(unittest.TestCase):
     def test_missing_completion_has_no_report_and_lead_is_not_projected(self):
         agent = self.snapshot(status="completed", lastAnswer="Unproven result")
         self.assertEqual(agent["overview"]["result"], "")
-        lead = next(a for a in self.runtime.snapshot()["agents"] if a["id"] == self.lead["id"])
+        lead = self.runtime.agent(self.lead["id"])
         self.assertNotIn("overview", lead)
 
 
