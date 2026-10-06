@@ -161,6 +161,19 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         self.backend.mount_workspace(layer_a, mount_a, base_image=self.image)
         self.backend.mount_workspace(layer_b, mount_b, base_image=self.image)
         repo_a, repo_b = mount_a / "repo", mount_b / "repo"
+        identity = self.run_in_namespace(
+            "sh", "-c", "printf '%s\\n' \"$(id -u)\"; awk '/CapEff/ {print $2}' /proc/self/status"
+        ).stdout.splitlines()
+        self.assertEqual(int(identity[0]), os.getuid())
+        self.assertEqual(int(identity[1], 16), 0, "agent namespace process must have no capabilities")
+
+        unmount_probe = subprocess.run(
+            self.backend.exec_prefix() + [sys.executable, "-c",
+                "import ctypes,sys; sys.exit(0 if ctypes.CDLL(None,use_errno=True).umount2(sys.argv[1].encode(),0)==0 else ctypes.get_errno())",
+                str(mount_a)], check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(unmount_probe.returncode, 1, unmount_probe.stderr)
+        self.assertTrue(linux._mount_exists(int(self.backend._ensure_namespace()), mount_a))
 
         (self.source / "tracked.txt").write_text("changed\n", encoding="utf-8")
         (self.source / ".git" / "objects" / "aa" / "delta-object").write_bytes(b"delta object")
@@ -186,6 +199,8 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
         result = subprocess.run(prefix + ["git", "-C", str(repo_a), "status", "--short"],
                                 check=False, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.backend.unmount_workspace(mount_a)
+        self.assertFalse(linux._mount_exists(int(self.backend._ensure_namespace()), mount_a))
 
 
 if __name__ == "__main__":
