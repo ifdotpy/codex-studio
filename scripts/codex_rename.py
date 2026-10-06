@@ -139,7 +139,7 @@ def _finish(
             current = runtime.agent(key, db)
             if current.get("deletedAt") or current["name"] != agent["name"]:
                 error = "The chat name changed before the title was ready."
-        result = {"id": key, "request_id": request_id, "status": "failed", "error": error} if error else _set_name(runtime, db, key, title)  # type: ignore[arg-type]  # Title is set when generation succeeds.
+        result = {"id": key, "request_id": request_id, "status": "failed", "error": error} if error else _set_name(runtime, db, key, title)  # type: ignore[arg-type]  # typed-narrowing: Successful generation supplies its title
         if not error:
             result.update(request_id=request_id, status="applied")
         db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?", (json.dumps(result), request_id))
@@ -183,11 +183,11 @@ def rename(
                             "error": "The title request stopped. Try /rename again."}
                 db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?",
                            (json.dumps(previous), request_id))
-            return previous  # type: ignore[no-any-return]  # Stored rename receipts are returned as mappings.
+            return previous  # type: ignore[no-any-return]  # typed-suspect: Stored response may be malformed
         if name is not None:
             result = _set_name(runtime, db, key, name)
             result.update(request_id=request_id, status="applied")
-            return runtime.save_receipt(db, request_id, signature, result)  # type: ignore[no-any-return]  # Runtime returns the saved result mapping.
+            return runtime.save_receipt(db, request_id, signature, result)  # type: ignore[no-any-return]  # typed-narrowing: Save method returns persisted mapping
         agent = runtime.agent(key, db)
         if agent.get("deletedAt"):
             raise ValueError("This conversation was deleted")
@@ -199,7 +199,7 @@ def rename(
         runtime.pool.submit(_finish, runtime, key, request_id, agent, first, recent)
     except RuntimeError:
         with runtime.lock, runtime.db() as db:
-            runtime._rename_jobs.discard(request_id)  # type: ignore[attr-defined]  # The job set was initialized on this runtime above.
+            runtime._rename_jobs.discard(request_id)  # type: ignore[attr-defined]  # typed-narrowing: Module initializes rename job state
             result = {"id": key, "request_id": request_id, "status": "failed",
                       "error": "The title request could not start. Try /rename again."}
             db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?",
