@@ -2,7 +2,10 @@
 import hashlib
 import json
 import sqlite3
-from typing import cast
+from typing import Annotated, cast
+
+from pydantic import AfterValidator, TypeAdapter
+
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
 from studio_api.sync.models import (
@@ -22,7 +25,7 @@ from studio_api.sync.models import (
     WorkspaceEntityDto,
     SyncEntityPayload,
 )
-from studio_api.models import JsonValue
+from studio_api.models import JsonValue, _validate_finite_json
 
 ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
@@ -52,6 +55,14 @@ COLLECTION_FIELDS = {
     for name, model in _DTO_MODELS.items()
     if name != "agent"
 }
+def _validate_finite_entity_payload(payload: SyncEntityPayload) -> SyncEntityPayload:
+    _validate_finite_json(payload.value.model_dump(mode="python", exclude_unset=True))
+    return payload
+
+
+_SYNC_ENTITY_PAYLOAD_ADAPTER: TypeAdapter[SyncEntityPayload] = TypeAdapter(
+    Annotated[SyncEntityPayload, AfterValidator(_validate_finite_entity_payload)]
+)
 _STRING_LIMITS = {
     "overview": 9000, "error": 2000, "tail": 2000, "description": 2000,
     "command": 2000, "query": 2000, "text": 4000, "lastAnswer": 4000,
@@ -141,10 +152,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
 
 def validate_entity_payload(payload: str) -> SyncEntityPayload:
     """Validate a canonical sync entity JSON envelope without changing its bytes."""
-    envelope = SyncEntityPayload.model_validate_json(payload)
-    model = _DTO_MODELS[envelope.collection.value]
-    model.model_validate(envelope.value)
-    return envelope
+    return _SYNC_ENTITY_PAYLOAD_ADAPTER.validate_json(payload)
 
 
 def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:

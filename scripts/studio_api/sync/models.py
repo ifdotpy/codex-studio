@@ -1526,10 +1526,107 @@ class EntityCollection(ContractStrEnum):
     WORKSPACE = "workspace"
 
 
-class SyncEntityPayload(ContractModel):
-    collection: EntityCollection
+class SyncAgentEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.AGENT]
     id: str
-    value: JsonValue
+    value: AgentEntityDto
+
+
+class SyncRoomEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.ROOM]
+    id: str
+    value: RoomEntityDto
+
+
+class SyncTaskEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.TASK]
+    id: str
+    value: TaskEntityDto
+
+
+class SyncMonitorEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.MONITOR]
+    id: str
+    value: MonitorEntityDto
+
+
+class SyncComplaintEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.COMPLAINT]
+    id: str
+    value: ComplaintEntityDto
+
+
+class SyncRequestEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.REQUEST]
+    id: str
+    value: RequestEntityDto
+
+
+class SyncRuleEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.RULE]
+    id: str
+    value: RuleEntityDto
+
+
+class SyncProjectEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.PROJECT]
+    id: str
+    value: ProjectEntityDto
+
+
+class SyncPeerTeamEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.PEER_TEAM]
+    id: str
+    value: PeerTeamEntityDto
+
+
+class SyncChatEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.CHAT]
+    id: str
+    value: ChatEntityDto
+
+
+class SyncEdgeEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.EDGE]
+    id: str
+    value: EdgeEntityDto
+
+
+class SyncEventEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.EVENT]
+    id: str
+    value: EventEntityDto
+
+
+class SyncWorkEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.WORK]
+    id: str
+    value: WorkEntityDto
+
+
+class SyncWorkspaceEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.WORKSPACE]
+    id: str
+    value: WorkspaceEntityDto
+
+
+SyncEntityPayload = Annotated[
+    SyncAgentEntityPayload
+    | SyncRoomEntityPayload
+    | SyncTaskEntityPayload
+    | SyncMonitorEntityPayload
+    | SyncComplaintEntityPayload
+    | SyncRequestEntityPayload
+    | SyncRuleEntityPayload
+    | SyncProjectEntityPayload
+    | SyncPeerTeamEntityPayload
+    | SyncChatEntityPayload
+    | SyncEdgeEntityPayload
+    | SyncEventEntityPayload
+    | SyncWorkEntityPayload
+    | SyncWorkspaceEntityPayload,
+    Field(discriminator="collection"),
+]
 
 
 class SyncDocument(ContractModel):

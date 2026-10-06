@@ -26,6 +26,7 @@ from studio_api.sync.models import (
     SyncIdentityResponse,
     SyncProtocolResponse,
     SyncDocument,
+    SyncEntityPayload,
     SyncPullResponse,
     SyncPullResetResponse,
     SyncStreamQuery,
@@ -208,6 +209,16 @@ def create_router(context: ApiContext) -> APIRouter:
                 except ValidationError:
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
         return context.send(request, {**projection, "generation": store.generation()})
+
+    pull_route = router.routes[-1]
+    register_route_components(
+        pull_route,
+        {
+            "SyncEntityPayload": TypeAdapter(SyncEntityPayload).json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
 
     @router.get(
         "/api/sync/stream",

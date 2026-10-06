@@ -15,7 +15,7 @@ from typing import Protocol, cast
 
 from pydantic import ValidationError
 from codex_account_transfer import AccountTransfers
-from codex_sync_entities import COLLECTION_FIELDS, project, validate_entity_payload
+from codex_sync_entities import COLLECTION_FIELDS, project, seed, validate_entity_payload
 from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
@@ -34,7 +34,6 @@ from studio_api.sync.models import (
     SnapshotRoomDto,
     StateSnapshot,
     SyncDocument,
-    SyncEntityPayload,
 )
 
 
@@ -649,6 +648,46 @@ class SyncEntityContractTests(unittest.TestCase):
         invalid = json.dumps({"collection": "agent", "id": "a", "value": {"id": "a", "internal": True}})
         with self.assertRaises(ValidationError):
             validate_entity_payload(invalid)
+
+    def test_entity_payload_accepts_every_collection_and_rejects_invalid_values(self) -> None:
+        collections = (
+            "agent", "room", "task", "monitor", "complaint", "request", "rule",
+            "project", "peerTeam", "chat", "edge", "event", "work", "workspace",
+        )
+        for collection in collections:
+            with self.subTest(collection=collection):
+                identity = f"{collection}-id"
+                value = {} if collection == "workspace" else {"id": identity}
+                payload = json.dumps({
+                    "collection": collection,
+                    "id": identity,
+                    "value": value,
+                })
+                envelope = validate_entity_payload(payload)
+                self.assertEqual(envelope.collection.value, collection)
+                self.assertEqual(
+                    envelope.value.model_dump(exclude_unset=True), value
+                )
+
+        invalid_payloads = (
+            '{"collection":"chat","id":"c","value":{"id":"c","created":1}}',
+            '{"collection":"agent","id":"a","value":{}}',
+        )
+        for index, payload in enumerate(invalid_payloads):
+            with self.subTest(invalid_case=index):
+                with self.assertRaises(ValidationError):
+                    validate_entity_payload(payload)
+
+        nonfinite_tokens = ("NaN", "Infinity", "-Infinity", "1e999", "9" * 400)
+        for token_index, token in enumerate(nonfinite_tokens):
+            payloads = (
+                f'{{"collection":"agent","id":"a","value":{{"id":"a","created":{token}}}}}',
+                f'{{"collection":"agent","id":"a","value":{{"id":"a","accountTransfer":{{"updated":{token}}}}}}}',
+            )
+            for field_depth, payload in enumerate(payloads):
+                with self.subTest(number_kind=token_index, field_depth=field_depth):
+                    with self.assertRaises(ValidationError):
+                        validate_entity_payload(payload)
 
     def test_draft_batch_is_fully_validated_before_service_call(self) -> None:
         row = {
