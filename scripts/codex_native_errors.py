@@ -141,9 +141,9 @@ def warning_text(method: str, p: "JsonObject") -> str:
     if method == 'mcpServer/startupStatus/updated':
         return (str(p.get('name') or 'Connected tool') + ': ' + str(p.get('error') or p['status'])
                 if p.get('status') in {'failed', 'cancelled'} else '')
-    if method == 'guardianWarning' and text.startswith('Automatic approval review approved ('):
+    if method == 'guardianWarning' and text.startswith('Automatic approval review approved ('):  # type: ignore[union-attr]  # typed-suspect: Warning text may be non-string
         return ''
-    return text
+    return text  # type: ignore[return-value]  # typed-suspect: Message payload may be non-string
 
 
 def account_notice(runtime: "Runtime", db: "sqlite3.Connection", method: str, p: "JsonObject",
@@ -174,7 +174,7 @@ def account_notices(runtime: "Runtime", db: "sqlite3.Connection") -> list["Nativ
 def hook_notice(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
                 method: str, params: "JsonObject") -> None:
     run = params.get('run') or {}
-    if not isinstance(run.get('id'), str) or not run['id']:
+    if not isinstance(run.get('id'), str) or not run['id']:  # type: ignore[union-attr]  # typed-suspect: Hook payload may not be a mapping
         return
     key = 'hook:' + run['id']
     item_id = agent['id'] + ':native-notice:' + key
