@@ -20,7 +20,7 @@ type Props = {
   mainAgentId?: string;
   showDates?: boolean;
   onAnswerOpen?: () => void;
-  onAnswerPosition?: () => void;
+  onAnswerPosition?: (node: HTMLElement) => void;
   requests: components["schemas"]["RequestEntityDto"][];
   allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
@@ -301,11 +301,12 @@ function RequestCard({
     const transcript = node.closest("#messages");
     if (!form || !transcript) return;
     const position = () => {
-      transcript.scrollTop +=
-        node.getBoundingClientRect().top -
-        transcript.getBoundingClientRect().top -
-        12;
-      onAnswerPosition?.();
+      if (onAnswerPosition) onAnswerPosition(node);
+      else
+        transcript.scrollTop +=
+          node.getBoundingClientRect().top -
+          transcript.getBoundingClientRect().top -
+          12;
     };
     const fit = () => {
       const available =
