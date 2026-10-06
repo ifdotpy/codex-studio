@@ -11,7 +11,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Iterable
+from typing import Iterable
+
+from codex_records import JsonObject
+from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
 
 
 _GIT_OBJECTS_MARKER = "HEAD"
@@ -131,9 +134,9 @@ def _proc_start_time(pid: int) -> str | None:
         return None
 
 
-def _namespace_alive(record: dict[str, Any]) -> bool:
+def _namespace_alive(record: JsonObject) -> bool:
     try:
-        pid = int(record["pid"])
+        pid = int(record["pid"])  # type: ignore[arg-type]  # typed-narrowing: persisted namespace PID is an OS integer or decimal string
     except (KeyError, TypeError, ValueError):
         return False
     if _proc_start_time(pid) != str(record.get("startTime")):
@@ -145,7 +148,7 @@ def _namespace_alive(record: dict[str, Any]) -> bool:
         return False
 
 
-def _write_json(path: Path, value: dict[str, Any]) -> None:
+def _write_json(path: Path, value: JsonObject) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
@@ -164,7 +167,7 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 class Backend:
     """Implement the common image workspace backend contract."""
 
-    def supported(self: Any, repo_root: Path) -> tuple[bool, str]:
+    def supported(self, repo_root: Path) -> tuple[bool, str]:
         if not sys.platform.startswith("linux"):
             return False, "Linux overlay workspaces require Linux"
         missing = [name for name in ("unshare", "nsenter", "rsync", "cp")
@@ -175,11 +178,11 @@ class Backend:
             return False, "User namespaces are unavailable"
         return True, "Linux overlayfs is available"
 
-    def current_event_id(self: Any, repo_root: Path) -> None:
+    def current_event_id(self, repo_root: Path) -> None:
         del repo_root
         return None
 
-    def open_base_staging(self: Any, repo_root: Path, repo_key: str, version: str) -> dict[str, Any]:
+    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> WorkspaceBaseStaging:
         del repo_root
         parent = _workspace_store() / "bases" / repo_key
         parent.mkdir(parents=True, exist_ok=True)
@@ -195,11 +198,11 @@ class Backend:
         (staging_path / "tmp").mkdir(exist_ok=True)
         return {"root": repo, "token": None, "versionPath": staging_path}
 
-    def copy_base_tree(self: Any, repo_root: Path, destination: Path, *,
+    def copy_base_tree(self, repo_root: Path, destination: Path, *,
                        excludes: tuple[str, ...]) -> None:
         _copy_without_object_stores(Path(repo_root), Path(destination), excludes)
 
-    def seal_base(self: Any, staging: dict[str, Any]) -> dict[str, Any]:
+    def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging:
         staging_path = Path(staging["versionPath"]).resolve()
         version = staging_path.with_name(staging_path.name[1:-len(".building")])
         if version.exists():
@@ -213,7 +216,7 @@ class Backend:
             os.replace(staging_path, version)
         return {"image": version, "versionPath": version, "token": staging.get("token")}
 
-    def clone_workspace(self: Any, base_image: Path, agent_dir: Path) -> Path:
+    def clone_workspace(self, base_image: Path, agent_dir: Path) -> Path:
         del base_image
         agent_dir = Path(agent_dir)
         agent_dir.mkdir(parents=True, exist_ok=True)
@@ -221,8 +224,8 @@ class Backend:
         (agent_dir / "w").mkdir(exist_ok=True)
         return agent_dir
 
-    def mount_workspace(self: Any, layer: Path, mount: Path, *,
-                        base_image: Path | None = None) -> dict[str, Any]:
+    def mount_workspace(self, layer: Path, mount: Path, *,
+                        base_image: Path | None = None) -> WorkspaceMount:
         if base_image is None:
             raise ValueError("Linux overlay mount requires a frozen base_image")
         layer, mount, base_image = Path(layer).resolve(), Path(mount).resolve(), Path(base_image).resolve()
@@ -237,8 +240,8 @@ class Backend:
                                                         "overlay", str(mount), options])
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
-    def sync_delta(self: Any, repo_root: Path, target_repo: Path, token: object, *,
-                   excludes: tuple[str, ...]) -> dict[str, Any]:
+    def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *,
+                   excludes: tuple[str, ...]) -> WorkspaceDelta:
         current_token = token.get("token") if isinstance(token, dict) else token
         repo_root, target_repo = Path(repo_root).resolve(), Path(target_repo).resolve()
         pid = self._ensure_namespace()
@@ -261,9 +264,9 @@ class Backend:
             path = path.removeprefix("./").rstrip("/")  # type: ignore[attr-defined]  # typed-narrowing: the preceding status field is text
             if path:
                 changed_paths.add(path)
-        return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}
+        return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}  # type: ignore[typeddict-item]  # typed-narrowing: backend tokens are JSON scalar values from the persisted state
 
-    def unmount_workspace(self: Any, mount: Path, *, force: bool = False) -> None:
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> None:
         del force
         mount = Path(mount).resolve()
         state_path = _namespace_state_path()
@@ -278,7 +281,7 @@ class Backend:
             _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_UNMOUNT,
                                                         str(mount)])
 
-    def remove_layer(self: Any, agent_dir: Path) -> None:
+    def remove_layer(self, agent_dir: Path) -> None:
         agent_dir = Path(agent_dir)
         if not agent_dir.exists():
             return
@@ -287,10 +290,10 @@ class Backend:
             _run(["chmod", "-R", "u+rwx", str(work)])
         shutil.rmtree(agent_dir, ignore_errors=False)
 
-    def remove_base_version(self: Any, path: Path) -> None:
+    def remove_base_version(self, path: Path) -> None:
         remove_base_version(path)
 
-    def private_bytes(self: Any, path: Path) -> int:
+    def private_bytes(self, path: Path) -> int:
         path = Path(path)
         upper = path / "u" if (path / "u").is_dir() else path
         total = 0
@@ -304,8 +307,8 @@ class Backend:
                 total += info.st_size
         return total
 
-    def exec_prefix(self: Any) -> list[str]:
-        return self._nsenter(self._ensure_namespace())  # type: ignore[no-any-return]  # typed-narrowing: namespace entry is a string argv prefix
+    def exec_prefix(self) -> list[str]:
+        return self._nsenter(self._ensure_namespace())
 
     @staticmethod
     def _nsenter(pid: int, *, keep_caps: bool = False) -> list[str]:
@@ -314,7 +317,7 @@ class Backend:
             args.append("--keep-caps")
         return args + ["--"]
 
-    def _ensure_namespace(self: Any) -> int:
+    def _ensure_namespace(self) -> int:
         state_path = _namespace_state_path()
         state_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = state_path.with_suffix(".lock")

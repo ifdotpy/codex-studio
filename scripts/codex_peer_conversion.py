@@ -194,7 +194,7 @@ def convert(runtime: "Runtime", data: Any) -> Any:
         at = time.time()
         project['peerTeams'] = [dict(id=t['id'], name=t['name'], members=[m for m in t['members'] if m != source_id])
                                 for t in teams if len([m for m in t['members'] if m != source_id]) >= 2]
-        project.update(peerTeamsRevision=revision + 1, updated=at)
+        project.update(peerTeamsRevision=revision + 1, updated=at)  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'projects', project)
         for agent in moving:
             agent.update(rootId=target_id, updated=at)

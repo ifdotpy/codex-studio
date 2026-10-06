@@ -17,39 +17,68 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from collections.abc import Callable, Iterable, Iterator
+from typing import Callable, NotRequired, Protocol, TypedDict
+
+from codex_records import (ImageWorkspaceCollectResultRecord, ImageWorkspaceMount,
+                           ImageWorkspaceRemovalResultRecord, JsonObject, JsonValue)
+
+
+class WorkspaceBaseStaging(TypedDict):
+    root: NotRequired[Path]
+    token: str | int | None
+    versionPath: Path
+    image: NotRequired[Path]
+    mount: NotRequired[Path]
+    version: NotRequired[str]
+    refresh: NotRequired[bool]
+
+
+class WorkspaceMount(TypedDict):
+    mount: str
+    layer: NotRequired[str]
+    baseImage: NotRequired[str]
+    pid: NotRequired[int]
+
+
+class WorkspaceDelta(TypedDict):
+    token: str | int | None
+    changedPaths: list[str]
+    historyLost: bool
+    scanPaths: NotRequired[list[str]]
+    refreshBase: NotRequired[bool]
 
 
 class WorkspaceBackend(Protocol):
     """Storage operations required by the common workspace engine."""
 
-    def supported(self: Any, repo_root: Path) -> tuple[bool, str]: ...
+    def supported(self, repo_root: Path) -> tuple[bool, str]: ...
 
-    def current_event_id(self: Any, repo_root: Path) -> Any: ...
+    def current_event_id(self, repo_root: Path) -> str | int | None: ...
 
-    def open_base_staging(self: Any, repo_root: Path, repo_key: str, version: str) -> dict[str, Any]: ...
+    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> WorkspaceBaseStaging: ...
 
-    def copy_base_tree(self: Any, repo_root: Path, destination: Path, *, excludes: tuple[str, ...]) -> None: ...
+    def copy_base_tree(self, repo_root: Path, destination: Path, *, excludes: tuple[str, ...]) -> None: ...
 
-    def seal_base(self: Any, staging: dict[str, Any]) -> dict[str, Any]: ...
+    def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging: ...
 
-    def clone_workspace(self: Any, base_image: Path, agent_dir: Path) -> Path: ...
+    def clone_workspace(self, base_image: Path, agent_dir: Path) -> Path: ...
 
-    def mount_workspace(self: Any, layer: Path, mount: Path, *,
-                        base_image: Path | None = None) -> dict[str, Any]: ...
+    def mount_workspace(self, layer: Path, mount: Path, *,
+                        base_image: Path | None = None) -> WorkspaceMount: ...
 
-    def sync_delta(self: Any, repo_root: Path, target_repo: Path, token: Any, *,
-                   excludes: tuple[str, ...]) -> Any: ...
+    def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *,
+                   excludes: tuple[str, ...]) -> WorkspaceDelta: ...
 
-    def unmount_workspace(self: Any, mount: Path, *, force: bool = False) -> None: ...
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> None: ...
 
-    def remove_layer(self: Any, agent_dir: Path) -> None: ...
+    def remove_layer(self, agent_dir: Path) -> None: ...
 
-    def remove_base_version(self: Any, path: Path) -> None: ...
+    def remove_base_version(self, path: Path) -> None: ...
 
-    def private_bytes(self: Any, path: Path) -> int: ...
+    def private_bytes(self, path: Path) -> int: ...
 
-    def exec_prefix(self: Any) -> list[str]: ...
+    def exec_prefix(self) -> list[str]: ...
 
 
 def _backend() -> WorkspaceBackend:
@@ -71,7 +100,7 @@ _backend_instance: WorkspaceBackend | None = None
 _backend_lock = threading.Lock()
 _build_lock = threading.Lock()
 _build_threads: dict[str, threading.Thread] = {}
-_build_callbacks: dict[str, list[Any]] = {}
+_build_callbacks: dict[str, list[Callable[[JsonObject], object]]] = {}
 _BASE_REFRESH_DELTA_RATIO = 0.35
 
 
@@ -88,7 +117,7 @@ def _store() -> Path:
     return Path(os.environ.get(_STORE_OVERRIDE) or _DEFAULT_STORE).expanduser().resolve()
 
 
-def _repo_root(path: Any) -> Path:
+def _repo_root(path: str | Path) -> Path:
     result = subprocess.run(['git', '-C', str(path), 'rev-parse', '--show-toplevel'],
                             capture_output=True, text=True, timeout=30)
     if result.returncode == 0:
@@ -100,7 +129,7 @@ def _repo_key(root: Path) -> str:
     return hashlib.sha256(os.fsencode(root.resolve())).hexdigest()[:32]
 
 
-def _workspace_excludes(repo_root: Path, repositories: Any=(), *, exclude_git_metadata: Any=False) -> tuple[str, ...]:
+def _workspace_excludes(repo_root: Path, repositories: Iterable[tuple[str, Path]] = (), *, exclude_git_metadata: bool = False) -> tuple[str, ...]:
     root = Path(repo_root).resolve()
     values = {'.worktrees'}
     try:
@@ -128,14 +157,14 @@ def _safe_id(value: object) -> str:
     return value
 
 
-def _read_json(path: Path, default: Any=None) -> Any:
+def _read_json(path: Path, default: JsonObject | None = None) -> JsonObject | None:
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
 
 
-def _write_json(path: Path, value: Any) -> Any:
+def _write_json(path: Path, value: JsonObject) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
     with temp.open('w') as stream:
@@ -154,7 +183,7 @@ def _write_json(path: Path, value: Any) -> Any:
 
 
 @contextmanager
-def _file_lock(path: Path, *, blocking: Any=True) -> Any:
+def _file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -186,11 +215,11 @@ def _mount_path(agent_id: str) -> Path:
     return _store() / 'mnt' / _safe_id(agent_id)
 
 
-def supported(repo_root: Any) -> tuple[bool, str]:
+def supported(repo_root: object) -> tuple[bool, str]:
     return _get_backend().supported(Path(repo_root).expanduser().resolve())
 
 
-def base_status(repo_root: Any) -> dict[str, Any]:
+def base_status(repo_root: object) -> JsonObject:
     root = _repo_root(repo_root)
     state = _read_json(_base_state_path(_repo_key(root)), {})
     if not state:
@@ -198,7 +227,7 @@ def base_status(repo_root: Any) -> dict[str, Any]:
     return {key: state.get(key) for key in ('state', 'version', 'error')}
 
 
-def start_base_build(repo_root: Any, on_done: Any=None) -> dict[str, Any]:
+def start_base_build(repo_root: object, on_done: Callable[[JsonObject], object] | None = None) -> JsonObject:
     root = _repo_root(repo_root)
     ok, reason = supported(root)
     if not ok:
@@ -243,7 +272,7 @@ def start_base_build(repo_root: Any, on_done: Any=None) -> dict[str, Any]:
     return base_status(root)
 
 
-def _check_base_refresh(root: Path, key: str, expected_version: str) -> Any:
+def _check_base_refresh(root: Path, key: str, expected_version: str) -> None:
     try:
         state = _read_json(_base_state_path(key), {}) or {}
         if (state.get('state') == 'ready' and state.get('version') == expected_version
@@ -262,7 +291,7 @@ def _check_base_refresh(root: Path, key: str, expected_version: str) -> Any:
                 _build_threads.pop(key, None)
 
 
-def _schedule_base_refresh(root: Path, version: str) -> Any:
+def _schedule_base_refresh(root: Path, version: str) -> None:
     key = _repo_key(root)
     with _build_lock:
         thread = _build_threads.get(key)
@@ -274,7 +303,7 @@ def _schedule_base_refresh(root: Path, version: str) -> Any:
         thread.start()
 
 
-def _call_callback(callback: Any, result: Any) -> Any:
+def _call_callback(callback: Callable[[JsonObject], object], result: JsonObject) -> None:
     try:
         callback(result)
     except BaseException:
@@ -282,7 +311,7 @@ def _call_callback(callback: Any, result: Any) -> Any:
         pass
 
 
-def _build_base(root: Path, key: str, refresh_from: Any=None) -> Any:
+def _build_base(root: Path, key: str, refresh_from: str | None = None) -> None:
     callbacks = []
     base_root = _base_dir(key)
     staging = None
@@ -409,7 +438,7 @@ def _build_base(root: Path, key: str, refresh_from: Any=None) -> Any:
         _call_callback(callback, {key: result.get(key) for key in ('state', 'version', 'error')})
 
 
-def _prune_base_versions(key: Any) -> Any:
+def _prune_base_versions(key: str) -> None:
     # Keep the current base. Retention is deliberately conservative because
     # agent layers can still refer to older versions after a refresh.
     root = _base_dir(key)
@@ -455,13 +484,13 @@ def _git(repo: Path, *args: str, check: bool = True, timeout: float = 120,
     return result.stdout.decode(errors='surrogateescape')
 
 
-def _is_git_repo(path: Path, *, view: Any=False) -> bool:
+def _is_git_repo(path: Path, *, view: bool = False) -> bool:
     result = _command(['git', '-C', str(path), 'rev-parse', '--show-toplevel'],
                       timeout=20, view=view)
     return result.returncode == 0
 
 
-def _git_repositories(root: Path) -> Any:
+def _git_repositories(root: Path) -> list[tuple[Path, Path]]:
     root = Path(root).resolve()
     results = []
     excluded = {Path(value) for value in _workspace_excludes(root)}
@@ -490,8 +519,8 @@ def _object_dir(repo: Path) -> Path:
     return Path(value).resolve()
 
 
-def _prepare_repo(target: Path, source: Path, *, refresh: Any=False, view: Any=False,
-                  copy_index: Any=False, return_head: Any=False) -> Any:
+def _prepare_repo(target: Path, source: Path, *, refresh: bool = False, view: bool = False,
+                  copy_index: bool = False, return_head: bool = False) -> str:
     code = r'''import json,pathlib,re,shutil,subprocess,sys
 source,target=map(pathlib.Path,sys.argv[1:3]); refresh=sys.argv[3]=="1"
 copy_index=sys.argv[4]=="1"; return_head=sys.argv[5]=="1"
@@ -561,7 +590,7 @@ print(json.dumps({"objects":str(objects),"head":head}))
     return ''
 
 
-def _status_paths(output: Any) -> Any:
+def _status_paths(output: str) -> list[str]:
     """Read Git's NUL-delimited porcelain status and return changed paths."""
     paths = set()
     fields = output.split('\0')
@@ -579,7 +608,7 @@ def _status_paths(output: Any) -> Any:
     return sorted(paths)
 
 
-def _copy_index(source: Path, target: Path, *, view: Any=False) -> Any:
+def _copy_index(source: Path, target: Path, *, view: bool = False) -> None:
     source_index = _git(source, 'rev-parse', '--path-format=absolute', '--git-path', 'index').strip()
     target_index = target / '.git' / 'index'
     code = 'import shutil,sys; shutil.copy2(sys.argv[1],sys.argv[2])'
@@ -587,7 +616,7 @@ def _copy_index(source: Path, target: Path, *, view: Any=False) -> Any:
              view=view, check=True, timeout=60)
 
 
-def _tree_paths(repo: Path, commit: str, pathspecs: Any, *, view: Any=False) -> Any:
+def _tree_paths(repo: Path, commit: str, pathspecs: Iterable[str], *, view: bool = False) -> set[str]:
     if not pathspecs:
         return set()
     output = _git(repo, 'ls-tree', '-r', '-z', commit, '--', *pathspecs, view=view)
@@ -598,7 +627,7 @@ def _tree_paths(repo: Path, commit: str, pathspecs: Any, *, view: Any=False) -> 
     return result
 
 
-def _stageable_paths(repo: Path, paths: Any, *, view: Any=False) -> Any:
+def _stageable_paths(repo: Path, paths: Iterable[str | Path], *, view: bool = False) -> list[Path]:
     if not paths:
         return []
     pathspecs = [f':(literal){Path(value).as_posix()}' for value in paths]
@@ -612,7 +641,7 @@ def _stageable_paths(repo: Path, paths: Any, *, view: Any=False) -> Any:
 
 
 def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
-                            extra_paths: Any, *, view: Any=False) -> Any:
+                            extra_paths: Iterable[str | Path], *, view: bool = False) -> None:
     changed = _git(target, 'diff', '--no-renames', '--name-only', '-z',
                    source_head, target_head, view=view).split('\0')
     paths = {Path(value) for value in changed if value}
@@ -627,7 +656,7 @@ def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
     target_paths = _tree_paths(target, target_head, pathspecs, view=view)
     source_paths = _tree_paths(target, source_head, pathspecs, view=view)
 
-    def matches(candidate, entries):  # type: (Any, Any) -> Any
+    def matches(candidate, entries):  # type: (Path, set[str]) -> bool
         value = candidate.as_posix().rstrip('/')
         return any(entry == value or entry.startswith(value + '/') for entry in entries)
 
@@ -646,13 +675,13 @@ def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
         _git(target, 'clean', '-f', '-d', '--', *staged_remove, view=view)
 
 
-def _sync_refs(target: Path, source: Path, agent_id: str, *, view: Any=False) -> Any:
+def _sync_refs(target: Path, source: Path, agent_id: str, *, view: bool = False) -> None:
     format_arg = '--format=%(refname) %(objectname) %(symref)'
     source_refs = _git(source, 'for-each-ref', format_arg).splitlines()
     target_refs = _git(target, 'for-each-ref', format_arg, view=view).splitlines()
     agent_ref = 'refs/heads/codex-agent/' + agent_id
 
-    def parse(lines):  # type: (Any) -> Any
+    def parse(lines):  # type: (str) -> dict[str, str]
         refs = {}
         for line in lines:
             try:
@@ -672,7 +701,7 @@ def _sync_refs(target: Path, source: Path, agent_id: str, *, view: Any=False) ->
     _git(target, 'update-ref', '--stdin', input=('\n'.join(commands) + '\n').encode(), view=view)
 
 
-def _base_for_agent(state: Any) -> Any:
+def _base_for_agent(state: JsonObject) -> str:
     value = _read_json(_base_state_path(state['repoKey']), {}) or {}
     if value.get('version') != state.get('baseVersion'):
         # Keep agent's exact version in the state and locate it by version name.
@@ -681,7 +710,7 @@ def _base_for_agent(state: Any) -> Any:
     return Path(value['image'])
 
 
-def _repo_state_list(root: Path, mount_repo: Path, known_paths: Any, delta: Any) -> Any:
+def _repo_state_list(root: Path, mount_repo: Path, known_paths: Iterable[str], delta: WorkspaceDelta) -> list[JsonObject]:
     """Resolve repositories known at base time plus those named by delta events."""
     candidates = {Path(value) for value in known_paths}
     for value in delta.get('changedPaths', ()):
@@ -707,7 +736,7 @@ def _repo_state_list(root: Path, mount_repo: Path, known_paths: Any, delta: Any)
     return items
 
 
-def _git_repository_paths_under(relative_root: Path, absolute_root: Path) -> Any:
+def _git_repository_paths_under(relative_root: Path, absolute_root: Path) -> list[Path]:
     if not absolute_root.is_dir():
         return set()
     found = set()
@@ -722,12 +751,12 @@ def _git_repository_paths_under(relative_root: Path, absolute_root: Path) -> Any
     return found
 
 
-def _snapshot_paths(repo_rel: Path, dirty_paths: Any, delta: Any, nested_repositories: Any=()) -> Any:
+def _snapshot_paths(repo_rel: Path, dirty_paths: Iterable[str], delta: WorkspaceDelta, nested_repositories: Iterable[str] = ()) -> list[str]:
     paths = {Path(value) for value in dirty_paths}
     repo_parts = repo_rel.parts
     nested_repositories = tuple(Path(value) for value in nested_repositories if Path(value) != repo_rel)
 
-    def add_delta_path(value):  # type: (Any) -> Any
+    def add_delta_path(value):  # type: (str) -> None
         path = Path(value)
         parts = path.parts
         if any(part in {'.worktrees'} for part in parts):
@@ -769,8 +798,8 @@ def _snapshot_paths(repo_rel: Path, dirty_paths: Any, delta: Any, nested_reposit
                   key=lambda path: path.as_posix())
 
 
-def create_workspace(repo_root: Any, agent_id: Any, *, start_commit: Any=None,
-                     restore_heads: dict[str, str] | None = None) -> dict[str, Any]:
+def create_workspace(repo_root: object, agent_id: object, *, start_commit: str | None = None,
+                     restore_heads: dict[str, str] | None = None) -> ImageWorkspaceMount:
     root = _repo_root(repo_root)
     agent_id = _safe_id(agent_id)
     if restore_heads is not None and start_commit is not None:
@@ -896,7 +925,7 @@ def create_workspace(repo_root: Any, agent_id: Any, *, start_commit: Any=None,
             'startCommit': state['startCommit'], 'snapshotCommit': state['snapshotCommit']}
 
 
-def ensure_mounted(agent_id: Any) -> dict[str, Any]:
+def ensure_mounted(agent_id: object) -> ImageWorkspaceMount:
     agent_id = _safe_id(agent_id)
     state = _read_json(_agent_state_path(agent_id), {}) or {}
     if not state or not state.get('image'):
@@ -914,7 +943,7 @@ def ensure_mounted(agent_id: Any) -> dict[str, Any]:
 
 
 def _fetch_and_replay(user_repo: Path, agent_repo: Path, branch: str, snapshot: str | None,
-                      start_commit: str | None, agent_id: str) -> Any:
+                      start_commit: str | None, agent_id: str) -> JsonObject:
     raw_ref = f'refs/studio/agents/{agent_id}/raw'
     result_ref = f'refs/heads/codex-agent/{agent_id}'
     _git(user_repo, 'fetch', str(agent_repo), f'{branch}:{raw_ref}', timeout=300, view=True)
@@ -950,7 +979,7 @@ def _fetch_and_replay(user_repo: Path, agent_repo: Path, branch: str, snapshot: 
             'commit': current, 'commits': len(commits)}
 
 
-def collect(agent_id: Any) -> dict[str, Any]:
+def collect(agent_id: object) -> ImageWorkspaceCollectResultRecord:
     agent_id = _safe_id(agent_id)
     state = _read_json(_agent_state_path(agent_id), {}) or {}
     if not state:
@@ -958,7 +987,7 @@ def collect(agent_id: Any) -> dict[str, Any]:
     mount = Path(state.get('mount') or _mount_path(agent_id))
     ensure_mounted(agent_id)
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
-        result: dict[str, Any] = {'state': 'collected', 'repositories': []}
+        result: ImageWorkspaceCollectResultRecord = {'state': 'collected', 'repositories': []}
         for item in sorted(state.get('repositories', []), key=lambda row: len(Path(row['path']).parts), reverse=True):
             rel = Path(item['path'])
             user_repo = Path(state['repoRoot']) / rel
@@ -979,7 +1008,7 @@ def collect(agent_id: Any) -> dict[str, Any]:
         return result
 
 
-def remove_workspace(agent_id: Any, *, force: Any=False) -> dict[str, Any]:
+def remove_workspace(agent_id: object, *, force: bool = False) -> ImageWorkspaceRemovalResultRecord:
     agent_id = _safe_id(agent_id)
     agent_dir = _agent_dir(agent_id)
     state_path = _agent_state_path(agent_id)
@@ -999,7 +1028,7 @@ def remove_workspace(agent_id: Any, *, force: Any=False) -> dict[str, Any]:
         return {'freedBytes': before or 0, 'state': 'removed'}
 
 
-def _allocated_bytes(path: Path) -> Any:
+def _allocated_bytes(path: Path) -> int:
     if not path.exists():
         return 0
     total = 0
@@ -1015,7 +1044,7 @@ def _allocated_bytes(path: Path) -> Any:
     return total
 
 
-def workspace_bytes(agent_id: Any) -> int:
+def workspace_bytes(agent_id: object) -> int:
     state = _read_json(_agent_state_path(_safe_id(agent_id)), {}) or {}
     if not state or not state.get('image'):
         return 0
@@ -1023,7 +1052,7 @@ def workspace_bytes(agent_id: Any) -> int:
     return int(result) if result is not None else _allocated_bytes(Path(state['image']))
 
 
-def base_bytes(repo_root: Any) -> int:
+def base_bytes(repo_root: object) -> int:
     state = _read_json(_base_state_path(_repo_key(_repo_root(repo_root))), {}) or {}
     if not state.get('image'):
         return 0
@@ -1032,7 +1061,7 @@ def base_bytes(repo_root: Any) -> int:
     return int(result) if result is not None else _allocated_bytes(image)
 
 
-def list_workspaces() -> list[dict[str, Any]]:
+def list_workspaces() -> list[JsonObject]:
     results = []
     for path in (_store() / 'agents').glob('*/agent.json'):
         value = _read_json(path, {})

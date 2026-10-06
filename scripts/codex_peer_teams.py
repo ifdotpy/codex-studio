@@ -196,7 +196,7 @@ def manage(runtime: "Runtime", data: Any) -> Any:
                 teams.append(replacement)  # type: ignore[arg-type]  # typed-narrowing: validated save fields form a peer team record
         else:
             teams = [team for team in teams if team['id'] != team_id]
-        project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())
+        project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'projects', project)
         sync_entities(runtime, db, {path})
-        return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)
+        return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)  # type: ignore[arg-type]  # typed-suspect: project receipt shape is not a WorkViewRecord
