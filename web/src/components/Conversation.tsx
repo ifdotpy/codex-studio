@@ -1626,6 +1626,11 @@ export default function Conversation(p: {
             <AgentPhase agent={agent} connection={connection} wait={wait} />
           )}
           <Requests
+            mainAgentId={
+              !p.room && agent?.isLead === false
+                ? agent.rootId || undefined
+                : undefined
+            }
             showDates={!!p.room}
             scope={p.data.stateDir}
             allRequests={runtime?.requests || []}

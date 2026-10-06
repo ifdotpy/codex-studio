@@ -749,7 +749,7 @@ p {
   margin-top: 3px;
 }
 .agent-conversation .copy-message {
-  opacity: 0;
+  opacity: 1;
 }
 .agent-conversation .message:hover .copy-message,
 .agent-conversation .message:focus-within .copy-message {
@@ -2123,4 +2123,76 @@ html body #root {
   margin-left: auto;
   background: light-dark(#e5f1fc, #253a50);
   border-radius: 16px 16px 4px 16px;
+}
+
+/* Transcript rows share one column. User messages retain their own bubble. */
+#conversation #messages .message-content {
+  max-width: 760px;
+  margin-inline: auto;
+}
+.ai-conversation .message.assistant,
+.agent-conversation .message.bubble:not(.outgoing) {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.ai-conversation .message.user,
+.agent-conversation .message.bubble.outgoing {
+  max-width: min(85%, 620px);
+}
+.ai-conversation .message.user .message-bottom {
+  display: flex;
+}
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .message .message-bottom .message-action-controls > *,
+  .message .message-bottom .message-info-control {
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .message:hover .message-bottom .message-action-controls > *,
+  .message:focus-within .message-bottom .message-action-controls > *,
+  .message:hover .message-bottom .message-info-control,
+  .message:focus-within .message-bottom .message-info-control,
+  .message .message-info-control[aria-expanded="true"] {
+    opacity: 1;
+  }
+}
+.tool-group > summary::after {
+  content: none;
+}
+.tool-group[open] > summary > .tool-chevron {
+  transform: rotate(90deg);
+}
+.tool-title,
+.tool-body,
+.tool-group,
+.tool-section > small,
+.tool-read-summary,
+.activity-read-summary {
+  font-size: var(--studio-text-meta);
+}
+.tool-body pre {
+  font-size: var(--studio-text-code);
+}
+.main-agent-requests-heading {
+  font-size: var(--studio-text-body);
+  color: var(--muted);
+  margin: 12px 0 8px;
+}
+.studio-recovery-banner {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: var(--studio-text-body);
+}
+.studio-recovery-banner details {
+  font-size: var(--studio-text-meta);
+  color: var(--muted);
+}
+.studio-recovery-banner summary {
+  cursor: pointer;
 }

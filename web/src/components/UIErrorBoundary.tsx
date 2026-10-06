@@ -1,6 +1,20 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Button, MantineContext, MantineProvider } from "@mantine/core";
+import { Component, useContext, type ErrorInfo, type ReactNode } from "react";
+import { theme } from "../theme";
 import { displayError } from "../errorPresentation";
 import "./ui-error-boundary.css";
+
+// The root boundary sits outside the application's provider.
+function ErrorSurface({ children }: { children: ReactNode }) {
+  const context = useContext(MantineContext);
+  return context ? (
+    children
+  ) : (
+    <MantineProvider theme={theme} defaultColorScheme="auto">
+      {children}
+    </MantineProvider>
+  );
+}
 
 type Props = {
   children: ReactNode;
@@ -38,26 +52,32 @@ export default class UIErrorBoundary extends Component<
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <section
-        className={`ui-error-boundary${this.props.fullPage ? " ui-error-page" : ""}`}
-        role="alert"
-        aria-label={`${this.props.label} display error`}
-      >
-        <h2>Could not display {this.props.label}</h2>
-        <p>Your saved chats and drafts remain available.</p>
-        <button type="button" onClick={() => this.setState({ error: null })}>
-          Try again
-        </button>
-        {this.props.fullPage && (
-          <button type="button" onClick={() => window.location.reload()}>
-            Reload Studio
-          </button>
-        )}
-        <details>
-          <summary>Error details</summary>
-          <pre>{displayError(this.state.error)}</pre>
-        </details>
-      </section>
+      <ErrorSurface>
+        <section
+          className={`ui-error-boundary${this.props.fullPage ? " ui-error-page" : ""}`}
+          role="alert"
+          aria-label={`${this.props.label} display error`}
+        >
+          <h2>Could not display {this.props.label}</h2>
+          <p>Your saved chats and drafts remain available.</p>
+          <Button
+            variant="filled"
+            color="indigo"
+            onClick={() => this.setState({ error: null })}
+          >
+            Try again
+          </Button>
+          {this.props.fullPage && (
+            <Button variant="default" onClick={() => window.location.reload()}>
+              Reload Studio
+            </Button>
+          )}
+          <details>
+            <summary>Error details</summary>
+            <pre>{displayError(this.state.error)}</pre>
+          </details>
+        </section>
+      </ErrorSurface>
     );
   }
 }

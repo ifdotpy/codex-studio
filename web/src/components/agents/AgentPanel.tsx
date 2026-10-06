@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Button } from "@mantine/core";
 import { NetworkTimeoutError } from "../../api";
 import {
   watchResourceChanges,
@@ -438,19 +439,19 @@ function ProgressDisplay({
       >
         {hidden && (
           <div className="agent-panel-compact">
-            <button
+            <Button
               type="button"
               onClick={openOriginal}
               disabled={!current.path}
               aria-label="Open PROGRESS.md"
             >
-              <code>PROGRESS.md</code>
-            </button>
+              <span>PROGRESS.md</span>
+            </Button>
             <span className="agent-panel-summary">
               {parsed.firstLine ||
                 (current.error
                   ? "Cannot read PROGRESS.md."
-                  : "Progress format is unsupported.")}
+                  : "Open PROGRESS.md to view this format.")}
             </span>
             {changed && (
               <span
@@ -471,7 +472,7 @@ function ProgressDisplay({
               </span>
             )}
             {Boolean(current.error || reportError) && (
-              <button
+              <Button
                 type="button"
                 className="agent-panel-compact-error"
                 aria-label={
@@ -482,32 +483,34 @@ function ProgressDisplay({
                 onClick={() => setDialogError(current.error || reportError)}
               >
                 !
-              </button>
+              </Button>
             )}
-            <button
+            <Button
               type="button"
               aria-expanded={false}
               aria-controls={contentId}
               onClick={() => showOrHide(false)}
             >
               Show
-            </button>
+            </Button>
           </div>
         )}
         <div
           ref={heading}
-          className="agent-panel-heading"
+          className="agent-panel-heading ui-panel-header"
           aria-hidden={hidden || undefined}
           inert={hidden}
         >
-          <button
-            type="button"
-            onClick={openOriginal}
-            disabled={!current.path}
-            aria-label="Open PROGRESS.md"
-          >
-            <code>PROGRESS.md</code>
-          </button>
+          <h3 className="agent-panel-title">
+            <Button
+              type="button"
+              onClick={openOriginal}
+              disabled={!current.path}
+              aria-label="Open PROGRESS.md"
+            >
+              <span>PROGRESS.md</span>
+            </Button>
+          </h3>
           {current.cached && <span>Saved copy</span>}
           {connection !== "live" && (
             <span role="status">
@@ -517,33 +520,33 @@ function ProgressDisplay({
           {Boolean(current.error) && current.markdown.trim() && (
             <>
               <span>Cannot read PROGRESS.md.</span>
-              <button
+              <Button
                 type="button"
                 onClick={() => setDialogError(current.error)}
               >
                 Error details
-              </button>
-              <button type="button" onClick={retry}>
+              </Button>
+              <Button type="button" onClick={retry}>
                 Retry
-              </button>
+              </Button>
             </>
           )}
           {Boolean(reportError) && (
-            <button type="button" onClick={() => setDialogError(reportError)}>
+            <Button type="button" onClick={() => setDialogError(reportError)}>
               Cannot report panel size
-            </button>
+            </Button>
           )}
           <div className="agent-panel-controls">
-            <button
+            <Button
               type="button"
               aria-expanded={!hidden}
               aria-controls={contentId}
               onClick={() => showOrHide(true)}
             >
               Hide
-            </button>
+            </Button>
             {parsed.supported && (
-              <button
+              <Button
                 type="button"
                 className="agent-panel-expand"
                 style={{
@@ -555,7 +558,7 @@ function ProgressDisplay({
                 onClick={() => setExpanded((value) => !value)}
               >
                 {expanded && clipped ? "Collapse" : "Expand"}
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -574,21 +577,21 @@ function ProgressDisplay({
           {Boolean(current.error) && !current.markdown.trim() ? (
             <div className="agent-panel-notice" role="alert">
               <span>Cannot read PROGRESS.md.</span>
-              <button
+              <Button
                 type="button"
                 onClick={() => setDialogError(current.error)}
               >
                 Error details
-              </button>
-              <button type="button" onClick={retry}>
+              </Button>
+              <Button type="button" onClick={retry}>
                 Retry
-              </button>
+              </Button>
             </div>
           ) : (
             <>
               {!parsed.supported && (
                 <div className="agent-panel-notice" role="status">
-                  Progress format is unsupported.
+                  Open PROGRESS.md to view this format.
                 </div>
               )}
               {parsed.supported && (

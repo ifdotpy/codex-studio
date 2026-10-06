@@ -3,11 +3,15 @@
   background: var(--surface);
   border: 1px solid var(--line);
   color: var(--text);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
 }
 .request-summary {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .request-heading {
   display: flex;
@@ -17,7 +21,7 @@
 }
 .request-status {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .request-async .request-status {
   color: var(--accent);
@@ -37,18 +41,18 @@
   padding: 10px 12px;
 }
 .request-actions .request-delete:not(:disabled) {
-  color: light-dark(#c92a2a, #ff8787);
+  color: var(--muted);
 }
 .request-card .request-copy p {
   overflow-wrap: anywhere;
 }
 .request-card .request-copy .request-cwd {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .request-inline-answer {
-  margin-top: 14px;
-  padding-top: 14px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--line);
 }
 .request-answer-fields {
@@ -77,12 +81,12 @@
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 11px;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
 .request-answer-option small {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .request-answer-option:hover {
   background: var(--raised);
@@ -124,7 +128,7 @@
 
 .request-history {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   margin: 8px 0;
 }
 .request-history > summary {
@@ -154,7 +158,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 5px 10px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .request-history-meta strong,
 .request-history-question {
@@ -169,8 +173,71 @@
 }
 .request-deferred-note {
   margin: 8px 0;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .request-history-error {
   color: var(--warning, #e3b761);
+}
+
+/* Compact requests keep the question above secondary details. */
+.request-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.request-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.request-answer-form {
+  max-height: min(420px, 55dvh);
+  overflow: auto;
+  scroll-padding-bottom: 60px;
+}
+.request-answer-actions {
+  position: sticky;
+  bottom: 0;
+  padding-block: 8px;
+  background: var(--surface);
+  z-index: 1;
+}
+.request-permissions dl {
+  margin: 8px 0;
+  font-size: var(--studio-text-meta);
+}
+.request-permissions dl > div {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 4fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.request-permissions dt {
+  text-transform: capitalize;
+  color: var(--muted);
+}
+.request-permissions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.request-permissions summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--studio-text-meta);
+}
+.request-card {
+  scroll-margin-top: 12px;
+}
+@media (max-width: 560px) {
+  .request-summary .request-copy {
+    flex-basis: calc(100% - 30px);
+  }
+  .request-actions {
+    width: 100%;
+  }
 }
