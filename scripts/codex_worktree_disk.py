@@ -325,7 +325,8 @@ class WorktreeDiskScanner:
                         image_repos.add(agent['imageWorkspaceRepo'])
                     if agent and agent.get('imageWorkspaceBaseRepo'):
                         image_repos.add(agent['imageWorkspaceBaseRepo'])
-                    if agent and agent.get('imageWorkspaceReady') and not agent.get('deletedAt'):
+                    if (agent and agent.get('imageWorkspace')
+                            and agent.get('imageWorkspacePhase') not in {'removed', 'fallback'}):
                         images[agent['id']] = agent.get('imageWorkspaceRepo')
             finally:
                 db.close()
@@ -381,7 +382,7 @@ def management_view(runtime, agents, *, db=None):
     by_agent = {a['id']: workers.get(a['id'], {'state': 'unmeasured'})
                 for a in agents}
     repos = {a.get('imageWorkspaceRepo') for a in agents
-             if a.get('imageWorkspaceReady') and a.get('imageWorkspaceRepo')}
+             if a.get('imageWorkspace') and a.get('imageWorkspaceRepo')}
     for root_id in {a.get('rootId') for a in agents if a.get('rootId')}:
         try:
             lead = runtime.agent(root_id, db) if db is not None else runtime.agent(root_id)

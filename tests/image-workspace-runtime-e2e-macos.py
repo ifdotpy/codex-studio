@@ -34,7 +34,7 @@ def wait_for(predicate, timeout=90):
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('diskutil'),
                      'requires the macOS ASIF image backend')
 class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
-    def test_read_only_to_real_mount_commit_and_collect(self):
+    def test_read_only_copy_notice_worker_commit_and_lead_fetch(self):
         with tempfile.TemporaryDirectory(prefix='image-runtime-e2e-') as temp:
             root = Path(temp)
             repo = root / 'repo'
@@ -60,13 +60,13 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
             lead = rt.new_lead({'cwd': str(repo)})
             worker_id = None
             try:
-                def create_after_first_read_only_turn(path, agent_id, *, start_commit=None):
+                def create_after_first_read_only_turn(path, agent_id):
                     if agent_id == worker_id:
                         if not allow_create.wait(90):
                             raise RuntimeError('test did not release image workspace creation')
                         (project / 'tracked.txt').write_text('parent uncommitted edit\n')
                         user_edit_written.set()
-                    return create_real(path, agent_id, start_commit=start_commit)
+                    return create_real(path, agent_id)
 
                 with patch.object(engine, 'create_workspace', side_effect=create_after_first_read_only_turn):
                     worker_id = rt.spawn_agents(rt.agent(lead['id']), {'agents': [{
@@ -90,9 +90,11 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                     wait_for(lambda: rt.agent(worker_id).get('imageWorkspaceReady'))
                     self.assertTrue(user_edit_written.is_set())
                     ready = rt.agent(worker_id)
-                    image_repo = Path(ready['imageWorkspaceMount']) / 'repo'
+                    image_repo = Path(ready['cwd']).parents[1]
                     self.assertEqual((image_repo / 'project' / 'tracked.txt').read_text(),
                                      'parent uncommitted edit\n')
+                    taken_at = time.strftime('%Y-%m-%dT%H:%M:%SZ',
+                                             time.gmtime(ready['imageWorkspaceCreatedAt']))
 
                     rt.dispatch()
                     wait_for(lambda: len([1 for method, params in rt.server.calls
@@ -101,6 +103,11 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                     turns = [params for method, params in rt.server.calls if method == 'turn/start' and
                              params.get('threadId') == rt.agent(worker_id).get('threadId')]
                     self.assertIn('Write access is enabled', turns[-1]['input'][0]['text'])
+                    notice = turns[-1]['input'][0]['text']
+                    self.assertIn(str(image_repo / 'project'), notice)
+                    self.assertIn(str(repo), notice)
+                    self.assertIn(taken_at, notice)
+                    self.assertIn('including uncommitted changes', notice)
                     self.assertEqual(turns[-1]['cwd'], str(image_repo / 'project'))
                     worker_file = image_repo / 'project' / 'worker.txt'
                     worker_file.write_text('worker commit\n')
@@ -108,27 +115,24 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                                                          *args], check=True, capture_output=True)
                     git('config', 'user.name', 'Fixture Worker')
                     git('config', 'user.email', 'worker@example.test')
+                    git('switch', '-c', 'worker/image-e2e')
                     git('add', 'project/worker.txt')
                     git('commit', '-m', 'worker change')
                     agent = rt.agent(worker_id)
                     rt.server.complete(agent['threadId'], agent['turnId'], 'Committed worker change')
-                    wait_for(lambda: rt.agent(worker_id).get('imageWorkspaceCollect') is not None)
 
-                branch_head = subprocess.check_output(
-                    ['git', '-C', str(repo), 'rev-parse', f'refs/heads/codex-agent/{worker_id}'], text=True).strip()
-                collected_text = subprocess.check_output(
-                    ['git', '-C', str(repo), 'show', branch_head + ':project/tracked.txt'], text=True)
-                collected_worker = subprocess.check_output(
-                    ['git', '-C', str(repo), 'show', branch_head + ':project/worker.txt'], text=True)
-                self.assertEqual(collected_text, 'base tree\n')
-                self.assertEqual(collected_worker, 'worker commit\n')
+                subprocess.run(['git', '-C', str(repo), 'fetch', str(image_repo),
+                                'worker/image-e2e'], check=True, capture_output=True)
+                fetched = subprocess.check_output(
+                    ['git', '-C', str(repo), 'show', 'FETCH_HEAD:project/worker.txt'], text=True)
+                self.assertEqual(fetched, 'worker commit\n')
                 self.assertEqual((project / 'tracked.txt').read_text(), 'parent uncommitted edit\n')
-                self.assertEqual(rt.agent(worker_id)['imageWorkspaceCollect']['state'], 'collected')
+                self.assertFalse((project / 'worker.txt').exists())
             finally:
                 allow_create.set()
                 if worker_id:
                     try:
-                        engine.remove_workspace(worker_id, force=True)
+                        engine.remove_workspace(worker_id)
                     except Exception:
                         pass
                 rt.close()

@@ -275,108 +275,19 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def image_operation(self):
         self.agent = self.update(self.agent, inFlight=False, turnId=None, status="completed",
-                                 imageWorkspaceReady=True, lastCompletedTurn="image-turn")
+                                 imageWorkspace=True, imageWorkspaceReady=True,
+                                 lastCompletedTurn="image-turn")
         with self.runtime.lock, self.runtime.db() as db:
             return self.runtime._reserve_checkpoint(db, self.agent, "checkpoint", "image-turn")
 
-    def test_stop_during_capture_prevents_image_collection(self):
+    def test_image_workspace_skips_checkpoint_capture_and_collection(self):
         operation_id = self.image_operation()
-        entered, release = threading.Event(), threading.Event()
-
-        def capture(*args):
-            entered.set()
-            self.assertTrue(release.wait(3))
-            return {"id": "successful-capture"}
-
-        with patch.object(self.runtime, "capture_checkpoint", side_effect=capture):
-            with patch("codex_workspace_images.collect") as collect, ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(self.runtime.checkpoint_after_turn, self.agent["id"], "image-turn", operation_id)
-                try:
-                    self.assertTrue(entered.wait(3))
-                    self.runtime.stop(self.agent["id"], False)
-                finally:
-                    release.set()
-                    future.result(timeout=3)
-                collect.assert_not_called()
-        current = self.runtime.agent(self.agent["id"])
-        self.assertFalse(current["autoWake"])
-        self.assertGreater(current["epoch"], self.agent["epoch"])
-        self.assertNotIn("imageWorkspaceCollect", current)
-
-    def test_source_change_during_capture_prevents_image_collection(self):
-        for change in ({"threadId": "changed-thread"}, {"accountKey": "changed-account"}, {"cwd": str(self.root)}):
-            with self.subTest(change=change):
-                original = self.runtime.agent(self.agent["id"])
-                operation_id = self.image_operation()
-                entered, release = threading.Event(), threading.Event()
-
-                def capture(*args):
-                    entered.set()
-                    self.assertTrue(release.wait(3))
-                    return {"id": "successful-capture"}
-
-                with patch.object(self.runtime, "capture_checkpoint", side_effect=capture):
-                    with patch("codex_workspace_images.collect") as collect, ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(self.runtime.checkpoint_after_turn, self.agent["id"], "image-turn", operation_id)
-                        try:
-                            self.assertTrue(entered.wait(3))
-                            changed = self.update(self.agent, **change)
-                        finally:
-                            release.set()
-                            future.result(timeout=3)
-                        collect.assert_not_called()
-                self.assertNotIn("imageWorkspaceCollect", self.runtime.agent(self.agent["id"]))
-                self.agent = self.update(changed, threadId=original["threadId"],
-                                         accountKey=original["accountKey"], cwd=original["cwd"])
-
-    def test_stop_during_started_collect_does_not_write_stale_result_or_error(self):
-        for fail in (False, True):
-            with self.subTest(fail=fail):
-                self.agent = self.update(self.agent, autoWake=True, imageWorkspaceError="saved image notice")
-                operation_id = self.image_operation()
-                entered, release = threading.Event(), threading.Event()
-
-                def collect(*args):
-                    entered.set()
-                    self.assertTrue(release.wait(3))
-                    if fail:
-                        raise ValueError("fixture collect failure")
-                    return {"conflict": "fixture conflict", "rawRef": "fixture-ref"}
-
-                with patch("codex_workspace_images.collect", side_effect=collect) as collected:
-                    with patch.object(self.runtime, "parent_event") as parent, ThreadPoolExecutor(max_workers=1) as pool:
-                        future = pool.submit(self.runtime.checkpoint_after_turn, self.agent["id"], "image-turn", operation_id)
-                        try:
-                            self.assertTrue(entered.wait(3))
-                            self.runtime.stop(self.agent["id"], False)
-                        finally:
-                            release.set()
-                            future.result(timeout=3)
-                        collected.assert_called_once_with(self.agent["id"])
-                        parent.assert_not_called()
-                current = self.runtime.agent(self.agent["id"])
-                self.assertFalse(current["autoWake"])
-                self.assertNotIn("imageWorkspaceCollect", current)
-                self.assertEqual(current["imageWorkspaceError"], "saved image notice")
-                self.agent = current
-
-    def test_failed_checkpoint_does_not_start_image_collection(self):
-        operation_id = self.image_operation()
-        with patch.object(self.runtime, "capture_checkpoint", side_effect=ValueError("fixture capture failure")):
-            with patch("codex_workspace_images.collect") as collect:
-                self.runtime.checkpoint_after_turn(self.agent["id"], "image-turn", operation_id)
-                collect.assert_not_called()
-        self.assertEqual(self.operations()[0]["phase"], "failed")
-        self.assertEqual(self.runtime.agent(self.agent["id"])["checkpointError"], "fixture capture failure")
-
-    def test_successful_image_collection_keeps_exact_result(self):
-        operation_id = self.image_operation()
-        result = {"collected": True, "rawRef": "fixture-ref"}
-        with patch("codex_workspace_images.collect", return_value=result) as collect:
+        with patch.object(self.runtime, "capture_checkpoint") as capture, \
+                patch("codex_workspace_images.collect") as collect:
             self.runtime.checkpoint_after_turn(self.agent["id"], "image-turn", operation_id)
-            collect.assert_called_once_with(self.agent["id"])
-        self.assertEqual(self.operations()[0]["phase"], "completed")
-        self.assertEqual(self.runtime.agent(self.agent["id"])["imageWorkspaceCollect"], result)
+            capture.assert_not_called()
+            collect.assert_not_called()
+        self.assertNotIn("imageWorkspaceCollect", self.runtime.agent(self.agent["id"]))
 
 
 class ManualCheckpointLockContract(unittest.TestCase):
