@@ -2505,18 +2505,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
       /** Imageworkspacecreatedat */
       imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3835,18 +3841,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
       /** Imageworkspacecreatedat */
       imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -9324,12 +9336,16 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
       /** Imageworkspacecreatedat */
       imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacemount */
       imageWorkspaceMount?: string | null;
       /** Imageworkspacenoticeerror */
@@ -9344,6 +9360,8 @@ export interface components {
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Importedfrom */
       importedFrom?: string | null;
       /** Inflight */

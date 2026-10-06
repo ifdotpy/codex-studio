@@ -599,6 +599,9 @@ class AgentEntityDto(ContractModel):
     imageWorkspaceError: str | None = None
     imageWorkspaceRepo: str | None = None
     imageWorkspaceBaseRepo: str | None = None
+    imageWorkspaceSubpath: str | None = None
+    imageWorkspaceBaseRef: str | None = None
+    imageWorkspaceHasGit: bool | None = None
     imageWorkspaceCreatedAt: float | None = None
     created: float | None = None
     updated: float | None = None
