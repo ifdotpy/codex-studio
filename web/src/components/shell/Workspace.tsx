@@ -1,4 +1,5 @@
 import { SearchContent } from "./SearchOverlay";
+import { EmptyState, PanelHeader } from "../ui/primitives";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
 import { useWorkspaceResource as useResource } from "../useWorkspaceResource";
@@ -90,15 +91,15 @@ const descriptions: Record<string, string> = {
   plan: "The agent's current plan.",
   checkpoints: "Save and restore points in the work.",
   tools: "Tools the agents can use.",
-  profiles: "Reusable instructions and model choices for subagents.",
-  rules: "Wake the agent on a time, file change, or event.",
+  profiles: "Reusable instructions and model choices for workers.",
+  rules: "When the agent resumes",
 };
 const date = (value: number | string | undefined) =>
   value
     ? localDateTime(new Date(typeof value === "number" ? value * 1000 : value))
     : "";
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div className="workspace-empty">{children}</div>;
+  return <EmptyState title={children} />;
 }
 function ResourceState({
   state,
@@ -141,7 +142,8 @@ export function Workspace(props: Props) {
     [revision, setRevision] = useState(0),
     [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [pending, setPending] = useState(0),
-    [focusId, setFocusId] = useState("");
+    [focusId, setFocusId] = useState(""),
+    [filePath, setFilePath] = useState("");
   useEffect(() => {
     if (props.opened && props.initialFocus) setFocusId(props.initialFocus.id);
   }, [props.opened, props.initialFocus?.requestId]);
@@ -240,147 +242,209 @@ export function Workspace(props: Props) {
   ].includes(section);
   const title = sections.find(([id]) => id === section)?.[1];
   return (
-    <Drawer
+    <Drawer.Root
       opened={props.opened}
-      closeButtonProps={{ "aria-label": "Close" }}
       onClose={props.onClose}
       position="right"
-      size="min(1180px, 100vw)"
-      title={
-        <span className="workspace-drawer-title">
-          {section === "messages" ? <Inbox size={19} /> : <Layers3 size={19} />}{" "}
-          {section === "messages" ? "Messages" : "Workspace"}
-        </span>
+      size={
+        section === "changes" || section === "messages"
+          ? "min(1040px, 100vw)"
+          : "min(840px, 100vw)"
       }
       className={`workspace-drawer ${section === "messages" ? "workspace-messages-drawer" : ""}`}
     >
-      <div
-        className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
-      >
-        {section !== "messages" && (
-          <nav
-            ref={navRef}
-            className="workspace-nav"
-            aria-label="Workspace sections"
-          >
-            {sections.map(([id, label, Icon]) => (
-              <UnstyledButton
-                key={id}
-                className={`workspace-nav-item ${section === id ? "selected" : ""}`}
-                onClick={() => setSection(id)}
-                aria-current={section === id ? "page" : undefined}
-              >
-                <Icon size={17} />
-                <span>{label}</span>
-                {id === "messages" && messageAttentionCount(props.data) > 0 && (
-                  <span className="workspace-count">
-                    {messageAttentionCount(props.data)}
-                  </span>
-                )}
-              </UnstyledButton>
-            ))}
-          </nav>
-        )}
-        <main
-          className={`workspace-content ${section === "messages" ? "workspace-messages" : ""}`}
-        >
-          <header className="workspace-heading">
-            <div>
-              {section !== "messages" && <h2>{title}</h2>}
-              <p>
-                {section === "messages"
-                  ? props.data.threads.find((agent) => agent.isLead)?.name ||
-                    descriptions[section]
-                  : descriptions[section]}
-              </p>
-            </div>
+      <Drawer.Overlay />
+      <Drawer.Content>
+        <Drawer.Header>
+          <Drawer.Title>
+            {" "}
+            <span className="workspace-drawer-title">
+              {section === "messages" ? (
+                <Inbox size={19} />
+              ) : (
+                <Layers3 size={19} />
+              )}{" "}
+              {section === "messages" ? "Messages" : "Workspace"}
+            </span>
+          </Drawer.Title>
+          {section === "messages" && (
             <Button
               variant="subtle"
               size="compact-sm"
-              aria-label={
-                section === "messages"
-                  ? "Refresh messages"
-                  : "Refresh workspace"
-              }
+              className="workspace-messages-refresh"
+              aria-label="Refresh messages"
               onClick={() => {
                 reload();
-                if (section === "messages")
-                  void refreshRef
-                    .current()
-                    .catch((error) => notifyRef.current(errorText(error)));
+                void refreshRef
+                  .current()
+                  .catch((error) => notifyRef.current(errorText(error)));
               }}
             >
               <RefreshCw size={16} />
             </Button>
-          </header>
-          {section !== "messages" && (
-            <div className="workspace-scope">
-              <NativeSelect
-                label="Agent"
-                value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
+          )}
+          <Drawer.CloseButton aria-label="Close" />
+        </Drawer.Header>
+        <Drawer.Body>
+          <div
+            className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
+          >
+            {section !== "messages" && (
+              <nav
+                ref={navRef}
+                className="workspace-nav"
+                aria-label="Workspace sections"
               >
-                <option value="">Select an agent</option>
-                {props.data.threads
-                  .filter((a) => a.source === "managed")
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.isLead ? "Main agent · " : ""}
-                      {a.name}
-                    </option>
-                  ))}
-              </NativeSelect>
-              {selected && (
-                <Button
-                  variant="subtle"
-                  size="xs"
-                  onClick={() => {
-                    props.onSelect(selected.id);
-                    props.onClose();
-                  }}
-                >
-                  Open chat <ChevronRight size={14} />
-                </Button>
-              )}
-              {pending > 0 && <Loader size={16} />}
-            </div>
-          )}
-          {needAgent && !selected ? (
-            <Empty>Select an agent to view its {title?.toLowerCase()}.</Empty>
-          ) : (
-            <div
-              className={
-                section === "messages" ? "workspace-message-body" : undefined
-              }
-              key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
+                {sections.map(([id, label, Icon]) => (
+                  <UnstyledButton
+                    key={id}
+                    className={`workspace-nav-item ${section === id ? "selected" : ""}`}
+                    onClick={() => setSection(id)}
+                    aria-current={section === id ? "page" : undefined}
+                  >
+                    <Icon size={17} />
+                    <span>{label}</span>
+                    {id === "messages" &&
+                      messageAttentionCount(props.data) > 0 && (
+                        <span className="workspace-count">
+                          {messageAttentionCount(props.data)}
+                        </span>
+                      )}
+                  </UnstyledButton>
+                ))}
+              </nav>
+            )}
+            <main
+              className={`workspace-content ${section === "messages" ? "workspace-messages" : ""}`}
             >
-              {section === "changes" && <Changes {...context} />}
-              {section === "messages" && (
-                <TeamChats
-                  refresh={props.refresh}
-                  notify={props.notify}
-                  data={props.data}
-                  focusItemId={props.initialFocus?.id}
-                  focusRequestId={props.initialFocus?.requestId}
-                  focusRoomId={props.initialFocus?.roomId}
-                  leadId={
-                    props.agent?.rootId ||
-                    (props.agent?.isLead ? props.agent.id : undefined)
-                  }
-                />
+              {section !== "messages" && (
+                <div className="workspace-heading">
+                  <div>
+                    <PanelHeader title={title} help={descriptions[section]} />
+                    {section !== "messages" && section !== "profiles" && (
+                      <div className="workspace-scope">
+                        <NativeSelect
+                          aria-label="Agent"
+                          size="xs"
+                          value={agentId}
+                          onChange={(e) => setAgentId(e.target.value)}
+                        >
+                          <option value="">Select an agent</option>
+                          {props.data.threads
+                            .filter((a) => a.source === "managed")
+                            .map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.isLead ? "Main agent · " : ""}
+                                {a.name}
+                              </option>
+                            ))}
+                        </NativeSelect>
+                        {selected && (
+                          <Button
+                            variant="subtle"
+                            size="compact-xs"
+                            onClick={() => {
+                              props.onSelect(selected.id);
+                              props.onClose();
+                            }}
+                          >
+                            Open chat <ChevronRight size={14} />
+                          </Button>
+                        )}
+                        {pending > 0 && <Loader size={16} />}
+                      </div>
+                    )}
+                  </div>
+                  {section === "plan" && (
+                    <Button
+                      variant="subtle"
+                      size="compact-sm"
+                      disabled={!selected}
+                      onClick={() => {
+                        if (selected) {
+                          props.onSelect(selected.id);
+                          props.onClose();
+                        }
+                      }}
+                    >
+                      Change plan in chat
+                    </Button>
+                  )}
+                  {section === "changes" && selected && (
+                    <TextInput
+                      aria-label="Open a file"
+                      placeholder="File path"
+                      value={filePath}
+                      onChange={(e) => setFilePath(e.target.value)}
+                      rightSection={
+                        <UnstyledButton
+                          aria-label="Preview file"
+                          disabled={!filePath.trim()}
+                          onClick={() =>
+                            setPreview({ agent: selected.id, path: filePath })
+                          }
+                        >
+                          <ChevronRight size={16} />
+                        </UnstyledButton>
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && filePath.trim())
+                          setPreview({ agent: selected.id, path: filePath });
+                      }}
+                    />
+                  )}
+                  <Button
+                    variant="subtle"
+                    size="compact-sm"
+                    aria-label="Refresh workspace"
+                    onClick={reload}
+                  >
+                    <RefreshCw size={16} />
+                  </Button>
+                </div>
               )}
-              {section === "search" && <SearchContent {...context} />}
-              {section === "plan" && <Plan {...context} />}
-              {section === "checkpoints" && <Checkpoints {...context} />}
-              {section === "tools" && <Tools {...context} />}
-              {section === "profiles" && <Profiles {...context} />}
-              {section === "rules" && <Rules {...context} />}
-            </div>
-          )}
-        </main>
-      </div>
-      <FilePreview target={preview} onClose={() => setPreview(null)} />
-    </Drawer>
+              {needAgent && !selected ? (
+                <Empty>
+                  Select an agent to view its {title?.toLowerCase()}.
+                </Empty>
+              ) : (
+                <div
+                  className={
+                    section === "messages"
+                      ? "workspace-message-body"
+                      : undefined
+                  }
+                  key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
+                >
+                  {section === "changes" && <Changes {...context} />}
+                  {section === "messages" && (
+                    <TeamChats
+                      refresh={props.refresh}
+                      notify={props.notify}
+                      data={props.data}
+                      focusItemId={props.initialFocus?.id}
+                      focusRequestId={props.initialFocus?.requestId}
+                      focusRoomId={props.initialFocus?.roomId}
+                      leadId={
+                        props.agent?.rootId ||
+                        (props.agent?.isLead ? props.agent.id : undefined)
+                      }
+                    />
+                  )}
+                  {section === "search" && <SearchContent {...context} />}
+                  {section === "plan" && <Plan {...context} />}
+                  {section === "checkpoints" && <Checkpoints {...context} />}
+                  {section === "tools" && <Tools {...context} />}
+                  {section === "profiles" && <Profiles {...context} />}
+                  {section === "rules" && <Rules {...context} />}
+                </div>
+              )}
+            </main>
+          </div>
+          <FilePreview target={preview} onClose={() => setPreview(null)} />
+        </Drawer.Body>
+      </Drawer.Content>
+    </Drawer.Root>
   );
 }
 export default Workspace;
@@ -398,8 +462,7 @@ function Changes(c: Context) {
         view: "annotations",
       },
     });
-  const [path, setPath] = useState(""),
-    [comment, setComment] = useState<{
+  const [comment, setComment] = useState<{
       path: string;
       line: number;
       turnId?: string;
@@ -438,7 +501,16 @@ function Changes(c: Context) {
       const newLine =
         inHunk && !hunk && (text.startsWith("+") || text.startsWith(" "));
       if (newLine) line++;
-      return { text, line, path: current, commentable: !!current && newLine };
+      const headerPath = text.startsWith("diff --git ")
+        ? text.match(/ b\/(.*)$/)?.[1] || text.slice(11)
+        : undefined;
+      return {
+        text,
+        line,
+        path: current,
+        headerPath,
+        commentable: !!current && newLine,
+      };
     });
   return (
     <>
@@ -455,28 +527,9 @@ function Changes(c: Context) {
         <>
           <div className="workspace-toolbar">
             <span className="workspace-muted">
-              {files.length} reported files
+              {files.length} reported {files.length === 1 ? "file" : "files"}
               {report?.reportedAt && <> · {date(report.reportedAt)}</>}
             </span>
-            <TextInput
-              aria-label="Open a file"
-              placeholder="File path"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              rightSection={
-                <UnstyledButton
-                  aria-label="Preview file"
-                  disabled={!path.trim()}
-                  onClick={() => c.preview({ agent: c.selected!.id, path })}
-                >
-                  <ChevronRight size={16} />
-                </UnstyledButton>
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && path.trim())
-                  c.preview({ agent: c.selected!.id, path });
-              }}
-            />
           </div>
           {report?.truncated && (
             <p className="workspace-muted">
@@ -505,37 +558,49 @@ function Changes(c: Context) {
             >
               {rows.map((row, index) => (
                 <div
-                  className={`workspace-diff-line ${row.text.startsWith("+") ? "addition" : row.text.startsWith("-") ? "deletion" : row.text.startsWith("@@") ? "hunk" : ""}`}
+                  className={`workspace-diff-line ${row.headerPath ? "file-header" : !row.commentable && !row.text.startsWith("@@") ? "patch-metadata" : ""} ${row.text.startsWith("+") ? "addition" : row.text.startsWith("-") ? "deletion" : row.text.startsWith("@@") ? "hunk" : ""}`}
                   key={index}
                 >
-                  <button
-                    type="button"
-                    disabled={!row.commentable}
-                    aria-label={
-                      row.commentable
-                        ? `Comment on ${row.path} line ${row.line}`
-                        : undefined
-                    }
-                    title={
-                      row.commentable
-                        ? `Comment on line ${row.line}`
-                        : undefined
-                    }
-                    onClick={() =>
-                      setComment({
-                        path: row.path,
-                        line: row.line,
-                        ...(typeof report?.turnId === "string"
-                          ? { turnId: report.turnId }
-                          : {}),
-                        text: "",
-                        id: crypto.randomUUID(),
-                      })
-                    }
-                  >
-                    {row.commentable ? row.line : ""}
-                  </button>
-                  <code>{row.text || " "}</code>
+                  {row.headerPath ? (
+                    <>
+                      <code className="workspace-diff-status">
+                        {files.find((file) => file.path === row.headerPath)
+                          ?.status || "M"}
+                      </code>
+                      <span>{row.headerPath}</span>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        disabled={!row.commentable}
+                        aria-label={
+                          row.commentable
+                            ? `Comment on ${row.path} line ${row.line}`
+                            : undefined
+                        }
+                        title={
+                          row.commentable
+                            ? `Comment on line ${row.line}`
+                            : undefined
+                        }
+                        onClick={() =>
+                          setComment({
+                            path: row.path,
+                            line: row.line,
+                            ...(typeof report?.turnId === "string"
+                              ? { turnId: report.turnId }
+                              : {}),
+                            text: "",
+                            id: crypto.randomUUID(),
+                          })
+                        }
+                      >
+                        {row.commentable ? row.line : ""}
+                      </button>
+                      <code>{row.text || " "}</code>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -613,19 +678,6 @@ function Plan(c: Context) {
   return (
     <>
       <ResourceState state={state} />
-      <div className="workspace-actions">
-        <Button
-          variant="light"
-          disabled={!c.selected}
-          onClick={() => {
-            if (!c.selected) return;
-            c.onSelect(c.selected.id);
-            c.onClose();
-          }}
-        >
-          Change plan in chat
-        </Button>
-      </div>
       {steps.length || explanation ? (
         <section className="workspace-result">
           <h3>Agent plan</h3>
@@ -665,6 +717,10 @@ function Checkpoints(c: Context) {
   return (
     <>
       <ResourceState state={state} />
+      <p className="workspace-muted">
+        Save the project files and chat history. Preview changes before you
+        restore a checkpoint.
+      </p>
       <form
         className="workspace-toolbar"
         onSubmit={async (e) => {
@@ -691,6 +747,7 @@ function Checkpoints(c: Context) {
         />
         <Button
           variant="filled"
+          color="indigo"
           type="submit"
           loading={busy}
           disabled={!!c.selected?.inFlight}
@@ -806,9 +863,14 @@ function Tools(c: Context) {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      {(state.data?.errors || []).map((error: unknown, i: number) => (
-        <ErrorDescription className="workspace-error" key={i} value={error} />
-      ))}
+      {!!state.data?.errors?.length && (
+        <details className="workspace-error">
+          <summary>Some tools could not load. View details.</summary>
+          {state.data.errors.map((error: unknown, i: number) => (
+            <ErrorDescription key={i} value={error} />
+          ))}
+        </details>
+      )}
       {state.data && (
         <>
           <h3 className="workspace-section-title">Orchestration tools</h3>
@@ -829,12 +891,12 @@ function Tools(c: Context) {
                     <strong>
                       {inventoryName(tool) || `Tool ${index + 1}`}
                     </strong>
+                    <span className="workspace-tool-description">
+                      {typeof tool.description === "string"
+                        ? tool.description
+                        : ""}
+                    </span>
                   </summary>
-                  <p>
-                    {typeof tool.description === "string"
-                      ? tool.description
-                      : JSON.stringify(tool.description ?? "")}
-                  </p>
                   <pre className="workspace-code">
                     {JSON.stringify(
                       tool.inputSchema ?? tool.parameters,
@@ -968,7 +1030,7 @@ function Profiles(c: Context) {
       <ResourceState state={state} />
       <div className="workspace-toolbar">
         <span className="workspace-muted">
-          Apply profiles when you create subagents.
+          Apply profiles when you create workers.
         </span>
         <Button
           size="xs"
@@ -1034,7 +1096,7 @@ function Profiles(c: Context) {
         </div>
       ))}
       {!state.data?.profiles?.length && state.data !== null && (
-        <Empty>No saved subagent profiles.</Empty>
+        <Empty>No saved worker profiles.</Empty>
       )}
       <Modal
         opened={!!draft}

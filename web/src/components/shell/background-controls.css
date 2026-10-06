@@ -106,3 +106,40 @@
 .tasks-drawer-body > .mantine-Collapse-root {
   flex-shrink: 0;
 }
+
+.tasks-toolbar {
+  padding: 10px 16px;
+  gap: 8px;
+}
+.tasks-filter-help {
+  font-size: var(--studio-text-meta);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.task-detail-top {
+  padding: 12px 16px 4px;
+  gap: 8px;
+}
+.task-detail-scroll {
+  padding: 4px 16px 16px;
+}
+.task-detail h2 {
+  margin: 6px 0;
+  font-size: var(--studio-text-code);
+  line-height: 1.5;
+}
+.task-row {
+  padding: 10px 12px;
+}
+.task-row-footer,
+.task-facts,
+.task-owner,
+.task-age,
+.task-record {
+  font-size: var(--studio-text-meta);
+}
+.task-output {
+  padding: 12px;
+  max-height: 58dvh;
+  line-height: 1.65;
+}

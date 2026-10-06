@@ -64,7 +64,7 @@
 .team-room-title time {
   color: var(--muted);
   flex: none;
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 .team-room-preview {
   margin-top: 5px;
@@ -111,7 +111,7 @@
 .team-room-kind {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
 }
 .team-room-back {
@@ -148,7 +148,7 @@
 .team-message-sender {
   display: block;
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   margin-bottom: 5px;
 }
 .team-message .markdown-block {
@@ -180,14 +180,14 @@
   display: block;
   text-align: right;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   margin-top: 5px;
 }
 .team-room-footer {
   flex: none;
   padding: 8px 16px;
   border-top: 1px solid var(--line);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
   text-align: center;
 }
@@ -288,7 +288,7 @@
 .message-group > summary {
   margin: 0;
   padding: 11px 8px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   font-weight: 600;
 }
 .message-group > summary {
@@ -296,7 +296,7 @@
 }
 .message-group > summary > span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   margin-left: 8px;
 }
 .for-you .workspace-toolbar {
@@ -382,7 +382,7 @@
   border-radius: 5px;
   background: var(--raised, #27272e);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   font-variant-numeric: tabular-nums;
 }
 .messages-team-panel {
@@ -520,4 +520,60 @@
 }
 .message-inline-thread > .message-date {
   margin-top: 5px;
+}
+
+.team-room-header {
+  padding: 10px 14px;
+  gap: 8px;
+}
+.team-message {
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.team-message.from-first {
+  border-radius: 6px;
+}
+.team-room-row {
+  padding: 10px 12px;
+}
+.unified-messages .chat-message-author {
+  font-size: var(--studio-text-meta);
+  gap: 6px;
+}
+.unified-messages .workspace-row {
+  padding: 10px;
+  border-radius: 6px;
+}
+.unified-messages .workspace-facts {
+  margin-block: 10px;
+  gap: 4px 10px;
+}
+
+.messages-chat-list .team-room-row {
+  min-height: 64px;
+  padding: 8px 10px;
+}
+.unified-message-scroll {
+  padding: 14px;
+}
+.unified-message-scroll [data-feed-item] {
+  margin-bottom: 10px;
+}
+.unified-message-scroll
+  :is(.request-card, .message-inline-thread, .complaint-card) {
+  padding: 10px;
+  border-radius: 6px;
+}
+.unified-message-scroll
+  :is(.request-heading, .request-status, .message-date, .chat-message-author) {
+  font-size: var(--studio-text-meta);
+  line-height: 1.5;
+}
+.unified-message-scroll .request-actions {
+  gap: 6px;
+}
+.message-inline-thread .complaint-response {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
 }

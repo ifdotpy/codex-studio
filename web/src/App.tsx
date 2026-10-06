@@ -166,7 +166,6 @@ import {
   workerState,
   TEAM_PANEL_STATES,
 } from "./components/agents/WorkerOverview";
-import { TeamDiskTotal } from "./components/WorktreeDisk";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
 const ClaudeSettings = lazy(() =>
   import("./components/ClaudeSettings").then((module) => ({
@@ -1566,27 +1565,24 @@ export default function App() {
         >
           <X size={16} />
         </ActionIcon>
-        <span>
-          {workers.length} {workers.length === 1 ? "subagent" : "subagents"}
-        </span>
       </div>
-      {!smallTeam && (
-        <TeamSummary
-          workers={workers}
-          answers={answerIds}
-          deferred={deferredIds}
-          disk={worktreeDisk}
-        />
-      )}
-      {smallTeam && <TeamDiskTotal workers={workers} disk={worktreeDisk} />}
+      <TeamSummary
+        workers={workers}
+        answers={answerIds}
+        deferred={deferredIds}
+        disk={worktreeDisk}
+      />
       {/* The lead link is only useful from a worker chat. */}
       {lead && opened !== lead.id && (
         <Button
           id="lead-row"
+          variant="subtle"
+          size="compact-sm"
+          title={lead.name || "Main agent"}
           leftSection={<ArrowLeft size={13} />}
           onClick={() => open(lead.id)}
         >
-          {lead.name || "Main agent"}
+          Back to main agent
         </Button>
       )}
       {showTeamFilters && (
@@ -1596,7 +1592,7 @@ export default function App() {
             id="worker-search"
             type="search"
             aria-label="Find a subagent"
-            placeholder="Find a subagent"
+            placeholder="Find a worker"
             value={workerQuery}
             onChange={(e) => setWorkerQuery(e.target.value)}
           />
@@ -1656,8 +1652,8 @@ export default function App() {
         {!shown.length && (
           <p className="team-empty" role="status">
             {query
-              ? "No subagents match your search."
-              : "No subagents in this group."}
+              ? "No workers match your search."
+              : "No workers in this group."}
           </p>
         )}
       </div>
