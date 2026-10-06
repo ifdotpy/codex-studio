@@ -216,7 +216,7 @@ class DeleteInflightContract(unittest.TestCase):
         self.assert_deleted_and_released(lead["id"], baseline)
         self.assert_deleted_and_released(worker["id"], baseline)
 
-    def test_deleted_turn_releases_global_and_per_root_capacity_for_next_turn(self):
+    def test_global_limit_slot_releases_after_three_deleted_turns(self):
         with patch.dict(fixture.fixture.os.environ, {"CODEX_CANVAS_CONCURRENCY": "3"}):
             running = [self.runtime.create({"name": f"Global {index}", "cwd": self.temp.name,
                 "prompt": f"Run {index}"}, defer=True) for index in range(4)]
@@ -235,6 +235,7 @@ class DeleteInflightContract(unittest.TestCase):
             self.runtime.server.complete(agent["threadId"], agent["turnId"])
             fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
 
+    def test_deleted_worker_releases_per_root_limit_for_next_turn(self):
         root = self.runtime.create({"name": "Team", "cwd": self.temp.name, "prompt": "Team",
                                     "maxAgents": 5, "concurrency": 1})
         self.runtime.dispatch()
