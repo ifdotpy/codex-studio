@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Iterable, Mapping
     from typing import Any, Callable, ContextManager
-    from codex_records import AgentRecord, ComplaintRecord, DeliveredModeRecord, JsonObject, JsonValue, WorkRecord
+    from codex_records import AgentRecord, ComplaintRecord, DeliveredModeRecord, JsonObject, JsonValue, WorkRecord, WorkViewRecord
 
 
 class _EfficiencyHost(RecordStore, Protocol):
@@ -28,10 +28,10 @@ class _EfficiencyHost(RecordStore, Protocol):
     def read_db(self: "_EfficiencyHost") -> "ContextManager[sqlite3.Connection]": ...
     def checked_actor(self: "_EfficiencyHost", db: "sqlite3.Connection", agent_id: str, actor: str | None = None) -> "AgentRecord": ...
     def work_action(self: "_EfficiencyHost", actor_id: str, args: dict[str, "Any"], key: str | None, *, actor: str, epoch: int | None) -> dict[str, "Any"]: ...
-    def task_brief(self: "_EfficiencyHost", task: dict[str, "Any"]) -> dict[str, "Any"]: ...
+    def task_brief(self: "_EfficiencyHost", task: "WorkViewRecord | dict[str, Any]") -> dict[str, "Any"]: ...
     def work_records(self: "_EfficiencyHost", db: "sqlite3.Connection", root_id: str) -> list["WorkRecord"]: ...
     def work_by_id(self: "_EfficiencyHost", db: "sqlite3.Connection", task_id: str | None, root_id: str) -> "WorkRecord" | None: ...
-    def work_view(self: "_EfficiencyHost", work: "WorkRecord", works: "Mapping[str, str]") -> dict[str, "Any"]: ...
+    def work_view(self: "_EfficiencyHost", work: "WorkRecord", works: "dict[str, str] | list[WorkRecord]") -> "WorkViewRecord": ...
     def worker_defaults(self: "_EfficiencyHost", root: "AgentRecord") -> "JsonObject": ...
     def dispatch_active_slots(self: "_EfficiencyHost", db: "sqlite3.Connection") -> list["JsonObject"]: ...
     def tool_request(self: "_EfficiencyHost", key: str | None, db: "sqlite3.Connection") -> "JsonObject" | None: ...
@@ -50,7 +50,6 @@ class _EfficiencyHost(RecordStore, Protocol):
     def remember_role_text(self: "_EfficiencyHost", text: str) -> None: ...
     def role_update(self: "_EfficiencyHost", previous_version: "Any", text: str) -> str: ...
     def _archive_child_result_event(self: "_EfficiencyHost", row: "JsonObject", value: "JsonObject", result_text: str) -> str: ...
-
 
 def packed(value: "Any") -> str:
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
@@ -159,7 +158,7 @@ class EfficiencyMixin:
             actor = self.checked_actor(db, actor_id, actor_id)
             if action == 'list':
                 works = self.work_records(db, actor['rootId'])
-                statuses = {work['id']: work['status'] for work in works}
+                statuses: dict[str, str] = {work['id']: work['status'] for work in works}
                 rows = [self.task_brief(self.work_view(w, statuses)) for w in works
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
@@ -183,7 +182,7 @@ class EfficiencyMixin:
                     'history': {'results': len(task['results']), 'decisions': len(task['decisions'])}}
 
     @staticmethod
-    def task_brief(task: dict[str, "Any"]) -> dict[str, "Any"]:
+    def task_brief(task: "WorkViewRecord | dict[str, Any]") -> dict[str, "Any"]:
         brief = {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
         if task.get('archive'):
             brief['archive'] = {k: task['archive'].get(k) for k in ('status', 'reason')
@@ -368,7 +367,7 @@ class EfficiencyMixin:
 
     def model_tool_result(self: "_EfficiencyHost", actor: str, key: str, result: dict[str, "Any"]) -> dict[str, "Any"]:
         from codex_agent_modes import tool_mode_context
-        result = tool_mode_context(self, actor, result, key)  # type: ignore[arg-type]  # Runtime calls this mixin through its host protocol
+        result = tool_mode_context(self, actor, result, key)  # type: ignore[arg-type]  # typed-narrowing: host protocol supplies runtime arguments
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
         for item in texts:
@@ -613,7 +612,7 @@ class EfficiencyMixin:
                 previous = actor.get('deliveredMode') or {}
                 if previous.get('epoch') == epoch and previous.get('revision', -1) > record['revision']:
                     continue
-                actor['deliveredMode'] = {k: record[k] for k in ('epoch', 'version', 'revision')}  # type: ignore[typeddict-item]  # selected mode record fields retain their declared types
+                actor['deliveredMode'] = {k: record[k] for k in ('epoch', 'version', 'revision')}  # type: ignore[typeddict-item]  # typed-narrowing: projection preserves declared field types
                 self.put(db, 'agents', actor)
 
     def reported_plan(self: "_EfficiencyHost", db: "sqlite3.Connection", root_id: str) -> "JsonObject | None":

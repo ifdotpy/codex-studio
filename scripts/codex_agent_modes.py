@@ -100,7 +100,7 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         prior_max_agents = agent.get('maxAgents')
         changed = current != limit
         if current != limit:
-            agent.update(concurrency=limit, agentModeRevision=revision + 1,
+            agent.update(concurrency=limit, agentModeRevision=revision + 1,  # type: ignore[call-arg]  # typed-update
                          agentModeChangedAt=time.time(), agentModeChangedBy='user')
         # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
         # enough records available for the requested workers plus the lead.

@@ -59,10 +59,12 @@ if TYPE_CHECKING:
     from codex_records import (
         AccountTransferRecord,
         AgentRecord,
+        AnnotationRecord,
         CheckpointRecord,
         ComplaintRecord,
         JsonValue,
         ProjectRecord,
+        PlanRecord,
         RoomRecord,
         WorkRecord,
         WorkspaceOperationRecord,
@@ -1448,6 +1450,9 @@ class _RuntimeWalKeeper:
 
 
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
+    search_migration_thread: threading.Thread | None
+    search_migration_error: str | None
+
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
@@ -2478,6 +2483,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def records(self, db: sqlite3.Connection, table: Literal["work"], *, shared: bool = False) -> list["WorkRecord"]: ...
 
     @overload
+    def records(self, db: sqlite3.Connection, table: Literal["plans"], *, shared: bool = False) -> list["PlanRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["annotations"], *, shared: bool = False) -> list["AnnotationRecord"]: ...
+
+    @overload
     def records(self, db: sqlite3.Connection, table: Literal["checkpoints"], *, shared: bool = False) -> list["CheckpointRecord"]: ...
 
     @overload
@@ -2869,6 +2880,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
+    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
     def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
@@ -2887,7 +2904,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
         if table in {"checkpoints", "tool_requests"}:
