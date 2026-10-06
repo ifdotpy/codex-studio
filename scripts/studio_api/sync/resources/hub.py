@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Sequence
+from contextlib import closing
 import logging
 from pathlib import Path
+import sqlite3
 import threading
+import time
 from typing import Callable, Literal, Protocol
 from uuid import uuid4
 
@@ -26,15 +29,16 @@ from studio_api.sync.resources.models import (
     ResourceHeartbeatEvent,
     ResourceRef,
     ResourceRefValue,
+    ResourceRevisionEntry,
     ResourceTokenRatesEvent,
     SessionCostResource,
     StateResource,
+    TranscriptsResource,
     TaskResource,
     TasksResource,
     TerminalResource,
     TerminalsResource,
     TranscriptResource,
-    TranscriptsResource,
     TokenRateSnapshot,
     VoiceResource,
     WorktreeDiskResource,
@@ -43,6 +47,11 @@ from studio_api.sync.resources.models import (
 
 MAX_SUBSCRIBED_RESOURCES = 256
 MAX_PENDING_RESOURCES = 128
+MAX_RESOURCE_REVISION_ENTRIES = 4096
+ENTITY_SEQUENCE_THROTTLE_SECONDS = 0.1
+# Bound the trailing quiet window so continuous entity writes still reach peers.
+MAX_ENTITY_SEQUENCE_DELAY_SECONDS = 0.5
+MAX_ENTITY_SEQUENCE_IDS = 512
 _LOGGER = logging.getLogger(__name__)
 
 ResourceKey = tuple[str, str | None]
@@ -123,6 +132,8 @@ class ResourceSubscription:
         self._loop = loop
         self._resources = resources
         self._pending: dict[ResourceKey, ResourceRef] = {}
+        self._pending_entity_sequences: set[int] = set()
+        self._pending_entity_sequence_reset = False
         self._overflow = False
         self._pending_token_rates: TokenRateSnapshot | None = None
         self._wake = asyncio.Event()
@@ -151,6 +162,8 @@ class ResourceSubscription:
                 changed = list(self._resources.values())
                 self._overflow = False
                 self._pending.clear()
+                self._pending_entity_sequences.clear()
+                self._pending_entity_sequence_reset = False
                 event: ResourceChangeEvent | ResourceTokenRatesEvent = self._hub._event(reason, changed)
             elif self._pending_token_rates is not None:
                 snapshot = self._pending_token_rates
@@ -159,7 +172,16 @@ class ResourceSubscription:
             elif self._pending:
                 changed = list(self._pending.values())
                 self._pending.clear()
-                event = self._hub._event("change", changed)
+                entity_sequences = sorted(self._pending_entity_sequences)
+                entity_sequence_reset = self._pending_entity_sequence_reset
+                self._pending_entity_sequences.clear()
+                self._pending_entity_sequence_reset = False
+                event = self._hub._event(
+                    "change",
+                    changed,
+                    entity_sequences=entity_sequences,
+                    entity_sequence_reset=entity_sequence_reset,
+                )
             else:
                 self._wake.clear()
                 return None
@@ -191,12 +213,16 @@ class ResourceHub:
         workspace_id: str,
         progress_watchdog: ProgressWatchdog | None = None,
         token_rates: TokenRateSnapshot | None = None,
+        entity_sequence: int = 0,
     ) -> None:
         if not workspace_id:
             raise ValueError("Workspace identity must not be empty")
         self.workspace_id = workspace_id
         self.epoch = uuid4().hex
         self._revision = 0
+        self._entity_sequence = entity_sequence
+        self._published_entity_sequence = entity_sequence
+        self._resource_revisions: dict[ResourceKey, int] = {}
         self._progress_watchdog = progress_watchdog
         self._token_rates = token_rates or TokenRateSnapshot(rates={}, teams={})
         self._token_rates_published = token_rates is not None
@@ -226,6 +252,12 @@ class ResourceHub:
 
         subscription = ResourceSubscription(self, loop, keyed)
         with self._lock:
+            for key in keyed:
+                if key[0] != "state":
+                    revision = self._resource_revisions.pop(key, self._revision)
+                    self._resource_revisions[key] = revision
+            while len(self._resource_revisions) > MAX_RESOURCE_REVISION_ENTRIES:
+                self._resource_revisions.pop(next(iter(self._resource_revisions)))
             self._subscriptions.add(subscription)
 
         # Never enter the native watchdog while holding the hub lock. Its
@@ -268,6 +300,8 @@ class ResourceHub:
                 subscription.initial_token_rates = self._token_rates_event(self._token_rates)
                 # Watch callbacks during registration are covered by this full baseline.
                 subscription._pending.clear()
+                subscription._pending_entity_sequences.clear()
+                subscription._pending_entity_sequence_reset = False
                 subscription._overflow = False
                 subscription._wake.clear()
         if subscription._closed:
@@ -285,6 +319,67 @@ class ResourceHub:
 
     def publish(self, resource: ResourceRef) -> int:
         return self.publish_many((resource,))
+
+    def publish_entity_sequence(
+        self,
+        sequence: int,
+        entity_sequences: Sequence[int] = (),
+        *,
+        reset: bool = False,
+    ) -> int:
+        """Publish a bounded state invalidation for committed entity changes."""
+        if sequence <= 0 and not reset:
+            return self._revision
+        with self._lock:
+            unpublished = {
+                value
+                for value in entity_sequences
+                if value > self._published_entity_sequence
+            }
+            if sequence <= self._published_entity_sequence and not unpublished and not reset:
+                return self._revision
+            if not unpublished and not reset:
+                return self._revision
+            self._entity_sequence = max(self._entity_sequence, sequence)
+            self._published_entity_sequence = max(
+                self._published_entity_sequence, sequence
+            )
+            committed_sequences = sorted(unpublished)
+            reset = reset or len(committed_sequences) > MAX_ENTITY_SEQUENCE_IDS
+            if reset:
+                committed_sequences = []
+            resource = ResourceRef(StateResource(kind="state"))
+            key = _key(resource)
+            self._advance_revision()
+            for subscription in self._subscriptions:
+                if key not in subscription._resources:
+                    continue
+                if subscription._overflow:
+                    continue
+                subscription._pending[key] = resource
+                if reset:
+                    subscription._pending_entity_sequences.clear()
+                    subscription._pending_entity_sequence_reset = True
+                elif not subscription._pending_entity_sequence_reset:
+                    subscription._pending_entity_sequences.update(committed_sequences)
+                    if len(subscription._pending_entity_sequences) > MAX_ENTITY_SEQUENCE_IDS:
+                        subscription._pending_entity_sequences.clear()
+                        subscription._pending_entity_sequence_reset = True
+                if len(subscription._pending) > MAX_PENDING_RESOURCES:
+                    subscription._pending.clear()
+                    subscription._pending_entity_sequences.clear()
+                    subscription._pending_entity_sequence_reset = False
+                    subscription._overflow = True
+                self._schedule_wake(subscription)
+            revision = self._revision
+        self._close_orphaned_subscriptions()
+        return revision
+
+    def _resource_revision(self, resource: ResourceRef) -> int:
+        key = _key(resource)
+        if key[0] == "state":
+            return self._entity_sequence
+        return self._resource_revisions.get(key, self._revision)
 
     def close(self) -> None:
         """Release all live subscriptions without entering watchers under lock."""
@@ -321,12 +416,20 @@ class ResourceHub:
             key = _key(resource)
             if key[1] == "":
                 raise ValueError("Resource identity must not be empty")
+            if key[0] == "state":
+                raise ValueError("State resources must publish an entity sequence")
             keyed[key] = resource
         if not keyed:
             with self._lock:
                 return self._revision
         with self._lock:
             self._advance_revision()
+            for key in keyed:
+                if key[0] != "state":
+                    self._resource_revisions.pop(key, None)
+                    self._resource_revisions[key] = self._revision
+            while len(self._resource_revisions) > MAX_RESOURCE_REVISION_ENTRIES:
+                self._resource_revisions.pop(next(iter(self._resource_revisions)))
             for subscription in self._subscriptions:
                 matching = ((key, value) for key, value in keyed.items() if key in subscription._resources)
                 for key, value in matching:
@@ -335,6 +438,8 @@ class ResourceHub:
                     subscription._pending[key] = value
                     if len(subscription._pending) > MAX_PENDING_RESOURCES:
                         subscription._pending.clear()
+                        subscription._pending_entity_sequences.clear()
+                        subscription._pending_entity_sequence_reset = False
                         subscription._overflow = True
                         break
                 if subscription._pending or subscription._overflow:
@@ -348,7 +453,15 @@ class ResourceHub:
         with self._lock:
             self._advance_revision()
             for subscription in self._subscriptions:
+                for key in subscription._resources:
+                    if key[0] != "state":
+                        self._resource_revisions[key] = self._revision
+            while len(self._resource_revisions) > MAX_RESOURCE_REVISION_ENTRIES:
+                self._resource_revisions.pop(next(iter(self._resource_revisions)))
+            for subscription in self._subscriptions:
                 subscription._pending.clear()
+                subscription._pending_entity_sequences.clear()
+                subscription._pending_entity_sequence_reset = False
                 subscription._overflow = True
                 self._schedule_wake(subscription)
             revision = self._revision
@@ -369,6 +482,9 @@ class ResourceHub:
         self,
         reason: Literal["initial", "change", "reconnect", "overflow", "workspace"],
         resources: list[ResourceRef],
+        *,
+        entity_sequences: Sequence[int] = (),
+        entity_sequence_reset: bool = False,
     ) -> ResourceChangeEvent:
         return ResourceChangeEvent(
             protocol=3,
@@ -377,6 +493,22 @@ class ResourceHub:
             revision=self._revision,
             reason=reason,
             resources=resources,
+            resourceVersions=[
+                ResourceRevisionEntry(
+                    revision=self._resource_revision(resource),
+                    entitySequences=(
+                        list(entity_sequences)
+                        if _key(resource)[0] == "state" and entity_sequences
+                        else None
+                    ),
+                    entitySequenceReset=(
+                        entity_sequence_reset
+                        if _key(resource)[0] == "state"
+                        else None
+                    ),
+                )
+                for resource in resources
+            ],
         )
 
     def _heartbeat(self) -> ResourceHeartbeatEvent:
@@ -438,6 +570,190 @@ def unregister_resource_hub(state_dir: str | Path, hub: ResourceHub) -> None:
             _hub_registry.pop(key, None)
 
 
+class EntityPublicationScheduler:
+    """One process-wide worker coalesces committed entity sequence scans."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        start_worker: bool = True,
+    ) -> None:
+        self._condition = threading.Condition()
+        self._pending: dict[
+            str, tuple[Path, float, float, int, set[int], bool]
+        ] = {}
+        self._worker: threading.Thread | None = None
+        self._clock = clock
+        self._start_worker = start_worker
+        self._failure_attempts: dict[str, int] = {}
+
+    def schedule(
+        self,
+        state_dir: str | Path,
+        database_path: str | Path,
+        sequence: int = 0,
+        entity_sequences: Sequence[int] = (),
+    ) -> None:
+        root = _root_key(state_dir)
+        database = Path(database_path)
+        with self._condition:
+            current = self._pending.get(root)
+            now = self._clock()
+            deadline = (
+                current[2]
+                if current is not None
+                else now + MAX_ENTITY_SEQUENCE_DELAY_SECONDS
+            )
+            pending_sequence = max(sequence, current[3] if current else 0)
+            pending_ids = set(current[4]) if current else set()
+            pending_reset = current[5] if current else False
+            if not pending_reset:
+                pending_ids.update(entity_sequences)
+                if len(pending_ids) > MAX_ENTITY_SEQUENCE_IDS:
+                    pending_ids.clear()
+                    pending_reset = True
+            self._pending[root] = (
+                database,
+                min(now + ENTITY_SEQUENCE_THROTTLE_SECONDS, deadline),
+                deadline,
+                pending_sequence,
+                pending_ids,
+                pending_reset,
+            )
+            if self._start_worker and (
+                self._worker is None or not self._worker.is_alive()
+            ):
+                self._worker = threading.Thread(
+                    target=self._run,
+                    name="codex-entity-publications",
+                    daemon=True,
+                )
+                self._worker.start()
+            self._condition.notify()
+
+    def flush_due(self) -> int:
+        """Publish currently due batches; exposed for deterministic clock tests."""
+        due: list[tuple[str, tuple[Path, float, float, int, set[int], bool]]] = []
+        now = self._clock()
+        with self._condition:
+            for root, pending in tuple(self._pending.items()):
+                if pending[1] <= now:
+                    due.append((root, pending))
+                    del self._pending[root]
+        for root, pending in due:
+            try:
+                self._publish(root, *pending)
+            except Exception:
+                self._retry_failed(root, pending)
+            else:
+                self._failure_attempts.pop(root, None)
+        return len(due)
+
+    def _retry_failed(
+        self,
+        root: str,
+        pending: tuple[Path, float, float, int, set[int], bool],
+    ) -> None:
+        attempts = self._failure_attempts.get(root, 0) + 1
+        self._failure_attempts[root] = attempts
+        if attempts == 1:
+            _LOGGER.exception("Unable to publish committed entity sequence")
+        else:
+            _LOGGER.warning(
+                "Retrying committed entity publication (attempt %s)", attempts
+            )
+        database_path, _, _deadline, sequence, ids, reset = pending
+        now = self._clock()
+        retry_delay = min(0.25 * (2 ** min(attempts - 1, 5)), 5.0)
+        with self._condition:
+            current = self._pending.get(root)
+            pending_sequence = max(sequence, current[3] if current else 0)
+            pending_ids = set(ids) | (set(current[4]) if current else set())
+            pending_reset = reset or bool(current and current[5])
+            self._pending[root] = (
+                database_path,
+                now + retry_delay,
+                now + MAX_ENTITY_SEQUENCE_DELAY_SECONDS,
+                pending_sequence,
+                pending_ids,
+                pending_reset,
+            )
+            self._condition.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._pending:
+                    self._condition.wait()
+                root, pending = min(self._pending.items(), key=lambda item: item[1][1])
+                remaining = pending[1] - self._clock()
+                if remaining > 0:
+                    self._condition.wait(remaining)
+                    continue
+                del self._pending[root]
+            try:
+                self._publish(root, *pending)
+            except Exception:
+                self._retry_failed(root, pending)
+            else:
+                self._failure_attempts.pop(root, None)
+
+    @staticmethod
+    def _publish(
+        root: str,
+        database_path: Path,
+        _due_at: float,
+        _deadline: float,
+        explicit_sequence: int,
+        explicit_sequences: set[int],
+        explicit_reset: bool,
+    ) -> None:
+        with _registry_lock:
+            hub = _hub_registry.get(root)
+        if hub is None:
+            return
+        watermark = hub._published_entity_sequence
+        rows: list[tuple[int]] = []
+        sequence = explicit_sequence
+        try:
+            database_uri = database_path.resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(database_uri, uri=True, timeout=0.2)) as database:
+                # This predicate matches the renderer pull contract and uses a
+                # partial seq index so arbitrarily many transcript rows remain
+                # outside the scan without maintaining a collection allowlist.
+                row = database.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%'",
+                ).fetchone()
+                sequence = max(sequence, int(row[0]) if row else 0)
+                rows = database.execute(
+                    "SELECT seq FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%' "
+                    "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                    (watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
+                ).fetchall()
+        except sqlite3.Error:
+            if sequence <= watermark and not explicit_reset:
+                raise
+        sequences = explicit_sequences | {int(item[0]) for item in rows}
+        sequences = {value for value in sequences if value > watermark}
+        if not sequences and not explicit_reset:
+            return
+        reset = explicit_reset or len(rows) > MAX_ENTITY_SEQUENCE_IDS
+        reset = reset or len(sequences) > MAX_ENTITY_SEQUENCE_IDS
+        if sequence <= watermark and not reset:
+            return
+        hub.publish_entity_sequence(
+            sequence,
+            () if reset else sorted(sequences),
+            reset=reset,
+        )
+
+
+_entity_publication_scheduler = EntityPublicationScheduler()
+
+
 def publish_resources(state_dir: str | Path, *resources: ResourceRef) -> None:
     """Publish after a successful commit; pre-API writers safely have no hub."""
     with _registry_lock:
@@ -447,6 +763,17 @@ def publish_resources(state_dir: str | Path, *resources: ResourceRef) -> None:
             hub.publish_many(resources)
         except Exception:
             _LOGGER.exception("Unable to publish committed resource changes")
+
+
+def schedule_entity_publication(state_dir: str | Path, database_path: str | Path) -> None:
+    """Queue an instrumented commit for asynchronous sequence inspection."""
+    _entity_publication_scheduler.schedule(state_dir, database_path)
+
+
+def has_resource_hub(state_dir: str | Path) -> bool:
+    """Avoid importing/starting publication machinery in standalone writers."""
+    with _registry_lock:
+        return _root_key(state_dir) in _hub_registry
 
 
 def publish_resource_overflow(state_dir: str | Path) -> None:

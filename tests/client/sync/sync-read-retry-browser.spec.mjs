@@ -33,6 +33,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
           revision,
           reason: "change",
           resources: [resource],
+          resourceVersions: [{ resource, revision }],
         })}\n\n`,
       );
     }
@@ -66,6 +67,10 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
             revision: 0,
             reason: "initial",
             resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision: 0,
+            })),
           })}\n\n`,
         );
         const stream = {

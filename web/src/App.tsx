@@ -5,6 +5,7 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
+import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -166,6 +167,7 @@ import {
 } from "./components/agents/WorkerOverview";
 import { TeamDiskTotal } from "./components/WorktreeDisk";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
+import { watchResourceChanges } from "./sync/resourceEvents";
 const ClaudeSettings = lazy(() =>
   import("./components/ClaudeSettings").then((module) => ({
     default: module.ClaudeSettings,
@@ -427,6 +429,12 @@ export default function App() {
       Record<string, AccountLimitsSnapshot>
     >({}),
     [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (mobileClient || !data?.stateDir) return;
+    // Include terminals in the first typed subscription set; TerminalDock can
+    // mount later, and its watcher then shares this resource without a reopen.
+    return watchResourceChanges({ kind: "terminals" }, () => {});
+  }, [mobileClient, data?.stateDir]);
   useEffect(() => {
     if (!data?.stateDir) return;
     setLimitsByAccount(saved(`codex-limits:${data.stateDir}`, {}));
@@ -769,6 +777,8 @@ export default function App() {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
+  const accountsForLimits = useRef(accounts.data.accounts);
+  accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
     (key: string, force = false) => {
       const selected = accounts.data.accounts.find((item) => item.id === key);
@@ -824,6 +834,8 @@ export default function App() {
     () => reloadLimits(true),
     [reloadLimits],
   );
+  const reloadLimitsForRef = useRef(reloadLimitsFor);
+  reloadLimitsForRef.current = reloadLimitsFor;
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
@@ -849,7 +861,7 @@ export default function App() {
     );
     keys.add(agent.accountKey || "default");
     const labelFor = (key: string) => {
-      const account = accounts.data.accounts.find((item) => item.id === key);
+      const account = accountsForLimits.current.find((item) => item.id === key);
       return account?.email || account?.label || key;
     };
     return [...keys]
@@ -900,24 +912,42 @@ export default function App() {
   ]);
   // Only accounts that take part in this chat team get a dot and a cache read.
   const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
+  const usageAccountConnectionKey = usageConnectionKey(
+    usageAccountKeys,
+    accounts.data.accounts,
+  );
   useEffect(() => {
     if (!data?.stateDir || !usageAccountKeys) return;
     for (const key of usageAccountKeys.split("\n")) {
-      const account = accounts.data.accounts.find((item) => item.id === key);
+      const account = accountsForLimits.current.find((item) => item.id === key);
       if (account?.disconnected) continue;
       void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
-          if (!accountLimits(result, key, account?.accountId) || !result.data)
+          const currentAccount = accountsForLimits.current.find(
+            (item) => item.id === key,
+          );
+          if (
+            currentAccount?.disconnected ||
+            !accountLimits(result, key, currentAccount?.accountId) ||
+            !result.data
+          )
             return;
           setLimitsByAccount((old) => {
-            const previous = accountLimits(old[key], key, account?.accountId);
+            const previous = accountLimits(
+              old[key],
+              key,
+              currentAccount?.accountId,
+            );
             if (previous && (previous.at || 0) >= (result.at || 0)) return old;
             return { ...old, [key]: result };
           });
         })
         .catch(() => {});
     }
-  }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
+    // Account metadata validates this key through the ref above; the request
+    // identity depends only on workspace + usageAccountKeys. Replacing the
+    // accounts array during its initial load must not repeat the same read.
+  }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
   useEffect(() => {
     if (!data?.stateDir) return;
     const keys = new Set([
@@ -928,7 +958,7 @@ export default function App() {
       watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsFor(key, true);
+          await reloadLimitsForRef.current(key, true);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.
@@ -938,7 +968,7 @@ export default function App() {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsFor]);
+  }, [data?.stateDir, accountKey, usageAccountKeys]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

@@ -127,7 +127,7 @@ def _resource_event(
     return format_sse_event(
         event=event,
         id=str(payload.revision),
-        data_str=payload.model_dump_json(by_alias=True),
+        data_str=payload.model_dump_json(by_alias=True, exclude_none=True),
     )
 
 

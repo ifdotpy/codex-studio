@@ -4,8 +4,10 @@ import logging
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
+from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 
@@ -64,6 +66,7 @@ def connect(database, *, site=None, **options):
     options["factory"] = InstrumentedConnection
     db = sqlite3.connect(database, **options)
     db._codex_site = _site(site)
+    db._codex_database_path = str(database)
     from codex_sqlite_traces import database_kind
     db._codex_database_kind = database_kind(database)
     return db
@@ -109,7 +112,25 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                self._finish_transaction()
+                # Production commit paths use connection.commit(), context exit,
+                # or explicit BEGIN/COMMIT; unusual cursor/autocommit spellings
+                # are reconciled by the next supported commit (no callers today).
+                operation = words[0].upper() if words else ""
+                outcome = (
+                    "committed"
+                    if operation in {"COMMIT", "END", "RELEASE"}
+                    else "rolledBack"
+                    if operation == "ROLLBACK"
+                    else "ended"
+                )
+                self._finish_transaction(outcome)
+            elif (
+                not was_in_transaction
+                and not self.in_transaction
+                and is_write
+                and self.isolation_level is None
+            ):
+                self._publish_entity_sequence()
 
     def executemany(self, sql, seq_of_parameters, /):
         started = _clock()
@@ -138,9 +159,24 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                self._finish_transaction()
+                operation = words[0].upper() if words else ""
+                outcome = (
+                    "committed"
+                    if operation in {"COMMIT", "END", "RELEASE"}
+                    else "rolledBack"
+                    if operation == "ROLLBACK"
+                    else "ended"
+                )
+                self._finish_transaction(outcome)
+            elif (
+                not was_in_transaction
+                and not self.in_transaction
+                and is_write
+                and self.isolation_level is None
+            ):
+                self._publish_entity_sequence()
 
-    def _finish_transaction(self, outcome="ended"):
+    def _finish_transaction(self, outcome="ended", *, publish_entities=True):
         started = getattr(self, "_codex_transaction_started", None)
         if started is not None:
             elapsed_ms = (_clock() - started) * 1000
@@ -152,6 +188,36 @@ class InstrumentedConnection(sqlite3.Connection):
                 logging.getLogger("codex.sqlite").warning("SQLite owner completion failed: %s", type(error).__name__)
             self._codex_transaction_started = None
             self._codex_transaction_site = None
+        if outcome == "committed" and publish_entities:
+            self._publish_entity_sequence()
+
+    def _publish_entity_sequence(self):
+        if getattr(self, "_codex_database_kind", None) != "canvas.sqlite3":
+            return
+        state_dir = Path(self._codex_database_path).parent
+        try:
+            hub_module = sys.modules.get("studio_api.sync.resources.hub")
+            if hub_module is not None:
+                registered = getattr(hub_module, "has_resource_hub", None)
+                schedule = getattr(hub_module, "schedule_entity_publication", None)
+                if callable(registered) and registered(state_dir) and callable(schedule):
+                    schedule(state_dir, self._codex_database_path)
+        except Exception as error:
+            logging.getLogger("codex.sync").warning(
+                "Could not hand off committed entity change: %s",
+                type(error).__name__,
+            )
+
+    def executescript(self, sql, /):
+        was_in_transaction = self.in_transaction
+        try:
+            result = super().executescript(sql)
+        finally:
+            if not self.in_transaction:
+                if was_in_transaction:
+                    self._finish_transaction("committed", publish_entities=False)
+                self._publish_entity_sequence()
+        return result
 
     def commit(self):
         outcome = "ended"

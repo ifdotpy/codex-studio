@@ -158,6 +158,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
                       revision,
                       reason: "change",
                       resources,
+                      resourceVersions: resources.map((resource) => ({
+                        resource,
+                        revision,
+                      })),
                     }),
                   }),
                 );

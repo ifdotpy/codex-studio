@@ -39,19 +39,21 @@ AGENT_FIELD_GROUPS = {
         provider quickCreate readState reviewDefaults role rootId sharedRoomId startAttempt status
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
         worktreePreparation yoloMode
+        accountTransferId capacityRetry contextRepairWait epoch lastCompletedTurnStatus lastEvent
+        usageResume workspaceOperation
     """.split()),
     "private": frozenset("""
-        accountHistory accountId accountTransferId accountTransferState activeTools activityPhase
+        accountHistory accountId accountTransferState activeTools activityPhase
         agentArchive agentModeChangedAt agentModeChangedBy approvalPolicy browserRecovery budgetActionWait
-        branch budgetBlocked budgetStartWait cancelledPark capacityRetry capacityRetryCount checkpointError
+        branch budgetBlocked budgetStartWait cancelledPark capacityRetryCount checkpointError
         checkpointHistoryHead complaintMisses complaintsPresented
         claudeInputRequest claudeOptions claudePreInputRetry cleanedWorktree compactionsObservedOnly
-        connectionRecovery contextRepair contextRepairHistory contextRepairWait cyberAccessProgram
-        deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery epoch events
+        connectionRecovery contextRepair contextRepairHistory cyberAccessProgram
+        deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
         imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
-        lastBudgetWait lastCompletedTurnError lastCompletedTurnStatus lastContextRepairCheck
-        lastContextRepairWait lastEvent lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
+        lastBudgetWait lastCompletedTurnError lastContextRepairCheck
+        lastContextRepairWait lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
         liveSteerRejectedTurnId maxAgents maxAgentsExplicit nativeEffort nativeFailureHold nativeName
         nativeNameFailure nativeNameSyncError nativeNameSynced nativeOperation nativeResponseTurn
         nativeReview nativeToolCatalog needsAttention needsTitle parkAfterTurn parkReceipt parkSequence
@@ -59,8 +61,8 @@ AGENT_FIELD_GROUPS = {
         restartRecovery restoredCheckpoint reviewArchiveAttempts reviewArchiveError reviewArchiveNextAt
         reviewArchiveScheduled
         sandbox startOutcomeHold steerRejectedTurnId supervisorRestore tokenBudget tokenUsageAccounting
-        turnEpoch turnRecovery usageResume usageResumeEnabled workerBaseBehindMain workerBaseCommit
-        workerBaseMainRef workerBaseRef workerBaseStatus workspaceOperation worktreeCleanup worktreeReady
+        turnEpoch turnRecovery usageResumeEnabled workerBaseBehindMain workerBaseCommit
+        workerBaseMainRef workerBaseRef workerBaseStatus worktreeCleanup worktreeReady
         worktreeWarning authResumeAttempt cleanedImageWorkspace imageWorkspaceCleanupResult
         imageWorkspaceBaseError nativeToolRefreshId nativeToolUpdate portableHistory
         queueMutationRevision workspaceReservationId forkedFrom sourceMessage draft
@@ -199,7 +201,10 @@ class AgentRecordContractTests(unittest.TestCase):
 
     def test_entity_shared_fields_accept_the_declared_stored_types(self) -> None:
         stored = get_type_hints(AgentRecord)
-        exceptions = {"nativeRelease", "startAttempt"}
+        # The entity narrows these three stored objects to the keys the renderer
+        # reads; the projection omits and reports a value that does not fit.
+        narrowed = {"capacityRetry", "contextRepairWait", "usageResume"}
+        exceptions = {"nativeRelease", "startAttempt"} | narrowed
         for name in sorted(AGENT_FIELD_GROUPS["shared"] - exceptions):
             with self.subTest(field=name):
                 self.assertTrue(

@@ -865,7 +865,7 @@ class WorkspaceMixin:
             self.git(a, ["add", "-A", "--", "."], env)
             return self.git(a, ["write-tree"], env).decode().strip()
 
-    def _reserve_checkpoint(self: "WorkspaceRuntime", db: sqlite3.Connection, agent: AgentRecord, kind: str, turn_id: str | None=None) -> str:
+    def _reserve_checkpoint(self, db, agent, kind, turn_id=None):
         operation = {
             "id": kind + ":" + str(uuid.uuid4()),
             "kind": kind, "agent": agent["id"], "cwd": agent["cwd"],
@@ -878,7 +878,7 @@ class WorkspaceMixin:
         self.put(db, "agents", agent)
         return operation["id"]
 
-    def queue_checkpoint_after_turn(self: "WorkspaceRuntime", db: sqlite3.Connection, agent: AgentRecord, turn_id: str | None) -> None:
+    def queue_checkpoint_after_turn(self, db, agent, turn_id):
         if agent.get("workspaceOperation"):
             agent["checkpointError"] = "Checkpoint skipped: An agent is using this workspace"
             return
@@ -892,7 +892,7 @@ class WorkspaceMixin:
         except Exception as error:
             agent["checkpointError"] = str(error)
 
-    def _checkpoint_completed_agent(self: "WorkspaceRuntime", db: sqlite3.Connection, request: tuple[str, int, str, str, str | None, str, str | None]) -> AgentRecord | None:
+    def _checkpoint_completed_agent(self, db, request):
         key, epoch, cwd, account, thread, turn_id, attempt = request
         if self.closed:
             return None
@@ -910,7 +910,7 @@ class WorkspaceMixin:
             return None
         return agent
 
-    def _checkpoint_after_committed_turn(self: "WorkspaceRuntime", request: tuple[str, int, str, str, str | None, str, str | None]) -> None:
+    def _checkpoint_after_committed_turn(self, request):
         with self.lock, self.db() as db:
             agent = self._checkpoint_completed_agent(db, request)
             if agent is None:
@@ -953,7 +953,7 @@ class WorkspaceMixin:
             agent.pop("workspaceReservationId", None)
             self.put(db, "agents", agent)
 
-    def _capture_reserved_checkpoint(self: "WorkspaceRuntime", key: str, label: str, turn_id: str | None, operation_id: str) -> CheckpointRecord | None:
+    def _capture_reserved_checkpoint(self, key, label, turn_id, operation_id):
         with self.lock, self.db() as db:
             agent = self.agent(key, db)
             operation = self._workspace_operation(db, operation_id)
@@ -994,11 +994,11 @@ class WorkspaceMixin:
                 return None
             operation.update(phase="capture_running", updated=time.time())
             self._put_workspace_operation(db, operation)
-        error = None  # type: ignore[misc]  # typed-narrowing: preserve the idle check result for later capture cleanup
+        error = None
         try:
             return self.capture_checkpoint(key, label, turn_id)
         except Exception as cause:
-            error = cause  # type: ignore[misc]  # typed-narrowing: preserve the capture failure for finalization
+            error = cause
             raise
         finally:
             with self.lock, self.db() as db:
@@ -1491,7 +1491,7 @@ class WorkspaceMixin:
         with self.db() as db:
             self._assert_workspace_idle(db, a)
 
-    def _workspace_idle_snapshot(self: "WorkspaceRuntime", db: sqlite3.Connection, a: AgentRecord, *, current_state: bool=False) -> JsonObject:
+    def _workspace_idle_snapshot(self, db, a, *, current_state=False):
         agents = [tuple(row) for row in db.execute(
             "SELECT id,json_extract(record,'$.cwd'),json_extract(record,'$.inFlight'),"
             "json_extract(record,'$.workspaceOperation'),json_extract(record,'$.workspaceReservationId') "
@@ -1513,15 +1513,15 @@ class WorkspaceMixin:
             "WHERE json_extract(record,'$.status')='running' ORDER BY id")]
         return agents, operations, monitors, tasks
 
-    def _resolve_workspace_idle(self: "WorkspaceRuntime", snapshot: JsonObject, a: AgentRecord) -> Path:
+    def _resolve_workspace_idle(self, snapshot, a):
         agents, operations, monitors, tasks = snapshot
         busy_ids = {row[1] for row in operations} | {row[1] for row in tasks}
         paths = {a["cwd"]} | {row[1] for row in monitors}
         paths.update(row[1] for row in agents if row[2] or row[3] or row[0] in busy_ids)
         return {cwd: Path(cwd).resolve() for cwd in sorted(paths)}
 
-    def _assert_workspace_idle(self: "WorkspaceRuntime", db: sqlite3.Connection, a: AgentRecord, reservation_id: str | None=None, *, current_state: bool=False,
-                               snapshot: JsonObject=None, resolved: Path | None=None) -> None:
+    def _assert_workspace_idle(self, db, a, reservation_id=None, *, current_state=False,
+                               snapshot=None, resolved=None):
         snapshot = snapshot if snapshot is not None else self._workspace_idle_snapshot(db, a, current_state=current_state)
         resolved = resolved if resolved is not None else self._resolve_workspace_idle(snapshot, a)
         agents, operations, monitors, tasks = snapshot

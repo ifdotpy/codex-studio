@@ -8370,6 +8370,8 @@ export interface components {
       reason: "initial" | "change" | "reconnect" | "overflow" | "workspace";
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
+      /** Resourceversions */
+      resourceVersions: components["schemas"]["ResourceRevisionEntry"][];
       /** Revision */
       revision: number;
       /** Workspaceid */
@@ -8441,6 +8443,19 @@ export interface components {
       | components["schemas"]["DraftsResource"]
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["TranscriptResource"];
+    /**
+     * ResourceRevisionEntry
+     * @description Per-resource revision; StateResource uses the entity sequence.
+     */
+    ResourceRevisionEntry: {
+      /** Entitysequencereset */
+      entitySequenceReset?: boolean | null;
+      /** Entitysequences */
+      entitySequences?: number[] | null;
+      resource?: components["schemas"]["ResourceRef"] | null;
+      /** Revision */
+      revision: number;
+    };
     /**
      * ResourceTokenRatesEvent
      * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
@@ -11740,7 +11755,10 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
     };
-    /** TranscriptsResource */
+    /**
+     * TranscriptsResource
+     * @description Legacy collection-wide transcript subscription retained for clients.
+     */
     TranscriptsResource: {
       /**
        * @description discriminator enum property added by openapi-typescript

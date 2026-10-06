@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Sequence
 from typing import cast
 from unittest.mock import patch
 from urllib.error import URLError
@@ -69,7 +70,7 @@ class _Context:
         return None
 
     def entity_sequence(self) -> int:
-        return 0
+        return 1
 
     def send(self, _request: FastAPIRequest, value: object, status: int = 200, **_kwargs: object) -> JSONResponse:
         if hasattr(value, "model_dump"):
@@ -107,11 +108,38 @@ class RelayRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = _Context()
         self.client = _client(self.context)
+        self.entity_publication = threading.Event()
+        publish = self.context.hub.publish_entity_sequence
+
+        def observe_publication(
+            sequence: int,
+            entity_sequences: Sequence[int] = (),
+            *,
+            reset: bool = False,
+        ) -> int:
+            result = publish(sequence, entity_sequences, reset=reset)
+            self.entity_publication.set()
+            return result
+
+        self.publication_patch = patch.object(
+            self.context.hub,
+            "publish_entity_sequence",
+            side_effect=observe_publication,
+        )
+        self.publication_patch.start()
+        self.addCleanup(self.publication_patch.stop)
+
+    def wait_for_entity_publication(self) -> None:
+        self.assertTrue(
+            self.entity_publication.wait(timeout=5),
+            "entity publisher did not complete its observable hub update",
+        )
 
     def test_authenticated_typed_post_publishes_and_exact_retry_is_deduplicated(self) -> None:
         body = {"requestId": "stable-notify-1", "resources": [{"kind": "state"}]}
         first = _post(self.client, body)
         second = _post(self.client, body)
+        self.wait_for_entity_publication()
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(first.json(), {"requestId": "stable-notify-1", "accepted": True})
         self.assertEqual(second.json(), first.json())
@@ -190,6 +218,7 @@ class RelayRouteTests(unittest.TestCase):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
+        self.wait_for_entity_publication()
         connect.assert_not_called()
         socket_connect.assert_not_called()
         self.assertEqual(ack.requestId, "response-loss-id")
@@ -328,12 +357,18 @@ class ExternalCliSseTests(unittest.TestCase):
                     self.assertEqual(len(proxy_requests), 2)
                     self.assertEqual(proxy_requests[0], proxy_requests[1])
                     self.assertEqual(proxy_requests[0]["requestId"], proxy_requests[1]["requestId"])
-                    event = self._read_frame(stream)
-                    self.assertIn("event: resources", event)
-                    payload = json.loads(next(line[6:] for line in event if line.startswith("data: ")))
-                    self.assertEqual(payload["revision"], before_revision + 1)
+                    first_event = self._read_frame(stream)
+                    second_event = self._read_frame(stream)
+                    self.assertIn("event: resources", first_event)
+                    self.assertIn("event: resources", second_event)
+                    payloads = [
+                        json.loads(next(line[6:] for line in event if line.startswith("data: ")))
+                        for event in (first_event, second_event)
+                    ]
+                    self.assertEqual(payloads[0]["revision"], before_revision + 1)
+                    self.assertEqual(payloads[1]["revision"], before_revision + 2)
                     self.assertEqual(
-                        {tuple(sorted(resource.items())) for resource in payload["resources"]},
+                        {tuple(sorted(resource.items())) for payload in payloads for resource in payload["resources"]},
                         {
                             (("kind", "state"),),
                             (("agentId", "host-root"), ("kind", "workspace")),
@@ -381,11 +416,27 @@ class ExternalCliSseTests(unittest.TestCase):
 
                     posted = run_cli("codex-chat", "post", chat_id, "Native report", "--agent", "host-root")
                     self.assertEqual(posted.returncode, 0, posted.stderr)
-                    posted_event = self._read_frame(stream)
-                    posted_payload = json.loads(
-                        next(line[6:] for line in posted_event if line.startswith("data: "))
-                    )
-                    self.assertIn({"kind": "room", "roomId": chat_id}, posted_payload["resources"])
+                    # The external notification publishes the room and its
+                    # unknown entity sequence separately; accept both frames.
+                    posted_payloads = []
+                    for _ in range(2):
+                        posted_event = self._read_frame(stream)
+                        posted_payloads.append(
+                            json.loads(
+                                next(
+                                    line[6:]
+                                    for line in posted_event
+                                    if line.startswith("data: ")
+                                )
+                            )
+                        )
+                    posted_resources = [
+                        resource
+                        for payload in posted_payloads
+                        for resource in payload["resources"]
+                    ]
+                    self.assertIn({"kind": "state"}, posted_resources)
+                    self.assertIn({"kind": "room", "roomId": chat_id}, posted_resources)
                     message = canvas.messages(chat_id)[0]
                     self.assertEqual(message["author"], "host-root")
                     self.assertEqual(message["deliveries"], {})
