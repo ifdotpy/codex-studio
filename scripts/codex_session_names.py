@@ -2,27 +2,62 @@
 import json
 import threading
 import time
+import sqlite3
+import threading
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Callable, ContextManager, Protocol, TypedDict
+
+from codex_records import AgentRecord, RecordStore
+
+if TYPE_CHECKING:
+    from codex_runtime import Runtime
 
 
-def identity(agent):
+class NameIdentity(TypedDict):
+    accountKey: str
+    threadId: str | None
+    name: str
+
+
+class NativeNameServer(Protocol):
+    def submit(self, method: str, params: dict[str, object]) -> Future[object]: ...
+    def on_result(self, future: object, callback: Callable[[Future[object]], None]) -> None: ...
+
+
+class _Lock(Protocol):
+    def __enter__(self) -> object: ...
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
+
+
+class SessionNamesHost(RecordStore, Protocol):
+    lock: _Lock
+    closed: bool
+    changed: threading.Event
+    _session_names: "SessionNames"
+
+    def db(self) -> ContextManager[sqlite3.Connection]: ...
+    def connect(self, account_key: str) -> NativeNameServer: ...
+
+
+def identity(agent: AgentRecord) -> NameIdentity:
     return {"accountKey": agent.get("accountKey", "default"),
             "threadId": agent.get("threadId"), "name": agent["name"]}
 
 
-def session_names(runtime):
+def session_names(runtime: "Runtime") -> "SessionNames":
     with runtime.lock:
         if not hasattr(runtime, "_session_names"):
-            runtime._session_names = SessionNames(runtime)
-        return runtime._session_names
+            runtime._session_names = SessionNames(runtime)  # type: ignore[attr-defined,arg-type]
+        return runtime._session_names  # type: ignore[attr-defined,no-any-return]
 
 
 class SessionNames:
-    def __init__(self, runtime):
+    def __init__(self, runtime: SessionNamesHost) -> None:
         self.runtime = runtime
-        self.pending = {}
-        self.next_scan = 0
+        self.pending: dict[str, NameIdentity] = {}
+        self.next_scan: float = 0
 
-    def tick(self):
+    def tick(self) -> None:
         rt = self.runtime
         with rt.lock:
             if rt.closed or time.monotonic() < self.next_scan:
@@ -53,7 +88,7 @@ class SessionNames:
                     threading.Thread(target=self.submit, args=(agent["id"], wanted),
                                      name="studio-session-name", daemon=True).start()
 
-    def submit(self, key, wanted):
+    def submit(self, key: str, wanted: NameIdentity) -> None:
         rt = self.runtime
         try:
             server = rt.connect(wanted["accountKey"])
@@ -62,7 +97,7 @@ class SessionNames:
                     self.pending.pop(key, None)
                     return
             try:
-                submitted = server.submit("thread/name/set", {
+                submitted: object = server.submit("thread/name/set", {
                     "threadId": wanted["threadId"], "name": wanted["name"],
                 })
             except Exception as error:
@@ -73,7 +108,7 @@ class SessionNames:
         except Exception as error:
             self.complete(key, wanted, error=error)
 
-    def complete(self, key, wanted, future=None, error=None):
+    def complete(self, key: str, wanted: NameIdentity, future: Future[object] | None = None, error: Exception | None = None) -> None:
         rt = self.runtime
         if future is not None:
             try:
@@ -92,7 +127,7 @@ class SessionNames:
                     rt.changed.set()
                     return
                 if error is None:
-                    agent["nativeNameSynced"] = wanted
+                    agent["nativeNameSynced"] = wanted  # type: ignore[typeddict-item]
                     agent.pop("nativeNameFailure", None)
                 else:
                     previous = agent.get("nativeNameFailure", {})

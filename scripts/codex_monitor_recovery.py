@@ -8,20 +8,26 @@ from pathlib import Path
 import tempfile
 import time
 import uuid
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Iterable
+    from codex_runtime import Runtime
 
 VERSION = 1
 TERMINAL = {'completed', 'failed', 'cancelled'}
 
 
-def _directory(root):
+def _directory(root: str | Path) -> Path:
     return Path(root) / 'monitor-results'
 
 
-def _path(root, key):
+def _path(root: str | Path, key: str) -> Path:
     return _directory(root) / (hashlib.sha256(key.encode()).hexdigest() + '.json')
 
 
-def _sync_directory(path):
+def _sync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -29,7 +35,7 @@ def _sync_directory(path):
         os.close(descriptor)
 
 
-def _validate(value):
+def _validate(value: Any) -> Any:
     if not isinstance(value, dict) or value.get('version') != VERSION:
         raise ValueError('Unsupported monitor result version')
     if not isinstance(value.get('key'), str) or not 1 <= len(value['key']) <= 200:
@@ -47,12 +53,12 @@ def _validate(value):
             or type(operation.get('epoch')) is not int):
         raise ValueError('Invalid monitor result operation')
     finished = value.get('finished')
-    if type(finished) not in (int, float) or not math.isfinite(finished) or finished <= 0:
+    if type(finished) not in (int, float) or not math.isfinite(finished) or finished <= 0:  # type: ignore[arg-type,operator]  # typed-narrowing: Timestamp guard rejects nonnumeric values
         raise ValueError('Invalid monitor result time')
     return value
 
 
-def persist_monitor_result(root, key, receipt):
+def persist_monitor_result(root: str | Path, key: str, receipt: Any) -> Any:
     """Save the first observed result before any SQLite read or write."""
     value = _validate({'version': VERSION, 'key': key, **{
         name: receipt.get(name) for name in ('code', 'error', 'operation', 'finished')}})
@@ -89,7 +95,7 @@ def persist_monitor_result(root, key, receipt):
         Path(temporary).unlink(missing_ok=True)
 
 
-def acknowledge_monitor_result(root, key):
+def acknowledge_monitor_result(root: str | Path, key: str) -> None:
     """Call only after the monitor and its event commit successfully."""
     target = _path(root, key)
     if target.exists():
@@ -97,9 +103,11 @@ def acknowledge_monitor_result(root, key):
         _sync_directory(target.parent)
 
 
-def recover_monitor_results(runtime, db, *, keys=None):
+def recover_monitor_results(
+    runtime: "Runtime", db: "sqlite3.Connection", *, keys: "Iterable[str] | None" = None
+) -> dict[str, list[Any]]:
     """Restore exact native outcomes. Never repeat a command or infer an exit."""
-    result = {'restored': [], 'acknowledge': [], 'warnings': []}
+    result: dict[str, list[Any]] = {'restored': [], 'acknowledge': [], 'warnings': []}
     directory = _directory(runtime.root)
     if not directory.exists():
         return result
@@ -154,10 +162,10 @@ def recover_monitor_results(runtime, db, *, keys=None):
     return result
 
 
-def _restore_rule_check(runtime, db, monitor):
+def _restore_rule_check(runtime: "Runtime", db: "sqlite3.Connection", monitor: Any) -> bool | None:
     row = db.execute('SELECT record FROM runtime_rules WHERE id=?', (monitor['ruleId'],)).fetchone()
     if not row:
-        return
+        return  # type: ignore[return-value]  # typed-narrowing: Missing row safely means absent
     rule = json.loads(row[0])
     expected = str(uuid.uuid5(uuid.NAMESPACE_URL, 'rule:' + rule['id'] + ':' + str(rule['checks'])))
     if (monitor['id'] != expected or rule['agent'] != monitor['agent']

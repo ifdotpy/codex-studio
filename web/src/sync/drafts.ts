@@ -7,6 +7,11 @@ import {
 } from "react";
 import { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } from "../api";
 import { startDraftReplication, syncDatabase } from "./client";
+import {
+  draftSyncNoticeText,
+  hasDraftSyncFailure,
+  scheduleDraftSyncNotice,
+} from "./draftSyncNotice";
 
 import { encodeDraftPayload } from "./draftPayload";
 import {
@@ -110,38 +115,39 @@ export function useSyncedDrafts() {
   const conflictValues = useRef<DraftVersion[]>([]);
   const initialLocalError = recovery.error || localRecovery.error;
   const [localError, setLocalError] = useState(initialLocalError);
-  const [syncFailed, setSyncFailed] = useState(false);
+  const [syncFailureDirection, setSyncFailureDirection] = useState<
+    "pull" | "push" | "replication" | null
+  >(null);
   const localErrorValue = useRef(initialLocalError);
-  const syncFailureValue = useRef(false);
+  const syncFailureValue = useRef<typeof syncFailureDirection>(null);
   const retryDraftBootstrap = useRef<() => void>(() => {});
   const reportLocalError = useCallback((message: string) => {
     if (localErrorValue.current === message) return;
     localErrorValue.current = message;
     setLocalError(message);
   }, []);
-  const reportSyncFailure = useCallback((failed: boolean) => {
-    if (syncFailureValue.current === failed) return;
-    syncFailureValue.current = failed;
-    setSyncFailed(failed);
-  }, []);
-  const [syncNotice, setSyncNotice] = useState("");
+  const reportSyncFailure = useCallback(
+    (direction: typeof syncFailureDirection) => {
+      if (syncFailureValue.current === direction) return;
+      syncFailureValue.current = direction;
+      setSyncFailureDirection(direction);
+    },
+    [],
+  );
+  const [syncNoticeVisible, setSyncNoticeVisible] = useState(false);
   const [bootstrapPaused, setBootstrapPaused] = useState(false);
+  const syncFailureActive = hasDraftSyncFailure(syncFailureDirection);
   useEffect(() => {
-    if (!syncFailed) {
-      setSyncNotice("");
-      return;
-    }
-    if (bootstrapPaused) {
-      setSyncNotice("Draft sync paused. Edit a draft or reconnect to retry.");
-      return;
-    }
-    // Brief network interruptions recover without moving the conversation.
-    setSyncNotice("");
-    const timer = setTimeout(() => {
-      setSyncNotice("Draft sync paused. Retrying automatically.");
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, [syncFailed, bootstrapPaused]);
+    return scheduleDraftSyncNotice(
+      syncFailureActive,
+      bootstrapPaused,
+      setSyncNoticeVisible,
+    );
+  }, [syncFailureActive, bootstrapPaused]);
+  const syncNotice =
+    syncFailureDirection && syncNoticeVisible
+      ? draftSyncNoticeText(syncFailureDirection, bootstrapPaused)
+      : "";
   const versions = useRef<DraftVersion[]>([]);
   const decoded = useRef(new WeakMap<object, DraftVersion>());
   const decodeDrafts = useCallback(
@@ -398,7 +404,7 @@ export function useSyncedDrafts() {
         reportLocalError("");
         reconcile(decodeDrafts(await db.drafts.find().exec()));
       } catch {
-        if (connecting) reportSyncFailure(true);
+        if (connecting) reportSyncFailure("replication");
         else
           reportLocalError(
             "Draft changes could not be saved for synchronization. Keep this chat open.",
@@ -525,8 +531,11 @@ export function useSyncedDrafts() {
               ? (window as any).__codexDraftReplicationTestOnly
               : undefined;
           cancel = await startDraftReplication(
-            (e) => {
-              if (!stopped) reportSyncFailure(e !== null);
+            (e, direction) => {
+              if (!stopped)
+                reportSyncFailure(
+                  e === null ? null : (direction ?? "replication"),
+                );
             },
             testOnly ? { testOnly } : undefined,
           );
@@ -560,12 +569,12 @@ export function useSyncedDrafts() {
           started = true;
           bootstrapRetryCount = 0;
           setBootstrapPaused(false);
-          reportSyncFailure(false);
+          reportSyncFailure(null);
           importUnassigned.current = false;
         })
         .catch(() => {
           if (!stopped) {
-            reportSyncFailure(true);
+            reportSyncFailure("replication");
             unsubscribe();
             cancel();
             const delay = bootstrapRetryDelays[bootstrapRetryCount++];

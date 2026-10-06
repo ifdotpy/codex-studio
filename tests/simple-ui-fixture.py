@@ -15,6 +15,7 @@ skill = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(skill / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
+from studio_api.testing import read_runtime_state
 
 spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-contract.py')
 m = importlib.util.module_from_spec(spec)
@@ -120,7 +121,7 @@ for i in range(105):
 c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
 c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
 # Enough actual rooms to exercise the bounded sidebar at production-like sizes.
-roster = c.runtime.team(lead['id'])['agents']
+roster = read_runtime_state(c.runtime)['agents']
 for sender in [r for r in roster if r['name'] in {'Worker 38', 'Worker 39'}]:
     with c.runtime.lock, c.runtime.db() as db:
         a = c.runtime.agent(sender['id'], db)

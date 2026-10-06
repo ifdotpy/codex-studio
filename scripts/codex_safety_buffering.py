@@ -7,19 +7,25 @@ import json
 import time
 import uuid
 from threading import Timer
+from typing import TYPE_CHECKING, Any
 
 from codex_native_errors import NativeRpcError, assert_native_thread_open
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord, NativeSafetyRetryRecord, NativeSafetyRetryViewRecord
+    from codex_runtime import Runtime
 
 ACTIVE = {'turns', 'items', 'interrupt', 'verify_turns', 'verify_items', 'fork', 'start', 'unknown'}
 
 
-def active(agent):
+def active(agent: "AgentRecord") -> bool:
     receipt = agent.get('nativeSafetyRetry') or {}
     return (receipt.get('stage') in ACTIVE and receipt.get('epoch') == agent.get('epoch')
             and receipt.get('accountKey') == agent.get('accountKey', 'default'))
 
 
-def recover_restart(runtime, db, agent):
+def recover_restart(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> bool:
     """Turn an in-flight retry into a durable hold when its receipt is incomplete."""
     receipt = agent.get('nativeSafetyRetry') or {}
     if receipt.get('stage') not in ACTIVE:
@@ -27,11 +33,11 @@ def recover_restart(runtime, db, agent):
     db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
     row = db.execute('SELECT record FROM runtime_safety_retries WHERE id=?', (receipt.get('id'),)).fetchone()
     op = json.loads(row[0]) if row else {
-        **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+        **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),  # type: ignore[typeddict-item]  # typed-narrowing: Later checks validate receipt identity
         'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch'),
-    }
+    }  # type: NativeSafetyRetryRecord
     if op.get('id') != receipt.get('id'):
-        op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+        op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),  # type: ignore[typeddict-item]  # typed-narrowing: Later checks validate receipt identity
               'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch')}
     if (op.get('agent') != agent.get('id') or op.get('epoch') != agent.get('epoch')
             or op.get('accountKey') != agent.get('accountKey', 'default')):
@@ -40,17 +46,17 @@ def recover_restart(runtime, db, agent):
         return False
     reason = ('Safety retry stopped at restart during ' + str(op.get('stage')) +
               '. Studio did not repeat the native operation. Review the saved retry receipt.')
-    op.update(stage='failed', terminalHold=True, error=reason, finished=time.time())
+    op.update(stage='failed', terminalHold=True, error=reason, finished=time.time())  # type: ignore[call-arg]  # typed-update
     runtime.put(db, 'safety_retries', op)
     agent['nativeSafetyRetry'] = public(op)
     agent.update(status='interrupted', autoWake=False, inFlight=False,
-                 nativeFailureHold=True, error=reason)
+                 nativeFailureHold=True, error=reason)  # type: ignore[call-arg]  # typed-update
     runtime.child_stopped_event(db, agent, 'interrupted', reason,
                                 'safety-retry:' + str(op.get('id')))
     return True
 
 
-def action(runtime, key, data):
+def action(runtime: "Runtime", key: str, data: Any) -> Any:
     choice = data.get('safety')
     if choice not in {'wait', 'retry', 'cancel'}:
         raise ValueError('Choose wait or retry')
@@ -95,19 +101,21 @@ def action(runtime, key, data):
         op = {'id': identity, 'agent': key, 'accountKey': a.get('accountKey', 'default'),
               'connectionId': b['connectionId'], 'epoch': a['epoch'], 'threadId': a['threadId'],
               'turnId': a['turnId'], 'model': model, 'stage': 'turns', 'created': time.time(),
-              'attemptId': str(uuid.uuid4()), 'sourceThreadId': a['threadId']}
+              'attemptId': str(uuid.uuid4()), 'sourceThreadId': a['threadId']}  # type: NativeSafetyRetryRecord
         save(runtime, db, a, op)
         db.commit()
     issue(runtime, op, 'turns')
     return public(op)
 
 
-def public(op):
+def public(op: "NativeSafetyRetryRecord") -> "NativeSafetyRetryViewRecord":
     return {k: op.get(k) for k in ('id', 'stage', 'model', 'turnId', 'created', 'updated', 'epoch', 'accountKey',
-                                  'error', 'newThreadId', 'acceptedTurnId', 'requestId', 'rpcMethod')}
+                                  'error', 'newThreadId', 'acceptedTurnId', 'requestId', 'rpcMethod')}  # type: ignore[return-value]  # typed-narrowing: Projection preserves optional receipt fields
 
 
-def save(runtime, db, a, op):
+def save(
+    runtime: "Runtime", db: "sqlite3.Connection", a: "AgentRecord", op: "NativeSafetyRetryRecord"
+) -> None:
     op['updated'] = time.time()
     runtime.put(db, 'safety_retries', op)
     a['nativeSafetyRetry'] = public(op)
@@ -115,7 +123,9 @@ def save(runtime, db, a, op):
     runtime.touch_ui(a['id'])
 
 
-def current(runtime, db, op):
+def current(
+    runtime: "Runtime", db: "sqlite3.Connection", op: "NativeSafetyRetryRecord"
+) -> "AgentRecord":
     a = runtime.agent(op['agent'], db)
     if (not runtime.operation_current(a, op) or not a.get('autoWake') or a.get('accountTransferId')
             or a.get('threadId') != op.get('newThreadId', op['threadId'])
@@ -127,18 +137,18 @@ def current(runtime, db, op):
     return a
 
 
-def issue(runtime, op, stage):
+def issue(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str) -> None:
     """Submit without a wait in the coordination pool. Preserve late replies."""
     try:
         from codex_daybreak import turn_program, turn_params
         program = None
         if stage in {"interrupt", "fork", "start"}:
-            candidate = {**runtime.agent(op["agent"]), "model": op["model"]}
+            candidate: "AgentRecord" = {**runtime.agent(op["agent"]), "model": op["model"]}
             program = turn_program(runtime, candidate)
         with runtime.lock, runtime.db() as db:
             a = current(runtime, db, op)
             server = runtime.servers[op['accountKey']]
-            params = {'threadId': op['threadId']}
+            params = {'threadId': op['threadId']}  # type: dict[str, Any]
             if stage in {'turns', 'verify_turns'}:
                 method = 'thread/turns/list'
                 params.update(limit=1, sortDirection='desc', itemsView='notLoaded')
@@ -171,8 +181,8 @@ def issue(runtime, op, stage):
                 a.update(status='starting', inFlight=True, turnEpoch=a['epoch'], error=None,
                          startAttempt={'id': op['attemptId'], 'epoch': a['epoch'], 'events': [],
                              'action': 'safety', 'submitted': True, 'accountKey': op['accountKey'],
-                             'connectionId': op['connectionId'], 'threadId': op['newThreadId']})
-            op.update(stage=stage, error=None, rpcMethod=method)
+                             'connectionId': op['connectionId'], 'threadId': op['newThreadId']})  # type: ignore[call-arg]  # typed-update
+            op.update(stage=stage, error=None, rpcMethod=method)  # type: ignore[call-arg]  # typed-update
             save(runtime, db, a, op)
             db.commit()
             submitted = runtime.submit_reserved(server, method, params)
@@ -180,10 +190,10 @@ def issue(runtime, op, stage):
             if isinstance(submitted, tuple):
                 op['requestId'] = submitted[0]
                 save(runtime, db, a, op)
-        ticket = dict(op)
+        ticket: Any = dict(op)
         timer = Timer(15, lambda: fail(runtime, ticket, TimeoutError('Waiting for Codex to confirm ' + method), unknown=True))
         timer.daemon = True
-        def receive(future):
+        def receive(future):  # type: (Any) -> None
             timer.cancel()
             if not runtime.closed:
                 runtime.recovery_pool.submit(complete, runtime, op, stage, future)
@@ -193,7 +203,7 @@ def issue(runtime, op, stage):
         fail(runtime, op, error, unknown=not isinstance(error, (ValueError, NativeRpcError)))
 
 
-def complete(runtime, op, stage, future):
+def complete(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str, future: Any) -> None:
     try:
         result = future.result()
         with runtime.lock, runtime.db() as db:
@@ -237,7 +247,7 @@ def complete(runtime, op, stage, future):
                 # continues at the fork, excluding the interrupted turn.
                 a.update(threadId=tid, model=op['model'], effort='low', nativeEffort='low',
                          turnId=None, inFlight=False, status='starting', nativeFailureHold=False,
-                         activeTools=[], error=None)
+                         activeTools=[], error=None)  # type: ignore[call-arg]  # typed-update
                 a.pop('startAttempt', None)
                 a.pop('nativeSafetyBuffering', None)
                 runtime.loaded.add(a['id'])
@@ -248,7 +258,7 @@ def complete(runtime, op, stage, future):
                 if not isinstance(turn, str) or not turn:
                     raise RuntimeError('The retry response has no turn identity; outcome unknown')
                 attempt = a.get('startAttempt') or {}
-                op.update(stage='running', acceptedTurnId=turn, error=None)
+                op.update(stage='running', acceptedTurnId=turn, error=None)  # type: ignore[call-arg]  # typed-update
                 save(runtime, db, a, op)
                 db.commit()
                 runtime.start_accepted(a['id'], attempt, result)
@@ -259,7 +269,9 @@ def complete(runtime, op, stage, future):
         fail(runtime, op, error, unknown=not isinstance(error, (ValueError, NativeRpcError)))
 
 
-def fail(runtime, op, error, *, unknown):
+def fail(
+    runtime: "Runtime", op: "NativeSafetyRetryRecord", error: BaseException, *, unknown: bool
+) -> None:
     if runtime.closed:
         return
     with runtime.lock, runtime.db() as db:
@@ -270,7 +282,7 @@ def fail(runtime, op, error, *, unknown):
         if stored.get('stage') in {'running', 'failed', 'cancelled'} or stored.get('rpcMethod') != op.get('rpcMethod'):
             return
         a = runtime.agent(op['agent'], db)
-        op.update(stage='unknown' if unknown else 'failed', error=str(error))
+        op.update(stage='unknown' if unknown else 'failed', error=str(error))  # type: ignore[call-arg]  # typed-update
         # Keep the receipt even if the owner stopped or transferred the agent.
         runtime.put(db, 'safety_retries', op)
         if (a.get('nativeSafetyRetry') or {}).get('id') == op['id']:
@@ -278,7 +290,7 @@ def fail(runtime, op, error, *, unknown):
                     and runtime.operation_current(a, op)
                     and a.get('threadId') == op.get('newThreadId')
                     and (a.get('startAttempt') or {}).get('id') == op['attemptId']):
-                a.update(inFlight=False, status='failed', nativeFailureHold=True, error=str(error))
+                a.update(inFlight=False, status='failed', nativeFailureHold=True, error=str(error))  # type: ignore[call-arg]  # typed-update
             save(runtime, db, a, op)
             if a.get('status') == 'failed' and not runtime.worker_continuation_pending(a):
                 runtime.child_stopped_event(db, a, 'failed', str(error),

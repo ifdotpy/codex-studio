@@ -1,7 +1,18 @@
 """Daybreak selection uses account-native model grants, separate from the model."""
 
+from typing import NotRequired, TypedDict, TYPE_CHECKING
 
-def resolve_program(catalog, model, enabled, provider="codex"):
+if TYPE_CHECKING:
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
+
+
+class ModelCatalog(TypedDict):
+    data: NotRequired[list[dict[str, object]]]
+
+
+def resolve_program(catalog: ModelCatalog, model: str | None, enabled: bool | None,
+                    provider: str = "codex") -> str:
     if type(enabled) is not bool:
         raise ValueError("daybreak_enabled must be a boolean")
     if provider == "claude":
@@ -24,14 +35,14 @@ def resolve_program(catalog, model, enabled, provider="codex"):
     return "standard"
 
 
-def turn_program(runtime, agent):
+def turn_program(runtime: "Runtime", agent: "AgentRecord") -> str:
     """Read grants outside runtime locks. The provider still owns authorization."""
     enabled = agent.get("daybreakEnabled", False)
-    catalog = runtime.catalog(agent.get("accountKey", "default")) if enabled else {}
+    catalog: ModelCatalog = runtime.catalog(agent.get("accountKey", "default")) if enabled else {}
     return resolve_program(catalog, agent["model"], enabled, agent.get("provider", "codex"))
 
 
-def turn_params(agent, program=None):
+def turn_params(agent: "AgentRecord", program: str | None = None) -> dict[str, str | None]:
     if agent.get("provider") == "claude":
         return {}
     if program is None:

@@ -13,15 +13,61 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
+import typing
+from enum import Enum
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from pydantic import BaseModel
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_canvas import Canvas, make_server
 from codex_diagnostics import process_tree, snapshot
 from codex_lock_metrics import MeasuredRLock
+from studio_api.system.models import DiagnosticsResponse
+
+
+def minimal_model_value(annotation):
+    origin = typing.get_origin(annotation)
+    arguments = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return minimal_model_value(arguments[0])
+    if origin in (typing.Union, types.UnionType):
+        if type(None) in arguments:
+            return None
+        return minimal_model_value(arguments[0])
+    if origin is typing.Literal:
+        return arguments[0]
+    if origin is list:
+        return []
+    if origin is dict:
+        return {}
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        fields = annotation.model_fields
+        values = {name: minimal_model_value(field.annotation)
+                  for name, field in fields.items() if field.is_required()}
+        return annotation.model_validate(values)
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return next(iter(annotation)).value
+    if annotation is str:
+        return "fixture"
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is bool:
+        return False
+    raise TypeError(f"No minimal diagnostics value for {annotation!r}")
+
+
+def minimal_model_instance(model):
+    fields = model.model_fields
+    values = {name: minimal_model_value(field.annotation)
+              for name, field in fields.items() if field.is_required()}
+    return model.model_validate(values)
 
 
 class Server:
@@ -104,26 +150,35 @@ class DiagnosticsContract(unittest.TestCase):
             server = make_server(canvas)
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
+            fixture = minimal_model_instance(DiagnosticsResponse).wire_dump()
+            fixture.pop("supervisor")
+            expected_supervisor = {"mode": False, "fallback": False, "notice": None}
+            connection = None
             try:
-                with patch("codex_diagnostics.snapshot", return_value={"processTree": {"kinds": {}}}):
+                with patch("codex_diagnostics.snapshot", return_value=fixture):
                     connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
                     connection.request("GET", "/api/diagnostics")
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     body = json.load(response)
                     # The route adds the process supervisor state to the snapshot.
-                    self.assertEqual(body.pop("processTree"), {"kinds": {}})
-                    self.assertEqual(set(body), {"supervisor"})
-                    self.assertIs(type(body["supervisor"]["mode"]), bool)
-                    connection.close()
+                    self.assertEqual(body.pop("processTree"), fixture["processTree"])
+                    self.assertEqual(body.pop("supervisor"), expected_supervisor)
+                    self.assertEqual(body, {key: value for key, value in fixture.items()
+                                            if key not in {"processTree", "supervisor"}})
+                    self.assertIs(type(expected_supervisor["mode"]), bool)
                     cli = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]
                                            / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
                     printed = json.loads(cli.stdout)
-                    self.assertEqual(printed.pop("processTree"), {"kinds": {}})
-                    self.assertEqual(set(printed), {"supervisor"})
+                    self.assertEqual(printed.pop("processTree"), fixture["processTree"])
+                    self.assertEqual(printed.pop("supervisor"), expected_supervisor)
+                    self.assertEqual(printed, {key: value for key, value in fixture.items()
+                                               if key not in {"processTree", "supervisor"}})
             finally:
+                if connection is not None:
+                    connection.close()
                 server.shutdown()
                 server.server_close()
                 thread.join()

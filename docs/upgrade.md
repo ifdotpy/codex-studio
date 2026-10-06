@@ -89,10 +89,12 @@ For a restart, stop admitting new work and wait until agents, monitors,
 background tasks, and terminals are idle. Use the installation's existing
 normal restart/recovery mechanism. Do not terminate the backend directly while
 work is active. Keep the same state directory. Start Studio once, then confirm
-that the existing backend is serving `/api/state` and `/api/sync/identity`:
+that the existing backend is serving `/api/session`, `/api/desktop`, and
+`/api/sync/identity`:
 
 ```sh
-curl --fail --silent http://127.0.0.1:4620/api/state >/tmp/studio-state.json
+curl --fail --silent http://127.0.0.1:4620/api/session >/dev/null
+curl --fail --silent http://127.0.0.1:4620/api/desktop >/dev/null
 curl --fail --silent http://127.0.0.1:4620/api/sync/identity
 ```
 
@@ -171,8 +173,8 @@ separate `--gc` option only after the migration has completed and its seven-day
 orphan grace period has elapsed.
 
 Run the upgrade check again. Require each `payloads` entry to report
-`complete: true`. Confirm `canvas.sqlite3` still opens and `/api/state` and
-`/api/sync/identity` still work. Spot-check long transcript bodies and search
+`complete: true`. Confirm `canvas.sqlite3` still opens and `/api/session`,
+`/api/desktop`, and `/api/sync/identity` still work. Spot-check long transcript bodies and search
 results through the normal UI before considering the upgrade complete.
 
 ## 5. VACUUM only when needed
@@ -194,7 +196,7 @@ sqlite3 "$STATE/canvas.sqlite3" 'PRAGMA integrity_check; VACUUM; PRAGMA integrit
 ```
 
 Require both integrity checks to print `ok`, then restart Studio once and
-verify `/api/state`, `/api/sync/identity`, and `/api/diagnostics`.
+verify `/api/session`, `/api/desktop`, `/api/sync/identity`, and `/api/diagnostics`.
 
 ## 6. Optional process supervisor
 
