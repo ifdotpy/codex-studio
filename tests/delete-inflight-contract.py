@@ -27,6 +27,13 @@ class DeleteInflightContract(unittest.TestCase):
         with self.runtime.read_db() as db:
             return self.runtime.dispatch_active_slots(db)
 
+    def attach_runtime_log(self):
+        from codex_log_rotation import RotatingLog
+        server = next(iter(self.runtime.servers.values()))
+        server.log = RotatingLog(Path(self.temp.name) / "app-server.log")
+        self.addCleanup(server.log.close)
+        return server.log.path
+
     def running_chat(self):
         agent = self.runtime.create(
             {"name": "Delete while running", "cwd": self.temp.name, "prompt": "Start"},
@@ -120,6 +127,63 @@ class DeleteInflightContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(agent["id"])["status"], status)
         self.assertEqual(len(self.slots()), baseline)
 
+    def test_tombstone_native_request_replies_do_not_create_pending_requests(self):
+        agent, baseline = self.running_chat()
+        self.runtime.delete_conversation(agent["id"])
+        server = self.runtime.server
+        requests = (
+            ("item/fileChange/requestApproval", {"decision": "decline"}, False),
+            ("item/permissions/requestApproval", {"permissions": {}, "scope": "turn"}, False),
+            ("mcpServer/elicitation/request", {"action": "decline", "content": None}, False),
+            ("item/tool/requestUserInput", None, True),
+        )
+        for index, (method, result, user_input) in enumerate(requests):
+            request_id = f"late-request-{index}"
+            server.request({"id": request_id, "method": method,
+                "params": {"threadId": agent["threadId"], "turnId": agent["turnId"]}})
+            response = server.responses[-1]
+            self.assertEqual(response["id"], request_id)
+            if user_input:
+                self.assertIn("error", response)
+                self.assertIn("unavailable", response["error"]["message"])
+                self.assertNotIn("deleted", response["error"]["message"].lower())
+            else:
+                self.assertEqual(response["result"], result)
+        self.assertEqual(self.runtime.agent(agent["id"])["status"], "paused")
+        with self.runtime.db() as db:
+            self.assertFalse(any(r.get("rpcId", "").startswith("late-request-")
+                                 for r in self.runtime.records(db, "requests")))
+        self.assertEqual(len(self.slots()), baseline)
+
+    def test_archived_worker_late_request_is_declined_without_resurrection(self):
+        root = self.runtime.create({"name": "Archive root", "cwd": self.temp.name,
+                                    "prompt": "Root", "maxAgents": 4})
+        self.runtime.dispatch()
+        fixture.fixture.eventually(lambda: self.runtime.agent(root["id"]).get("turnId"))
+        worker = self.runtime.create({"name": "Archived worker", "prompt": "Worker",
+                                      "role": "reviewer"}, root["id"], defer=True)
+        self.runtime.send(worker["id"], "Run worker", "archive-worker-run")
+        self.runtime.dispatch()
+        fixture.fixture.eventually(lambda: self.runtime.agent(worker["id"]).get("turnId"))
+        archived = self.runtime.agent(worker["id"])
+        now = fixture.fixture.time.time()
+        with self.runtime.lock, self.runtime.db() as db:
+            archived.update(deletedAt=now, autoWake=False, status="paused", epoch=archived["epoch"] + 1,
+                            agentArchive={"at": now, "by": root["id"], "reason": "fixture archive",
+                                          "epoch": archived["epoch"] + 1, "cleanupPending": False})
+            self.runtime.put(db, "agents", archived)
+        slots_before = len(self.slots())
+        status_before = self.runtime.agent(worker["id"])["status"]
+        self.runtime.server.request({"id": "archived-late", "method": "item/commandExecution/requestApproval",
+            "params": {"threadId": archived["threadId"], "turnId": archived["turnId"]}})
+        self.assertEqual(self.runtime.server.responses[-1],
+                         {"id": "archived-late", "result": {"decision": "decline"}})
+        self.assertEqual(self.runtime.agent(worker["id"])["status"], status_before)
+        self.assertEqual(len(self.slots()), slots_before)
+        with self.runtime.db() as db:
+            self.assertFalse(any(r.get("rpcId") == "archived-late"
+                                 for r in self.runtime.records(db, "requests")))
+
     def test_delete_during_unanswered_start_interrupts_late_accepted_turn(self):
         agent, _ = self.running_chat()
         server = self.runtime.server
@@ -135,8 +199,78 @@ class DeleteInflightContract(unittest.TestCase):
         self.assert_deleted_and_released(agent["id"], baseline)
         gate.set()
         fixture.fixture.eventually(lambda: any(method == "turn/interrupt" for method, _ in server.calls))
+        accepted_turn = next(params["turnId"] for method, params in server.calls
+                             if method == "turn/interrupt")
+        self.assertEqual(sum(method == "turn/interrupt" and params["turnId"] == accepted_turn
+                             for method, params in server.calls), 1)
         self.assert_deleted_and_released(agent["id"], baseline)
         self.assertTrue(server.active_turns.get(agent["threadId"]) is None)
+
+    def test_delete_during_start_records_failed_late_interrupt(self):
+        agent, _ = self.running_chat()
+        server = self.runtime.server
+        log_path = self.attach_runtime_log()
+        server.complete(agent["threadId"], agent["turnId"])
+        fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+        baseline = len(self.slots())
+        gate = fixture.fixture.threading.Event()
+        server.start_gate = gate
+        start_count = sum(method == "turn/start" for method, _ in server.calls)
+        self.runtime.send(agent["id"], "Run while start is pending", "late-failed-interrupt")
+        self.runtime.dispatch(agent["id"])
+        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) > start_count)
+        self.runtime.delete_conversation(agent["id"])
+        self.assert_deleted_and_released(agent["id"], baseline)
+        original = server.call
+        interrupt_calls = []
+
+        def fail_interrupt(method, params, timeout=60):
+            if method == "turn/interrupt":
+                interrupt_calls.append(params.copy())
+                raise RuntimeError("interrupt acknowledgement lost")
+            return original(method, params, timeout)
+
+        with patch.object(server, "call", side_effect=fail_interrupt):
+            gate.set()
+            fixture.fixture.eventually(lambda: bool(interrupt_calls)
+                                        and self.runtime.agent(agent["id"]).get("error"))
+        accepted_turn = interrupt_calls[0]["turnId"]
+        self.assertEqual(sum(call["turnId"] == accepted_turn for call in interrupt_calls), 1)
+        current = self.runtime.agent(agent["id"])
+        self.assertTrue(current.get("deletedAt"))
+        self.assertFalse(current.get("inFlight"))
+        self.assertIsNone(current.get("turnId"))
+        self.assertIn("interrupt acknowledgement unavailable", current["error"])
+        self.assertEqual(len(self.slots()), baseline)
+        diagnostic = log_path.read_text()
+        self.assertIn("deleted_turn_interrupt_unconfirmed", diagnostic)
+
+    def test_failed_start_after_delete_leaves_tombstone_settled(self):
+        agent, _ = self.running_chat()
+        server = self.runtime.server
+        server.complete(agent["threadId"], agent["turnId"])
+        fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+        baseline = len(self.slots())
+        gate = fixture.fixture.threading.Event()
+        server.start_gate = gate
+        start_count = sum(method == "turn/start" for method, _ in server.calls)
+        self.runtime.send(agent["id"], "Run while start is pending", "late-failed-start")
+        self.runtime.dispatch(agent["id"])
+        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) > start_count)
+        self.runtime.delete_conversation(agent["id"])
+        self.assert_deleted_and_released(agent["id"], baseline)
+        server.fail_start = True
+        failed = fixture.fixture.threading.Event()
+        original = self.runtime.start_error
+
+        def record_failure(*args, **kwargs):
+            original(*args, **kwargs)
+            failed.set()
+
+        with patch.object(self.runtime, "start_error", side_effect=record_failure):
+            gate.set()
+            self.assertTrue(failed.wait(5), "late turn/start failure callback did not run")
+        self.assert_deleted_and_released(agent["id"], baseline)
 
     def test_unanswered_steer_reservation_is_released_and_restart_keeps_evidence(self):
         agent, baseline = self.running_chat()
@@ -279,6 +413,27 @@ class DeleteInflightContract(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "stop failed"):
                 self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
+
+    def test_settle_failure_is_logged_without_replacing_stop_exception(self):
+        agent, baseline = self.running_chat()
+        log_path = self.attach_runtime_log()
+        original = self.runtime.put
+
+        def fail_settle(db, kind, record, **kwargs):
+            if (kind == "agents" and record["id"] == agent["id"] and record.get("deletedAt")
+                    and not record.get("inFlight") and kwargs.get("sync_rooms") is False):
+                raise RuntimeError("settle storage failed")
+            return original(db, kind, record, **kwargs)
+
+        with patch.object(self.runtime, "stop", side_effect=RuntimeError("original stop failure")), \
+             patch.object(self.runtime, "put", side_effect=fail_settle):
+            with self.assertRaisesRegex(RuntimeError, "original stop failure"):
+                self.runtime.delete_conversation(agent["id"])
+        self.assertTrue(self.runtime.agent(agent["id"]).get("deletedAt"))
+        self.assertTrue(self.runtime.agent(agent["id"]).get("inFlight"))
+        self.assertEqual(len(self.slots()), baseline + 1)
+        diagnostic = log_path.read_text()
+        self.assertIn("deleted_conversation_settle_failed", diagnostic)
 
 
 if __name__ == "__main__":

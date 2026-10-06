@@ -4166,23 +4166,41 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         finally:
             # A timed-out interrupt frees capacity although the old native turn
             # may still run; a late accepted start is interrupted by its receipt.
-            with self.lock, self.db() as db:
-                for agent_id in ids:
-                    agent = self.agent(agent_id, db)
-                    if not agent.get("deletedAt"):
-                        continue
-                    attempt = agent.get("startAttempt") or {}
-                    if not (agent.get("inFlight") or agent.get("turnId")
-                            or attempt.get("activeAtReservation")
-                            or agent.get("status") in {"running", "starting", "approval"}):
-                        continue
-                    agent.update(status="paused", inFlight=False, turnId=None,
-                                 activity=None, activeTools=[])
-                    if attempt.get("activeAtReservation"):
-                        attempt["activeAtReservation"] = False
-                        agent["startAttempt"] = attempt
-                    self.put(db, "agents", agent, sync_rooms=False)
+            try:
+                self._settle_deleted_conversations(ids)
+            except Exception as error:
+                self._log_runtime_diagnostic({"event": "deleted_conversation_settle_failed",
+                    "at": time.time(), "agentIds": sorted(ids), "error": str(error)})
+
         return {"deleted": sorted(ids)}
+
+    def _settle_deleted_conversations(self, ids):
+        with self.lock, self.db() as db:
+            for agent_id in ids:
+                agent = self.agent(agent_id, db)
+                if not agent.get("deletedAt"):
+                    continue
+                attempt = agent.get("startAttempt") or {}
+                if not (agent.get("inFlight") or agent.get("turnId")
+                        or attempt.get("activeAtReservation")
+                        or agent.get("status") in {"running", "starting", "approval"}):
+                    continue
+                agent.update(status="paused", inFlight=False, turnId=None,
+                             activity=None, activeTools=[])
+                if attempt.get("activeAtReservation"):
+                    attempt["activeAtReservation"] = False
+                    agent["startAttempt"] = attempt
+                self.put(db, "agents", agent, sync_rooms=False)
+
+    def _log_runtime_diagnostic(self, diagnostic, server=None):
+        try:
+            target = server or next(iter(self.servers.values()), None)
+            log = getattr(target, "log", None)
+            if log:
+                log.write((json.dumps(diagnostic) + "\n").encode())
+                log.flush()
+        except Exception:
+            pass
 
     def conversation_settings(self, key, data):
         if ("agent_mode" in data or "expected_mode_revision" in data
@@ -6009,8 +6027,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if deleted_server:
             try:
                 deleted_server.call("turn/interrupt", {"threadId": deleted_thread, "turnId": turn})
-            except Exception:
-                pass
+            except Exception as error:
+                diagnostic = {"event": "deleted_turn_interrupt_unconfirmed", "at": time.time(),
+                              "agent": agent_id, "threadId": deleted_thread,
+                              "turnId": turn, "error": str(error)}
+                self._log_runtime_diagnostic(diagnostic, deleted_server)
+                with self.lock, self.db() as db:
+                    latest = self.agent(agent_id, db)
+                    if latest.get("deletedAt") and latest.get("threadId") == deleted_thread:
+                        latest["error"] = "Deleted turn interrupt acknowledgement unavailable: " + str(error)
+                        self.put(db, "agents", latest, sync_rooms=False)
             return
         if stopped and not completed:
             self.interrupt(a)
@@ -6972,7 +6998,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                account_key, connection_id)
                 else:
                     self.reply({"id": message["id"], "error": {"code": -32600,
-                        "message": "The conversation was deleted before this request could be handled."}},
+                        "message": "This agent is unavailable and cannot handle this request."}},
                         account_key, connection_id)
                 return
             if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
