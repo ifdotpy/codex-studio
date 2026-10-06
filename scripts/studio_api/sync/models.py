@@ -599,8 +599,10 @@ class AgentEntityDto(ContractModel):
     imageWorkspaceError: str | None = None
     imageWorkspaceRepo: str | None = None
     imageWorkspaceBaseRepo: str | None = None
-    imageWorkspaceRelative: str | None = None
-    imageWorkspaceStartCommit: str | None = None
+    imageWorkspaceSubpath: str | None = None
+    imageWorkspaceBaseRef: str | None = None
+    imageWorkspaceHasGit: bool | None = None
+    imageWorkspaceCreatedAt: float | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None
@@ -686,14 +688,11 @@ class TurnRecoveryDto(ContractModel):
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
 
-    imageWorkspaceRelative: str | None = None
-    imageWorkspaceStartCommit: str | None = None
-    imageWorkspaceSnapshotCommit: str | None = None
     imageWorkspaceMount: str | None = None
+    cleanedImageWorkspace: dict[str, JsonValue] | None = None
     imageWorkspaceNoticeSent: str | None = None
     imageWorkspaceNoticeText: str | None = None
     imageWorkspaceNoticeError: str | None = None
-    imageWorkspaceCollect: dict[str, JsonValue] | None = None
     startOutcomeHold: StartOutcomeHoldDto | None = None
     turnRecovery: TurnRecoveryDto | None = None
 

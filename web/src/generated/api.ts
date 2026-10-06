@@ -2505,20 +2505,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3837,20 +3841,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -9254,6 +9262,10 @@ export interface components {
       /** Checkpointerror */
       checkpointError?: string | null;
       claudeOptions?: components["schemas"]["JsonValue"] | null;
+      /** Cleanedimageworkspace */
+      cleanedImageWorkspace?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Command */
       command?: string | null;
       /** Compactions */
@@ -9324,14 +9336,16 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
-      /** Imageworkspacecollect */
-      imageWorkspaceCollect?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacemount */
       imageWorkspaceMount?: string | null;
       /** Imageworkspacenoticeerror */
@@ -9344,14 +9358,10 @@ export interface components {
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacesnapshotcommit */
-      imageWorkspaceSnapshotCommit?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Importedfrom */
       importedFrom?: string | null;
       /** Inflight */

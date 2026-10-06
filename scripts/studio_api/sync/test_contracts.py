@@ -143,8 +143,7 @@ class SyncEntityContractTests(unittest.TestCase):
             "imageWorkspaceError",
             "imageWorkspaceRepo",
             "imageWorkspaceBaseRepo",
-            "imageWorkspaceRelative",
-            "imageWorkspaceStartCommit",
+            "imageWorkspaceCreatedAt",
         ):
             self.assertIn(field, AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
@@ -168,17 +167,17 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertEqual(image_agent["imageWorkspace"], True)
         self.assertEqual(image_agent["imageWorkspacePhase"], "ready")
 
-    def test_image_workspace_paths_and_commits_survive_each_snapshot_location(self) -> None:
-        for relative, commit in ((None, None), (".", None), ("packages/app", "a" * 40)):
-            with self.subTest(relative=relative, commit=commit):
+    def test_image_workspace_paths_and_copy_time_survive_each_snapshot_location(self) -> None:
+        for path, created_at in ((None, None), ("/copy/repo", 15.0)):
+            with self.subTest(path=path, created_at=created_at):
                 source: dict[str, JsonValue] = {
                     "id": "image-worker", "kind": "agent",
-                    "imageWorkspaceRelative": relative, "imageWorkspaceStartCommit": commit,
+                    "cwd": path, "imageWorkspaceCreatedAt": created_at,
                 }
                 projected = project("agent", source)
                 if not isinstance(projected, dict):
                     self.fail("image workspace agent did not project")
-                for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
+                for field in ("cwd", "imageWorkspaceCreatedAt"):
                     self.assertIn(field, projected)
                     self.assertEqual(projected[field], source[field])
                 snapshot = StateSnapshot.model_validate({
@@ -200,12 +199,12 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_image_workspace_metadata_rejects_wrong_types_and_unknown_fields(self) -> None:
         for model in (AgentEntityDto, SnapshotAgentDto):
-            for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
-                for value in (42, False, {}, []):
+            for field in ("imageWorkspaceCreatedAt",):
+                for value in ("wrong", False, {}, []):
                     with self.subTest(model=model.__name__, field=field, value=value):
                         with self.assertRaises(ValidationError) as rejected:
                             model.model_validate({"id": "image-worker", "kind": "agent", field: value})
-                        self.assertEqual(rejected.exception.errors()[0]["type"], "string_type")
+                        self.assertEqual(rejected.exception.errors()[0]["type"], "float_type")
             with self.assertRaises(ValidationError) as rejected:
                 model.model_validate({"id": "image-worker", "kind": "agent", "imageWorkspaceUnknown": "."})
             self.assertEqual(rejected.exception.errors()[0]["type"], "extra_forbidden")

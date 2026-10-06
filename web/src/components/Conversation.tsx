@@ -1521,17 +1521,6 @@ export default function Conversation(p: {
         }}
       >
         <div ref={content} className="message-content">
-          {transcriptItems.some(isSendingMessage) && (
-            <Button
-              size="compact-xs"
-              loading={removingSending}
-              onClick={() =>
-                void removeSending(transcriptItems.filter(isSendingMessage))
-              }
-            >
-              Remove sending messages
-            </Button>
-          )}
           {removed.hasRemoved && (
             <Button size="compact-xs" onClick={() => removed.restore()}>
               Restore removed messages

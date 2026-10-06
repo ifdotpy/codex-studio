@@ -360,8 +360,24 @@ class Controls(unittest.TestCase):
         self.assertEqual(self.rt.connection_ids['default'], previous)
         self.assertIs(self.rt.servers['default'], self.server)
 
+    def test_version_17_bridge_retires_only_after_active_work_finishes(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 17}}
+        self.server.provider_options = {}
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent(self.key, db)
+            agent.update(status='running', inFlight=True)
+            self.rt.put(db, 'agents', agent)
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.assertIs(self.rt.servers['default'], self.server)
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent(self.key, db)
+            agent.update(status='completed', inFlight=False)
+            self.rt.put(db, 'agents', agent)
+        self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.assertNotIn('default', self.rt.servers)
+
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
-        self.server.initialize_result = {'capabilities': {'claudeVersion': 15}}
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 18}}
         self.server.provider_options = {}
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.server.state['tasks'] = [{'task_id': 'background'}]

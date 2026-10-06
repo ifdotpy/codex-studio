@@ -299,7 +299,9 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
     if (request.get('source') != _source(agent) or request.get('clientUserMessageId') != events[0]
             or [_event_snapshot(db, row) for row in rows] != request.get('events')):
         return None
-    retry = not any(meta.get('claudePreInputRetryUsed') for meta in metadata)
+    rejection_data = turn['error']['data'] if turn is not None else error.data
+    account_rejected = rejection_data.get('claudePreparationFailure') == 'account_validation'
+    retry = not account_rejected and not any(meta.get('claudePreInputRetryUsed') for meta in metadata)
     receipt = {key: attempt[key] for key in ('id', 'epoch', 'accountKey', 'threadId',
                                            'connectionId', 'nativeOperationId', 'events')}
     receipt.update(agent=agent['id'], turnId=turn_id, outcome='not_applied', retry=retry)

@@ -78,6 +78,9 @@ const queries = new Map(),
   pending = new Map();
 const pendingTurnReceipts = new Set();
 const PREPARATION_TIMEOUT_MS = 20_000;
+// A cold Claude process can need more than 20 seconds under launchd limits.
+// Retained query controls keep their shorter, shared deadline.
+const INITIALIZATION_TIMEOUT_MS = 60_000;
 
 async function boundedPreparation(read, deadline, onTimeout) {
   let timer;
@@ -179,17 +182,66 @@ const settings = (s) => ({
   stderr: (line) => process.stderr.write(line),
 });
 function checkAccount(account) {
-  if (
-    !process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account.email !== process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account.apiProvider !== "firstParty" ||
-    !account.subscriptionType ||
-    (account.apiKeySource && account.apiKeySource !== "none")
-  ) {
-    throw new Error(
-      "Claude Code account or subscription changed. Restore the original login.",
+  const reject = (reason, message) => {
+    throw Object.assign(new Error(message), {
+      claudeAccountValidationFailed: true,
+      data: {
+        turnStartOutcome: "not_applied",
+        claudePreparationFailure: "account_validation",
+        claudeAccountFailure: reason,
+      },
+    });
+  };
+  const expected = process.env.STUDIO_CLAUDE_ACCOUNT;
+  if (!expected)
+    reject(
+      "expected_identity",
+      "Claude Code account identity is not configured. No input was submitted.",
     );
-  }
+  if (!account || typeof account !== "object" || Array.isArray(account))
+    reject(
+      "account_metadata",
+      "Claude Code account metadata is missing. No input was submitted.",
+    );
+  if (typeof account.email !== "string" || !account.email.trim())
+    reject(
+      "email_metadata",
+      "Claude Code email metadata is missing. No input was submitted.",
+    );
+  if (account.email !== expected)
+    reject(
+      "identity_mismatch",
+      "Claude Code account or subscription changed: expected " +
+        expected +
+        ", got " +
+        account.email +
+        ". Restore the original login.",
+    );
+  if (typeof account.apiProvider !== "string" || !account.apiProvider)
+    reject(
+      "provider_metadata",
+      "Claude Code API provider metadata is missing. No input was submitted.",
+    );
+  if (account.apiProvider !== "firstParty")
+    reject(
+      "provider_mismatch",
+      "Claude Code API provider is " +
+        account.apiProvider +
+        ", expected firstParty. Restore the original login.",
+    );
+  if (
+    typeof account.subscriptionType !== "string" ||
+    !account.subscriptionType.trim()
+  )
+    reject(
+      "subscription_metadata",
+      "Claude Code subscription metadata is missing. No input was submitted.",
+    );
+  if (account.apiKeySource && account.apiKeySource !== "none")
+    reject(
+      "api_key_source",
+      "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
+    );
 }
 async function probe(cwd, read) {
   let release;
@@ -200,7 +252,7 @@ async function probe(cwd, read) {
     await hold;
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
+  const timer = setTimeout(() => controller.abort(), INITIALIZATION_TIMEOUT_MS);
   const q = query({
     prompt: prompt(),
     options: {
@@ -224,7 +276,7 @@ async function probe(cwd, read) {
         checkAccount(await q.accountInfo());
         return read(q);
       },
-      Date.now() + PREPARATION_TIMEOUT_MS,
+      Date.now() + INITIALIZATION_TIMEOUT_MS,
       () => controller.abort(),
     );
   } finally {
@@ -291,11 +343,26 @@ async function permissions(s, turn, name, input, options) {
       isOther: true,
       isSecret: false,
     }));
-    const result = await request(
-      "item/tool/requestUserInput",
-      { threadId: s.id, turnId: turn.id, itemId: options.toolUseID, questions },
-      options.signal,
-    );
+    let result;
+    try {
+      result = await request(
+        "item/tool/requestUserInput",
+        {
+          threadId: s.id,
+          turnId: turn.id,
+          itemId: options.toolUseID,
+          questions,
+        },
+        options.signal,
+      );
+    } catch (error) {
+      if (
+        error.message !==
+        "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."
+      )
+        throw error;
+      return { behavior: "deny", message: error.message };
+    }
     const answers = Object.fromEntries(
       questions.map((q) => [
         q.question,
@@ -445,6 +512,23 @@ async function flags(s, p = {}, live = false) {
 async function finishTurn(s, active, result, error) {
   const turn = active.turn;
   if (!turn) return;
+  if (
+    (error?.preparationTimedOut === true ||
+      error?.claudeAccountValidationFailed === true) &&
+    error?.data?.turnStartOutcome === "not_applied" &&
+    turn.items[0]?.type === "userMessage" &&
+    typeof turn.clientUserMessageId === "string" &&
+    turn.clientUserMessageId.length > 0 &&
+    active.input.values.some(
+      (input) =>
+        input.studioInputIdentity === turn.clientUserMessageId &&
+        input.uuid === turn.items[0].nativeId &&
+        input.session_id === (s.nativeId || s.id),
+    )
+  ) {
+    // InputQueue removes the message before yielding it to the SDK.
+    turn.startOutcome = "not_applied";
+  }
   turn.status = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
@@ -461,9 +545,20 @@ async function finishTurn(s, active, result, error) {
         ? { codexErrorInfo: turn.apiErrorInfo }
         : {}),
       ...(turn.startOutcome === "not_applied" &&
-      error?.preparationTimedOut === true &&
+      (error?.preparationTimedOut === true ||
+        error?.claudeAccountValidationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
-        ? { data: { turnStartOutcome: "not_applied" } }
+        ? {
+            data: {
+              turnStartOutcome: "not_applied",
+              ...(error?.data?.claudePreparationFailure === "account_validation"
+                ? {
+                    claudePreparationFailure: "account_validation",
+                    claudeAccountFailure: error.data.claudeAccountFailure,
+                  }
+                : {}),
+            },
+          }
         : {}),
       ...turn.limitError,
     };
@@ -568,6 +663,7 @@ async function finishTurn(s, active, result, error) {
 }
 async function startSession(s, active, p) {
   const initial = active.turn;
+  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
   let admit;
   const admitted = new Promise((r) => (admit = r));
   let allowed = false;
@@ -598,7 +694,11 @@ async function startSession(s, active, p) {
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...(p.effort ? { effort: p.effort } : {}),
-        settings: await flags(s, p),
+        settings: await boundedPreparation(
+          () => flags(s, p),
+          deadline,
+          () => {},
+        ),
         extraArgs: {
           ...providerOptions.extraArgs,
           "replay-user-messages": null,
@@ -672,7 +772,7 @@ async function startSession(s, active, p) {
     checkAccount(
       await boundedPreparation(
         () => q.accountInfo(),
-        Date.now() + PREPARATION_TIMEOUT_MS,
+        deadline,
         () => q.close(),
       ),
     );
@@ -1082,15 +1182,6 @@ async function startSession(s, active, p) {
     if (active.turn) throw new Error("Claude ended without a completed turn");
   } catch (error) {
     active.readyReject(error);
-    if (
-      !allowed &&
-      active.turn === initial &&
-      error?.preparationTimedOut === true &&
-      error?.data?.turnStartOutcome === "not_applied"
-    ) {
-      // The prompt gate proves this exact input never reached the SDK.
-      initial.startOutcome = "not_applied";
-    }
     if (active.turn) await finishTurn(s, active, null, error);
   } finally {
     allowed = false;
@@ -1138,13 +1229,15 @@ function newActive(turn) {
   return active;
 }
 function userMessage(s, turn, blocks, id) {
-  return {
+  const message = {
     type: "user",
     uuid: nativeUserMessageId(id || turn.id),
     session_id: s.nativeId || s.id,
     parent_tool_use_id: null,
     message: { role: "user", content: blocks },
   };
+  Object.defineProperty(message, "studioInputIdentity", { value: id });
+  return message;
 }
 async function handle(method, p) {
   if (commandMethods.has(method)) return commands.handle(method, p);
@@ -1173,7 +1266,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 15 },
+      capabilities: { claudeVersion: 18 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
