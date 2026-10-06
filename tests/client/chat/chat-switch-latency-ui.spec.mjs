@@ -1,6 +1,7 @@
 import {
   readTestState,
   stubEntityState,
+  readFixtureSyncContract,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -81,7 +82,11 @@ test(
         })),
         runtime: { ...state.runtime, requests: [] },
       };
-      await stubEntityState(page, snapshot, "chat-switch-fixture");
+      await stubEntityState(
+        page,
+        snapshot,
+        await readFixtureSyncContract(origin),
+      );
       const payload = (agent, tag) => ({
         agent: { ...agent, status: "completed", inFlight: false, turnId: null },
         items: Array.from({ length: 30 }, (_, i) => ({

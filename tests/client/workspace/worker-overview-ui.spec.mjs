@@ -175,7 +175,7 @@ test("Worker Overview Ui", async ({
         }
         document.payload = JSON.stringify(entity);
       }
-      {
+      if (isEntityPull) {
         const requests = [];
         if (pending)
           requests.push({
@@ -217,6 +217,17 @@ test("Worker Overview Ui", async ({
         );
         data.checkpoint.seq = seq;
         data.maxSeq = seq;
+        if (!pending) {
+          const tombstoneSeq = data.maxSeq + 1;
+          data.documents.push({
+            id: "entity:request:worker-question",
+            seq: tombstoneSeq,
+            _deleted: true,
+            payload: "{}",
+          });
+          data.checkpoint.seq = tombstoneSeq;
+          data.maxSeq = tombstoneSeq;
+        }
       }
       if (isEntityPull && fixtureRefreshStage > appliedFixtureRefreshStage) {
         appliedFixtureRefreshStage = fixtureRefreshStage;

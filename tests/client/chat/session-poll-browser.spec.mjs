@@ -1,5 +1,6 @@
 import {
   apiSchemaHandshakeSse,
+  legacySnapshotRoute,
   syncIdentityFixture,
   test,
   expect,
@@ -51,7 +52,7 @@ test("Session Poll Browser", async ({
       token = "first";
     const identity = syncIdentityFixture();
     const workspaceId = identity.workspaceId;
-    await page.route("**/api/state", (route) => {
+    await page.route(legacySnapshotRoute, (route) => {
       snapshotReads++;
       return route.continue();
     });

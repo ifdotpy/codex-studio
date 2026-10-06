@@ -244,6 +244,18 @@ def fixture_events():
         elif message.get('method') == 'fixture/task':
             with c.runtime.lock, c.runtime.db() as db:
                 c.runtime.put(db, 'tasks', message['params'])
+        elif message.get('method') == 'fixture/request':
+            from studio_api.sync.resources.models import ResourceRef, StateResource
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.put(db, 'requests', message['params'])
+                agent = c.runtime.agent(message['params']['agent'], db)
+                agent.update(status='completed', inFlight=False, turnId=None)
+                c.runtime.put(db, 'agents', agent)
+                # Stand-in for the pending state-resource commit notification;
+                # this base runtime does not publish it for entity commits.
+                c.runtime._stage_resource_change(
+                    db, ResourceRef(StateResource(kind='state')),
+                )
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])

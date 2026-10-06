@@ -1,6 +1,7 @@
 import {
   readTestState,
   stubEntityState,
+  readFixtureSyncContract,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -506,7 +507,11 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     };
-    await stubEntityState(firstUse, emptyState, "shell-first-use-fixture");
+    await stubEntityState(
+      firstUse,
+      emptyState,
+      await readFixtureSyncContract(origin),
+    );
     await firstUse.route("**/api/directories*", (route) =>
       route.fulfill({
         json: { path: "/workspace/phone-first", directories: [] },
@@ -577,7 +582,11 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     });
-    await stubEntityState(branchPage, branchState(), "shell-branch-fixture");
+    await stubEntityState(
+      branchPage,
+      branchState(),
+      await readFixtureSyncContract(origin),
+    );
     await branchPage.route("**/api/transcript/stream*", (route) =>
       route.fulfill({ status: 503, json: { error: "Use fixture polling" } }),
     );

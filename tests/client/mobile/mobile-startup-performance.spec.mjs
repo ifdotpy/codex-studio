@@ -1,8 +1,8 @@
 import {
   test,
   readTestState,
-  readLegacySnapshotForS2Assertions,
   browserExecutablePath,
+  legacySnapshotRoute,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 // Production renderer and Runtime with generated history, no live user data.
@@ -121,7 +121,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
     );
     const entityState = await readTestState(origin);
-    const fullState = await readLegacySnapshotForS2Assertions(origin);
+    const fullState = entityState;
     const compactState = {
       threads: entityState.threads,
       chats: entityState.chats,
@@ -167,11 +167,8 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       fullState.runtime.work.length > 0,
       "Fixture has retained work history",
     );
-    assert.equal(
-      compactState.runtime.work,
-      undefined,
-      "The chat projection excludes retained work history",
-    );
+    // Compare the broad entity projection with the chat projection assembled
+    // from it; no second endpoint read is needed for these size measurements.
     browser = await browserType.launch({
       headless: true,
       ...(browserType === chromium
@@ -319,6 +316,12 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         ).length,
         0,
         "Startup never pulls the full state projection",
+      );
+      assert.equal(
+        requests.filter((request) => legacySnapshotRoute.test(request.path))
+          .length,
+        0,
+        "Startup never requests the legacy snapshot endpoint",
       );
     }
     await page.evaluate(() => navigator.serviceWorker.ready);

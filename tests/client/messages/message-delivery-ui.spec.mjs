@@ -1,6 +1,7 @@
 import {
   readTestState,
   stubEntityState,
+  readFixtureSyncContract,
   apiSchemaHandshakeEvent,
   spawnFixture as spawn,
   test,
@@ -187,7 +188,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         [a.id, 100],
         [b.id, 100],
       ]);
-      await stubEntityState(page, state, "message-delivery-fixture");
+      await stubEntityState(page, state, await readFixtureSyncContract(origin));
       const queuedItems = new Map();
       await page.route("**/api/queue?*", (route) => {
         const id = new URL(route.request().url()).searchParams.get("agent");

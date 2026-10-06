@@ -1,7 +1,7 @@
 import {
   readTestState,
-  syncIdentityFixture,
-  entityPullFixtureForRequest,
+  readFixtureSyncContract,
+  stubEntityState,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -70,11 +70,6 @@ test(
         inFlight: false,
         turnId: null,
       }));
-      const backendIdentity = await (
-        await fetch(`${origin}/api/sync/identity`)
-      ).json();
-      const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-      const workspaceId = identityResponse.workspaceId;
       const state = {
         ...original,
         threads: agents,
@@ -186,18 +181,27 @@ test(
                 ),
               );
             window.fixtureStreams = [];
-            window.EventSource = class extends EventTarget {
-              constructor(url) {
-                super();
-                this.url = url;
-                window.fixtureStreams.push(this);
-              }
-              close() {
-                window.fixtureStreams = window.fixtureStreams.filter(
-                  (stream) => stream !== this,
-                );
-              }
-            };
+            const NativeEventSource = window.EventSource;
+            window.EventSource = new Proxy(NativeEventSource, {
+              construct(target, args) {
+                const url = String(args[0]);
+                if (new URL(url, location.href).pathname === "/api/sync/stream")
+                  return Reflect.construct(target, args);
+                class TranscriptFixtureStream extends EventTarget {
+                  constructor() {
+                    super();
+                    this.url = url;
+                    window.fixtureStreams.push(this);
+                  }
+                  close() {
+                    window.fixtureStreams = window.fixtureStreams.filter(
+                      (stream) => stream !== this,
+                    );
+                  }
+                }
+                return new TranscriptFixtureStream();
+              },
+            });
             window.metrics = {
               phase: "startup",
               inputSequence: 0,
@@ -341,18 +345,6 @@ test(
               .fulfill({ path: join(staticDir, path), contentType: type })
               .catch(() => route.fallback());
           }
-          if (url.pathname === "/api/sync/identity")
-            return route.fulfill({
-              json: identityResponse,
-            });
-          if (url.pathname === "/api/sync/pull") {
-            return route.fulfill({
-              json: {
-                workspaceId: workspaceId,
-                ...entityPullFixtureForRequest(state, url),
-              },
-            });
-          }
           if (url.pathname === "/api/transcript") {
             const id = url.searchParams.get("id");
             return route.fulfill({
@@ -365,6 +357,11 @@ test(
           }
           return route.fallback();
         });
+        await stubEntityState(
+          page,
+          state,
+          await readFixtureSyncContract(origin),
+        );
         await page.goto(origin);
         if (!(await page.locator('[data-message="a-result-29"]').count())) {
           if (name === "mobile")

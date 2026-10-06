@@ -9,6 +9,7 @@ import {
 } from "../playwright.mjs";
 // Production UI with an isolated backend and a recorded native bridge. No OS alerts.
 import { mkdtemp } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,9 +71,8 @@ test("Desktop Notifications Ui", async ({
         "X-Canvas-Token": snapshot.token,
       },
       body: JSON.stringify({
-        name: "Other project",
+        id: randomUUID(),
         cwd: evidence,
-        request_id: "notification-fixture-lead",
       }),
     });
     assert.equal(response.ok, true, await response.text());

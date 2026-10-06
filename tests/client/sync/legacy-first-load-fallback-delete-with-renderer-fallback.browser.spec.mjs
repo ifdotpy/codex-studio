@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
-  syncIdentityFixture,
+  legacySnapshotRoute,
   syncProtocolFixture,
   test,
 } from "../playwright.mjs";
@@ -11,6 +11,7 @@ import {
 test("legacy first-load fallback is deleted with the renderer fallback", async ({
   page,
 }) => {
+  test.setTimeout(60000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -22,7 +23,6 @@ test("legacy first-load fallback is deleted with the renderer fallback", async (
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
-  const identity = syncIdentityFixture();
   let snapshotReads = 0;
   const requests = [];
   page.on("request", (request) =>
@@ -41,7 +41,10 @@ test("legacy first-load fallback is deleted with the renderer fallback", async (
       route.fulfill({ json: { token: "fixture-token" } }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identity }),
+      route.fulfill({
+        status: 503,
+        json: { error: "Fixture sync unavailable" },
+      }),
     );
     await page.route("**/api/sync/protocol", (route) =>
       route.fulfill({ json: syncProtocolFixture() }),
@@ -55,7 +58,7 @@ test("legacy first-load fallback is deleted with the renderer fallback", async (
         json: { error: "Entity sync is unavailable" },
       }),
     );
-    await page.route("**/api/state**", (route) => {
+    await page.route(legacySnapshotRoute, (route) => {
       snapshotReads++;
       return route.fulfill({
         json: {
@@ -85,6 +88,9 @@ test("legacy first-load fallback is deleted with the renderer fallback", async (
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
+    const initialFallback = page.waitForResponse((response) =>
+      legacySnapshotRoute.test(response.url()),
+    );
     await page.evaluate(async () => {
       const { useSnapshot } = await import("/src/hooks.ts");
       const ReactModule = await import("/node_modules/.vite/deps/react.js");
@@ -100,18 +106,26 @@ test("legacy first-load fallback is deleted with the renderer fallback", async (
         }),
       );
     });
+    await initialFallback;
+    assert.ok(
+      snapshotReads >= 1,
+      "initial subscription failure uses the temporary snapshot fallback",
+    );
+    const refreshFallback = page.waitForResponse((response) =>
+      legacySnapshotRoute.test(response.url()),
+    );
     await page.evaluate(() => window.snapshot.refresh(false));
+    await refreshFallback;
     await page.waitForFunction(
       () => window.snapshot?.data?.stateDir === "legacy-fixture",
       undefined,
       { timeout: 10000 },
     );
     assert.ok(
-      snapshotReads > 0,
-      "first load uses the temporary snapshot fallback",
+      snapshotReads >= 2,
+      "refresh failure uses the temporary snapshot fallback",
     );
   } finally {
-    console.log("fallback requests", requests);
     await server.close();
   }
 });

@@ -1,6 +1,7 @@
 import {
   readTestState,
   stubEntityState,
+  readFixtureSyncContract,
   spawnFixture as spawn,
   test,
 } from "../playwright.mjs";
@@ -248,7 +249,11 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     const quietState = structuredClone(state);
     quietState.runtime.requests = [];
     quietState.runtime.complaints = [];
-    await stubEntityState(stable, quietState, "messages-focused-fixture");
+    await stubEntityState(
+      stable,
+      quietState,
+      await readFixtureSyncContract(origin),
+    );
     quietState.runtime.userTasks = [];
     quietState.runtime.work = [];
     quietState.runtime.monitors = [];
@@ -315,6 +320,12 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
         },
       },
     ];
+    fixture.stdin.write(
+      JSON.stringify({
+        method: "fixture/request",
+        params: quietState.runtime.requests[0],
+      }) + "\n",
+    );
     await stableDrawer
       .getByRole("button", { name: "Refresh messages" })
       .click();

@@ -4,6 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
   readTestState,
+  readFixtureSyncContract,
   stubEntityState,
 } from "../playwright.mjs";
 // Production renderer with controlled transcript timing and isolated server state.
@@ -59,9 +60,8 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const syncIdentity = await (
-      await fetch(origin + "/api/sync/identity")
-    ).json();
+    const syncContract = await readFixtureSyncContract(origin);
+    const syncIdentity = syncContract.identity;
     const lead = state.threads.find((a) => a.name === "Other project");
     const other = state.threads.find((a) => a.name === "Release lead");
     let items = Array.from({ length: 36 }, (_, i) => ({
@@ -134,7 +134,7 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           threads: state.threads.map((a) => (a.id === lead.id ? agent : a)),
           runtime: { ...state.runtime, requests: [] },
         },
-        "conversation-motion-fixture",
+        syncContract,
       );
       await page.route("**/api/transcript?*", (r) =>
         r.fulfill({

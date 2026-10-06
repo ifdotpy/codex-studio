@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   syncIdentityFixture,
+  legacySnapshotRoute,
   test,
   expect,
   spawnFixture as spawn,
@@ -88,7 +89,8 @@ test("Team Motion Ui", async ({
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
-      if (path === "/api/state") stateRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
     });
     await page.setViewportSize({ width: 1440, height: 980 });
     const backendIdentity = await (
@@ -153,11 +155,11 @@ test("Team Motion Ui", async ({
     );
     await page.goto(origin);
     await page.locator("[data-chat]").first().waitFor();
-    console.log("initial state reads", {
-      syncPulls: syncPullRequests.length,
-      stateReads: stateRequests,
-    });
-    assert.ok(syncPullRequests.length > 0);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
     assert.deepEqual(stateRequests, []);
     await page
       .locator("[data-chat]")
@@ -293,7 +295,11 @@ test("Team Motion Ui", async ({
       "An older poll cannot remove the newly confirmed terminal",
     );
     assert.equal(await page.locator(".terminal-session").count(), 2);
-    assert.ok(syncPullRequests.length > 0);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
     assert.deepEqual(stateRequests, []);
     await page.screenshot({
       path: join(root, "team-motion.png"),

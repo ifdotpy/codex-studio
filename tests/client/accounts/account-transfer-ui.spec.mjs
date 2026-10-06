@@ -354,10 +354,6 @@ test("Account Transfer Ui", async ({
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    page.on("response", async (response) => {
-      if (new URL(response.url()).pathname === "/api/accounts")
-        console.log("account transfer fixture accounts", await response.json());
-    });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator('[data-chat="started"]').click();
     await page
@@ -583,21 +579,6 @@ test("Account Transfer Ui", async ({
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
     assert.deepEqual(errors, []);
-    console.log(
-      JSON.stringify({
-        ok: true,
-        evidence,
-        cases: [
-          "same chat",
-          "team progress",
-          "cancel remaining",
-          "receipt after reload",
-          "retry",
-          "automatic history without extra controls",
-          "destination account",
-        ],
-      }),
-    );
   } finally {
     server.closeAllConnections();
     server.close();

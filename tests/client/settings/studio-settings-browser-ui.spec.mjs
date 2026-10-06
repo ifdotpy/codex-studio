@@ -4,6 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
   stubEntityState,
+  readFixtureSyncContract,
   readTestState,
 } from "../playwright.mjs";
 // Browser-local Studio preferences. Uses the production bundle and isolated fixture.
@@ -604,7 +605,11 @@ test("studio settings browser ui", async ({
         monitors: [],
       },
     };
-    await stubEntityState(emptyPage, emptyState, "empty-settings-fixture");
+    await stubEntityState(
+      emptyPage,
+      emptyState,
+      await readFixtureSyncContract(origin),
+    );
     await emptyPage.addInitScript((key) => {
       // A valid saved preference object from before the avatar option existed.
       const seedKey = `${key}:legacy-seed-applied`;

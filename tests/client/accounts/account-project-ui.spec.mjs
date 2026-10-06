@@ -1,5 +1,6 @@
 import {
   handleEntitySyncFixtureRequest,
+  legacySnapshotRoute,
   syncIdentityFixture,
   test,
 } from "../playwright.mjs";
@@ -363,7 +364,8 @@ test("account project ui", async ({ browser: _browser }) => {
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
-      if (path === "/api/state") stateRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
     });
     const errors = [];
     page.on("pageerror", (error) => {
@@ -372,11 +374,11 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator("[data-chat]").first().waitFor();
-    console.log("initial state reads", {
-      syncPulls: syncPullRequests.length,
-      stateReads: stateRequests,
-    });
-    assert.ok(syncPullRequests.length > 0);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
     assert.deepEqual(stateRequests, []);
     await page.getByRole("button", { name: "Studio settings" }).click();
     await page
@@ -896,7 +898,11 @@ test("account project ui", async ({ browser: _browser }) => {
     );
     assert.equal(agents.at(-1).accountKey, "work");
     assert.deepEqual(errors, []);
-    assert.ok(syncPullRequests.length > 0);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
     assert.deepEqual(stateRequests, []);
     console.log(
       JSON.stringify({

@@ -1,6 +1,7 @@
 import {
   readTestState,
   stubEntityState,
+  readFixtureSyncContract,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -119,7 +120,11 @@ test("Team panel ui", async ({
         },
       }),
     );
-    await stubEntityState(page, snapshot, "team-panel-fixture");
+    await stubEntityState(
+      page,
+      snapshot,
+      await readFixtureSyncContract(origin),
+    );
     await page.goto(origin);
     await page.locator("#message").waitFor();
     for (const width of [1440, 320]) {

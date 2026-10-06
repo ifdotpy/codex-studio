@@ -3,6 +3,7 @@ import {
   readLegacySnapshotForS2Assertions,
   syncIdentityFixture,
   entityPullFixtureForRequest,
+  legacySnapshotRoute,
   test,
   expect,
   spawnFixture as spawn,
@@ -162,7 +163,8 @@ test("chat-status-ui", async ({ browser }) => {
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
-      if (path === "/api/state") stateRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
     });
     page.setDefaultTimeout(10000);
     const errors = [],
@@ -186,14 +188,6 @@ test("chat-status-ui", async ({ browser }) => {
       });
       if (typeof projection.maxSeq === "number")
         fixtureMaxSeq = Math.max(fixtureMaxSeq, projection.maxSeq);
-      console.log(
-        "chat status fixture pull",
-        url.search,
-        projection.documents.length,
-        projection.documents.filter((document) =>
-          document.id.startsWith("entity:agent:"),
-        ).length,
-      );
       return route.fulfill({
         json: {
           workspaceId,
@@ -282,11 +276,11 @@ test("chat-status-ui", async ({ browser }) => {
     );
     await page.goto(origin);
     await page.locator("#conversation-title").waitFor();
-    console.log("initial state reads", {
-      syncPulls: syncPullRequests.length,
-      stateReads: stateRequests,
-    });
-    assert.ok(syncPullRequests.length > 0);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
     assert.deepEqual(stateRequests, []);
     const row = (agent) => page.locator(`[data-chat="${agent.id}"]`);
     const indicatorLabel = (label, agent) =>
@@ -536,14 +530,12 @@ test("chat-status-ui", async ({ browser }) => {
       "PASS production Conversation, header, and sidebar: exact wake kinds and counts, static end without a spinner",
     );
     expect(errors).toEqual([]);
-    assert.ok(syncPullRequests.length > 0);
-    assert.deepEqual(stateRequests, []);
-    console.log(
-      JSON.stringify({
-        syncPullRequests: syncPullRequests.length,
-        stateRequests,
-      }),
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
     );
+    assert.deepEqual(stateRequests, []);
     console.log(
       JSON.stringify({
         browser: browser.browserType().name(),
