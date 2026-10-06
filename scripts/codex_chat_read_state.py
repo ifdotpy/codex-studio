@@ -1,7 +1,14 @@
 """Persist read state for one exact result under the runtime lock."""
 
+from typing import TYPE_CHECKING
 
-def read_state(runtime, db, agent, data):
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord, ReadStateRecord, RecordStore
+
+
+def read_state(runtime: "RecordStore", db: "sqlite3.Connection", agent: "AgentRecord",
+               data: dict[str, object]) -> "AgentRecord":
     if set(data) - {'id', 'read_state'}:
         raise ValueError('Change read state separately from other chat settings')
     if 'id' in data and data['id'] != agent['id']:
@@ -22,17 +29,17 @@ def read_state(runtime, db, agent, data):
             or agent.get('lastCompletedTurn') != desired['turn_id']
             or agent.get('lastCompletedTurnStatus') != 'completed'):
         raise ValueError('The completed result changed. Reload the chat')
-    previous = agent.get('readState') or {}
+    previous: "ReadStateRecord" | dict[str, object] = agent.get('readState') or {}
     current = previous.get('revision', 0)
     if type(current) is not int or current < 0:
         raise ValueError('The saved read state revision is invalid')
-    target = {'threadId': desired['thread_id'], 'turnId': desired['turn_id'],
+    target: dict[str, str | bool] = {'threadId': desired['thread_id'], 'turnId': desired['turn_id'],
               'read': desired['read']}
     same = all(previous.get(field) == value for field, value in target.items())
     if same and revision in (current, current - 1):
         return agent
     if revision != current:
         raise ValueError('The read state changed. Reload the chat')
-    agent['readState'] = {**target, 'revision': current + 1}
+    agent['readState'] = {**target, 'revision': current + 1}  # type: ignore[typeddict-item]  # typed-narrowing: target fields match persisted schema
     runtime.put(db, 'agents', agent)
     return agent

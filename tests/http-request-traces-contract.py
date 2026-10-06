@@ -209,7 +209,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertIsNone(traces.begin("GET", "/api/sync/stream"))
         keys = [traces.begin("GET", "/api/session") for _ in range(traces.ACTIVE_LIMIT)]
         self.assertTrue(all(keys))
-        self.assertIsNone(traces.begin("GET", "/api/state"))
+        self.assertIsNone(traces.begin("GET", "/api/session"))
         self.assertEqual(len(traces._ACTIVE), traces.ACTIVE_LIMIT)
         self.assertEqual(traces._UNTRACKED, 1)
         self.clock += .1

@@ -1,5 +1,10 @@
 """Shared window selectors for snapshot and entity-sync runtime collections."""
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import JsonObject
 
 
 TASK_ARCHIVE_WINDOW = 100
@@ -10,7 +15,7 @@ MONITOR_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "lost")
 ACTIVE_MONITOR_STATUSES = ("running", "starting", "approval")
 
 
-def task_records(db, root=None):
+def task_records(db: "sqlite3.Connection", root: str | None = None) -> list["JsonObject"]:
     scope = "" if root is None else " AND json_extract(a.record,'$.rootId')=?"
     params = () if root is None else (root, root)
     rows = db.execute(
@@ -27,7 +32,7 @@ def task_records(db, root=None):
     return [json.loads(row[0]) for row in rows]
 
 
-def monitor_records(db, root=None):
+def monitor_records(db: "sqlite3.Connection", root: str | None = None) -> list["JsonObject"]:
     active_agent_scope = "" if root is None else " AND json_extract(record,'$.rootId')=?"
     scope = "" if root is None else """ AND json_extract(record,'$.agent') IN (
         SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?
@@ -51,7 +56,7 @@ def monitor_records(db, root=None):
     return [record for record in records if record.get("agent") in active_agents]
 
 
-def event_records(db):
+def event_records(db: "sqlite3.Connection") -> list[dict[str, object]]:
     rows = db.execute(
         f"""SELECT id,agent,kind,status,created,error FROM runtime_events
             ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"""

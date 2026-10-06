@@ -6,9 +6,12 @@ isolate_supervisor_environment()
 import concurrent.futures
 import importlib.util
 from pathlib import Path
+import sys
 import threading
 import unittest
 from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 
 spec = importlib.util.spec_from_file_location('workspace_fixture', Path(__file__).with_name('workspace-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -78,7 +81,7 @@ class WorkspaceReviewContract(unittest.TestCase):
         self.assertEqual(result['id'], repeated['id'])
         self.assertEqual(result['forkedFrom'], lead['id'])
         self.assertEqual(result['accountKey'], lead['accountKey'])
-        self.assertEqual(len(self.runtime.snapshot()['agents']), 2)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 2)
         self.assertEqual(sum(method == 'thread/fork' for method, _ in self.runtime.server.calls), 1)
 
     def test_concurrent_restore_uses_one_native_result(self):

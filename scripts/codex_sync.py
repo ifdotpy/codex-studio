@@ -63,7 +63,7 @@ class SyncStore:
         if reader is not None:
             reader.close()
 
-    def identity(self):
+    def identity(self) -> dict[str, object]:
         reader = getattr(self, '_version_reader', None)
         if reader is None:
             with self.connection("SyncStore.identity") as db:

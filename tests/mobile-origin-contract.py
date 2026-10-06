@@ -16,6 +16,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_canvas import Canvas, make_server
 from codex_remote import validate_origin
+from studio_api.testing import read_session_token
 
 
 class MobileOriginContract(unittest.TestCase):
@@ -36,7 +37,7 @@ class MobileOriginContract(unittest.TestCase):
         self.thread.join()
         self.temp.cleanup()
 
-    def request(self, headers=None, body=None, path="/api/state"):
+    def request(self, headers=None, body=None, path="/api/session"):
         req = urllib.request.Request(self.url + path,
             data=json.dumps(body).encode() if body is not None else None,
             headers={"Content-Type": "application/json", **(headers or {})})
@@ -71,11 +72,12 @@ class MobileOriginContract(unittest.TestCase):
 
     def test_remote_writes_keep_csrf_token(self):
         self.enable()
-        code, state = self.request(self.headers)
+        code, _session = self.request(self.headers)
         self.assertEqual(code, 200)
         body = {"id": "12345678-1234-1234-1234-123456789abc", "name": "Mobile", "members": []}
         self.assertEqual(self.request(self.headers, body, "/api/chats")[0], 403)
-        self.assertEqual(self.request({**self.headers, "X-Canvas-Token": state["token"]}, body, "/api/chats")[0], 200)
+        token = read_session_token(lambda path: self.request(self.headers, path=path)[1])
+        self.assertEqual(self.request({**self.headers, "X-Canvas-Token": token}, body, "/api/chats")[0], 200)
         self.assertEqual(len(self.canvas.chats()), 1)
 
     def test_opaque_cross_site_asset_requests_are_rejected(self):
@@ -85,9 +87,9 @@ class MobileOriginContract(unittest.TestCase):
         self.assertEqual(self.request(headers)[0], 403)
 
     def test_workspace_identity_guards_mutations(self):
-        _, state = self.request()
         _, identity = self.request(path="/api/sync/identity")
-        headers = {"X-Canvas-Token": state["token"], "X-Canvas-Workspace": "wrong"}
+        token = read_session_token(lambda path: self.request(path=path)[1])
+        headers = {"X-Canvas-Token": token, "X-Canvas-Workspace": "wrong"}
         self.assertEqual(self.request(headers, {"rows": []}, "/api/sync/drafts")[0], 409)
         headers["X-Canvas-Workspace"] = identity["workspaceId"]
         self.assertEqual(self.request(headers, {"rows": []}, "/api/sync/drafts"), (200, []))

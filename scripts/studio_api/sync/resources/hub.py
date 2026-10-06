@@ -239,7 +239,7 @@ class ResourceHub:
                     continue
                 detach = self._progress_watchdog.subscribe(
                     agent_id,
-                    lambda resource=resource: self.publish(resource),
+                    lambda resource=resource: self.publish(resource),  # type: ignore[arg-type,misc]
                 )
                 if not callable(detach):
                     raise RuntimeError("Progress watcher returned no detach callback")
@@ -258,7 +258,7 @@ class ResourceHub:
             else:
                 detach_callbacks = []
             if subscription._closed:
-                reason = "initial"
+                reason: Literal["initial", "change", "reconnect", "overflow", "workspace"] = "initial"
             else:
                 reason = "reconnect" if reconnect else "initial"
                 subscription.initial = self._event(reason, list(keyed.values()))

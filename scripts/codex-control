@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Control the same managed agents as the canvas, without another app-server."""
 import argparse
+from http.client import IncompleteRead
 import json
 import os
+import stat
 import sys
-from codex_api_client import request_json
+from pathlib import Path
+from urllib.error import HTTPError
+from codex_api_client import desktop_state_dir, pull_entities, request_json, session_token
 from codex_agent_modes import DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY
+from codex_canvas import identity
+from codex_state import effective_status, read_threads
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
@@ -57,6 +63,122 @@ a = p.parse_args()
 def request(path, data=None, token=''):
     return request_json(a.url, path, data, token)
 
+def wave_agents(state_directory, managed_agents):
+    root = os.fspath(state_directory) if isinstance(state_directory, (str, os.PathLike)) else ''
+    if not root or not os.path.isdir(root) or not os.access(root, os.R_OK | os.X_OK):
+        print('codex-control: file-backed wave threads are not available from this machine', file=sys.stderr)
+        rows = []
+    else:
+        try:
+            for path in Path(root).glob('codex-swarm-status.*.json'):
+                mode = path.stat().st_mode
+                if not mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH):
+                    raise RuntimeError(f'file-backed wave threads are not available: {path}')
+            rows = read_threads(Path(root))
+        except (OSError, RuntimeError):
+            print('codex-control: file-backed wave threads are not available from this machine', file=sys.stderr)
+            rows = []
+
+    wave_rows = {}
+    wave_order = []
+    for row in rows:
+        agent_id = identity(row['wave'], row.get('runId'), row['threadId'], row['name'])
+        agent = {
+            'id': agent_id,
+            'name': row['name'],
+            'threadId': row['threadId'],
+            'wave': row['wave'],
+            'runId': row.get('runId'),
+            'orchestratorId': row.get('orchestratorId'),
+            'orchestratorName': row.get('orchestratorName'),
+            'parentId': row.get('parentId'),
+            'status': effective_status(row),
+            'model': row.get('model'),
+            'accountKey': row.get('accountKey'),
+            'tokensUsed': row.get('tokensUsed'),
+            '_created': row.get('createdAt', row.get('created')),
+            '_wave_order': len(wave_order),
+        }
+        if agent_id not in wave_rows:
+            wave_order.append(agent_id)
+        wave_rows[agent_id] = agent
+
+    aliases = {}
+    ordinary_agents = []
+    registered_agents = []
+    for agent in managed_agents:
+        source = agent.get('source')
+        if source in {'app-server', 'orchestrator-reference'}:
+            continue
+        if source == 'registered':
+            registered = dict(agent)
+            registered.setdefault('_created', agent.get('createdAt', agent.get('created', agent.get('reportedAt'))))
+            registered_agents.append(registered)
+        else:
+            managed = dict(agent)
+            managed.setdefault('_created', agent.get('createdAt', agent.get('created')))
+            ordinary_agents.append(managed)
+
+    agents = [wave_rows[key] for key in wave_order]
+    agents.extend(ordinary_agents)
+    by_thread = {agent['threadId']: agent for agent in agents if agent.get('threadId')}
+    for agent in registered_agents:
+        thread_id = agent.get('threadId')
+        existing = by_thread.get(thread_id) if isinstance(thread_id, str) else None
+        if existing:
+            aliases[agent['id']] = existing['id']
+            existing['parentId'] = agent.get('parentId')
+        else:
+            agents.append(agent)
+            if isinstance(thread_id, str) and thread_id:
+                by_thread[thread_id] = agent
+    by_id = {agent['id']: agent for agent in agents}
+    references = {}
+    for agent in agents:
+        parent = agent.get('orchestratorId') or agent.get('parentId')
+        if not parent:
+            agent['_parent'] = None
+            continue
+        resolved = by_thread.get(parent, {}).get('id') or aliases.get(parent) or parent
+        agent['_parent'] = resolved
+        if resolved not in by_id:
+            references.setdefault(resolved, {
+                'id': resolved,
+                'name': agent.get('orchestratorName') or 'Orchestrator',
+                'status': 'unknown',
+                'model': None,
+                'accountKey': None,
+                'tokensUsed': None,
+                '_created': None,
+                '_parent': None,
+                '_reference': True,
+            })
+    agents.extend(references.values())
+    # Preserve the legacy wave-file prefix. Entity pull order is unstable, so
+    # order those rows by creation time and identity.
+    wave_ids = set(wave_rows)
+    def order_key(agent):
+        if agent.get('_reference'):
+            return (2, 1, '', agent['id'])
+        if agent['id'] in wave_ids:
+            return (0, 0, agent['_wave_order'], agent['id'])
+        created = agent.get('_created')
+        if isinstance(created, (int, float)) and not isinstance(created, bool):
+            created_key = (0, created)
+        else:
+            created_key = (1, str(created or ''))
+        return (1, *created_key, agent['id'])
+
+    agents.sort(key=order_key)
+    result = {}
+    for agent in agents:
+        result[agent['id']] = {
+            'id': agent['id'], 'name': agent['name'], 'parent': agent.get('_parent'),
+            'status': agent.get('status', 'unknown'), 'model': agent.get('model'),
+            'accountKey': agent.get('accountKey'), 'tokens': agent.get('tokensUsed'),
+        }
+    return list(result.values())
+
 try:
     if os.environ.get('CODEX_BOARD_OWNER'):
         raise ValueError('CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.')
@@ -64,11 +186,17 @@ try:
         raise ValueError('Agents must use their runtime tools; codex-control is for the user')
     import uuid
     from urllib.parse import quote
-    state = request('/api/state') if a.command != 'requests' else {}
-    token = state.get('token', '')
+    token = session_token(a.url) if a.command != 'requests' else ''
+    threads = []
+    if a.command == 'list' or (a.command == 'configure' and a.concurrency is not None):
+        threads = [entity['value'] for entity in pull_entities(a.url, token)
+                   if entity['collection'] == 'agent']
     if a.command == 'list':
-        result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
-                   'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
+        try:
+            state_directory = desktop_state_dir(a.url, timeout=5)
+        except Exception:
+            state_directory = None
+        result = wave_agents(state_directory, threads)
     elif a.command == 'accounts':
         result = request('/api/accounts')
     elif a.command == 'requests':
@@ -116,7 +244,7 @@ try:
                 raise ValueError('Set subagent concurrency separately from team storage and token limits')
             if bool(a.request_id) != (a.expected_mode_revision is not None):
                 raise ValueError('Use --request-id and --expected-mode-revision together')
-            lead = next((t for t in state['threads'] if t['id'] == a.agent), None)
+            lead = next((t for t in threads if t['id'] == a.agent), None)
             if not lead or not lead.get('isLead'):
                 raise ValueError('Configure subagent concurrency on a lead chat')
             request_id = a.request_id or str(uuid.uuid4())
@@ -134,8 +262,17 @@ try:
     else:
         result = request('/api/transcript?id=' + quote(a.agent))
     print(json.dumps(result, ensure_ascii=False, indent=2))
-except (OSError, ValueError) as error:
-    if isinstance(error, urllib.error.HTTPError):
-        try: error = json.load(error).get('error', str(error))
-        except ValueError: pass
+except (IncompleteRead, OSError, ValueError) as error:
+    if isinstance(error, HTTPError):
+        response_error = error
+        try:
+            body = json.load(response_error)
+            if isinstance(body, dict):
+                error = body.get('error') or body.get('detail') or str(response_error)
+            else:
+                error = str(response_error)
+        except (IncompleteRead, ValueError, OSError):
+            error = str(response_error)
+        finally:
+            response_error.close()
     p.exit(1, f'codex-control: {error}\n')

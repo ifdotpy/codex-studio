@@ -26,6 +26,7 @@ from studio_api.sync.models import (
     SyncIdentityResponse,
     SyncProtocolResponse,
     SyncDocument,
+    SyncEntityPayload,
     SyncPullResponse,
     SyncPullResetResponse,
     SyncStreamQuery,
@@ -74,6 +75,7 @@ class SyncStoreContract(Protocol):
     ) -> SyncPullProjection: ...
     def generation(self) -> int: ...
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]: ...
+    def draft_sequence(self) -> int: ...
 
 
 class PanelAgentValidator(Protocol):
@@ -209,6 +211,16 @@ def create_router(context: ApiContext) -> APIRouter:
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
         return context.send(request, {**projection, "generation": store.generation()})
 
+    pull_route = router.routes[-1]
+    register_route_components(
+        pull_route,
+        {
+            "SyncEntityPayload": TypeAdapter(SyncEntityPayload).json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
+
     @router.get(
         "/api/sync/stream",
         response_class=StreamingResponse,
@@ -244,7 +256,7 @@ def create_router(context: ApiContext) -> APIRouter:
             **ERROR_RESPONSES,
         },
     )
-    async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:
+    async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:  # type: ignore[return]
         protocol_value = _first(request, "protocol")
         header_version = request.headers.get("X-Codex-Sync-Protocol")
         if protocol_value not in (None, "3") or header_version not in (None, "3"):
@@ -262,7 +274,7 @@ def create_router(context: ApiContext) -> APIRouter:
             server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
             if renderer_hash is not None and renderer_hash != server_hash:
                 async def schema_mismatch_event() -> AsyncIterator[bytes]:
-                    payload = {
+                    payload: dict[str, object] = {
                         "hash": server_hash,
                         API_SCHEMA_MISMATCH_FIELD: True,
                     }

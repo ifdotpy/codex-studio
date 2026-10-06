@@ -9,6 +9,7 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
+from studio_api.testing import read_runtime_state
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--run', action='store_true', required=True)
 a = p.parse_args()
@@ -34,7 +35,7 @@ exit event have arrived, reply LIVE_ORCHESTRATION_OK. If some are still pending,
 with WAITING_FOR_EVENTS and wait for automatic continuation.""")
     end = time.monotonic() + 180
     while time.monotonic() < end:
-        state = r.snapshot()
+        state = read_runtime_state(r)
         current = r.agent(lead['id'])
         if state['requests']:
             # Honor an inherited policy that requires command approval in this
@@ -62,6 +63,6 @@ with WAITING_FOR_EVENTS and wait for automatic continuation.""")
     else:
         raise AssertionError('Timed out before all completion events reached the lead')
 finally:
-    for node in r.snapshot()['agents']:
+    for node in read_runtime_state(r)['agents']:
         if not node.get('parentId'): r.stop(node['id'])
     r.close()

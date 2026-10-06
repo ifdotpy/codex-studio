@@ -12,6 +12,7 @@ import unittest
 spec = importlib.util.spec_from_file_location("runtime_contract", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from studio_api.testing import read_runtime_state
 Runtime, FakeServer, eventually = fixture.Runtime, fixture.FakeServer, fixture.eventually
 
 
@@ -31,7 +32,7 @@ class QuestionHistoryContract(unittest.TestCase):
     def question(self, **extra):
         self.runtime.request({"id": 102, "method": "item/tool/requestUserInput", "params": {
             "threadId": self.lead["threadId"], "questions": [{"id": "q", "question": "Which file?", **extra}]}})
-        return self.runtime.snapshot()["requests"][-1]
+        return read_runtime_state(self.runtime)["requests"][-1]
 
     def history(self):
         return self.runtime.question_history(self.lead["id"])["items"]
@@ -43,7 +44,7 @@ class QuestionHistoryContract(unittest.TestCase):
         self.assertEqual(self.runtime.delete_question(request["id"]), result)
         self.assertEqual(len(self.runtime.server.responses), before + 1)
         self.assertEqual(self.history(), [])
-        self.assertFalse(any(r["id"] == request["id"] for r in self.runtime.snapshot()["requests"]))
+        self.assertFalse(any(r["id"] == request["id"] for r in read_runtime_state(self.runtime)["requests"]))
         self.assertTrue(self.entity_deleted(request["id"]))
 
     def entity_deleted(self, key):
@@ -175,7 +176,7 @@ class QuestionHistoryContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.runtime.question_history(None)
         self.runtime.request({"id": 103, "method": "item/commandExecution/requestApproval", "params": {"threadId": self.lead["threadId"]}})
-        approval = next(r for r in self.runtime.snapshot()["requests"] if r["method"].endswith("requestApproval"))
+        approval = next(r for r in read_runtime_state(self.runtime)["requests"] if r["method"].endswith("requestApproval"))
         with self.assertRaisesRegex(ValueError, "Only a question"):
             self.runtime.defer_question(approval["id"])
         self.assertEqual(len(self.history()), 1)
@@ -184,7 +185,7 @@ class QuestionHistoryContract(unittest.TestCase):
         self.runtime.request({"id": 104, "method": "mcpServer/elicitation/request", "params": {
             "threadId": self.lead["threadId"], "mode": "form", "requestedSchema": {"properties": {
                 "token": {"type": "string", "title": "Access token", "format": "password"}}}}})
-        request = self.runtime.snapshot()["requests"][-1]
+        request = read_runtime_state(self.runtime)["requests"][-1]
         self.runtime.answer(request["id"], {"decision": "accept", "content": {"token": "another-secret"}})
         self.assertNotIn("another-secret", json.dumps(self.history()))
         self.assertEqual(self.history()[0]["answerHistory"][0]["answer"], "[redacted]")
@@ -193,7 +194,7 @@ class QuestionHistoryContract(unittest.TestCase):
         self.runtime.request({"id": 105, "method": "mcpServer/elicitation/request", "params": {
             "threadId": self.lead["threadId"], "mode": "form", "requestedSchema": {"properties": {
                 "features": {"type": "array", "items": {"type": "string", "enum": ["Search", "Export"]}}}}}})
-        request = self.runtime.snapshot()["requests"][-1]
+        request = read_runtime_state(self.runtime)["requests"][-1]
         body = {"decision": "accept", "content": {"features": ["Search", "Export"]}}
         self.runtime.answer(request["id"], body)
         self.assertEqual(self.runtime.server.responses[-1]["result"],
@@ -203,7 +204,7 @@ class QuestionHistoryContract(unittest.TestCase):
     def test_async_answer_creates_only_one_durable_user_event(self):
         self.runtime.notification({"method": "item/completed", "params": {"threadId": self.lead["threadId"],
             "item": {"id": "async-choice", "type": "agentMessage", "text": "Choose", "questions": [{"title": "Scope?", "options": ["One", "All"]}]}}})
-        request = self.runtime.snapshot()["requests"][-1]
+        request = read_runtime_state(self.runtime)["requests"][-1]
         self.runtime.defer_question(request["id"])
         body = {"answers": {"0": {"answers": ["One"]}}}
         self.runtime.answer(request["id"], body)
