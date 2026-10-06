@@ -15,13 +15,60 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
 
 import codex_workspace_images as images
-import codex_workspace_macos as macos
 from codex_workspace_macos import Backend
 
 
 def git(root, *args):
     return subprocess.run(['git', '-C', str(root), *args], check=True,
                           capture_output=True, text=True, timeout=1800).stdout.strip()
+
+
+def timed(owner, name, key, buckets):
+    original = getattr(owner, name)
+
+    def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        try:
+            return original(*args, **kwargs)
+        finally:
+            bucket = buckets.setdefault(key, 0.0)
+            buckets[key] = bucket + time.monotonic() - started
+
+    setattr(owner, name, wrapper)
+    return lambda: setattr(owner, name, original)
+
+
+def install_timings(backend, buckets):
+    restorers = []
+    for owner, name, key in (
+        (backend, 'copy_base_tree', 'baseCopy'),
+        (backend, 'clone_workspace', 'clone'),
+        (backend, 'mount_workspace', 'attach'),
+        (images, '_repo_snapshots', 'repositorySnapshot'),
+        (images, '_git_dirty_paths', 'sourceGitStatus'),
+        (images, '_git_head', 'headLookup'),
+        (images, '_detected_paths', 'gitStatusAndPaths'),
+        (images, '_copy_exact_paths', 'pathCopy'),
+        (images, '_sync_git_directories', 'gitDirectorySync'),
+        (images, '_sync_detected', 'delta'),
+        (images, '_repo_index_metadata', 'indexDeltaAndRefresh'),
+        (images, '_refresh_changed_paths', 'restat'),
+    ):
+        restorers.append(timed(owner, name, key, buckets))
+    git_original = images._git
+
+    def git_timed(repo, *arguments, **kwargs):
+        key = 'headDiff' if arguments[:2] == ('diff', '--no-renames') else None
+        started = time.monotonic()
+        try:
+            return git_original(repo, *arguments, **kwargs)
+        finally:
+            if key:
+                buckets[key] = buckets.get(key, 0.0) + time.monotonic() - started
+
+    images._git = git_timed
+    restorers.append(lambda: setattr(images, '_git', git_original))
+    return restorers
 
 
 def make_files(root, count, archive_path):
@@ -33,7 +80,7 @@ def make_files(root, count, archive_path):
             info.size = len(payload)
             archive.addfile(info, io.BytesIO(payload))
     root.mkdir(parents=True)
-    subprocess.run(['tar', '-xf', str(archive_path), '-C', str(root)], check=True, timeout=900)
+    subprocess.run(['tar', '-xf', str(archive_path), '-C', str(root)], check=True, timeout=1800)
     archive_path.unlink()
 
 
@@ -60,6 +107,9 @@ def main():
         print(json.dumps({'phase': 'git-fixture', 'paths': count,
                           'seconds': round(time.monotonic() - phase_start, 3)}), flush=True)
 
+        backend = images._get_backend()
+        timings = {}
+        restorers = install_timings(backend, timings)
         phase_start = time.monotonic()
         done = threading.Event()
         outcome = []
@@ -67,7 +117,26 @@ def main():
         if not done.wait(1800) or outcome[-1]['state'] != 'ready':
             raise RuntimeError(f'base build failed: {outcome[-1] if outcome else None}')
         print(json.dumps({'phase': 'base-build', 'paths': count,
-                          'seconds': round(time.monotonic() - phase_start, 3)}), flush=True)
+                          'seconds': round(time.monotonic() - phase_start, 3),
+                          'steps': {key: round(value, 3) for key, value in timings.items()}}),
+              flush=True)
+
+        baseline_id = agent_id + '-baseline'
+        timings.clear()
+        phase_start = time.monotonic()
+        baseline = images.create_workspace(folder, baseline_id)
+        baseline_create_seconds = time.monotonic() - phase_start
+        baseline_root = pathlib.Path(baseline['path'])
+        status_start = time.monotonic()
+        baseline_status = git(baseline_root, 'status', '--porcelain')
+        baseline_status_seconds = time.monotonic() - status_start
+        print(json.dumps({'phase': 'first-git-status-no-staged-change', 'paths': count,
+                          'seconds': round(baseline_status_seconds, 3),
+                          'createSeconds': round(baseline_create_seconds, 3),
+                          'agentStartSteps': {key: round(value, 3)
+                                              for key, value in timings.items()},
+                          'status': baseline_status.splitlines()}, sort_keys=True), flush=True)
+        images.remove_workspace(baseline_id)
 
         root_added = folder / 'root-event-probe.txt'
         root_added.write_text('temporary root file\n')
@@ -77,47 +146,24 @@ def main():
         changed = folder / 'payload/d000/f000000.txt'
         changed.write_text('user edited this file\n')
         git(folder, 'add', 'payload/d000/f000000.txt')
-        backend = images._get_backend()
-        original_sync = backend.sync_delta
-        original_read = macos._read_events
-        delta_seconds = []
-        event_paths = []
-
-        def tracked_read_events(event_root, since):
-            events, newest = original_read(event_root, since)
-            event_paths.extend(events)
-            return events, newest
-
-        def timed_sync(*args, **kwargs):
-            started = time.monotonic()
-            try:
-                return original_sync(*args, **kwargs)
-            finally:
-                delta_seconds.append(time.monotonic() - started)
-
-        macos._read_events = tracked_read_events
-        backend.sync_delta = timed_sync
+        timings.clear()
         start = time.monotonic()
-        try:
-            workspace = images.create_workspace(folder, agent_id)
-            agent_start_seconds = time.monotonic() - start
-        finally:
-            backend.sync_delta = original_sync
-            macos._read_events = original_read
+        workspace = images.create_workspace(folder, agent_id)
+        agent_start_seconds = time.monotonic() - start
         print(json.dumps({'phase': 'agent-start', 'paths': count,
-                          'seconds': round(agent_start_seconds, 3)}), flush=True)
+                          'seconds': round(agent_start_seconds, 3),
+                          'steps': {key: round(value, 3) for key, value in timings.items()}}),
+              flush=True)
         agent_root = pathlib.Path(workspace['path'])
         status_start = time.monotonic()
         status = git(agent_root, 'status', '--porcelain')
         first_status_seconds = time.monotonic() - status_start
-        print(json.dumps({'phase': 'first-git-status', 'paths': count,
+        print(json.dumps({'phase': 'first-git-status-after-user-git-add', 'paths': count,
                           'seconds': round(first_status_seconds, 3)}), flush=True)
-        root_event_fired = any(pathlib.Path(value).resolve() == folder
-                               for value, _flags, _event_id in event_paths)
         print(json.dumps({'paths': count, 'agentStartSeconds': round(agent_start_seconds, 3),
-                          'deltaSeconds': round(sum(delta_seconds), 3),
-                          'rootEventFired': root_event_fired,
-                          'firstGitStatusSeconds': round(first_status_seconds, 3)}, sort_keys=True),
+                          'firstGitStatusSeconds': round(first_status_seconds, 3),
+                          'agentStartSteps': {key: round(value, 3)
+                                              for key, value in timings.items()}}, sort_keys=True),
               flush=True)
         expected_status = ['M  payload/d000/f000000.txt']
         if status.splitlines() != expected_status:
@@ -125,6 +171,8 @@ def main():
         if (agent_root / 'payload/d000/f000000.txt').read_text() != 'user edited this file\n':
             raise AssertionError("workspace did not include the user's edit")
     finally:
+        for restore in locals().get('restorers', []):
+            restore()
         try:
             images.remove_workspace(agent_id)
         except (OSError, RuntimeError, ValueError):
