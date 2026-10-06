@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from collections import defaultdict
 from contextlib import contextmanager
 
@@ -64,6 +65,7 @@ def connect(database, *, site=None, **options):
     options["factory"] = InstrumentedConnection
     db = sqlite3.connect(database, **options)
     db._codex_site = _site(site)
+    db._codex_database_path = str(database)
     from codex_sqlite_traces import database_kind
     db._codex_database_kind = database_kind(database)
     return db
@@ -109,7 +111,22 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                self._finish_transaction()
+                operation = words[0].upper() if words else ""
+                outcome = (
+                    "committed"
+                    if operation in {"COMMIT", "END", "RELEASE"}
+                    else "rolledBack"
+                    if operation == "ROLLBACK"
+                    else "ended"
+                )
+                self._finish_transaction(outcome)
+            elif (
+                not was_in_transaction
+                and not self.in_transaction
+                and is_write
+                and self.isolation_level is None
+            ):
+                self._publish_entity_sequence()
 
     def executemany(self, sql, seq_of_parameters, /):
         started = _clock()
@@ -138,7 +155,22 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                self._finish_transaction()
+                operation = words[0].upper() if words else ""
+                outcome = (
+                    "committed"
+                    if operation in {"COMMIT", "END", "RELEASE"}
+                    else "rolledBack"
+                    if operation == "ROLLBACK"
+                    else "ended"
+                )
+                self._finish_transaction(outcome)
+            elif (
+                not was_in_transaction
+                and not self.in_transaction
+                and is_write
+                and self.isolation_level is None
+            ):
+                self._publish_entity_sequence()
 
     def _finish_transaction(self, outcome="ended"):
         started = getattr(self, "_codex_transaction_started", None)
@@ -152,6 +184,56 @@ class InstrumentedConnection(sqlite3.Connection):
                 logging.getLogger("codex.sqlite").warning("SQLite owner completion failed: %s", type(error).__name__)
             self._codex_transaction_started = None
             self._codex_transaction_site = None
+        if outcome == "committed":
+            self._publish_entity_sequence()
+
+    def _publish_entity_sequence(self):
+        if getattr(self, "_codex_database_kind", None) != "canvas.sqlite3":
+            return
+        state_dir = Path(self._codex_database_path).parent
+        try:
+            from studio_api.sync.resources.hub import (
+                entity_sequence_watermark,
+                publish_entity_sequence,
+            )
+
+            watermark = entity_sequence_watermark(state_dir)
+            if watermark is None:
+                return
+            row = self.execute(
+                "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+                "WHERE collection NOT LIKE 'transcript:%'"
+            ).fetchone()
+            sequence = int(row[0]) if row else 0
+            if sequence <= watermark:
+                return
+            sequences = [
+                int(item[0])
+                for item in self.execute(
+                    "SELECT seq FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%' AND seq>? AND seq<=? "
+                    "ORDER BY seq",
+                    (watermark, sequence),
+                ).fetchall()
+            ]
+        except sqlite3.OperationalError:
+            return
+        try:
+            publish_entity_sequence(state_dir, sequence, sequences)
+        except Exception as error:
+            logging.getLogger("codex.sync").warning(
+                "Could not schedule committed entity change: %s",
+                type(error).__name__,
+            )
+
+    def executescript(self, sql, /):
+        was_in_transaction = self.in_transaction
+        result = super().executescript(sql)
+        if not self.in_transaction:
+            if was_in_transaction:
+                self._finish_transaction("committed")
+            self._publish_entity_sequence()
+        return result
 
     def commit(self):
         outcome = "ended"

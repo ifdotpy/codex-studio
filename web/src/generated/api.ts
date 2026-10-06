@@ -8259,6 +8259,8 @@ export interface components {
       reason: "initial" | "change" | "reconnect" | "overflow" | "workspace";
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
+      /** Resourceversions */
+      resourceVersions: components["schemas"]["ResourceRevisionEntry"][];
       /** Revision */
       revision: number;
       /** Workspaceid */
@@ -8328,8 +8330,18 @@ export interface components {
       | components["schemas"]["RoomResource"]
       | components["schemas"]["StateResource"]
       | components["schemas"]["DraftsResource"]
-      | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["TranscriptResource"];
+    /**
+     * ResourceRevisionEntry
+     * @description Per-resource revision; StateResource uses the entity sequence.
+     */
+    ResourceRevisionEntry: {
+      /** Entitysequences */
+      entitySequences?: number[] | null;
+      resource: components["schemas"]["ResourceRef"];
+      /** Revision */
+      revision: number;
+    };
     /**
      * ResourceTokenRatesEvent
      * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
@@ -11624,14 +11636,6 @@ export interface components {
       text: string;
       /** Turnid */
       turnId?: string | null;
-    };
-    /** TranscriptsResource */
-    TranscriptsResource: {
-      /**
-       * @description discriminator enum property added by openapi-typescript
-       * @enum {string}
-       */
-      kind: "transcripts";
     };
     /**
      * TransferAction

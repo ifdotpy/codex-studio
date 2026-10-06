@@ -69,6 +69,12 @@ if os.environ.get('RENAME_UI_FIXTURE'):
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
     c.runtime.catalog = lambda account='default': {'data': fixture_catalog}
+fixture_freshness_catalog = list(c.runtime.catalog().get('data', [])) + [
+    {'model': 'gpt-5.6-luna', 'displayName': 'Fixture worker model'},
+    {'model': 'fixture-model-old', 'displayName': 'Fixture model old'},
+]
+if os.environ.get('RESOURCE_FRESHNESS_UI_FIXTURE'):
+    c.runtime.catalog = lambda account='default': {'data': fixture_freshness_catalog}
 with c.runtime.lock, c.runtime.db() as db:
     lead = c.runtime.create({'name': 'Release lead', 'cwd': str(c.root), 'prompt': 'Review the release'}, defer=True)
     lead.update(autoWake=True, status='waiting')
@@ -207,6 +213,7 @@ if os.environ.get('PROGRESS_PUSH_UI_FIXTURE'):
 import json
 import threading
 def fixture_events():
+    global server
     for line in sys.stdin:
         message = json.loads(line)
         if message.get('method') == 'fixture/account-key':
@@ -242,9 +249,62 @@ def fixture_events():
                 agent['status'] = params['status']
                 c.runtime.put(db, 'agents', agent)
             print(json.dumps({'id': message['id'], 'committedAt': __import__('time').time()}), flush=True)
+        elif message.get('method') == 'fixture/entity-change':
+            params = message['params']
+            operation = params['operation']
+            if operation == 'rename':
+                with c.runtime.lock, c.runtime.db() as db:
+                    agent = c.runtime.agent(params['agent'], db)
+                    agent['name'] = params['name']
+                    c.runtime.put(db, 'agents', agent)
+                collection, entity_id, deleted = 'agent', params['agent'], False
+            elif operation == 'project':
+                path = str(c.root / 'entity-change-project')
+                Path(path).mkdir(exist_ok=True)
+                c.runtime.projects({'action': 'register', 'path': path})
+                c.runtime.projects({'action': 'remove', 'path': path})
+                collection, entity_id, deleted = 'project', path, True
+            elif operation == 'rule':
+                import time
+                actor = params['agent']
+                rule_id = params['id']
+                c.runtime.rules_action({'action': 'save', 'agent': actor, 'id': rule_id,
+                    'name': 'Entity change fixture', 'kind': 'once', 'at': time.time() + 60})
+                c.runtime.rules_action({'action': 'delete', 'agent': actor, 'id': rule_id})
+                collection, entity_id, deleted = 'rule', rule_id, True
+            elif operation == 'budget':
+                from codex_budget import _save, _state
+                actor = params['agent']
+                with c.runtime.lock, c.runtime.db() as db:
+                    agent = c.runtime.agent(actor, db)
+                    state = _state(db, agent)
+                    state['noticeSpent'] += 13
+                    _save(db, agent, state)
+                collection, entity_id, deleted = 'agent', actor, False
+            else:
+                raise ValueError('Unknown entity change operation')
+            with c.runtime.db() as db:
+                row = db.execute('SELECT seq FROM sync_entities WHERE collection=? AND id=?',
+                                 (collection, entity_id)).fetchone()
+            print(json.dumps({'id': message['id'], 'ok': True,
+                'collection': collection, 'entityId': entity_id,
+                'deleted': deleted, 'seq': row[0] if row else None}), flush=True)
         elif message.get('method') == 'fixture/task':
             with c.runtime.lock, c.runtime.db() as db:
                 c.runtime.put(db, 'tasks', message['params'])
+        elif message.get('method') == 'fixture/model-catalog':
+            fixture_freshness_catalog[:] = message['params']['models']
+            from studio_api.sync.resources.models import ModelsResource, ResourceRef
+            server.context.resource_hub().publish(ResourceRef(ModelsResource(kind='models')))
+            print(json.dumps({'id': message['id'], 'ok': True}), flush=True)
+        elif message.get('method') == 'fixture/stream-transcript':
+            params = message['params']
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.item(
+                    db, params['agent'], params['id'], 'assistant', params['text'],
+                    streaming=True, index_search=False,
+                )
+            print(json.dumps({'id': message['id'], 'ok': True}), flush=True)
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])

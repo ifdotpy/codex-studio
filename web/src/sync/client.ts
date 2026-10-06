@@ -7,6 +7,7 @@ import { draftConflictHandler } from "./conflicts";
 import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
 import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
 import {
+  acknowledgeEntitySequences,
   watchResourceChanges,
   watchResourceConnection,
   type ResourceConnectionState,
@@ -166,15 +167,24 @@ if (typeof window !== "undefined")
   window.addEventListener("codex-sync-entities", (event: Event) => {
     const detail = (event as CustomEvent).detail;
     if (!detail || !Array.isArray(detail.documents)) return;
+    const documents = detail.documents as SyncDocument[];
+    acknowledgeEntitySequences(
+      documents
+        .filter((document) => document.id.startsWith("entity:"))
+        .map((document) => document.seq),
+      detail.workspaceId,
+    );
     void syncDatabase()
       .then(async ({ db, workspaceId }) => {
         if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents as SyncDocument[]) {
+        for (const document of documents) {
           if (!document.id.startsWith("entity:")) continue;
           await persistProjection(db.projections, document);
         }
       })
-      .catch(() => {});
+      .catch(async () => {
+        await refreshProjection("state:entities:v1").catch(() => {});
+      });
   });
 
 async function pull(

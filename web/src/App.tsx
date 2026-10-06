@@ -166,6 +166,7 @@ import {
 } from "./components/agents/WorkerOverview";
 import { TeamDiskTotal } from "./components/WorktreeDisk";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
+import { watchResourceChanges } from "./sync/resourceEvents";
 const ClaudeSettings = lazy(() =>
   import("./components/ClaudeSettings").then((module) => ({
     default: module.ClaudeSettings,
@@ -427,6 +428,10 @@ export default function App() {
       Record<string, AccountLimitsSnapshot>
     >({}),
     [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (mobileClient || !data?.stateDir) return;
+    return watchResourceChanges({ kind: "terminals" }, () => {});
+  }, [mobileClient, data?.stateDir]);
   useEffect(() => {
     if (!data?.stateDir) return;
     setLimitsByAccount(saved(`codex-limits:${data.stateDir}`, {}));
@@ -769,6 +774,8 @@ export default function App() {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
+  const accountsForLimits = useRef(accounts.data.accounts);
+  accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
     (key: string, force = false) => {
       const selected = accounts.data.accounts.find((item) => item.id === key);
@@ -824,6 +831,8 @@ export default function App() {
     () => reloadLimits(true),
     [reloadLimits],
   );
+  const reloadLimitsForRef = useRef(reloadLimitsFor);
+  reloadLimitsForRef.current = reloadLimitsFor;
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
@@ -849,7 +858,7 @@ export default function App() {
     );
     keys.add(agent.accountKey || "default");
     const labelFor = (key: string) => {
-      const account = accounts.data.accounts.find((item) => item.id === key);
+      const account = accountsForLimits.current.find((item) => item.id === key);
       return account?.email || account?.label || key;
     };
     return [...keys]
@@ -917,7 +926,7 @@ export default function App() {
         })
         .catch(() => {});
     }
-  }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
+  }, [data?.stateDir, usageAccountKeys]);
   useEffect(() => {
     if (!data?.stateDir) return;
     const keys = new Set([
@@ -928,7 +937,7 @@ export default function App() {
       watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsFor(key, true);
+          await reloadLimitsForRef.current(key, true);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.
@@ -938,7 +947,7 @@ export default function App() {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsFor]);
+  }, [data?.stateDir, accountKey, usageAccountKeys]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

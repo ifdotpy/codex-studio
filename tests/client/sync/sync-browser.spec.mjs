@@ -100,6 +100,10 @@ test("Sync Browser", async ({
             revision,
             reason: "initial",
             resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision,
+            })),
           }),
         ),
       });
@@ -206,6 +210,10 @@ test("Sync Browser", async ({
             revision: seq,
             reason: "change",
             resources: stream.resources,
+            resourceVersions: stream.resources.map((resource) => ({
+              resource,
+              revision: seq,
+            })),
           }),
         }),
       );

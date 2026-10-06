@@ -413,12 +413,17 @@ class ApiContext:
                     TokenRateSnapshot.model_validate(token_rates(runtime).workspace_snapshot())
                     if runtime else TokenRateSnapshot(rates={}, teams={})
                 )
+                entity_sequence = self.entity_sequence() or 0
                 self._resource_hub = ResourceHub(
                     cast(str, identity["workspaceId"]),
                     LazyProgressWatchdog(self.canvas.root),
                     initial_rates,
+                    entity_sequence=entity_sequence,
                 )
                 register_resource_hub(self.canvas.root, self._resource_hub)
+                latest_sequence = self.entity_sequence() or 0
+                if latest_sequence > entity_sequence:
+                    self._resource_hub.publish_entity_sequence(latest_sequence)
             return self._resource_hub
 
     def initialize(self) -> None:
@@ -442,8 +447,15 @@ class ApiContext:
         uri = self.canvas.db.absolute().as_uri() + "?mode=ro"
         try:
             with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
-                row = db.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_entities").fetchone()
-                return int(row[0]) if row is not None else 0
+                row = db.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%'"
+                ).fetchone()
+                high = int(row[0]) if row is not None else 0
+                floor = db.execute(
+                    "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
+                ).fetchone()
+                return max(high, int(floor[0]) if floor else 0)
         except sqlite3.OperationalError as error:
             if "no such table" in str(error).lower():
                 return None

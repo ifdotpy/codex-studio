@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -32,10 +33,24 @@ def create_router(context: ApiContext) -> APIRouter:
     def notify(request: Request, payload: ResourceNotifyRequest) -> object:
         try:
             hub = context.resource_hub()
+
+            def publish(resources: Sequence[ResourceRef]) -> None:
+                state_change = False
+                other_resources = []
+                for resource in resources:
+                    if resource.root.kind == "state":
+                        state_change = True
+                    else:
+                        other_resources.append(resource)
+                if other_resources:
+                    hub.publish_many(other_resources)
+                if state_change:
+                    hub.publish_entity_sequence(context.entity_sequence() or 0)
+
             notify_receipts.publish_once(
                 hub.workspace_id,
                 payload,
-                hub.publish_many,
+                publish,
             )
         except HTTPException:
             raise

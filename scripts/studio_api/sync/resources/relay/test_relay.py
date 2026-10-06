@@ -69,7 +69,7 @@ class _Context:
         return None
 
     def entity_sequence(self) -> int:
-        return 0
+        return 1
 
     def send(self, _request: FastAPIRequest, value: object, status: int = 200, **_kwargs: object) -> JSONResponse:
         if hasattr(value, "model_dump"):
@@ -112,6 +112,7 @@ class RelayRouteTests(unittest.TestCase):
         body = {"requestId": "stable-notify-1", "resources": [{"kind": "state"}]}
         first = _post(self.client, body)
         second = _post(self.client, body)
+        time.sleep(0.04)
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(first.json(), {"requestId": "stable-notify-1", "accepted": True})
         self.assertEqual(second.json(), first.json())
@@ -190,6 +191,7 @@ class RelayRouteTests(unittest.TestCase):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
+        time.sleep(0.04)
         connect.assert_not_called()
         socket_connect.assert_not_called()
         self.assertEqual(ack.requestId, "response-loss-id")
@@ -328,12 +330,18 @@ class ExternalCliSseTests(unittest.TestCase):
                     self.assertEqual(len(proxy_requests), 2)
                     self.assertEqual(proxy_requests[0], proxy_requests[1])
                     self.assertEqual(proxy_requests[0]["requestId"], proxy_requests[1]["requestId"])
-                    event = self._read_frame(stream)
-                    self.assertIn("event: resources", event)
-                    payload = json.loads(next(line[6:] for line in event if line.startswith("data: ")))
-                    self.assertEqual(payload["revision"], before_revision + 1)
+                    first_event = self._read_frame(stream)
+                    second_event = self._read_frame(stream)
+                    self.assertIn("event: resources", first_event)
+                    self.assertIn("event: resources", second_event)
+                    payloads = [
+                        json.loads(next(line[6:] for line in event if line.startswith("data: ")))
+                        for event in (first_event, second_event)
+                    ]
+                    self.assertEqual(payloads[0]["revision"], before_revision + 1)
+                    self.assertEqual(payloads[1]["revision"], before_revision + 2)
                     self.assertEqual(
-                        {tuple(sorted(resource.items())) for resource in payload["resources"]},
+                        {tuple(sorted(resource.items())) for payload in payloads for resource in payload["resources"]},
                         {
                             (("kind", "state"),),
                             (("agentId", "host-root"), ("kind", "workspace")),

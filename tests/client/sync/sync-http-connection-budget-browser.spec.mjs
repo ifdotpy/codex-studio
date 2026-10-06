@@ -35,6 +35,7 @@ test("Sync http connection budget browser", async ({
           revision,
           reason: "change",
           resources: [{ kind: "state" }],
+          resourceVersions: [{ resource: { kind: "state" }, revision }],
         })}\n\n`,
       );
     }
@@ -134,6 +135,10 @@ test("Sync http connection budget browser", async ({
               revision,
               reason: "initial",
               resources: refs,
+              resourceVersions: refs.map((resource) => ({
+                resource,
+                revision,
+              })),
             })}\n\n`,
           );
           res.on("close", () => {

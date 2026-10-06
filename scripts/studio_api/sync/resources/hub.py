@@ -26,6 +26,7 @@ from studio_api.sync.resources.models import (
     ResourceHeartbeatEvent,
     ResourceRef,
     ResourceRefValue,
+    ResourceRevisionEntry,
     ResourceTokenRatesEvent,
     SessionCostResource,
     StateResource,
@@ -34,7 +35,6 @@ from studio_api.sync.resources.models import (
     TerminalResource,
     TerminalsResource,
     TranscriptResource,
-    TranscriptsResource,
     TokenRateSnapshot,
     VoiceResource,
     WorktreeDiskResource,
@@ -43,6 +43,8 @@ from studio_api.sync.resources.models import (
 
 MAX_SUBSCRIBED_RESOURCES = 256
 MAX_PENDING_RESOURCES = 128
+MAX_RESOURCE_REVISION_ENTRIES = 4096
+ENTITY_SEQUENCE_THROTTLE_SECONDS = 0.025
 _LOGGER = logging.getLogger(__name__)
 
 ResourceKey = tuple[str, str | None]
@@ -98,7 +100,7 @@ def _key(resource: ResourceRef) -> ResourceKey:
         case RoomResource(roomId=identity):
             return "room", identity
         case (TerminalsResource() | AccountsResource() | ModelsResource() | CostsResource()
-              | DesktopResource() | StateResource() | DraftsResource() | TranscriptsResource()):
+              | DesktopResource() | StateResource() | DraftsResource()):
             return value.kind, None
         case TranscriptResource(agentId=identity):
             return "transcript", identity
@@ -123,6 +125,7 @@ class ResourceSubscription:
         self._loop = loop
         self._resources = resources
         self._pending: dict[ResourceKey, ResourceRef] = {}
+        self._pending_entity_sequences: set[int] = set()
         self._overflow = False
         self._pending_token_rates: TokenRateSnapshot | None = None
         self._wake = asyncio.Event()
@@ -151,6 +154,7 @@ class ResourceSubscription:
                 changed = list(self._resources.values())
                 self._overflow = False
                 self._pending.clear()
+                self._pending_entity_sequences.clear()
                 event: ResourceChangeEvent | ResourceTokenRatesEvent = self._hub._event(reason, changed)
             elif self._pending_token_rates is not None:
                 snapshot = self._pending_token_rates
@@ -159,7 +163,11 @@ class ResourceSubscription:
             elif self._pending:
                 changed = list(self._pending.values())
                 self._pending.clear()
-                event = self._hub._event("change", changed)
+                entity_sequences = sorted(self._pending_entity_sequences)
+                self._pending_entity_sequences.clear()
+                event = self._hub._event(
+                    "change", changed, entity_sequences=entity_sequences
+                )
             else:
                 self._wake.clear()
                 return None
@@ -191,12 +199,18 @@ class ResourceHub:
         workspace_id: str,
         progress_watchdog: ProgressWatchdog | None = None,
         token_rates: TokenRateSnapshot | None = None,
+        entity_sequence: int = 0,
     ) -> None:
         if not workspace_id:
             raise ValueError("Workspace identity must not be empty")
         self.workspace_id = workspace_id
         self.epoch = uuid4().hex
         self._revision = 0
+        self._entity_sequence = entity_sequence
+        self._published_entity_sequence = entity_sequence
+        self._pending_entity_sequences: set[int] = set()
+        self._entity_sequence_timer: threading.Timer | None = None
+        self._resource_revisions: dict[ResourceKey, int] = {}
         self._progress_watchdog = progress_watchdog
         self._token_rates = token_rates or TokenRateSnapshot(rates={}, teams={})
         self._token_rates_published = token_rates is not None
@@ -226,7 +240,12 @@ class ResourceHub:
 
         subscription = ResourceSubscription(self, loop, keyed)
         with self._lock:
+            for key in keyed:
+                if key[0] != "state":
+                    revision = self._resource_revisions.pop(key, self._revision)
+                    self._resource_revisions[key] = revision
             self._subscriptions.add(subscription)
+            self._prune_resource_revisions()
 
         # Never enter the native watchdog while holding the hub lock. Its
         # observer thread may be dispatching a progress callback concurrently.
@@ -286,9 +305,85 @@ class ResourceHub:
     def publish(self, resource: ResourceRef) -> int:
         return self.publish_many((resource,))
 
+    def publish_entity_sequence(
+        self, sequence: int, entity_sequences: Sequence[int] = ()
+    ) -> int:
+        """Schedule a coalesced state invalidation for a committed entity advance."""
+        if sequence <= 0:
+            return self._revision
+        with self._lock:
+            unpublished = {
+                value
+                for value in entity_sequences
+                if value > self._published_entity_sequence
+            }
+            if sequence <= self._published_entity_sequence and not unpublished:
+                return self._revision
+            self._entity_sequence = max(self._entity_sequence, sequence)
+            committed_sequences = unpublished
+            if not committed_sequences and sequence > self._published_entity_sequence:
+                committed_sequences.add(sequence)
+            if not committed_sequences:
+                return self._revision
+            self._pending_entity_sequences.update(committed_sequences)
+            if self._entity_sequence_timer is None:
+                timer = threading.Timer(
+                    ENTITY_SEQUENCE_THROTTLE_SECONDS,
+                    self._flush_entity_sequence,
+                )
+                timer.daemon = True
+                self._entity_sequence_timer = timer
+                timer.start()
+            return self._revision
+
+    def _flush_entity_sequence(self) -> None:
+        resource = ResourceRef(StateResource(kind="state"))
+        key = _key(resource)
+        with self._lock:
+            self._entity_sequence_timer = None
+            if self._entity_sequence <= self._published_entity_sequence:
+                return
+            self._published_entity_sequence = self._entity_sequence
+            entity_sequences = tuple(sorted(self._pending_entity_sequences))
+            self._pending_entity_sequences.clear()
+            self._advance_revision()
+            for subscription in self._subscriptions:
+                if key not in subscription._resources:
+                    continue
+                if subscription._overflow:
+                    continue
+                subscription._pending[key] = resource
+                subscription._pending_entity_sequences.update(entity_sequences)
+                if len(subscription._pending) > MAX_PENDING_RESOURCES:
+                    subscription._pending.clear()
+                    subscription._pending_entity_sequences.clear()
+                    subscription._overflow = True
+                self._schedule_wake(subscription)
+
+    def _resource_revision(self, resource: ResourceRef) -> int:
+        key = _key(resource)
+        if key[0] == "state":
+            return self._entity_sequence
+        return self._resource_revisions.get(key, self._revision)
+
+    def _prune_resource_revisions(self) -> None:
+        active = {
+            key
+            for subscription in self._subscriptions
+            for key in subscription._resources
+            if key[0] != "state"
+        }
+        inactive = [key for key in self._resource_revisions if key not in active]
+        while len(self._resource_revisions) > MAX_RESOURCE_REVISION_ENTRIES and inactive:
+            del self._resource_revisions[inactive.pop(0)]
+
     def close(self) -> None:
         """Release all live subscriptions without entering watchers under lock."""
         with self._lock:
+            if self._entity_sequence_timer is not None:
+                self._entity_sequence_timer.cancel()
+                self._entity_sequence_timer = None
+            self._pending_entity_sequences.clear()
             subscriptions = list(self._subscriptions | self._orphaned_subscriptions)
             self._orphaned_subscriptions.clear()
         for subscription in subscriptions:
@@ -327,6 +422,10 @@ class ResourceHub:
                 return self._revision
         with self._lock:
             self._advance_revision()
+            for key in keyed:
+                if key[0] != "state":
+                    self._resource_revisions.pop(key, None)
+                    self._resource_revisions[key] = self._revision
             for subscription in self._subscriptions:
                 matching = ((key, value) for key, value in keyed.items() if key in subscription._resources)
                 for key, value in matching:
@@ -335,11 +434,13 @@ class ResourceHub:
                     subscription._pending[key] = value
                     if len(subscription._pending) > MAX_PENDING_RESOURCES:
                         subscription._pending.clear()
+                        subscription._pending_entity_sequences.clear()
                         subscription._overflow = True
                         break
                 if subscription._pending or subscription._overflow:
                     self._schedule_wake(subscription)
             revision = self._revision
+            self._prune_resource_revisions()
         self._close_orphaned_subscriptions()
         return revision
 
@@ -348,7 +449,11 @@ class ResourceHub:
         with self._lock:
             self._advance_revision()
             for subscription in self._subscriptions:
+                for key in subscription._resources:
+                    if key[0] != "state":
+                        self._resource_revisions[key] = self._revision
                 subscription._pending.clear()
+                subscription._pending_entity_sequences.clear()
                 subscription._overflow = True
                 self._schedule_wake(subscription)
             revision = self._revision
@@ -369,6 +474,8 @@ class ResourceHub:
         self,
         reason: Literal["initial", "change", "reconnect", "overflow", "workspace"],
         resources: list[ResourceRef],
+        *,
+        entity_sequences: Sequence[int] = (),
     ) -> ResourceChangeEvent:
         return ResourceChangeEvent(
             protocol=3,
@@ -377,6 +484,18 @@ class ResourceHub:
             revision=self._revision,
             reason=reason,
             resources=resources,
+            resourceVersions=[
+                ResourceRevisionEntry(
+                    resource=resource,
+                    revision=self._resource_revision(resource),
+                    entitySequences=(
+                        list(entity_sequences)
+                        if _key(resource)[0] == "state" and entity_sequences
+                        else None
+                    ),
+                )
+                for resource in resources
+            ],
         )
 
     def _heartbeat(self) -> ResourceHeartbeatEvent:
@@ -412,6 +531,7 @@ class ResourceHub:
                 return
             subscription._closed = True
             self._subscriptions.discard(subscription)
+            self._prune_resource_revisions()
             detach_callbacks, subscription._watch_detach = subscription._watch_detach, []
         self._detach_all(detach_callbacks)
 
@@ -447,6 +567,31 @@ def publish_resources(state_dir: str | Path, *resources: ResourceRef) -> None:
             hub.publish_many(resources)
         except Exception:
             _LOGGER.exception("Unable to publish committed resource changes")
+
+
+def entity_sequence_watermark(state_dir: str | Path) -> int | None:
+    """Return the active hub's last observed entity high-water mark, if any."""
+    with _registry_lock:
+        hub = _hub_registry.get(_root_key(state_dir))
+    if hub is None:
+        return None
+    with hub._lock:
+        return hub._entity_sequence
+
+
+def publish_entity_sequence(
+    state_dir: str | Path,
+    sequence: int,
+    entity_sequences: Sequence[int] = (),
+) -> None:
+    """Notify the active hub of a committed sync entity high-water mark."""
+    with _registry_lock:
+        hub = _hub_registry.get(_root_key(state_dir))
+    if hub is not None:
+        try:
+            hub.publish_entity_sequence(sequence, entity_sequences)
+        except Exception:
+            _LOGGER.exception("Unable to schedule committed entity changes")
 
 
 def publish_resource_overflow(state_dir: str | Path) -> None:

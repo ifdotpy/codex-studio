@@ -20,9 +20,16 @@ test("Terminal dock", async () => {
   const workspaceId = "1234567890abcdef1234567890abcdef";
   const epoch = "terminal-dock-fixture";
   let resourceRevision = 0;
+  const resourceVersions = new Map();
   const resourceStreams = new Set();
   const writeResourceEvent = (stream, reason, resources = stream.resources) => {
-    if (reason !== "initial") resourceRevision++;
+    if (reason !== "initial") {
+      resourceRevision++;
+      for (const resource of resources) {
+        const key = JSON.stringify(resource);
+        resourceVersions.set(key, (resourceVersions.get(key) || 0) + 1);
+      }
+    }
     const event = {
       protocol: 3,
       workspaceId,
@@ -30,6 +37,10 @@ test("Terminal dock", async () => {
       revision: resourceRevision,
       reason,
       resources,
+      resourceVersions: resources.map((resource) => ({
+        resource,
+        revision: resourceVersions.get(JSON.stringify(resource)) || 0,
+      })),
     };
     assert.ok(
       Array.isArray(event.resources) && Number.isFinite(event.revision),

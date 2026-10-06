@@ -106,7 +106,6 @@ const PEER_HEARTBEAT_MS = 3_000;
 const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
-const RESOURCE_FLUSH_MS = 20;
 const COORDINATOR_IDLE_STOP_MS = 1_000;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
@@ -114,6 +113,7 @@ const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
 const resourceValues = new Map<string, Version>();
 const baselineReconciliations = new Set<string>();
+const deliveredEntitySequenceBatches = new Set<string>();
 const transportStatusListeners = new Set<
   (status: ResourceConnectionState) => void
 >();
@@ -140,7 +140,8 @@ let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
 let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let flushScheduled = false;
+let flushGeneration = 0;
 let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
@@ -156,6 +157,7 @@ let activeQueryKey = "";
 let streamUpdateGeneration = 0;
 let keepLiveOnReconfigure = false;
 let pendingResources = new Set<string>();
+const pendingEntitySequenceBatches = new Map<string, Set<string>>();
 let pendingReset = false;
 let currentStatus: ResourceConnectionState = "connecting";
 let stopResume: (() => void) | undefined;
@@ -243,9 +245,17 @@ function hasTokenRateInterest() {
   );
 }
 
-function dispatchResource(resource: ResourceRef, version: Version) {
-  if (!rememberResourceVersion(resource, version)) return;
+function dispatchResource(
+  resource: ResourceRef,
+  version: Version,
+  force = false,
+) {
+  if (!rememberResourceVersion(resource, version) && !force) return;
   pendingResources.add(resourceKey(resource));
+}
+
+function entitySequenceBatchKey(sequences: number[]) {
+  return [...sequences].sort((left, right) => left - right).join(",");
 }
 
 function rememberResourceVersion(resource: ResourceRef, version: Version) {
@@ -263,6 +273,23 @@ function rememberResourceVersion(resource: ResourceRef, version: Version) {
   }
   resourceValues.set(key, version);
   return true;
+}
+
+export function acknowledgeEntitySequences(
+  sequences: number[],
+  incomingWorkspaceId?: string,
+) {
+  if (incomingWorkspaceId && incomingWorkspaceId !== workspaceId) return;
+  const exactBatch = [...new Set(sequences)]
+    .filter((sequence) => Number.isSafeInteger(sequence) && sequence >= 0)
+    .sort((left, right) => left - right);
+  if (!exactBatch.length) return;
+  deliveredEntitySequenceBatches.add(exactBatch.join(","));
+  while (deliveredEntitySequenceBatches.size > 128) {
+    const oldest = deliveredEntitySequenceBatches.values().next().value;
+    if (oldest === undefined) break;
+    deliveredEntitySequenceBatches.delete(oldest);
+  }
 }
 
 function pruneResourceVersions(active: Set<string>) {
@@ -288,7 +315,8 @@ function dispatchEvent(event: ResourceChangeEvent) {
     setStatus("degraded");
     return;
   }
-  if (lastEpoch !== event.epoch) {
+  const epochChanged = lastEpoch !== event.epoch;
+  if (epochChanged) {
     lastEpoch = event.epoch;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
@@ -296,6 +324,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
     lastTokenRevision = undefined;
     lastTokenEvent = undefined;
     resourceValues.clear();
+    deliveredEntitySequenceBatches.clear();
   }
   const staleRevision =
     lastRevision !== undefined && event.revision < lastRevision;
@@ -303,14 +332,45 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (!staleRevision && !isDuplicate) lastRevision = event.revision;
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
+  const versions = event.resourceVersions?.length
+    ? new Map(
+        event.resourceVersions.map((entry) => [
+          resourceKey(entry.resource),
+          { epoch: event.epoch, revision: entry.revision },
+        ]),
+      )
+    : undefined;
   for (const resource of event.resources) {
     const key = resourceKey(resource);
-    const version = {
+    const version = versions?.get(key) ?? {
       epoch: event.epoch,
       revision: event.revision,
     };
-    if (active.has(key)) dispatchResource(resource, version);
-    else rememberResourceVersion(resource, version);
+    const entitySequences =
+      resource.kind === "state"
+        ? event.resourceVersions?.find(
+            (entry) => resourceKey(entry.resource) === key,
+          )?.entitySequences
+        : undefined;
+    if (
+      entitySequences?.length &&
+      deliveredEntitySequenceBatches.delete(
+        entitySequenceBatchKey(entitySequences),
+      )
+    ) {
+      continue;
+    }
+    if (active.has(key)) {
+      dispatchResource(resource, version, !versions);
+      if (resource.kind === "state" && entitySequences?.length) {
+        const batches =
+          pendingEntitySequenceBatches.get(key) ?? new Set<string>();
+        batches.add(entitySequenceBatchKey(entitySequences));
+        pendingEntitySequenceBatches.set(key, batches);
+      }
+    } else if (!rememberResourceVersion(resource, version) && !versions) {
+      resourceValues.set(key, version);
+    }
     if (event.reason !== "change" && baselineReconciliations.delete(key))
       pendingResources.add(key);
   }
@@ -320,6 +380,11 @@ function dispatchEvent(event: ResourceChangeEvent) {
     event.reason !== "change" &&
     !staleRevision &&
     !isDuplicate &&
+    (epochChanged ||
+      event.reason === "reconnect" ||
+      event.reason === "overflow" ||
+      event.reason === "workspace" ||
+      !versions) &&
     local.every((key) =>
       event.resources.some((resource) => resourceKey(resource) === key),
     )
@@ -356,9 +421,12 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
 }
 
 function scheduleFlush() {
-  if (flushTimer !== undefined) return;
-  flushTimer = setTimeout(function flushResourceChanges() {
-    flushTimer = undefined;
+  if (flushScheduled) return;
+  flushScheduled = true;
+  const generation = ++flushGeneration;
+  queueMicrotask(function flushResourceChanges() {
+    if (generation !== flushGeneration) return;
+    flushScheduled = false;
     try {
       if (pendingReset) {
         pendingReset = false;
@@ -370,19 +438,30 @@ function scheduleFlush() {
           }
         }
         pendingResources = new Set();
+        pendingEntitySequenceBatches.clear();
       } else {
         for (const key of pendingResources) {
+          const batches = pendingEntitySequenceBatches.get(key);
+          if (batches) {
+            let changed = false;
+            for (const batch of batches) {
+              if (!deliveredEntitySequenceBatches.delete(batch)) changed = true;
+            }
+            pendingEntitySequenceBatches.delete(key);
+            if (!changed) continue;
+          }
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of subscribers.get(key) || []) listener(version);
         }
         pendingResources = new Set();
+        pendingEntitySequenceBatches.clear();
       }
       retryCount = 0;
     } catch (error) {
       frameFailed(error);
     }
-  }, RESOURCE_FLUSH_MS);
+  });
 }
 
 function receiveResourceEvent(value: unknown, fromPeer = false) {
@@ -545,7 +624,13 @@ function replayResourceBaseline(resources: ResourceRef[]) {
     group.resources.push(resource);
     groups.set(key, group);
   }
-  for (const { version, resources: known } of groups.values())
+  for (const { version, resources: known } of groups.values()) {
+    const resourceVersions = known.flatMap((resource) => {
+      const resourceVersion = resourceValues.get(resourceKey(resource));
+      return resourceVersion
+        ? [{ resource, revision: resourceVersion.revision }]
+        : [];
+    });
     broadcast({
       kind: "resource-event",
       event: {
@@ -555,8 +640,10 @@ function replayResourceBaseline(resources: ResourceRef[]) {
         revision: version.revision,
         reason: "initial",
         resources: known,
+        resourceVersions,
       },
     });
+  }
 }
 
 function announceSubscriptions(reset = false) {
@@ -979,8 +1066,8 @@ function stopCoordinator() {
   coordinatorIdleStopTimer = undefined;
   streamUpdateGeneration++;
   releaseStream();
-  if (flushTimer !== undefined) clearTimeout(flushTimer);
-  flushTimer = undefined;
+  flushGeneration += 1;
+  flushScheduled = false;
   clearTimeout(heartbeatTimeout);
   clearTimeout(reconnectTimer);
   stopChannel();
@@ -1002,6 +1089,7 @@ function stopCoordinator() {
   streamUpdateGeneration = 0;
   resourceValues.clear();
   baselineReconciliations.clear();
+  deliveredEntitySequenceBatches.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
   setStatus(isApiSchemaMismatch() ? "schema-mismatch" : "connecting");

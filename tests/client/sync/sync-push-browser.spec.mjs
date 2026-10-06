@@ -47,6 +47,10 @@ test("Sync push", async ({ context: testContext }) => {
               revision,
               reason: "initial",
               resources,
+              resourceVersions: resources.map((resource) => ({
+                resource,
+                revision,
+              })),
             }),
           ),
         );
@@ -113,6 +117,10 @@ test("Sync push", async ({ context: testContext }) => {
           revision: 2,
           reason: "change",
           resources,
+          resourceVersions: resources.map((resource) => ({
+            resource,
+            revision: 2,
+          })),
         }),
       );
     await page.waitForFunction(() => window.pushState === "Pushed lead");

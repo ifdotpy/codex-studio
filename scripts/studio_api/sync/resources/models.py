@@ -104,10 +104,6 @@ class DraftsResource(ContractModel):
     kind: Literal["drafts"]
 
 
-class TranscriptsResource(ContractModel):
-    kind: Literal["transcripts"]
-
-
 class TranscriptResource(ContractModel):
     kind: Literal["transcript"]
     agentId: NonEmptyIdentifier
@@ -133,7 +129,6 @@ ResourceRefValue = Annotated[
     | RoomResource
     | StateResource
     | DraftsResource
-    | TranscriptsResource
     | TranscriptResource,
     Field(discriminator="kind"),
 ]
@@ -141,6 +136,14 @@ ResourceRefValue = Annotated[
 
 class ResourceRef(RootModel[ResourceRefValue]):
     """Closed discriminated union of all typed UI resource identities."""
+
+
+class ResourceRevisionEntry(ContractModel):
+    """Per-resource revision; StateResource uses the entity sequence."""
+
+    resource: ResourceRef
+    revision: ResourceRevision
+    entitySequences: list[ResourceRevision] | None = None
 
 
 class ResourceChangeEvent(ContractModel):
@@ -152,6 +155,7 @@ class ResourceChangeEvent(ContractModel):
     revision: ResourceRevision
     reason: Literal["initial", "change", "reconnect", "overflow", "workspace"]
     resources: list[ResourceRef]
+    resourceVersions: list[ResourceRevisionEntry]
 
 
 class ResourceHeartbeatEvent(ContractModel):
