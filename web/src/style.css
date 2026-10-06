@@ -1,5 +1,9 @@
 @import "./studio-theme.css";
 
+:root {
+  --studio-chat-max: 760px;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -2126,8 +2130,20 @@ html body #root {
 }
 
 /* Transcript rows share one column. User messages retain their own bubble. */
-#conversation #messages .message-content {
-  max-width: 760px;
+:root:not([data-studio-content-layout="original"])
+  .workspace
+  #conversation
+  :is(
+    .message-content,
+    .conversation-navigation,
+    .room-footer,
+    #composer,
+    .agent-panel,
+    .usage-footer,
+    .message-queue,
+    .conversation-results
+  ) {
+  max-width: var(--studio-chat-max);
   margin-inline: auto;
 }
 .ai-conversation .message.assistant,

@@ -1,7 +1,6 @@
 .conversation-results {
   min-width: 0;
-  width: min(100%, 760px);
-  margin: 8px auto;
+  margin: 8px 0;
 }
 .conversation-results-toggle,
 .conversation-results-more {
