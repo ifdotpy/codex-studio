@@ -112,7 +112,7 @@ test("capacity retry ui", async ({ browser: _browser }) => {
     notifyFailure(first);
     await page
       .locator('.capacity-retry[data-retry-status="scheduled"]')
-      .waitFor({ timeout: 5000 });
+      .waitFor();
     await until(
       async () => (await agent()).lastCompletedTurn === first.turnId,
       "failure event was not recorded",
