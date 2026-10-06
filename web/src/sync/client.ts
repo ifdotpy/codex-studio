@@ -1099,7 +1099,10 @@ export function prefetchTranscript(
 }
 
 export async function startDraftReplication(
-  report: (e: unknown | null) => void,
+  report: (
+    e: unknown | null,
+    direction: "pull" | "push" | "replication" | null,
+  ) => void,
   /** @internal Test-only instrumentation; production callers omit this field. */
   options: {
     testOnly?: {
@@ -1121,7 +1124,7 @@ export async function startDraftReplication(
   // downstream waits before cancelling the one active RxDB state.
   // Invariants: no pull sequence without a trigger; no outage trigger is lost;
   // at most one restart per minimum interval.
-  const failures = new Map<string, unknown>();
+  const failures = new Map<"pull" | "push" | "replication", unknown>();
   let stopped = false;
   let pushFailed = false;
   let pullTriggered = false;
@@ -1175,7 +1178,10 @@ export async function startDraftReplication(
     options.testOnly?.cancel
       ? options.testOnly.cancel(() => current.cancel())
       : current.cancel();
-  const state = (direction: string, error: unknown | null) => {
+  const state = (
+    direction: "pull" | "push" | "replication",
+    error: unknown | null,
+  ) => {
     if (stopped) return;
     if (error === null) failures.delete(direction);
     else failures.set(direction, error);
@@ -1187,7 +1193,17 @@ export async function startDraftReplication(
       }
       servePendingPull();
     }
-    report(failures.size ? failures.values().next().value : null);
+    const failedDirection = failures.has("push")
+      ? "push"
+      : failures.has("pull")
+        ? "pull"
+        : failures.has("replication")
+          ? "replication"
+          : null;
+    report(
+      failedDirection === null ? null : failures.get(failedDirection)!,
+      failedDirection,
+    );
   };
   const beginTriggeredPull = () => {
     if (
@@ -1246,7 +1262,7 @@ export async function startDraftReplication(
   };
   const attempt = async <T>(
     generation: number,
-    direction: string,
+    direction: "pull" | "push",
     request: () => Promise<T>,
   ) => {
     try {
@@ -1450,7 +1466,7 @@ export async function startDraftReplication(
       await restarting;
       await cancelReplication(replication);
     } catch (error) {
-      report(error);
+      report(error, "replication");
     } finally {
       settlePushWait();
     }

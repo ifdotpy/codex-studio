@@ -18,8 +18,14 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-const { identity, ensureBackend, backendBuild, updateStatus, apiPython } =
-  createRequire(import.meta.url)("./backend.cjs");
+const {
+  identity,
+  ensureBackend,
+  backendBuild,
+  updateStatus,
+  apiPython,
+  backendExitStatus,
+} = createRequire(import.meta.url)("./backend.cjs");
 const state = "/unused-studio-state";
 const record = {
   application: "codex-agents",
@@ -29,6 +35,15 @@ const record = {
   stateDir: state,
 };
 const timing = { attemptTimeoutMs: 50, timeoutMs: 250, retryDelayMs: 10 };
+
+test("desktop recognizes backend exit by signal during startup", () => {
+  assert.equal(
+    backendExitStatus({ exitCode: null, signalCode: "SIGTERM" }),
+    "SIGTERM",
+  );
+  assert.equal(backendExitStatus({ exitCode: 23, signalCode: null }), 23);
+  assert.equal(backendExitStatus({ exitCode: null, signalCode: null }), null);
+});
 
 test("desktop honors an equipped explicit API interpreter", () => {
   const root = mkdtempSync(path.join(tmpdir(), "studio-api-python-"));
