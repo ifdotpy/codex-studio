@@ -511,10 +511,21 @@ Lowering a limit does not interrupt existing turns.
 `orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
 is the lead's folder. On supported platforms, an implementer receives an image copy of the
 Git root that contains `cwd`, or of `cwd` when it is outside Git. The copy includes
-uncommitted changes. Multi agent mode starts the image base build. Until the base is ready,
-the worker has read-only access, whatever the YOLO setting. Studio then switches the worker
+uncommitted changes. Multi agent mode starts the image base build. Before sealing the base,
+Studio applies one change-detection pass and refreshes each copied Git index. Git workspaces
+use HEAD differences, current status paths, and paths that were dirty when the base was made.
+Studio mirrors each Git directory with `rsync -a --delete`, excluding `index`, then applies
+changed staged entries. Plain folders use `rsync -a --delete`. Git-ignored files changed after
+base creation stay at the base version. These Git operations do not change the user's Git
+metadata. Studio does not stage, commit, replay, or collect agent changes. Agent Git settings
+stay at their defaults. Until the base is ready, the worker has read-only access, whatever the
+YOLO setting. Studio then switches the worker
 to the copy path and sends a notice with the path and copy time. Unsupported platforms use a
 Git worktree when the folder is in Git, or the original folder otherwise.
+On a real Mac, default-config first `git status` took 1.924 s at 50,000 files and 4.156 s at
+200,000 files with no staged source change. After source `git add`, it took 0.436 s and 1.676 s.
+The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
+earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
 An agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
 resolved commit to the worker in its first input. The worker checks it out. Studio does not
 run Git checkpoints or collect worker changes inside image copies. The worker result includes

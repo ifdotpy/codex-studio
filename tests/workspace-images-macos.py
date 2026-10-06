@@ -1,6 +1,5 @@
 """Real macOS lifecycle checks for generic folder workspace copies."""
 
-import json
 import os
 import pathlib
 import shutil
@@ -9,15 +8,15 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
 
 import codex_workspace_images as images
-import codex_workspace_macos as macos
 from codex_workspace_macos import Backend
 
 
-def tree_bytes(root):
+def tree_bytes(root, *, exclude_git_indexes=False):
     root = pathlib.Path(root)
     result = {}
     for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
@@ -27,6 +26,8 @@ def tree_bytes(root):
         for name in dirs + files:
             path = current / name
             rel = path.relative_to(root).as_posix()
+            if exclude_git_indexes and path.name == 'index' and path.parent.name == '.git':
+                continue
             if path.is_symlink():
                 result[rel] = ('link', os.readlink(path))
             elif path.is_dir():
@@ -54,7 +55,7 @@ class MacWorkspaceCopyTests(unittest.TestCase):
         self.git('config', 'user.name', 'Workspace Test')
         self.git('config', 'user.email', 'workspace-test@example.invalid')
         (self.folder / 'tracked.txt').write_text('base\n')
-        (self.folder / '.gitignore').write_text('ignored.txt\n')
+        (self.folder / '.gitignore').write_text('ignored.txt\n.worktrees/\n')
         (self.folder / 'swap').symlink_to('../victim')
         self.git('add', '-A')
         self.git('commit', '-m', 'base')
@@ -117,14 +118,19 @@ class MacWorkspaceCopyTests(unittest.TestCase):
         workspace_a = images.create_workspace(self.folder, agent_a)
         workspace_b = images.create_workspace(self.folder, agent_b)
         target_a, target_b = pathlib.Path(workspace_a['path']), pathlib.Path(workspace_b['path'])
-        self.assertEqual(tree_bytes(target_a), tree_bytes(self.folder))
-        self.assertEqual(tree_bytes(target_b), tree_bytes(self.folder))
-        self.assertEqual((target_a / '.git' / 'index').read_bytes(),
-                         (self.folder / '.git' / 'index').read_bytes())
+        expected_tree = tree_bytes(self.folder, exclude_git_indexes=True)
+        expected_tree.pop('ignored.txt', None)
+        self.assertEqual(tree_bytes(target_a, exclude_git_indexes=True), expected_tree)
+        self.assertEqual(tree_bytes(target_b, exclude_git_indexes=True), expected_tree)
+        self.assertEqual(self.git('status', '--porcelain=v2', cwd=target_a),
+                         self.git('status', '--porcelain=v2'))
+        self.assertEqual(self.git('status', '--porcelain=v2', cwd=target_b),
+                         self.git('status', '--porcelain=v2'))
         self.assertTrue((target_a / '.git' / 'objects').is_dir())
         self.assertTrue(any((target_a / '.git' / 'objects').rglob('*')))
         self.assertEqual((target_a / 'node_modules' / '.cache' / 'cache.bin').read_bytes(), b'cache')
         self.assertFalse((target_a / '.worktrees').exists())
+        self.assertFalse((target_a / 'ignored.txt').exists())
         self.assertFalse((target_a / 'swap').is_symlink())
         self.assertEqual(self.victim.read_text(), 'user file must stay safe\n')
 
@@ -155,6 +161,40 @@ class MacWorkspaceCopyTests(unittest.TestCase):
         self.assertFalse((target / '.git').exists())
         self.assertEqual(tree_bytes(target), tree_bytes(plain))
 
+    def test_immediate_writes_reach_git_and_plain_workspaces(self):
+        self.build_base()
+        plain = self.root / 'immediate-plain'
+        plain.mkdir()
+        (plain / 'seed.txt').write_text('seed\n')
+        self.build_base(plain)
+        backend = images._get_backend()
+        original_sync = backend.sync_delta
+
+        def no_fsevents(*_args, **_kwargs):
+            raise AssertionError('workspace change detection used FSEvents')
+
+        backend.sync_delta = no_fsevents
+        try:
+            with mock.patch('codex_workspace_macos._read_events', side_effect=no_fsevents):
+                for attempt in range(10):
+                    path = self.folder / f'immediate-{attempt}.txt'
+                    path.write_text(f'git write {attempt}\n')
+                    agent = self.new_agent(f'immediate-git-{attempt}')
+                    workspace = images.create_workspace(self.folder, agent)
+                    self.assertEqual((pathlib.Path(workspace['path']) / path.name).read_text(),
+                                     f'git write {attempt}\n')
+                    images.remove_workspace(agent)
+                for attempt in range(10):
+                    path = plain / f'immediate-{attempt}.txt'
+                    path.write_text(f'plain write {attempt}\n')
+                    agent = self.new_agent(f'immediate-plain-{attempt}')
+                    workspace = images.create_workspace(plain, agent)
+                    self.assertEqual((pathlib.Path(workspace['path']) / path.name).read_text(),
+                                     f'plain write {attempt}\n')
+                    images.remove_workspace(agent)
+        finally:
+            backend.sync_delta = original_sync
+
     def test_interrupted_create_retries_reserved_version_after_refresh(self):
         old_base = self.build_base()
         agent = self.new_agent('refresh-retry')
@@ -184,19 +224,9 @@ class MacWorkspaceCopyTests(unittest.TestCase):
         images._build_base(self.folder, reserved['repoKey'], reserved['baseVersion'])
         current = images._read_json(images._base_state_path(reserved['repoKey']), {})
         self.assertNotEqual(current['version'], reserved['baseVersion'])
-        original_sync = backend.sync_delta
-        tokens = []
-
-        def record_sync(root, target, token, *, excludes):
-            tokens.append(token)
-            return original_sync(root, target, token, excludes=excludes)
-
-        backend.sync_delta = record_sync
-        try:
-            workspace = images.create_workspace(self.folder, agent)
-        finally:
-            backend.sync_delta = original_sync
-        self.assertEqual(tokens[0], reserved_base['token'])
+        workspace = images.create_workspace(self.folder, agent)
+        self.assertEqual(images._read_json(images._agent_state_path(agent), {})['baseVersion'],
+                         reserved_base['version'])
         self.assertEqual((pathlib.Path(workspace['path']) / 'tracked.txt').read_text(),
                          'changed between base versions\n')
 

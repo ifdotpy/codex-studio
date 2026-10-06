@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -86,6 +87,393 @@ def _workspace_excludes(root: Path) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
+def _git_repositories(root: Path) -> list[tuple[str, Path]]:
+    """Find Git work trees below root without following links or entering .git."""
+    root = Path(root).resolve()
+    excluded = _workspace_excludes(root)
+    found = []
+    for current, directories, _files in os.walk(root, followlinks=False):
+        directory = Path(current)
+        git_path = directory / '.git'
+        directories[:] = [name for name in directories
+                          if name != '.git' and not (directory / name).is_symlink()
+                          and not any((directory / name).relative_to(root).as_posix() == value
+                                      or (directory / name).relative_to(root).as_posix().startswith(
+                                          value + '/') for value in excluded)]
+        if not git_path.is_symlink() and (git_path.is_dir() or git_path.is_file()):
+            probe = subprocess.run(['git', '-C', str(directory), 'rev-parse', '--show-toplevel'],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+            if probe.returncode == 0 and Path(os.fsdecode(probe.stdout).strip()).resolve() == directory.resolve():
+                relative = directory.relative_to(root).as_posix()
+                found.append(('.' if relative == '.' else relative, directory))
+    return found
+
+
+def _git(repo: Path, *arguments: str, input_data: bytes | None = None,
+         accepted=(0,), timeout=1800, prefix=(), readonly=False) -> bytes:
+    env = os.environ.copy()
+    if readonly:
+        env['GIT_OPTIONAL_LOCKS'] = '0'
+    result = subprocess.run([*prefix, 'git', '-C', str(repo), *arguments], input=input_data,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=timeout, check=False, env=env)
+    if result.returncode not in accepted:
+        detail = result.stderr.decode(errors='replace')[-2000:]
+        raise RuntimeError(f"git {' '.join(arguments)} failed in {repo}: {detail}")
+    return result.stdout
+
+
+def _git_index_path(repo: Path, *, require_inside=False, inside_root: Path | None = None,
+                    prefix=()) -> Path:
+    value = os.fsdecode(_git(repo, 'rev-parse', '--git-path', 'index', prefix=prefix)).strip()
+    index = Path(value)
+    if not index.is_absolute():
+        index = repo / index
+    index = index.resolve()
+    allowed_root = inside_root if inside_root is not None else repo
+    if require_inside and not index.is_relative_to(allowed_root.resolve()):
+        raise RuntimeError(f'Git index is outside the image copy: {index}')
+    return index
+
+
+def _index_fingerprint(repo: Path) -> str | None:
+    try:
+        data = _git_index_path(repo).read_bytes()
+    except FileNotFoundError:
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def _index_entries(repo: Path, *, prefix=()) -> dict[bytes, tuple[tuple[bytes, bytes, bytes], ...]]:
+    raw = _git(repo, 'ls-files', '--stage', '-z', prefix=prefix)
+    entries: dict[bytes, list[tuple[bytes, bytes, bytes]]] = {}
+    for record in raw.split(b'\0'):
+        if not record:
+            continue
+        metadata, path = record.split(b'\t', 1)
+        mode, oid, stage = metadata.split(b' ', 2)
+        entries.setdefault(path, []).append((mode, oid, stage))
+    return {path: tuple(sorted(values)) for path, values in entries.items()}
+
+
+def _index_state(repo: Path):
+    """Read staged entries from a stable index without refreshing or writing it."""
+    for _attempt in range(3):
+        before = _index_fingerprint(repo)
+        entries = _index_entries(repo)
+        after = _index_fingerprint(repo)
+        if before == after:
+            return after, entries
+    raise RuntimeError(f'Git index changed while it was read: {repo}')
+
+
+def _git_head(repo: Path) -> str | None:
+    result = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            check=False, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+    return os.fsdecode(result.stdout).strip() if result.returncode == 0 else None
+
+
+def _git_dirty_paths(repo: Path) -> set[str]:
+    raw = _git(repo, 'status', '--porcelain=v1', '-z', '--untracked-files=all', readonly=True)
+    records = raw.split(b'\0')
+    paths = set()
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        paths.add(os.fsdecode(record[3:]))
+        if record[:2].strip() in {b'R', b'C'} and index < len(records):
+            paths.add(os.fsdecode(records[index]))
+            index += 1
+    return paths
+
+
+def _repo_snapshots(root: Path) -> list[dict[str, Any]]:
+    records = []
+    for relative, repo in _git_repositories(root):
+        fingerprint = _index_fingerprint(repo)
+        records.append({'path': relative, 'head': _git_head(repo),
+                        'dirtyPaths': sorted(_git_dirty_paths(repo)),
+                        'indexFingerprint': fingerprint})
+    return records
+
+
+def _target_prefix(backend=None):
+    return tuple((backend or _get_backend()).exec_prefix())
+
+
+def _detected_paths(root: Path, baseline: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]]]:
+    """Read Git state only from the source, and return paths changed since the baseline."""
+    baseline_repos = {item['path']: item for item in baseline.get('repositories', [])}
+    current_repos = _repo_snapshots(root)
+    changed: set[str] = set()
+    current_by_path = {item['path']: item for item in current_repos}
+    for relative, repo in _git_repositories(root):
+        before = baseline_repos.get(relative, {})
+        prefix = '' if relative == '.' else relative + '/'
+        current_head = current_by_path[relative].get('head')
+        if before.get('head') and current_head and before['head'] != current_head:
+            output = _git(repo, 'diff', '--no-renames', '--name-only', '-z',
+                          before['head'], current_head,
+                          readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        elif not before.get('head') and current_head:
+            output = _git(repo, 'ls-files', '-z', readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        elif before.get('head') and not current_head:
+            output = _git(repo, 'ls-files', '-z', readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        changed.update(prefix + path for path in before.get('dirtyPaths', []))
+        changed.update(prefix + path for path in current_by_path[relative].get('dirtyPaths', []))
+    return changed, current_repos
+
+
+def _copy_exact_paths(source_root: Path, target_root: Path, paths: set[str], backend) -> None:
+    safe_paths = []
+    for value in sorted(paths):
+        path = Path(value)
+        if path.is_absolute() or '..' in path.parts or value in {'', '.'}:
+            if value in {'', '.'}:
+                continue
+            raise RuntimeError(f'Unsafe workspace delta path: {value!r}')
+        if any(part == '.git' for part in path.parts):
+            continue
+        safe_paths.append(value)
+    if not safe_paths:
+        return
+    script = '''import json, os, pathlib, shutil, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+for name in json.loads(sys.stdin.read()):
+    source, target = src / name, dst / name
+    if not source.parent.resolve().is_relative_to(src.resolve()):
+        raise RuntimeError("source path escapes workspace root")
+    if not target.parent.resolve().is_relative_to(dst.resolve()):
+        raise RuntimeError("target path escapes workspace root")
+    if not source.exists() and not source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        parent = target.parent
+        while parent != dst and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        continue
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        target.symlink_to(os.readlink(source))
+    elif source.is_file():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        elif target.is_symlink():
+            target.unlink()
+        shutil.copy2(source, target)
+    elif source.is_dir() and not target.is_dir():
+        target.unlink(missing_ok=True)
+        target.mkdir()
+'''
+    subprocess.run([*_target_prefix(backend), sys.executable, '-c', script,
+                    str(source_root), str(target_root)],
+                   input=json.dumps(safe_paths).encode(), stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, check=True)
+
+
+def _sync_git_directories(source_root: Path, target_root: Path, backend) -> None:
+    prefix = _target_prefix(backend)
+    repositories = _git_repositories(source_root)
+    git_dirs = []
+    for relative, source_repo in repositories:
+        source_git = Path(os.fsdecode(_git(source_repo, 'rev-parse', '--absolute-git-dir',
+                                           readonly=True)).strip()).resolve()
+        git_dirs.append((relative, source_repo, source_git))
+    for relative, source_repo, source_git in git_dirs:
+        target_repo = target_root if relative == '.' else target_root / relative
+        target_repo.mkdir(parents=True, exist_ok=True)
+        if not source_git.is_relative_to(source_root.resolve()):
+            raise RuntimeError(f'Git metadata is outside the source copy: {source_git}')
+        target_git = target_root / source_git.relative_to(source_root.resolve())
+        target_git.parent.mkdir(parents=True, exist_ok=True)
+        source_entry = source_repo / '.git'
+        target_entry = target_repo / '.git'
+        if source_entry.is_dir():
+            if target_entry.is_symlink() or target_entry.is_file():
+                target_entry.unlink()
+            target_entry.mkdir(exist_ok=True)
+        elif source_entry.is_file():
+            if not source_entry.read_text().startswith('gitdir: '):
+                raise RuntimeError(f'Invalid Git directory pointer: {source_entry}')
+            pointer = os.path.relpath(target_git, target_repo)
+            target_entry.write_text(f'gitdir: {pointer}\n')
+        if not target_git.resolve().is_relative_to(target_root.resolve()):
+            raise RuntimeError(f'Git metadata is outside the image copy: {target_git}')
+        args = [*prefix, 'rsync', '-a', '--delete', '--exclude=/index']
+        for _nested, _repo, nested_git in git_dirs:
+            try:
+                nested_relative = nested_git.relative_to(source_git)
+            except ValueError:
+                continue
+            if nested_relative.parts:
+                args.append(f'--exclude=/{nested_relative.as_posix()}/index')
+        args.extend([
+                str(source_git) + '/', str(target_git) + '/']
+        )
+        subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        target_top = Path(os.fsdecode(_git(target_repo, 'rev-parse', '--show-toplevel',
+                                           prefix=prefix)).strip()).resolve()
+        if target_top != target_repo.resolve():
+            raise RuntimeError(f'Git repository is missing from the image copy: {relative}')
+        resolved_target_git = Path(os.fsdecode(_git(
+            target_repo, 'rev-parse', '--absolute-git-dir', prefix=prefix)).strip()).resolve()
+        if resolved_target_git != target_git.resolve():
+            raise RuntimeError(f'Git metadata path changed in the image copy: {relative}')
+
+
+def _sync_detected(root: Path, target: Path, baseline: dict[str, Any], excludes, backend):
+    paths, current_repositories = _detected_paths(root, baseline)
+    excluded = [Path(value) for value in excludes]
+    paths = {value for value in paths
+             if not any(Path(value) == item or item in Path(value).parents for item in excluded)}
+    known = {item['path'] for item in baseline.get('repositories', [])}
+    for relative, _repo in _git_repositories(root):
+        known.add(relative)
+    if '.' in known:
+        _copy_exact_paths(root, target, paths, backend)
+    else:
+        # A non-Git folder has no cheap reliable change log. Copy its current tree once.
+        args = [*_target_prefix(backend), 'rsync', '-a', '--delete']
+        for value in excludes:
+            suffix = '' if value.endswith('/.git/index') or value == '.git/index' else '/***'
+            args.append(f'--exclude=/{value}{suffix}')
+        args.extend([str(root) + '/', str(target) + '/'])
+        subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    _sync_git_directories(root, target, backend)
+    return {'changedPaths': sorted(paths), 'repositories': current_repositories}
+
+
+def _copy_index_entries(source: Path, target: Path, source_entries=None, *, image_root=None,
+                        prefix=()) -> set[str]:
+    _git_index_path(target, require_inside=True, inside_root=image_root, prefix=prefix)
+    source_entries = source_entries if source_entries is not None else _index_entries(source)
+    target_entries = _index_entries(target, prefix=prefix)
+    changed = {path for path in source_entries.keys() | target_entries.keys()
+               if source_entries.get(path) != target_entries.get(path)}
+    if not changed:
+        return set()
+    for entries in source_entries.items():
+        path, values = entries
+        if path not in changed:
+            continue
+        for _mode, oid, _stage in values:
+            present = subprocess.run([*prefix, 'git', '-C', str(target), 'cat-file', '-e',
+                                       os.fsdecode(oid)], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, check=False).returncode == 0
+            if present:
+                continue
+            kind = _git(source, 'cat-file', '-t', os.fsdecode(oid), readonly=True).strip()
+            body = _git(source, 'cat-file', os.fsdecode(kind), os.fsdecode(oid), readonly=True)
+            copied = _git(target, 'hash-object', '-w', '-t', os.fsdecode(kind), '--stdin',
+                          input_data=body, prefix=prefix).strip()
+            if copied != oid:
+                raise RuntimeError(f'Git object changed while copying index entry {os.fsdecode(path)!r}')
+    records = []
+    for path in sorted(changed):
+        for _mode, oid, stage in target_entries.get(path, ()):
+            records.append(b'0 ' + oid + b' ' + stage + b'\t' + path + b'\0')
+    for path in sorted(changed):
+        for mode, oid, stage in source_entries.get(path, ()):
+            records.append(mode + b' ' + oid + b' ' + stage + b'\t' + path + b'\0')
+    _git(target, 'update-index', '-z', '--index-info', input_data=b''.join(records), prefix=prefix)
+    return {os.fsdecode(path) for path in changed}
+
+
+def _refresh_index(repo: Path, paths=None, *, image_root=None, prefix=()):
+    _git_index_path(repo, require_inside=True, inside_root=image_root, prefix=prefix)
+    arguments = ['--literal-pathspecs', 'update-index', '--refresh', '-q']
+    if paths:
+        arguments.extend(['--', *sorted(paths)])
+    # Return code 1 means at least one work tree file differs from its index.
+    _git(repo, *arguments, accepted=(0, 1), prefix=prefix)
+
+
+def _index_excludes(root: Path) -> tuple[str, ...]:
+    root = Path(root).resolve()
+    values = []
+    for relative, _repo in _git_repositories(root):
+        prefix = '' if relative == '.' else relative + '/'
+        values.append(prefix + '.git/index')
+    return tuple(values)
+
+
+def _delta_excludes(root: Path, excludes) -> tuple[str, ...]:
+    return tuple(sorted(set(excludes) | set(_index_excludes(root))))
+
+
+def _repo_index_metadata(source_root: Path, copy_root: Path, previous=None, *, refresh_all=True,
+                         backend=None):
+    previous = previous or {}
+    records = []
+    changed_paths = {}
+    worktree_paths = set()
+    fingerprints = {}
+    for relative, source in _git_repositories(source_root):
+        target = copy_root if relative == '.' else copy_root / relative
+        fingerprint = _index_fingerprint(source)
+        prior = previous.get(relative)
+        changed = set()
+        if prior is None or prior.get('indexFingerprint') != fingerprint:
+            fingerprint, source_entries = _index_state(source)
+            changed = _copy_index_entries(source, target, source_entries,
+                                          image_root=copy_root, prefix=_target_prefix(backend))
+        fingerprints[relative] = fingerprint
+        if changed:
+            changed_paths[relative] = changed
+            prefix = '' if relative == '.' else relative + '/'
+            worktree_paths.update(prefix + path for path in changed)
+    if worktree_paths:
+        _copy_exact_paths(source_root, copy_root, worktree_paths, backend or _get_backend())
+    for relative, source in _git_repositories(source_root):
+        target = copy_root if relative == '.' else copy_root / relative
+        if refresh_all:
+            _refresh_index(target, image_root=copy_root, prefix=_target_prefix(backend))
+        records.append({'path': relative, 'indexFingerprint': fingerprints[relative]})
+    return records, changed_paths
+
+
+def _refresh_changed_paths(root: Path, target_root: Path, changed_paths, index_changes, backend=None):
+    paths = set(changed_paths or ())
+    paths.update(index_changes or ())
+    for relative, _source in _git_repositories(root):
+        repo_paths = set()
+        prefix = '' if relative == '.' else relative + '/'
+        for path in paths:
+            if path in {'.', ''}:
+                repo_paths.add('.')
+            elif not prefix:
+                repo_paths.add(path)
+            elif path.startswith(prefix):
+                repo_paths.add(path[len(prefix):])
+        repo_paths = {path for path in repo_paths if path != '.git' and not path.startswith('.git/')}
+        if repo_paths:
+            target = target_root if relative == '.' else target_root / relative
+            index_args = {'image_root': target_root, 'prefix': _target_prefix(backend)}
+            git_args = {'prefix': _target_prefix(backend)}
+            if '.' in repo_paths:
+                _refresh_index(target, **index_args)
+                continue
+            tracked = _git(target, 'ls-files', '-z', '--',
+                           *[f':(literal){path}' for path in sorted(repo_paths)], **git_args)
+            tracked_paths = {os.fsdecode(path) for path in tracked.split(b'\0') if path}
+            if tracked_paths:
+                _refresh_index(target, tracked_paths, **index_args)
+
+
 def _safe_id(value) -> str:
     value = str(value)
     if not value or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in value):
@@ -158,7 +546,7 @@ def supported(root) -> tuple[bool, str]:
 def base_status(root) -> dict[str, Any]:
     folder = _root_path(root)
     state = _read_json(_base_state_path(_repo_key(folder)), {})
-    if not state or state.get('schema') != 2:
+    if not state or state.get('schema') != 2 or state.get('changeDetector') != 'git-v1':
         return {'state': 'missing', 'version': None, 'error': None}
     return {key: state.get(key) for key in ('state', 'version', 'error')}
 
@@ -247,7 +635,8 @@ def _build_base(root: Path, key: str, refresh_from=None):
     try:
         with _file_lock(base_root / '.build.lock'):
             prior = _read_json(_base_state_path(key), {}) or {}
-            if (prior.get('schema') == 2 and prior.get('state') == 'ready'
+            if (prior.get('schema') == 2 and prior.get('changeDetector') == 'git-v1'
+                    and prior.get('state') == 'ready'
                     and Path(prior.get('image', '')).exists()
                     and (refresh_from is None or prior.get('version') != refresh_from)):
                 result = prior
@@ -264,23 +653,27 @@ def _build_base(root: Path, key: str, refresh_from=None):
                 backend = _get_backend()
                 staging = backend.open_base_staging(root, key, version)
                 excludes = _workspace_excludes(root)
+                delta_excludes = _delta_excludes(root, excludes)
                 token = staging.get('token')
+                baseline = {'repositories': _repo_snapshots(root)}
                 backend.copy_base_tree(root, Path(staging['root']), excludes=excludes)
-                for _pass in range(12):
-                    delta = backend.sync_delta(root, Path(staging['root']), token, excludes=excludes)
-                    if not isinstance(delta, dict):
-                        delta = {'token': delta, 'changedPaths': []}
-                    token = delta.get('token', token)
-                    if not delta.get('changedPaths') and not delta.get('scanPaths'):
-                        break
+                delta = _sync_detected(root, Path(staging['root']), baseline,
+                                       delta_excludes, backend)
+                index_records, _index_changes = _repo_index_metadata(
+                    root, Path(staging['root']), refresh_all=True, backend=backend)
+                fingerprints = {item['path']: item['indexFingerprint'] for item in index_records}
+                repositories = [dict(item, indexFingerprint=fingerprints.get(item['path']))
+                                for item in delta['repositories']]
                 sealed = backend.seal_base(staging)
                 result = {
                     'schema': 2, 'state': 'ready', 'repoRoot': str(root), 'repoKey': key,
+                    'changeDetector': 'git-v1',
                     'version': version, 'error': None,
                     'image': str(sealed['image']),
                     'versionPath': str(sealed['versionPath']),
                     'token': token,
-                    'excludes': list(excludes),
+                    'excludes': list(delta_excludes),
+                    'repositories': repositories,
                     'createdAt': time.time(),
                 }
                 _write_json(_base_dir(key) / 'versions' / version / 'version.json', result)
@@ -343,34 +736,8 @@ def _prune_base_versions(key: str):
 def _base_metadata(key: str, version: str):
     path = _base_dir(key) / 'versions' / version / 'version.json'
     value = _read_json(path, {}) or {}
-    return value if value.get('schema') == 2 and value.get('version') == version else None
-
-
-def _sync_to_latest(root: Path, target: Path, token, excludes):
-    current = token
-    changed_paths = set()
-    scan_paths = set()
-    result = {'token': token, 'changedPaths': [], 'scanPaths': []}
-    for _pass in range(12):
-        delta = _get_backend().sync_delta(root, target, current, excludes=excludes)
-        if not isinstance(delta, dict):
-            delta = {'token': delta, 'changedPaths': []}
-        current = delta.get('token', current)
-        changed_paths.update(delta.get('changedPaths') or [])
-        scan_paths.update(delta.get('scanPaths') or [])
-        flags = {key: (result.get(key, False) or value if isinstance(value, bool) else value)
-                 for key, value in delta.items()
-                 if key not in {'token', 'changedPaths', 'scanPaths'}}
-        result = {
-            **result,
-            **flags,
-            'token': current,
-            'changedPaths': sorted(changed_paths),
-            'scanPaths': sorted(scan_paths),
-        }
-        if not delta.get('changedPaths') and not delta.get('scanPaths'):
-            break
-    return result
+    return value if (value.get('schema') == 2 and value.get('changeDetector') == 'git-v1'
+                     and value.get('version') == version) else None
 
 
 def create_workspace(root, agent_id) -> dict[str, str]:
@@ -420,14 +787,25 @@ def create_workspace(root, agent_id) -> dict[str, str]:
             _get_backend().mount_workspace(Path(state['image']), mount,
                                           base_image=Path(state.get('baseImage') or base['image']))
             workspace_root = mount / 'repo'
-            excludes = tuple(base.get('excludes') or _workspace_excludes(folder))
-            delta = _sync_to_latest(folder, workspace_root, base.get('token'), excludes)
+            excludes = _delta_excludes(
+                folder, tuple(base.get('excludes') or _workspace_excludes(folder)))
+            backend = _get_backend()
+            delta = _sync_detected(folder, workspace_root, base, excludes, backend)
+            base_repositories = {item.get('path'): item for item in base.get('repositories', [])
+                                 if isinstance(item, dict)}
+            repositories, index_changes = _repo_index_metadata(
+                folder, workspace_root, base_repositories, refresh_all=False, backend=backend)
+            changed_index_paths = set()
+            for relative, paths in index_changes.items():
+                prefix = '' if relative == '.' else relative + '/'
+                changed_index_paths.update(prefix + path for path in paths)
+            _refresh_changed_paths(folder, workspace_root,
+                                   delta.get('changedPaths'), changed_index_paths, backend)
             state.update({'path': str(workspace_root), 'mount': str(mount),
-                          'token': delta.get('token', base.get('token')),
-                          'state': 'ready', 'mounted': True})
+                          'state': 'ready', 'mounted': True,
+                          'repositories': repositories,
+                          'deltaFallbackReason': None})
             _write_json(state_path, state)
-            if delta.get('refreshBase'):
-                _schedule_base_refresh(folder, base['version'])
     if already_ready:
         return ensure_mounted(agent_id)
     return {'mount': str(mount), 'path': str(mount / 'repo')}

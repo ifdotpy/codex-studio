@@ -35,19 +35,40 @@ class FakeBackend:
             (version_path / name).mkdir()
         return {'root': version_path / 'repo', 'versionPath': version_path, 'token': 0}
 
-    def _copy(self, source, destination, excludes):
+    def _copy(self, source, destination, excludes, base=None, destination_base=None):
+        source = pathlib.Path(source)
+        destination = pathlib.Path(destination)
+        base = source if base is None else pathlib.Path(base)
+        destination_base = destination if destination_base is None else pathlib.Path(destination_base)
         excluded = {pathlib.Path(value) for value in excludes}
         destination.mkdir(parents=True, exist_ok=True)
-        for item in pathlib.Path(source).iterdir():
-            if pathlib.Path(item.name) in excluded:
+        items = list(source.iterdir())
+        present = {item.name for item in items}
+        for old in destination.iterdir():
+            relative = old.relative_to(destination_base)
+            if old.parent == destination and pathlib.Path(old.name) in excluded:
+                continue
+            if old.name in present or relative in excluded or any(
+                    parent in excluded for parent in relative.parents):
+                continue
+            if any(value.parts[:len(relative.parts)] == relative.parts for value in excluded):
+                continue
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+            else:
+                old.unlink()
+        for item in items:
+            relative = item.relative_to(base)
+            if relative in excluded or any(parent in excluded for parent in relative.parents):
                 continue
             target = destination / item.name
             if item.is_dir() and not item.is_symlink():
-                shutil.copytree(item, target, symlinks=True, dirs_exist_ok=True)
+                self._copy(item, target, excludes, base, destination_base)
             elif item.is_symlink():
                 target.unlink(missing_ok=True)
                 target.symlink_to(os.readlink(item), target_is_directory=item.is_dir())
             else:
+                target.unlink(missing_ok=True)
                 shutil.copy2(item, target)
 
     def copy_base_tree(self, root, destination, *, excludes):
@@ -279,10 +300,8 @@ class WorkspaceCopyTests(unittest.TestCase):
         images._write_json(newer_image / 'version.json', newer)
         images._write_json(current_path, newer)
 
-        self.backend.delta_tokens.clear()
         images.create_workspace(self.folder, 'reserved-base-test')
-        self.assertEqual(self.backend.delta_tokens[0], reserved_base['token'])
-        self.assertNotEqual(self.backend.delta_tokens[0], 'new-token')
+        self.assertEqual(reserved_base['repositories'], current['repositories'])
         images.remove_workspace('reserved-base-test')
 
 

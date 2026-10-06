@@ -67,10 +67,40 @@ def _device_for_mount(mount):
 def _copy_tree_parallel(source, dest, excludes=()):
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
-    top = sorted(source.iterdir(), key=lambda p: p.name)
-    shards = [[] for _ in range(min(16, max(1, len(top))))]
-    for index, entry in enumerate(top):
-        shards[index % len(shards)].append(entry.name)
+    units = []
+
+    def partition(directory, depth=0):
+        relative = Path(directory)
+        absolute = source / relative
+        entries = sorted(absolute.iterdir(), key=lambda path: path.name)
+        if not entries:
+            units.append([relative.as_posix()])
+            return
+        if depth >= 2:
+            units.append([relative.as_posix()])
+            return
+        files, directories = [], []
+        for entry in entries:
+            path = relative / entry.name
+            path_value = path.as_posix()
+            if any(path_value == excluded or path_value.startswith(excluded + '/')
+                   for excluded in exclusions):
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                directories.append(path)
+            else:
+                files.append(path_value)
+        for path in directories:
+            partition(path, depth + 1)
+        for start in range(0, len(files), 256):
+            units.append(files[start:start + 256])
+
+    partition(Path('.'))
+    if not units:
+        return
+    shards = [[] for _ in range(min(16, len(units)))]
+    for index, unit in enumerate(units):
+        shards[index % len(shards)].extend(unit)
 
     def copy_shard(names):
         if not names:
@@ -78,9 +108,9 @@ def _copy_tree_parallel(source, dest, excludes=()):
         # BSD tar accepts path operands and excludes relative to its cwd.
         command = ['tar', '-C', str(source), '-cf', '-', '--no-mac-metadata']
         for relative in exclusions:
-            for name in names:
-                if relative == name or relative.startswith(name + '/'):
-                    command.extend(['--exclude', relative, '--exclude', relative + '/*'])
+            if any(relative == name or relative.startswith(name.rstrip('/') + '/')
+                   for name in names):
+                command.extend(['--exclude', relative, '--exclude', relative + '/*'])
         command.extend(['--', *names])
         producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
