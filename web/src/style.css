@@ -2142,11 +2142,20 @@ html body #root {
 .ai-conversation .message.user,
 .agent-conversation .message.bubble.outgoing {
   max-width: min(85%, 620px);
+  position: relative;
+  padding-block: 12px;
 }
 .ai-conversation .message.user .message-bottom {
   display: flex;
 }
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .ai-conversation .message.user .message-bottom,
+  .agent-conversation .message.bubble.outgoing .message-bottom {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 4px;
+  }
   .message .message-bottom .message-action-controls > *,
   .message .message-bottom .message-info-control {
     opacity: 0;

@@ -6,7 +6,8 @@
   min-height: 0;
   max-height: var(--progress-height, clamp(100px, 28vh, 280px));
   min-width: 0;
-  width: 100%;
+  width: min(100%, 760px);
+  margin-inline: auto;
   box-sizing: border-box;
   contain: layout;
   background: var(--surface);
