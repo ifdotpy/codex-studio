@@ -8,6 +8,7 @@ import uuid
 import zlib
 from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
+from codex_records import JsonObject
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
@@ -451,7 +452,7 @@ class SyncStore:
         markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
             "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
         if ('seeded' not in markers
-                or (self.runtime is not None and 'runtime_agents' in tables and
+                or (self.runtime is not None and self.canvas is not None and 'runtime_agents' in tables and
                     int(markers.get('agent_organization_fields', '0')) < 3)
                 or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
             return True
@@ -463,10 +464,17 @@ class SyncStore:
             recent = monitor_records(db)
             stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
                                      "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
-            if set(stored) != {str(record['id']) for record in recent}:
-                return True
+            valid_recent: list[tuple[str, JsonObject]] = []
             for record in recent:
-                key = str(record['id'])
+                key = record.get('id')
+                if not isinstance(key, str) or not key:
+                    from codex_sync_entities import _report_bad_entity
+                    _report_bad_entity('monitor', str(key or ''), ValueError('stored record has no valid id'))
+                    continue
+                valid_recent.append((key, record))
+            if set(stored) != {key for key, _record in valid_recent}:
+                return True
+            for key, record in valid_recent:
                 projected = project('monitor', record)
                 if projected is None:
                     continue
@@ -537,7 +545,10 @@ class SyncStore:
                     continue
                 documents.append({'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
                                   'seq': row[2], '_deleted': bool(row[4])})
-            checkpoint = (documents[-1]['seq'] if len(documents) == limit else high)
+            # Validation may omit bad stored rows. Advance over the fetched
+            # source page, not the filtered document list, or a short filtered
+            # page would skip all remaining valid rows up to high-watermark.
+            checkpoint = (rows[-1][2] if len(rows) == limit else high)
             return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                     'documents': documents, 'checkpoint': {'seq': checkpoint},
                     'maxSeq': high, 'initialHigh': initial_high if fresh else 0}

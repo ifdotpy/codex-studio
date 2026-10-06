@@ -2795,6 +2795,40 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         view["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
         return view
 
+    def room_entity_view(self, db: sqlite3.Connection, room_id: str) -> "RoomRecord | None":
+        """Return the single durable renderer projection for any room kind."""
+        row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+        if row is not None:
+            try:
+                stored = json.loads(row[0])
+                if not isinstance(stored, dict):
+                    raise TypeError("room record is not an object")
+            except (TypeError, ValueError):
+                raise
+            if stored.get("kind") == "broadcast" and stored.get("rootId") != "all":
+                return self.broadcast_room(db, stored)  # type: ignore[no-any-return]  # typed-narrowing: runtime room JSON is narrowed above
+        return next(iter(self.chat_rooms(db, room_id=room_id, include_last_message=True,
+                                        include_peer_teams=True)), None)
+
+    def sync_room_entity(self, db: sqlite3.Connection, room_id: str, *,
+                         tombstone_unavailable: bool = False) -> bool:
+        """Refresh a room through its shared view, optionally retiring it on revocation."""
+        try:
+            view = self.room_entity_view(db, room_id)
+        except Exception as error:
+            from codex_sync_entities import _report_bad_entity
+            _report_bad_entity("room", room_id, error)
+            return False
+        from codex_sync_entities import put as sync_entity_put
+        if view is None:
+            if not tombstone_unavailable:
+                return False
+            existing = db.execute(
+                "SELECT 1 FROM sync_entities WHERE collection='room' AND id=? AND deleted=0",
+                (room_id,)).fetchone()
+            return sync_entity_put(db, "room", room_id, {}, True) if existing else False
+        return sync_entity_put(db, "room", room_id, view)
+
     @staticmethod
     def affected_agent_room_ids(db, previous, record):
         """Select rooms whose renderer projection can depend on this agent."""
@@ -2837,10 +2871,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Rebuild only selected room entities, retaining chat_rooms tolerance."""
         from codex_sync_entities import put as sync_entity_put
         for room_id in sorted(set(room_ids)):
-            room = next(iter(self.chat_rooms(
-                db, room_id=room_id, include_last_message=True, include_peer_teams=True)), None)
-            # The legacy whole-roster path emitted no tombstone when a room became
-            # unavailable; keep that entity-store behavior exactly.
+            try:
+                room = self.room_entity_view(db, room_id)
+            except Exception as error:
+                from codex_sync_entities import _report_bad_entity
+                _report_bad_entity("room", room_id, error)
+                continue
             if room is not None:
                 sync_entity_put(db, "room", room_id, room)  # type: ignore[no-untyped-call]
             elif fallback and room_id in fallback:
@@ -2964,13 +3000,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         }.get(table)
         if collection:
             if table == "rooms":
-                room = (self.broadcast_room(db, record)  # type: ignore[no-untyped-call]
-                        if record.get("kind") == "broadcast"
-                        and record.get("rootId") != "all" else None)
-                if room is None:
-                    room = next(iter(self.chat_rooms(db, room_id=record["id"],
-                                                     include_last_message=include_last_message)), None)
-                sync_entity_put(db, collection, str(record["id"]), room or record, room is None)  # type: ignore[no-untyped-call]
+                self.sync_room_entity(db, str(record["id"]))
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),  # type: ignore[no-untyped-call]
                                 bool(record.get("deletedAt")))
@@ -4386,22 +4416,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 after = dict(before)
                 after.update(deletedAt=before.get("deletedAt") or True, autoWake=False)
                 affected_rooms.update(self.affected_agent_room_ids(db, before, after))
-            fallback_rooms = {}
-            broadcast_rows = db.execute(
-                "SELECT id,record FROM runtime_rooms WHERE id IN (" +
-                ",".join("?" * len(affected_rooms)) + ") "
-                "AND json_extract(record,'$.kind')='broadcast'", sorted(affected_rooms)
-            ).fetchall() if affected_rooms else []
-            for row in broadcast_rows:
-                room_record = json.loads(row[1])
-                root_id = room_record.get("rootId")
-                if root_id not in ids:
+            fallback_rooms: dict[str, dict[str, object]] = {}
+            for room_id in affected_rooms:
+                room_row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+                if room_row is None:
                     continue
-                view = self.broadcast_room(db, room_record)
-                if view:
-                    view["members"] = [member for member in view["members"]
-                                       if member not in ids or member == root_id]
-                    fallback_rooms[row[0]] = view
+                room_record = json.loads(room_row[0])
+                root_id = room_record.get("rootId") if isinstance(room_record, dict) else None
+                if not isinstance(room_record, dict) or room_record.get("kind") != "broadcast" \
+                        or root_id not in ids:
+                    continue
+                view = self.room_entity_view(db, room_id)
+                if view is not None:
+                    fallback = dict(view)
+                    members = fallback.get("members")
+                    if isinstance(members, list):
+                        fallback["members"] = [member for member in members if member not in ids or member == root_id]
+                    fallback_rooms[room_id] = fallback
             for agent_id in reversed(ordered_ids):
                 a = by_id[agent_id]
                 if a["id"] in ids:
@@ -8513,17 +8544,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 event_id = "chat:" + key + ":" + recipient["id"]
                 self.enqueue(db, recipient, "agent_message", event, event_id)
                 deliveries[recipient["id"]] = "queued"
-            message_row = db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
-                                     (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
-            derived_room = (self.broadcast_room(db, room) if room["kind"] == "broadcast"
-                            and room.get("rootId") != "all" else
-                            next(iter(self.chat_rooms(db, room_id=room["id"],
-                                                      include_last_message=False)), None))
-            if derived_room:
-                derived_room["lastMessage"] = {"seq": message_row.lastrowid, "text": text[:180],
-                                                "created": room["updated"], "sender": sender_id}
-                from codex_sync_entities import put as sync_entity_put
-                sync_entity_put(db, "room", room["id"], derived_room)
+            db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                       (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
+            self.sync_room_entity(db, str(room["id"]))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
     def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):

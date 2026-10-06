@@ -48,7 +48,23 @@ class EntityReadLockContract(unittest.TestCase):
             def complaint_entity_view(_self, _db, record):
                 return record
 
-            def chat_rooms(_self, _db, room_id=None, include_last_message=None):
+            def room_entity_view(_self, _db, room_id):
+                return None
+
+            def workspace_entity_view(_self, _db, base=None):
+                return {**(base or {}), 'connected': False, 'projectOrganizationVersion': 1,
+                        'peerTeamsVersion': 1, 'tasksHistoryLimit': 100}
+
+        class CanvasView:
+            root = Path(self.path).parent
+
+            def threads(_self, runtime_agents=None):
+                return []
+
+            def chats(_self, db=None):
+                return []
+
+            def edges(_self, agents, db=None):
                 return []
 
         class SnapshotOwner:
@@ -61,7 +77,7 @@ class EntityReadLockContract(unittest.TestCase):
 
         self.snapshot_owner = SnapshotOwner()
         self.store = SyncStore(self.connect, lambda: self.snapshot_owner.snapshot(), lambda _key: {},
-                               runtime=self.snapshot_owner.runtime)
+                               runtime=self.snapshot_owner.runtime, canvas=CanvasView())
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')

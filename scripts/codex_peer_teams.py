@@ -48,6 +48,8 @@ def _agents(db: sqlite3.Connection) -> dict[str, AgentRecord]:
         record = _decode_peer_record('agent', str(key), raw)
         if record is not None and isinstance(record.get('id'), str):
             agents[record['id']] = cast(AgentRecord, record)
+        elif record is not None:
+            _report_bad_peer_row('agent', str(key), TypeError('agent record has no string id'))
     return agents
 
 
@@ -63,6 +65,8 @@ def _members(db: sqlite3.Connection, ids: Iterable[str]) -> dict[str, AgentRecor
         record = _decode_peer_record('agent', str(key), raw)
         if record is not None and isinstance(record.get('id'), str):
             agents[record['id']] = cast(AgentRecord, record)
+        elif record is not None:
+            _report_bad_peer_row('agent', str(key), TypeError('agent record has no string id'))
     return agents
 
 

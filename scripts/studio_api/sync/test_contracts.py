@@ -158,10 +158,12 @@ class SyncEntityContractTests(unittest.TestCase):
                     self.assertIn("model", parsed.workerDefaults.model_dump(exclude_unset=True))
         codex_sync_entities._REPORTED_BAD_ENTITIES.discard(("agent", "agent-a", "ValidationError"))
         with self.assertLogs("codex_sync_entities", level="WARNING"):
-            self.assertIsNone(project("agent", {
+            projected = project("agent", {
                 "id": "agent-a",
                 "workerDefaults": {"model": 42, "effort": None, "fastMode": False},
-            }))
+            })
+        self.assertIsNotNone(projected)
+        self.assertNotIn("workerDefaults", projected)
 
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
@@ -640,9 +642,13 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
         with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
-            self.assertIsNone(project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}}))
-            self.assertIsNone(project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}}))
-        self.assertEqual(len(captured.records), 1)
+            native = project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}})
+            context = project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}})
+        self.assertIsNotNone(native)
+        self.assertNotIn("nativeSafetyRetry", native)
+        self.assertIsNotNone(context)
+        self.assertNotIn("contextUsage", context)
+        self.assertEqual(len(captured.records), 2)
 
     def test_legacy_status_file_public_row_has_named_external_fields(self) -> None:
         row = {

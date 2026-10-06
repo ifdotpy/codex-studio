@@ -97,9 +97,6 @@ class CanvasChatSeedContract(unittest.TestCase):
                 with runtime.lock, runtime.db() as db:
                     from codex_sync_entities import ensure_tables
                     ensure_tables(db)
-                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
-                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
-                               "VALUES('agent_organization_fields','1')")
                     db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
                                "VALUES('task_window_migrated','1')")
                     event_sequence = db.execute(
@@ -116,7 +113,11 @@ class CanvasChatSeedContract(unittest.TestCase):
                     canvas = Canvas(runtime.root)
                     context = ApiContext(canvas)
                     store = context.sync()
-                store._ensure_versions()
+                first = store.pull("state:entities:v1", fresh=True, reset_support=True)
+                self.assertTrue(first["documents"])
+                with runtime.db() as db:
+                    self.assertIsNone(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone())
                 blocker = sqlite3.connect(runtime.db_path, timeout=0)
                 blocker.execute("BEGIN IMMEDIATE")
                 try:
@@ -137,8 +138,19 @@ class CanvasChatSeedContract(unittest.TestCase):
                     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
                     after = {row[0]: row[1] for row in db.execute(
                         "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
+                    from codex_sync_entities import project
+                    runtime_agents = [runtime.agent(key, db) for (key,) in db.execute(
+                        "SELECT id FROM runtime_agents")]
+                    entity_values = {key: json.loads(payload)["value"] for key, payload in db.execute(
+                        "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
                 self.assertEqual(marker, "3")
                 self.assertTrue(any(after[key] > before[key] for key in before if key in after))
+                with runtime.db() as db:
+                    for record in runtime_agents:
+                        if record.get("deletedAt"):
+                            continue
+                        expected = project("agent", runtime.agent_entity_view(db, record))
+                        self.assertEqual(entity_values[record["id"]], expected, record["id"])
                 stable = {**after}
                 store.pull("state:entities:v1", fresh=True, reset_support=True)
                 with runtime.db() as db:
@@ -370,7 +382,9 @@ class CanvasChatSeedContract(unittest.TestCase):
                                       (live_room["id"],)).fetchone()
                     vanished = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection='room' AND id=?",
                                           (vanished_room["id"],)).fetchone()
-                    self.assertNotIn("lastMessage", json.loads(live[0])["value"])
+                    live_value = json.loads(live[0])["value"]
+                    self.assertIn("lastMessage", live_value)
+                    self.assertIsNone(live_value["lastMessage"])
                     self.assertEqual(vanished[1], 1)
                     seq = db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0]
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
@@ -392,6 +406,99 @@ class CanvasChatSeedContract(unittest.TestCase):
                 store.pull("state:entities:v1")
             self.assertEqual(len(captured.records), 1)
             self.assertNotIn("entity:agent:broken", {row["id"] for row in result["documents"]})
+
+    def test_malformed_row_does_not_advance_a_short_filtered_page_to_high_water(self):
+        with tempfile.TemporaryDirectory(prefix="sync-state-page-corrupt-") as directory:
+            canvas = Canvas(Path(directory))
+            store = SyncStore(canvas.connect, lambda: {}, canvas.transcript, canvas=canvas)
+            with canvas.connect() as db:
+                from codex_sync_entities import put
+                db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
+                db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')")
+                for index in range(10):
+                    put(db, "rule", f"rule-{index}", {"id": f"rule-{index}", "name": f"Rule {index}"})
+                db.execute("UPDATE sync_entities SET payload='{' WHERE collection='rule' AND id='rule-1'")
+            after = 0
+            received: set[str] = set()
+            while True:
+                page = store.pull("state:entities:v1", after=after, limit=3)
+                received.update(row["id"] for row in page["documents"])
+                checkpoint = page["checkpoint"]["seq"]
+                if checkpoint == after or checkpoint >= page["maxSeq"]:
+                    break
+                after = checkpoint
+            self.assertEqual(received, {f"entity:rule:rule-{index}" for index in range(10) if index != 1})
+
+    def test_fresh_seed_does_not_create_never_visible_tombstones(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-no-phantom-tombstones-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                                      draft=True, defer=True)
+                deleted = dict(lead, id="deleted-agent", rootId="deleted-agent", deletedAt=1.0)
+                closed = {"id": "closed-request", "agent": lead["id"], "status": "answered",
+                          "created": 1.0, "method": "agent/asyncQuestion", "params": {}}
+                canvas = Canvas(root)
+                canvas.runtime = runtime
+                with runtime.lock, runtime.db() as db:
+                    runtime.put(db, "agents", deleted)
+                    runtime.put(db, "requests", closed)
+                    db.execute("DELETE FROM sync_entities")
+                    db.execute("DELETE FROM sync_entity_meta")
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    self.assertIsNone(db.execute(
+                        "SELECT 1 FROM sync_entities WHERE collection='agent' AND id='deleted-agent'").fetchone())
+                    self.assertIsNone(db.execute(
+                        "SELECT 1 FROM sync_entities WHERE collection='request' AND id='closed-request'").fetchone())
+            finally:
+                runtime.close()
+
+    def test_malformed_runtime_rows_do_not_abort_seed_or_upgrade(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-malformed-runtime-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                                      draft=True, defer=True)
+                canvas = Canvas(root)
+                canvas.runtime = runtime
+                with runtime.lock, runtime.db() as db:
+                    from codex_sync_entities import ensure_tables, _REPORTED_BAD_ENTITIES
+                    ensure_tables(db)
+                    db.execute("INSERT INTO runtime_agents(id,record) VALUES(?,?)", ("bad-empty-agent", "{}"))
+                    db.execute("INSERT INTO runtime_agents(id,record) VALUES(?,?)", (
+                        "bad-lead-agent", json.dumps({"id": "bad-lead-agent", "isLead": True})))
+                    db.execute("INSERT INTO runtime_rooms(id,record) VALUES(?,?)", ("bad-array-room", "[]"))
+                    db.execute("INSERT INTO runtime_rooms(id,record) VALUES(?,?)", (
+                        "bad-members-room", json.dumps({"id": "bad-members-room", "kind": "private",
+                            "members": [lead["id"], 7], "updated": 1.0})))
+                    db.execute("INSERT INTO runtime_monitors(id,record) VALUES(?,?)", (
+                        "bad-id-monitor", json.dumps({"agent": lead["id"], "status": "running", "created": 1.0})))
+                    db.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", ("bad-json-graph", "{"))
+                    db.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", ("bad-object-graph", "{}"))
+                    _REPORTED_BAD_ENTITIES.clear()
+                    with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
+                        seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    self.assertGreaterEqual(len(captured.records), 5)
+                    self.assertEqual(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0],
+                        "3")
+                    db.execute("DELETE FROM sync_entity_meta WHERE key IN ('seeded','agent_organization_fields')")
+                    db.execute("DELETE FROM sync_entities")
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                store = SyncStore(canvas.connect, lambda: {}, canvas.transcript,
+                                  runtime=runtime, canvas=canvas)
+                self.assertIn("documents", store.pull("state:entities:v1", fresh=True))
+            finally:
+                with runtime.lock, runtime.db() as db:
+                    db.execute("DELETE FROM runtime_agents WHERE id IN ('bad-empty-agent','bad-lead-agent')")
+                    db.execute("DELETE FROM runtime_rooms WHERE id IN ('bad-array-room','bad-members-room')")
+                    db.execute("DELETE FROM runtime_monitors WHERE id='bad-id-monitor'")
+                    db.execute("DELETE FROM graph_agents WHERE id IN ('bad-json-graph','bad-object-graph')")
+                runtime.close()
 
     def test_snapshot_streams_active_work_and_keeps_index_tie_winner(self):
         fixture = runtime_fixture()
