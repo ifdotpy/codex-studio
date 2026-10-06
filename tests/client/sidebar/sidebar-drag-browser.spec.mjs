@@ -297,13 +297,12 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     await page.reload();
     await row("Destination").waitFor();
     assert.equal(await row("Team source").count(), 0);
-    const beforeRepeatedLegacy = await readLegacySnapshotForS2Assertions(url);
     const repeated = await post(conversionBodies[0]);
     assert.equal(repeated.status, 200);
     const finalLegacy = await readLegacySnapshotForS2Assertions(url);
     assert.equal(
       finalLegacy.runtime.agents.find((a) => a.id === moved.id).epoch,
-      beforeRepeatedLegacy.runtime.agents.find((a) => a.id === moved.id).epoch,
+      moved.epoch,
     );
     expect(errors).toEqual([]);
     console.log(

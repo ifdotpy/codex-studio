@@ -129,6 +129,11 @@ test("Session Poll Browser", async ({
     );
     await page.evaluate(() => window.snapshot.refresh());
     assert.ok(sessions >= 2);
+    assert.equal(
+      snapshotReads,
+      0,
+      "Replicated startup and refresh never download the full state",
+    );
     assert.ok(pulls > 0, "Startup and refresh use the entity pull");
     token = "rotated";
     await page.evaluate(() => window.snapshot.refresh());
@@ -150,6 +155,11 @@ test("Session Poll Browser", async ({
       assert.equal(
         await page.evaluate(() => window.snapshot.data.token),
         "rotated",
+      );
+      assert.equal(
+        snapshotReads,
+        0,
+        "A missing endpoint or server failure never invokes the old snapshot fallback",
       );
     }
     status = 200;

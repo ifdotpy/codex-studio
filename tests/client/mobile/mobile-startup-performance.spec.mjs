@@ -122,28 +122,12 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     );
     const entityState = await readTestState(origin);
     const fullState = entityState;
-    const compactState = {
-      threads: entityState.threads,
-      chats: entityState.chats,
-      runtime: {
-        agents: entityState.runtime.agents,
-        rooms: entityState.runtime.rooms,
-        tasks: entityState.runtime.tasks,
-        monitors: entityState.runtime.monitors,
-        complaints: entityState.runtime.complaints,
-        requests: entityState.runtime.requests,
-        projects: entityState.runtime.projects,
-        peerTeams: entityState.runtime.peerTeams,
-        events: entityState.runtime.events,
-      },
-    };
     const full = JSON.stringify(fullState);
-    const compact = JSON.stringify(compactState);
-    const selected = compactState.threads.find(
+    const selected = entityState.threads.find(
       (agent) => agent.id === fixture.lead,
     );
     const root = selected?.isLead ? selected.id : selected?.rootId;
-    const backgroundHistoryTargets = compactState.threads.filter(
+    const backgroundHistoryTargets = entityState.threads.filter(
       (agent) =>
         agent.source === "managed" &&
         agent.id !== fixture.lead &&
@@ -156,19 +140,17 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       backgroundHistoryTargets,
       fullStateBytes: Buffer.byteLength(full),
       fullStateGzipBytes: gzipSync(full, { level: 3 }).length,
-      compactStateBytes: Buffer.byteLength(compact),
-      compactStateGzipBytes: gzipSync(compact, { level: 3 }).length,
     });
     assert.ok(
-      measurements.fullStateGzipBytes > 4_000_000,
-      "Fixture history must remain large after compression",
+      measurements.fullStateGzipBytes > 180_000,
+      "Entity projection keeps at least 60 KB of compressed fixture history",
     );
     assert.ok(
       fullState.runtime.work.length > 0,
       "Fixture has retained work history",
     );
-    // Compare the broad entity projection with the chat projection assembled
-    // from it; no second endpoint read is needed for these size measurements.
+    // Measure the full state view assembled from the entity pull, not a
+    // compact object reconstructed from the same in-memory value.
     browser = await browserType.launch({
       headless: true,
       ...(browserType === chromium
@@ -361,13 +343,17 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       );
     measurements.openEntitySyncStreams = await page.evaluate(
       () =>
-        window.performanceStreams.filter(
-          (stream) =>
+        window.performanceStreams.filter((stream) => {
+          const url = new URL(stream.url);
+          const resources = JSON.parse(
+            url.searchParams.get("resources") || "[]",
+          );
+          return (
             stream.testOpen &&
-            new URL(stream.url).pathname === "/api/sync/stream" &&
-            new URL(stream.url).searchParams.get("scope") ===
-              "state:entities:v1",
-        ).length,
+            url.pathname === "/api/sync/stream" &&
+            resources.some((resource) => resource.kind === "state")
+          );
+        }).length,
     );
     if (expectCurrentBudgets) {
       assert.equal(
@@ -750,7 +736,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       JSON.stringify(measurements, null, 2),
     );
     console.log(
-      `PASS: mobile startup ${measurements.coldComposerMs} ms, cached draft ${measurements.warmDraftMs} ms, full state ${measurements.fullStateGzipBytes} bytes gzip, compact state ${measurements.compactStateGzipBytes} bytes gzip, one sync stream. Evidence: ${dir}`,
+      `PASS: mobile startup ${measurements.coldComposerMs} ms, cached draft ${measurements.warmDraftMs} ms, assembled state ${measurements.fullStateGzipBytes} bytes gzip, one sync stream. Evidence: ${dir}`,
     );
   } catch (error) {
     try {

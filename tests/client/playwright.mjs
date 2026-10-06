@@ -197,6 +197,8 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceTokenRatesEvent"]} ResourceTokenRatesEvent */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceRef"]} ResourceRef */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyRequest"]} ResourceNotifyRequest */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyAck"]} ResourceNotifyAck */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["StateSnapshot"]} StateSnapshot */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotAgentDto"]} SnapshotAgentDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotRoomDto"]} SnapshotRoomDto */
@@ -251,7 +253,7 @@ export const browserExecutablePath =
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, drafts?: SyncEntity[], sequenceOffset?: number }} EntityPullFixtureOptions */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
 
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
@@ -707,25 +709,15 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
   }
   if (url.pathname === "/api/sync/pull") {
     fixture.onPull?.();
-    const scope = url.searchParams.get("scope") ?? "state:entities:v1";
-    const after = Number(url.searchParams.get("after") || 0);
-    if (!Number.isSafeInteger(after) || after < 0) {
-      response.statusCode = 400;
-      json({ error: "Invalid sync cursor" });
-      return true;
-    }
-    if (
-      scope !== "state:entities:v1" &&
-      scope !== "drafts" &&
-      !scope.startsWith("transcript:")
-    ) {
-      response.statusCode = 400;
-      json({ error: "Unsupported sync scope" });
+    const validation = validateSyncPullRequest(url);
+    if (validation.ok === false) {
+      response.statusCode = validation.status;
+      json(validation.body);
       return true;
     }
     const pullResponse = generatedSyncPullResponse({
       workspaceId: identity.workspaceId,
-      ...entityPullFixtureForRequest(fixture.snapshot, url),
+      ...entityPullFixture(fixture.snapshot, validation.params),
     });
     json(pullResponse);
     return true;
@@ -873,6 +865,20 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       checkpoint: { seq: after < 1 ? 1 : after },
     };
   }
+  if (scope === "state:chat") {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+    const document = generatedSyncEntity({
+      id: "state:chat",
+      seq: 1,
+      payload: JSON.stringify(snapshot),
+      _deleted: false,
+    });
+    return {
+      generation,
+      documents: after < 1 ? [document].slice(0, limit) : [],
+      checkpoint: { seq: after < 1 ? 1 : after },
+    };
+  }
   if (scope !== "state:entities:v1")
     throw new Error(`Unsupported fixture pull scope: ${scope}`);
 
@@ -881,15 +887,16 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
   const baseDocuments = values.map((entity, index) =>
     generatedSyncEntity({
       id: `entity:${entity.collection}:${entity.id}`,
-      seq: index + 1 + (options.sequenceOffset ?? 0),
+      seq: index + 1,
       payload: JSON.stringify(entity),
       _deleted: false,
     }),
   );
   const tombstones = options.tombstones ?? [];
-  const documents = [...baseDocuments, ...tombstones].sort(
-    (left, right) => left.seq - right.seq,
-  );
+  const documents = [
+    ...(options.documents ?? baseDocuments),
+    ...tombstones,
+  ].sort((left, right) => left.seq - right.seq);
   const high = options.maxSeq ?? documents.at(-1)?.seq ?? 0;
   const floor = options.floor ?? 0;
   const fresh = options.fresh === true;
@@ -925,6 +932,75 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
 }
 
 /**
+ * Parse /api/sync/pull query semantics shared by the browser and Node fixtures.
+ * The real API accepts negative integer cursors (the store clamps them to zero)
+ * and returns 400 for malformed integers and unknown scopes.
+ * @param {string | URL} requestUrl
+ * @returns {{ ok: true, params: Required<Pick<EntityPullFixtureOptions, "scope" | "after" | "limit" | "fresh" | "initialHigh" | "reset">> & Pick<EntityPullFixtureOptions, "priorityId"> } | { ok: false, status: number, body: JsonObject }}
+ */
+export function validateSyncPullRequest(requestUrl) {
+  const url = new URL(requestUrl, "http://fixture.invalid");
+  const query = url.searchParams;
+  const first = (key) => query.getAll(key).find((value) => value !== "");
+  const scope = first("scope") ?? "state:entities:v1";
+  /** @type {Record<string, number>} */
+  const numbers = {};
+  /** @type {Array<[keyof typeof numbers, number]>} */
+  const defaults = [
+    ["after", 0],
+    ["limit", 500],
+    ["initialHigh", 0],
+  ];
+  for (const [key, fallback] of defaults) {
+    const raw = first(key);
+    if (raw === undefined) {
+      numbers[key] = fallback;
+      continue;
+    }
+    if (!/^[+-]?\d+$/.test(raw))
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          error: "Invalid request",
+          details: [
+            {
+              location: ["query", key],
+              message:
+                "Input should be a valid integer, unable to parse string as an integer",
+            },
+          ],
+        },
+      };
+    numbers[key] = Number(raw);
+  }
+  const supportedScope =
+    scope === "state" ||
+    scope === "state:chat" ||
+    scope === "state:entities:v1" ||
+    scope === "drafts" ||
+    (scope.startsWith("transcript:") && scope.length < 300);
+  if (!supportedScope)
+    return {
+      ok: false,
+      status: 400,
+      body: { error: "Invalid sync scope" },
+    };
+  return {
+    ok: true,
+    params: {
+      scope,
+      after: numbers.after,
+      limit: numbers.limit,
+      fresh: first("fresh") === "1",
+      initialHigh: numbers.initialHigh,
+      reset: first("reset") === "1",
+      priorityId: first("priorityId"),
+    },
+  };
+}
+
+/**
  * Convert an incoming fixture request URL to the shared pull fixture options.
  * @param {StateSnapshot} snapshot
  * @param {string | URL} requestUrl
@@ -936,18 +1012,16 @@ export function entityPullFixtureForRequest(
   requestUrl,
   overrides = {},
 ) {
-  const url = new URL(requestUrl, "http://fixture.invalid");
-  const query = url.searchParams;
-  return entityPullFixture(snapshot, {
-    scope: query.get("scope") ?? "state:entities:v1",
-    after: Number(query.get("after") || 0),
-    limit: Number(query.get("limit") || 100),
-    fresh: query.get("fresh") === "1",
-    initialHigh: Number(query.get("initialHigh") || 0),
-    reset: query.get("reset") === "1",
-    priorityId: query.get("priorityId") || undefined,
-    ...overrides,
-  });
+  const validation = validateSyncPullRequest(requestUrl);
+  if (validation.ok === false) {
+    const error = new Error(String(validation.body.error));
+    Object.assign(error, {
+      status: validation.status,
+      body: validation.body,
+    });
+    throw error;
+  }
+  return entityPullFixture(snapshot, { ...validation.params, ...overrides });
 }
 
 /**
@@ -955,6 +1029,7 @@ export function entityPullFixtureForRequest(
  * @param {{ route: Function }} page
  * @param {StateSnapshot} snapshot
  * @param {{ identity: SyncIdentityResponse, protocol: SyncProtocolResponse }} contract
+ * @returns {Promise<{ update: (nextSnapshot: StateSnapshot, options?: { origin: string, token: string, resources?: ResourceRef[] }) => Promise<ResourceNotifyAck | undefined> }>}
  */
 export async function stubEntityState(page, snapshot, contract) {
   const { identity: identityResponse, protocol: protocolResponse } = contract;
@@ -967,10 +1042,24 @@ export async function stubEntityState(page, snapshot, contract) {
       "stubEntityState requires the fixture backend's generated sync contract",
     );
   const identity = identityResponse.workspaceId;
-  let previousValues = "";
-  let sequenceOffset = 0;
   let generation = 1;
-  let lastMaxSeq = 0;
+  /** @type {StateSnapshot} */
+  let currentSnapshot = snapshot;
+  /** @type {Map<string, SyncEntity>} */
+  const documents = new Map();
+  let maxSeq = 0;
+  const nextDocument = (collection, id, value, deleted = false) =>
+    generatedSyncEntity({
+      id: `entity:${collection}:${id}`,
+      seq: ++maxSeq,
+      payload: JSON.stringify({ collection, id, value }),
+      _deleted: deleted,
+    });
+  for (const entity of entityValuesFromSnapshot(snapshot))
+    documents.set(
+      `entity:${entity.collection}:${entity.id}`,
+      nextDocument(entity.collection, entity.id, entity.value),
+    );
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ json: identityResponse }),
   );
@@ -981,36 +1070,100 @@ export async function stubEntityState(page, snapshot, contract) {
   // EventSource then reconnects continuously. The pull route below remains the
   // deterministic entity fixture; the live stream exercises real frame shape.
   await page.route("**/api/sync/stream?*", (route) => route.continue());
-  await page.route("**/api/sync/pull?*", (route) => {
+  await page.route("**/api/sync/pull**", (route) => {
     const requestUrl = route.request().url();
-    const requestScope =
-      new URL(requestUrl).searchParams.get("scope") ?? "state:entities:v1";
-    const currentValues = JSON.stringify(entityValuesFromSnapshot(snapshot));
-    if (
-      requestScope === "state:entities:v1" &&
-      previousValues &&
-      previousValues !== currentValues
-    ) {
-      sequenceOffset += lastMaxSeq;
-      generation++;
-    }
-    if (requestScope === "state:entities:v1") previousValues = currentValues;
-    const pageData = entityPullFixtureForRequest(snapshot, requestUrl, {
+    const validation = validateSyncPullRequest(requestUrl);
+    if (validation.ok === false)
+      return route.fulfill({
+        status: validation.status,
+        json: validation.body,
+      });
+    const pageData = entityPullFixture(currentSnapshot, {
+      ...validation.params,
       generation,
-      sequenceOffset,
-    });
-    if (requestScope === "state:entities:v1")
-      lastMaxSeq =
-        pageData.maxSeq ??
-        ("checkpoint" in pageData ? pageData.checkpoint.seq : lastMaxSeq);
-    const pullResponse = generatedSyncPullResponse({
-      workspaceId: identity,
-      ...pageData,
+      documents: [...documents.values()],
+      maxSeq,
     });
     return route.fulfill({
-      json: pullResponse,
+      json: generatedSyncPullResponse({
+        workspaceId: identity,
+        ...pageData,
+      }),
     });
   });
+
+  /**
+   * Update changed entity documents with monotonic sequences and tombstone
+   * removed entities. If origin/token are provided, publish the state
+   * invalidation as a stand-in for the missing base server commit notification.
+   * @param {StateSnapshot} nextSnapshot
+   * @param {{ origin: string, token: string, resources?: ResourceRef[] }} [publish]
+   * @returns {Promise<ResourceNotifyAck | undefined>}
+   */
+  const update = async (nextSnapshot, publish) => {
+    const nextById = new Map(
+      entityValuesFromSnapshot(nextSnapshot).map((entity) => [
+        `entity:${entity.collection}:${entity.id}`,
+        entity,
+      ]),
+    );
+    for (const [id, previous] of documents) {
+      if (previous._deleted) continue;
+      const next = nextById.get(id);
+      if (!next) {
+        documents.set(
+          id,
+          generatedSyncEntity({ ...previous, seq: ++maxSeq, _deleted: true }),
+        );
+        continue;
+      }
+      const payload = JSON.stringify(next);
+      if (payload !== previous.payload)
+        documents.set(
+          id,
+          generatedSyncEntity({
+            ...previous,
+            seq: ++maxSeq,
+            payload,
+            _deleted: false,
+          }),
+        );
+    }
+    for (const [id, next] of nextById) {
+      const previous = documents.get(id);
+      const payload = JSON.stringify(next);
+      if (!previous || previous._deleted)
+        documents.set(
+          id,
+          generatedSyncEntity({
+            id,
+            seq: ++maxSeq,
+            payload,
+            _deleted: false,
+          }),
+        );
+    }
+    currentSnapshot = nextSnapshot;
+    generation++;
+    if (!publish) return undefined;
+    const body = /** @type {ResourceNotifyRequest} */ ({
+      requestId: randomUUID(),
+      resources: publish.resources ?? [{ kind: "state" }],
+    });
+    const response = await fetch(new URL("/api/sync/notify", publish.origin), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": publish.token,
+        [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+      },
+      body: JSON.stringify(body),
+    });
+    return /** @type {ResourceNotifyAck} */ (
+      await readJson(response, "/api/sync/notify")
+    );
+  };
+  return { update };
 }
 
 /**

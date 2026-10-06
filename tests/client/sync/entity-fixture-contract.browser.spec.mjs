@@ -69,6 +69,9 @@ test("entity fixture contract matches the real sync backend", async () => {
   const realPull = await get(
     "/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=500&fresh=1",
   );
+  const capturedServerHead = await get(
+    "/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=500",
+  );
   const stubPull = entityPullFixture(snapshot, {
     scope: "state:entities:v1",
     after: 0,
@@ -156,14 +159,15 @@ test("entity fixture contract matches the real sync backend", async () => {
     "stateDir",
     "tasksHistoryLimit",
   ]);
+  const serverMaxSeq = capturedServerHead.maxSeq;
   const stubHead = entityPullFixture(snapshot, {
     scope: "state:entities:v1",
     after: realPull.maxSeq,
     limit: 500,
-    maxSeq: realPull.maxSeq,
+    documents: capturedServerHead.documents,
   });
   assert.deepEqual(stubHead.documents, []);
-  assert.equal(stubHead.checkpoint.seq, realPull.maxSeq);
+  assert.equal(stubHead.checkpoint.seq, serverMaxSeq);
 
   const onePage = entityPullFixture(snapshot, { limit: 1, fresh: true });
   assert.equal(onePage.documents.length, 1, "entity page limit is honored");
@@ -252,16 +256,24 @@ test("entity fixture contract matches the real sync backend", async () => {
   );
   assert.equal(stubStream.status, 200);
   const stubOrigin = `http://127.0.0.1:${streamServer.address().port}`;
-  assert.equal(
-    (await fetch(`${stubOrigin}/api/sync/pull?scope=unknown`)).status,
-    400,
-    "unsupported pull scopes use the server error status",
-  );
-  assert.equal(
-    (await fetch(`${stubOrigin}/api/sync/pull?after=-1`)).status,
-    400,
-    "invalid pull cursors use the server error status",
-  );
+  for (const path of [
+    "/api/sync/pull?after=-1",
+    "/api/sync/pull?after=abc",
+    "/api/sync/pull?after=1.5",
+    "/api/sync/pull?scope=unknown",
+  ]) {
+    const [realResponse, stubResponse] = await Promise.all([
+      fetch(new URL(path, origin)),
+      fetch(new URL(path, stubOrigin)),
+    ]);
+    assert.equal(stubResponse.status, realResponse.status, `${path} status`);
+    if (realResponse.status >= 400)
+      assert.deepEqual(
+        await stubResponse.json(),
+        await realResponse.json(),
+        `${path} error response matches the real server`,
+      );
+  }
   const stubReader = stubStream.body.getReader();
   let stubStreamText = "";
   const stubStreamDeadline = Date.now() + 6500;
@@ -369,11 +381,14 @@ test("shared entity stub converges on one matching stream", async ({
   const snapshot = await readLegacySnapshotForS2Assertions(origin);
   const syncContract = await readFixtureSyncContract(origin);
   const requests = [];
+  const pullScopes = [];
   const streamStatuses = [];
   const streamUrls = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname.startsWith("/api/sync/")) requests.push(url.pathname);
+    if (url.pathname === "/api/sync/pull")
+      pullScopes.push(url.searchParams.get("scope"));
     if (url.pathname === "/api/sync/stream") streamUrls.push(url.href);
     if (legacySnapshotRoute.test(url.href)) requests.push(url.pathname);
   });
@@ -382,8 +397,40 @@ test("shared entity stub converges on one matching stream", async ({
       streamStatuses.push(response.status());
   });
   try {
-    await stubEntityState(page, snapshot, syncContract);
+    const stub = await stubEntityState(page, snapshot, syncContract);
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.__entityFixtureResourceEvents = [];
+      window.EventSource = new Proxy(NativeEventSource, {
+        construct(Target, args) {
+          const stream = new Target(...args);
+          stream.addEventListener("resources", (event) => {
+            window.__entityFixtureResourceEvents.push(JSON.parse(event.data));
+          });
+          return stream;
+        },
+      });
+    });
     await page.goto(origin);
+    const routeParity = await page.evaluate(async () => {
+      const paths = [
+        "/api/sync/pull?after=-1",
+        "/api/sync/pull?after=abc",
+        "/api/sync/pull?after=1.5",
+        "/api/sync/pull?scope=unknown",
+      ];
+      return Promise.all(
+        paths.map(async (path) => {
+          const response = await fetch(path);
+          return { path, status: response.status };
+        }),
+      );
+    });
+    assert.deepEqual(
+      routeParity.map(({ status }) => status),
+      [200, 400, 400, 400],
+      "browser page route validates pull requests like the real server",
+    );
     await page.locator("#message").waitFor({ timeout: 30000 });
     // Let the renderer finish its initial resource union before measuring
     // reconnects; subscriptions are added as individual views mount.
@@ -405,8 +452,8 @@ test("shared entity stub converges on one matching stream", async ({
     const repeatedStreamUrls = settledStreamUrls.filter(
       (url, index) => settledStreamUrls.indexOf(url) !== index,
     );
-    const entityPulls = requests.filter(
-      (path) => path === "/api/sync/pull",
+    const entityPulls = pullScopes.filter(
+      (scope) => scope === "state:entities:v1",
     ).length;
     const snapshotReads = requests.filter((path) =>
       legacySnapshotRoute.test(path),
@@ -433,6 +480,60 @@ test("shared entity stub converges on one matching stream", async ({
       0,
       "page does not use the legacy snapshot endpoint",
     );
+    const initial = await page.evaluate(async () =>
+      (
+        await fetch("/api/sync/pull?scope=state%3Aentities%3Av1&fresh=1")
+      ).json(),
+    );
+    assert.ok(snapshot.runtime.projects.length > 0, "fixture has a project");
+    const removedProject = snapshot.runtime.projects[0];
+    const updatedSnapshot = {
+      ...snapshot,
+      runtime: {
+        ...snapshot.runtime,
+        tasksHistoryLimit: snapshot.runtime.tasksHistoryLimit + 1,
+        projects: snapshot.runtime.projects.slice(1),
+      },
+    };
+    const notification = await stub.update(updatedSnapshot, {
+      origin,
+      token: snapshot.token,
+      resources: [{ kind: "state" }],
+    });
+    assert.ok(notification, "state update receives a sync notification ack");
+    // The fixture notification stands in for the base server's missing
+    // state-resource commit notification; production entity commits do not
+    // publish this event on this base revision.
+    await page.waitForFunction(() =>
+      window.__entityFixtureResourceEvents?.some(
+        (event) =>
+          event.reason === "change" &&
+          event.resources?.some((resource) => resource.kind === "state"),
+      ),
+    );
+    const changed = await page.evaluate(
+      async (after) =>
+        (
+          await fetch(
+            `/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}`,
+          )
+        ).json(),
+      initial.maxSeq,
+    );
+    const changedWorkspace = changed.documents.find(
+      (document) => document.id === "entity:workspace:current",
+    );
+    const removedDocument = changed.documents.find(
+      (document) => document.id === `entity:project:${removedProject.id}`,
+    );
+    assert.ok(changedWorkspace, "changed workspace receives a new sequence");
+    assert.ok(changedWorkspace.seq > initial.maxSeq);
+    assert.equal(
+      removedDocument?._deleted,
+      true,
+      "removed work gets a tombstone",
+    );
+    assert.ok(removedDocument.seq > initial.maxSeq);
   } finally {
     child.kill("SIGTERM");
   }

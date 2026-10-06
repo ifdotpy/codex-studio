@@ -109,18 +109,27 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           },
           true,
         );
-        window.EventSource = class extends EventTarget {
-          constructor(url) {
-            super();
-            this.url = url;
-            window.motionStreams.push(this);
-          }
-          close() {
-            window.motionStreams = window.motionStreams.filter(
-              (s) => s !== this,
-            );
-          }
-        };
+        const NativeEventSource = window.EventSource;
+        window.EventSource = new Proxy(NativeEventSource, {
+          construct(target, args) {
+            const url = String(args[0]);
+            if (new URL(url, location.href).pathname === "/api/sync/stream")
+              return Reflect.construct(target, args);
+            class TranscriptFixtureStream extends EventTarget {
+              constructor() {
+                super();
+                this.url = url;
+                window.motionStreams.push(this);
+              }
+              close() {
+                window.motionStreams = window.motionStreams.filter(
+                  (stream) => stream !== this,
+                );
+              }
+            }
+            return new TranscriptFixtureStream();
+          },
+        });
         window.motionEmit = (id, data) => {
           for (const s of window.motionStreams)
             if (new URL(s.url, location.href).searchParams.get("id") === id)

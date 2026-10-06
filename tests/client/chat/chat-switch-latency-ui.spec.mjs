@@ -49,29 +49,34 @@ test(
         window.__chatSwitchPaintAt = undefined;
         window.testStreams = [];
         window.createdStreams = [];
-        window.EventSource = class extends EventTarget {
-          constructor(url) {
-            super();
-            this.url = url;
-            window.testStreams.push(this);
-            window.createdStreams.push(url);
-          }
-          close() {
-            window.testStreams = window.testStreams.filter((x) => x !== this);
-          }
-        };
+        const NativeEventSource = window.EventSource;
+        window.EventSource = new Proxy(NativeEventSource, {
+          construct(target, args) {
+            const url = String(args[0]);
+            if (new URL(url, location.href).pathname === "/api/sync/stream")
+              return Reflect.construct(target, args);
+            class TranscriptFixtureStream extends EventTarget {
+              constructor() {
+                super();
+                this.url = url;
+                window.testStreams.push(this);
+                window.createdStreams.push(url);
+              }
+              close() {
+                window.testStreams = window.testStreams.filter(
+                  (stream) => stream !== this,
+                );
+              }
+            }
+            return new TranscriptFixtureStream();
+          },
+        });
         window.emitTranscript = (id, data) =>
           window.testStreams.forEach((s) => {
             if (new URL(s.url, location.href).searchParams.get("id") === id)
               s.onmessage?.({ data: JSON.stringify(data) });
           });
       });
-      await page.route("**/api/sync/**", (r) =>
-        r.fulfill({
-          status: 404,
-          json: { error: "Fixture uses transcript transport" },
-        }),
-      );
       const snapshot = {
         ...state,
         threads: state.threads.map((x) => ({

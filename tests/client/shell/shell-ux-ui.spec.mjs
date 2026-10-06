@@ -39,6 +39,7 @@ test("Shell ux ui", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
@@ -176,58 +177,32 @@ test("Shell ux ui", async ({
         await page.keyboard.press("Escape");
       }
     }
-    const compactPage = await testBrowser.newPage({
+    const compactContext = await testBrowser.newContext({
       viewport: { width: 860, height: 960 },
     });
-    let warningNoticesEnabled = false;
+    const compactPage = await compactContext.newPage();
+    const usageError = {
+      codexErrorInfo: "usageLimitExceeded",
+      message: "Usage limit reached",
+    };
+    const compactAgents = snapshot.threads.map((agent) =>
+      agent.name === "Release lead" ? { ...agent, error: usageError } : agent,
+    );
+    const compactSnapshot = {
+      ...snapshot,
+      threads: compactAgents,
+      runtime: {
+        ...snapshot.runtime,
+        agents: compactAgents,
+        nativeNotices: [],
+      },
+    };
     compactPage.on("pageerror", (error) => errors.push(error.message));
-    await compactPage.route("**/api/sync/pull?*", async (route) => {
-      const response = await route.fetch();
-      const projection = await response.json();
-      const usageError = {
-        codexErrorInfo: "usageLimitExceeded",
-        message: "Usage limit reached",
-      };
-      projection.documents = projection.documents.map((document) => {
-        if (document._deleted) return document;
-        const entity = JSON.parse(document.payload);
-        if (
-          entity.collection === "agent" &&
-          entity.value.name === "Release lead"
-        )
-          entity.value.error = usageError;
-        if (entity.collection === "workspace")
-          entity.value.nativeNotices = warningNoticesEnabled
-            ? [
-                {
-                  id: "fixture-current-account-warning",
-                  accountKey: "default",
-                  nativeNotice: "warning",
-                  message: "Account configuration needs review",
-                  details: {
-                    code: "fixture_configuration",
-                    files: ["first.toml", "second.toml"],
-                    retryAllowed: false,
-                  },
-                },
-                {
-                  id: "fixture-other-account-warning",
-                  accountKey: "other-account",
-                  nativeNotice: "warning",
-                  message: "Account configuration needs review",
-                  details: {
-                    code: "fixture_configuration",
-                    files: ["first.toml", "second.toml"],
-                    retryAllowed: false,
-                  },
-                },
-              ]
-            : [];
-        document.payload = JSON.stringify(entity);
-        return document;
-      });
-      return route.fulfill({ response, json: projection });
-    });
+    const compactStub = await stubEntityState(
+      compactPage,
+      compactSnapshot,
+      syncContract,
+    );
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
         json: {
@@ -274,7 +249,37 @@ test("Shell ux ui", async ({
       0,
       "Account warning details are not duplicated in the workspace transcript",
     );
-    warningNoticesEnabled = true;
+    compactSnapshot.runtime.nativeNotices = [
+      {
+        id: "fixture-current-account-warning",
+        accountKey: "default",
+        nativeNotice: "warning",
+        message: "Account configuration needs review",
+        details: {
+          code: "fixture_configuration",
+          files: ["first.toml", "second.toml"],
+          retryAllowed: false,
+        },
+      },
+      {
+        id: "fixture-other-account-warning",
+        accountKey: "other-account",
+        nativeNotice: "warning",
+        message: "Account configuration needs review",
+        details: {
+          code: "fixture_configuration",
+          files: ["first.toml", "second.toml"],
+          retryAllowed: false,
+        },
+      },
+    ];
+    // Stand-in for the state commit notification missing from entity commits
+    // on this base; update assigns sequences above the client's saved cursor.
+    await compactStub.update(compactSnapshot, {
+      origin,
+      token: snapshot.token,
+      resources: [{ kind: "state" }],
+    });
     await compactPage.reload();
     await compactPage
       .locator(".chat-row")
