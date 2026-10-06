@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
-from studio_api.test_helpers import read_session_token
+from studio_api.testing import read_session_token
 import codex_canvas
 
 

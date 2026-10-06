@@ -6,11 +6,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
-from studio_api.test_helpers import read_test_state
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_test_state
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory() as directory:

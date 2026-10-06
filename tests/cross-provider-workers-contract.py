@@ -17,6 +17,7 @@ spec = importlib.util.spec_from_file_location(
     "worker_fixture", Path(__file__).with_name("worker-defaults-contract.py"))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class CrossProviderWorkers(unittest.TestCase):
@@ -66,7 +67,7 @@ class CrossProviderWorkers(unittest.TestCase):
             "role": "reviewer", **values}, parent=self.lead["id"], defer=True)
 
     def workers(self):
-        return [a for a in self.rt.team(self.lead["id"])["agents"] if a.get("parentId")]
+        return [a for a in read_runtime_state(self.rt)["agents"] if a.get("parentId")]
 
     def spawn(self, workers, call_id=None):
         self.lead = self.rt.prepare(self.rt.agent(self.lead["id"]))
@@ -258,7 +259,7 @@ class CrossProviderWorkers(unittest.TestCase):
         codex, claude = self.rt.servers["default"], self.rt.servers["claude-fixture"]
         codex.complete(child["threadId"], child["turnId"], "Codex evidence for Claude")
         self.assertEqual(self.rt.agent(self.lead["id"])["status"], "queued")
-        events = [event for event in self.rt.snapshot()["events"] if event["kind"] == "child_result"]
+        events = [event for event in read_runtime_state(self.rt)["events"] if event["kind"] == "child_result"]
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["agent"], self.lead["id"])
         self.rt.dispatch()

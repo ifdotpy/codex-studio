@@ -17,6 +17,7 @@ spec = importlib.util.spec_from_file_location(
 )
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class SendTranscriptContract(unittest.TestCase):
@@ -75,7 +76,7 @@ class SendTranscriptContract(unittest.TestCase):
         for contents in (None, [], {}, "unexpected", [None, 7, {}, {"type": "inputText", "text": None}]):
             with self.subTest(contents=contents):
                 a, _ = self.tool_fixture(None, native={"contentItems": contents})
-                sync = SyncStore(self.runtime.db, self.runtime.snapshot, self.runtime.transcript)
+                sync = SyncStore(self.runtime.db, lambda: read_runtime_state(self.runtime), self.runtime.transcript)
                 result = sync.pull("transcript:" + a["id"])
                 transcript = json.loads(result["documents"][0]["payload"])
                 item = transcript["items"][-1]

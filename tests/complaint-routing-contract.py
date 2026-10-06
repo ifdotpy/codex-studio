@@ -12,8 +12,9 @@ import unittest
 spec = importlib.util.spec_from_file_location('defaults', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 from codex_runtime import ComplaintConflict
-from studio_api.test_helpers import read_legacy_snapshot_field
+from studio_api.testing import read_legacy_snapshot_field
 
 
 class ComplaintRouting(unittest.TestCase):

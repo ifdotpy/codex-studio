@@ -12,6 +12,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("role_fixture", Path(__file__).with_name("workspace-contract.py"))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class RoleSkillsContract(unittest.TestCase):
@@ -119,7 +120,7 @@ class RoleSkillsContract(unittest.TestCase):
         worker = self.worker(lead)
         request = self.runtime.complaint(worker["id"], {"action": "submit", "text": "Need a decision", "recipient": "user"}, "request")
         self.assertEqual(request["recipient"], "lead")
-        self.assertFalse(any(c["recipient"] == "user" for c in self.runtime.snapshot()["complaints"]))
+        self.assertFalse(any(c["recipient"] == "user" for c in read_runtime_state(self.runtime)["complaints"]))
         with self.assertRaisesRegex(ValueError, "Only the lead"):
             self.runtime.chat_message(worker["id"], "user", "Bypass lead", "bypass")
         forwarded = self.runtime.complaint(lead["id"], {"action": "submit", "text": "Please decide the scope"}, "forward")
@@ -136,15 +137,15 @@ class RoleSkillsContract(unittest.TestCase):
         reply = self.runtime.server.responses[-1]
         self.assertEqual(reply["id"], "worker-question")
         self.assertIn("orchestration_message target=lead", reply["error"]["message"])
-        self.assertFalse(self.runtime.snapshot()["requests"])
+        self.assertFalse(read_runtime_state(self.runtime)["requests"])
         self.runtime.request({"id": "permission", "method": "item/commandExecution/requestApproval", "params": {
             "threadId": worker["threadId"], "itemId": "cmd", "command": "restricted-command"}})
-        request = self.runtime.snapshot()["requests"][-1]
+        request = read_runtime_state(self.runtime)["requests"][-1]
         self.assertEqual(request["rpcId"], "permission")
         self.assertEqual(request["status"], "pending")
         self.runtime.request({"id": "lead-question", "method": "item/tool/requestUserInput", "params": {
             "threadId": lead["threadId"], "questions": [{"id": "q", "question": "Choose scope"}]}})
-        self.assertTrue(any(r["rpcId"] == "lead-question" for r in self.runtime.snapshot()["requests"]))
+        self.assertTrue(any(r["rpcId"] == "lead-question" for r in read_runtime_state(self.runtime)["requests"]))
 
     def test_structured_worker_question_routes_once_to_lead(self):
         lead = self.start(self.lead())
@@ -154,8 +155,8 @@ class RoleSkillsContract(unittest.TestCase):
                      "questions": [{"title": "Which scope? " + "Full context " * 1200, "options": ["One", "Last complete option"], "multiSelect": True}]}}}
         self.runtime.notification(message)
         self.runtime.notification(message)
-        self.assertFalse(self.runtime.snapshot()["requests"])
-        records = self.runtime.snapshot()["complaints"]
+        self.assertFalse(read_runtime_state(self.runtime)["requests"])
+        records = read_runtime_state(self.runtime)["complaints"]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["recipient"], "lead")
         self.assertEqual(records[0]["author"], worker["id"])
@@ -168,7 +169,7 @@ class RoleSkillsContract(unittest.TestCase):
         message["params"]["threadId"] = lead["threadId"]
         message["params"]["turnId"] = lead["turnId"]
         self.runtime.notification(message)
-        request = self.runtime.snapshot()["requests"][-1]
+        request = read_runtime_state(self.runtime)["requests"][-1]
         self.assertEqual(request["agent"], lead["id"])
         self.assertEqual(request["method"], "agent/asyncQuestion")
         self.assertTrue(request["params"]["questions"][0]["multiSelect"])

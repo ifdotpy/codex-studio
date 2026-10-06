@@ -17,10 +17,11 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_runtime import PreparationPending, ResponseTimeout, Runtime
 from codex_worktree_creation import WorktreeNeedsReview
 from codex_canvas import Canvas, make_server
-from studio_api.test_helpers import read_test_state
+from studio_api.testing import read_test_state
 
 spec = importlib.util.spec_from_file_location("prepare_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -95,7 +96,7 @@ class PrepareSteerContract(unittest.TestCase):
         a = self.create()
         entry = self.pending_prepare(a)
         self.assertTrue(self.runtime.agent(a["id"])["inFlight"])
-        first_id = self.runtime.snapshot()["events"][0]["id"]
+        first_id = read_runtime_state(self.runtime)["events"][0]["id"]
         self.assertEqual(self.runtime.delivery_receipt(first_id)["status"], "reserved")
         second_id = self.runtime.send(a["id"], "Second")["id"]
         self.runtime.dispatch()
@@ -161,7 +162,7 @@ class PrepareSteerContract(unittest.TestCase):
         entry["future"].set_exception(RuntimeError("invalid project"))
         eventually(lambda: self.runtime.agent(a["id"])["status"] == "failed")
         # Never sent, so the first prompt waits for the next start instead of being lost.
-        self.assertEqual(self.runtime.snapshot()["events"][0]["status"], "pending")
+        self.assertEqual(read_runtime_state(self.runtime)["events"][0]["status"], "pending")
         self.assertEqual(self.count("turn/start"), 0)
         self.server.hold.discard("thread/start")
         self.runtime.send(a["id"], "Try again", "retry-after-prepare")
@@ -283,7 +284,7 @@ class PrepareSteerContract(unittest.TestCase):
                                        for w in workers[:2]))
                 with calls_lock:
                     self.assertEqual(calls.count(str(repos[0])), 1)
-                snapshot = self.runtime.snapshot()
+                snapshot = read_runtime_state(self.runtime)
                 self.assertIn("waiting", [agent.get("worktreePreparation")
                                           for agent in snapshot["agents"]])
                 with self.runtime.db() as db:
@@ -382,7 +383,7 @@ class PrepareSteerContract(unittest.TestCase):
             self.runtime.conversation_settings(a["id"], {"model": "gpt-5.6-sol"})
         self.accept_prepare(self.server.delayed[0])
         eventually(lambda: self.count("command/exec") == 1)
-        self.assertEqual(next(v for v in self.runtime.team(a["id"])["monitors"] if v["id"] == m["id"])["status"], "running")
+        self.assertEqual(next(v for v in read_runtime_state(self.runtime)["monitors"] if v["id"] == m["id"])["status"], "running")
 
     def delayed_busy_input(self, a, message_id='busy-1'):
         self.server.hold.add('turn/start')

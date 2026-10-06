@@ -22,7 +22,7 @@ spec = importlib.util.spec_from_file_location(
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_limit_resets import consume_reset
-from studio_api.test_helpers import read_session_token
+from studio_api.testing import read_session_token
 
 
 def credit(key="credit-A", **changes):

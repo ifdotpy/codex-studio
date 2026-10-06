@@ -35,6 +35,7 @@ from studio_api.sync.models import (
     StateSnapshot,
     SyncDocument,
     SyncEntityPayload,
+    WorkspaceEntityDto,
 )
 
 
@@ -95,6 +96,33 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_workspace_entity_carries_rate_limits_and_native_notices(self) -> None:
+        source = {
+            "connected": True,
+            "rateLimits": {
+                "accountKey": "default",
+                "at": 1.0,
+                "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+            },
+            "nativeNotices": [
+                {
+                    "id": "notice",
+                    "accountKey": "default",
+                    "provider": "codex",
+                    "version": "1",
+                    "baseline": "2",
+                    "message": "update",
+                    "at": 1.0,
+                }
+            ],
+        }
+        workspace = project("workspace", source)
+        self.assertEqual(workspace["rateLimits"], source["rateLimits"])
+        self.assertEqual(workspace["nativeNotices"], source["nativeNotices"])
+        validated = WorkspaceEntityDto.model_validate(workspace)
+        self.assertEqual(validated.nativeNotices[0].id, "notice")
+        self.assertEqual(validated.rateLimits.data.rateLimits.primary.usedPercent, 42)
+
     def test_monitor_entity_keeps_nullable_identity_and_open_task_status(self) -> None:
         record: dict[str, JsonValue] = {
             "id": "monitor-1", "agent": "agent-1", "created": 1.5,

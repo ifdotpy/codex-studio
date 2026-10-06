@@ -17,6 +17,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('mode_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 from codex_agent_modes import guidance
 
 
@@ -344,7 +345,7 @@ class AgentModes(unittest.TestCase):
             for key in ['agentMode', 'agentModeRevision', 'agentModeSupported']:
                 row.pop(key)
             self.rt.put(db, 'agents', row)
-        projected = self.rt.snapshot()['agents']
+        projected = read_runtime_state(self.rt)['agents']
         lead = next(a for a in projected if a['id'] == self.lead['id'])
         self.assertEqual((lead['agentMode'], lead['agentModeRevision'], lead['agentModeSupported']), ('multi', 0, True))
         self.mode()

@@ -11,6 +11,8 @@ import unittest
 spec = importlib.util.spec_from_file_location("runtime_contract", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from studio_api.testing import read_runtime_state
+from studio_api.testing import read_legacy_snapshot_field
 
 
 class WorkerOverviewContract(unittest.TestCase):
@@ -28,31 +30,35 @@ class WorkerOverviewContract(unittest.TestCase):
         self.runtime.close()
         self.tmp.cleanup()
 
-    def snapshot(self, **updates):
+    def legacy_overview(self, **updates):
         with self.runtime.lock, self.runtime.db() as db:
             self.worker.update(updates)
             self.runtime.put(db, "agents", self.worker)
-        return next(a for a in self.runtime.snapshot()["agents"] if a["id"] == self.worker["id"])
+        snapshot_agents = read_runtime_state(self.runtime)["agents"]
+        worker_index = next(i for i, agent in enumerate(snapshot_agents)
+                            if agent["id"] == self.worker["id"])
+        return read_legacy_snapshot_field(
+            lambda: read_runtime_state(self.runtime), "agents", worker_index, "overview")
 
     def test_running_commentary_and_stale_completed_turn_are_not_results(self):
-        agent = self.snapshot(status="running", inFlight=True, turnId="new", lastCompletedTurn="old", lastAnswer="I will investigate")
-        self.assertEqual(agent["overview"]["task"], "Review the exact retry receipt")
-        self.assertEqual(agent["overview"]["result"], "")
-        self.assertIsNone(agent["overview"]["resultTurnId"])
+        agent = self.legacy_overview(status="running", inFlight=True, turnId="new", lastCompletedTurn="old", lastAnswer="I will investigate")
+        self.assertEqual(agent["task"], "Review the exact retry receipt")
+        self.assertEqual(agent["result"], "")
+        self.assertIsNone(agent["resultTurnId"])
         for field in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy"):
             self.assertNotIn(field, agent)
         for status in ("starting", "queued", "waiting", "failed", "interrupted", "paused"):
-            self.assertEqual(self.snapshot(status=status, inFlight=False, turnId=None)["overview"]["result"], "")
+            self.assertEqual(self.legacy_overview(status=status, inFlight=False, turnId=None)["result"], "")
 
     def test_completed_report_is_bounded_and_has_turn_identity(self):
         report = "The retry receipt is verified. " + "x" * 4500
         task = "Review " + "y" * 4500
-        agent = self.snapshot(status="completed", inFlight=False, turnId=None, lastCompletedTurn="done", lastAnswer=report, prompt=task)
-        self.assertEqual(agent["overview"]["task"], task[:4000])
-        self.assertEqual(agent["overview"]["result"], report[:4000])
-        self.assertTrue(agent["overview"]["taskTruncated"])
-        self.assertTrue(agent["overview"]["resultTruncated"])
-        self.assertEqual(agent["overview"]["resultTurnId"], "done")
+        agent = self.legacy_overview(status="completed", inFlight=False, turnId=None, lastCompletedTurn="done", lastAnswer=report, prompt=task)
+        self.assertEqual(agent["task"], task[:4000])
+        self.assertEqual(agent["result"], report[:4000])
+        self.assertTrue(agent["taskTruncated"])
+        self.assertTrue(agent["resultTruncated"])
+        self.assertEqual(agent["resultTurnId"], "done")
         with self.runtime.db() as db:
             stored = self.runtime.agent(self.worker["id"], db)
         self.assertEqual(stored["prompt"], task)
@@ -60,10 +66,17 @@ class WorkerOverviewContract(unittest.TestCase):
         self.assertNotIn("overview", stored)
 
     def test_missing_completion_has_no_report_and_lead_is_not_projected(self):
-        agent = self.snapshot(status="completed", lastAnswer="Unproven result")
-        self.assertEqual(agent["overview"]["result"], "")
-        lead = self.runtime.agent(self.lead["id"])
-        self.assertNotIn("overview", lead)
+        agent = self.legacy_overview(status="completed", lastAnswer="Unproven result")
+        self.assertEqual(agent["result"], "")
+        lead = next(a for a in read_runtime_state(self.runtime)["agents"] if a["id"] == self.lead["id"])
+        agents = read_runtime_state(self.runtime)["agents"]
+        lead_index = next(i for i, agent in enumerate(agents) if agent["id"] == lead["id"])
+        legacy_lead = read_legacy_snapshot_field(
+            lambda: read_runtime_state(self.runtime), "agents", lead_index)
+        self.assertNotIn("overview", legacy_lead)
+        with self.runtime.db() as db:
+            entity_lead = self.runtime.agent_entity_view(db, self.runtime.agent(lead["id"], db))
+        self.assertNotIn("overview", entity_lead)
 
 
 if __name__ == "__main__":

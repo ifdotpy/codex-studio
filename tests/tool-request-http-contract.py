@@ -20,7 +20,7 @@ spec = importlib.util.spec_from_file_location('request_http_fixture', Path(__fil
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_canvas import Canvas, make_server
-from studio_api.test_helpers import read_session_token
+from studio_api.testing import read_session_token
 
 
 class ToolRequestHTTP(unittest.TestCase):

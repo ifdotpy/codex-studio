@@ -19,6 +19,7 @@ spec = importlib.util.spec_from_file_location(
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas, make_server
 
 
@@ -60,7 +61,7 @@ class MobileStateContract(unittest.TestCase):
                     }],
                 })
         saved = self.saved_work()
-        full = self.runtime.snapshot()
+        full = read_runtime_state(self.runtime)
         original_records = self.runtime.records
 
         def records_without_work(db, table, **kwargs):
@@ -69,7 +70,7 @@ class MobileStateContract(unittest.TestCase):
             return original_records(db, table, **kwargs)
 
         with patch.object(self.runtime, "records", side_effect=records_without_work):
-            chat = self.runtime.snapshot(include_work=False)
+            chat = read_runtime_state(self.runtime, include_work=False)
         self.assertNotIn("work", chat)
         self.assertEqual(chat, {key: value for key, value in full.items() if key != "work"})
         self.assertEqual(len(full["work"]), count)
@@ -94,10 +95,10 @@ class MobileStateContract(unittest.TestCase):
         task = self.runtime.work_action(lead["id"], {
             "action": "create", "title": "Retained history",
         })
-        self.assertEqual(self.runtime.snapshot()["work"][0]["id"], task["id"])
+        self.assertEqual(read_runtime_state(self.runtime)["work"][0]["id"], task["id"])
         self.agent_update(lead, deletedAt=1)
-        self.assertEqual(self.runtime.snapshot()["work"], [])
-        self.assertNotIn("work", self.runtime.snapshot(include_work=False))
+        self.assertEqual(read_runtime_state(self.runtime)["work"], [])
+        self.assertNotIn("work", read_runtime_state(self.runtime, include_work=False))
         with self.assertRaisesRegex(ValueError, "deleted"):
             self.runtime.work_action(lead["id"], {"action": "list"})
         self.assertEqual(len(self.saved_work()), 1)

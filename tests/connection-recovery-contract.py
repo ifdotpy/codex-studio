@@ -19,7 +19,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
 from codex_connection_recovery import recover, tick as connection_recovery_tick
-from studio_api.test_helpers import read_session_token
+from studio_api.testing import read_session_token
 
 
 class Runtime(fixture.Runtime):

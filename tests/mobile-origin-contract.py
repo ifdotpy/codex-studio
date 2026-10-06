@@ -16,7 +16,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_canvas import Canvas, make_server
 from codex_remote import validate_origin
-from studio_api.test_helpers import read_session_token
+from studio_api.testing import read_session_token
 
 
 class MobileOriginContract(unittest.TestCase):

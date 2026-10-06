@@ -16,7 +16,7 @@ ENTITY_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
-class TestState:
+class StateReadResult:
     """A token and raw entity values, without rebuilding the old snapshot."""
 
     token: str
@@ -44,7 +44,7 @@ class TestState:
         return None
 
 
-def read_test_state(get_json: JsonReader) -> TestState:
+def read_test_state(get_json: JsonReader) -> StateReadResult:
     """Read the session token and every current entity through HTTP."""
     token = read_session_token(get_json)
     documents: list[dict[str, Any]] = []
@@ -52,22 +52,44 @@ def read_test_state(get_json: JsonReader) -> TestState:
     while True:
         query = urlencode({"scope": ENTITY_SCOPE, "after": after, "limit": ENTITY_PAGE_SIZE})
         pull = get_json(f"/api/sync/pull?{query}")
-        for raw in pull.get("documents", []):
-            payload = raw.get("payload") if isinstance(raw, dict) else None
+        if not isinstance(pull, dict):
+            raise AssertionError("Entity pull response must be an object")
+        page = pull.get("documents")
+        checkpoint = pull.get("checkpoint")
+        if not isinstance(page, list):
+            raise AssertionError("Entity pull response is missing documents")
+        if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("seq"), int):
+            raise AssertionError("Entity pull response is missing checkpoint.seq")
+        if not isinstance(pull.get("maxSeq"), int):
+            raise AssertionError("Entity pull response is missing maxSeq")
+        for raw in page:
+            if not isinstance(raw, dict):
+                raise AssertionError("Entity pull document must be an object")
+            payload = raw.get("payload")
             if not isinstance(payload, str):
-                continue
+                raise AssertionError("Entity pull document payload must be a string")
             entity = json.loads(payload)
-            if isinstance(entity, dict) and not raw.get("_deleted"):
+            if not isinstance(entity, dict) or not isinstance(entity.get("value"), dict):
+                raise AssertionError("Entity pull payload must contain an object value")
+            if not raw.get("_deleted"):
                 documents.append(entity)
-        checkpoint = pull.get("checkpoint", {})
-        next_after = checkpoint.get("seq", after) if isinstance(checkpoint, dict) else after
-        max_seq = pull.get("maxSeq", next_after)
-        if not isinstance(next_after, int) or not isinstance(max_seq, int) or next_after >= max_seq:
+        next_after = checkpoint["seq"]
+        max_seq = pull["maxSeq"]
+        if next_after >= max_seq:
             break
         if next_after <= after:
             raise AssertionError("Entity pull did not advance its checkpoint")
         after = next_after
-    return TestState(token=token, documents=tuple(documents))
+    return StateReadResult(token=token, documents=tuple(documents))
+
+
+def read_runtime_state(runtime: Any, *, include_work: bool = True, db: Any = None) -> dict[str, Any]:
+    """Read in-process state through the legacy Runtime.snapshot source.
+
+    This is the single compatibility point to replace when the legacy snapshot
+    implementation is removed.
+    """
+    return runtime.snapshot(include_work=include_work, db=db)
 
 
 def read_session_token(get_json: JsonReader) -> str:

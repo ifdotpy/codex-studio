@@ -11,6 +11,9 @@ from pathlib import Path
 import unittest
 import uuid
 from unittest.mock import patch
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
@@ -236,7 +239,7 @@ class HistoryContract(unittest.TestCase):
                 self.runtime.branch_conversation(lead['id'],request)
         self.assertEqual(len(calls),1)
         self.assertEqual(self.runtime.agent(lead['id'])['threadId'],lead['threadId'])
-        self.assertEqual(len(self.runtime.team(lead['id'])['agents']),1)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']),1)
 
     def test_unknown_native_branch_result_never_forks_again(self):
         lead = self.start(self.lead())

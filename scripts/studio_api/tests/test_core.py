@@ -1202,7 +1202,7 @@ class CoreResponseTests(unittest.TestCase):
                 with patch.object(codex_canvas, "WEB", web_root):
                     with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
                         session = client.get("/api/session")
-                        identity = client.get("/api/session")
+                        identity = session
                         static = client.get("/")
                         unknown = client.get("/api/unknown")
                         mismatch = client.post(

@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location(
     'worker_base_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class WorkerBase(unittest.TestCase):
@@ -87,10 +88,10 @@ class WorkerBase(unittest.TestCase):
         self.assertIn('2 commits behind main', text)
 
     def test_invalid_base_ref_rejects_batch_without_workers(self):
-        before = len(self.runtime.team(self.lead['id'])['agents'])
+        before = len(read_runtime_state(self.runtime)['agents'])
         with self.assertRaisesRegex(ValueError, 'does not resolve to a commit'):
             self.spawn('invalid', base_ref='missing/branch')
-        self.assertEqual(len(self.runtime.team(self.lead['id'])['agents']), before)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), before)
 
 
 if __name__ == '__main__':

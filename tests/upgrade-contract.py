@@ -32,7 +32,7 @@ import codex_payload_migrate
 import codex_work
 from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
-from studio_api.test_helpers import read_test_state
+from studio_api.testing import read_test_state
 
 recovery_spec = importlib.util.spec_from_file_location("recover_backend", ROOT / "desktop/recover_backend.py")
 recover_backend = importlib.util.module_from_spec(recovery_spec)
