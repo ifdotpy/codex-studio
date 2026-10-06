@@ -41,11 +41,11 @@ def is_question(record: "RequestRecord") -> bool:
 def question_fields(record: "RequestRecord") -> list["RequestQuestionFieldRecord"]:
     params = record.get("params", {})
     if record.get("method") != "mcpServer/elicitation/request":
-        return params.get("questions", [])
+        return params.get("questions", [])  # type: ignore[return-value]  # typed-narrowing: Method discriminator guarantees question array
     return [
-        {"id": key, "question": value.get("title", key),
-         "isSecret": bool(value.get("isSecret") or value.get("writeOnly") or value.get("format") == "password")}
-        for key, value in params.get("requestedSchema", {}).get("properties", {}).items()
+        {"id": key, "question": value.get("title", key),  # type: ignore[union-attr,typeddict-item]  # typed-narrowing: Provider schema title remains textual
+         "isSecret": bool(value.get("isSecret") or value.get("writeOnly") or value.get("format") == "password")}  # type: ignore[union-attr]  # typed-narrowing: Provider properties remain object mappings
+        for key, value in params.get("requestedSchema", {}).get("properties", {}).items()  # type: ignore[union-attr]  # typed-narrowing: Schema properties are object mappings
     ]
 
 
@@ -78,7 +78,7 @@ class QuestionsMixin:
             record: "RequestRecord" = json.loads(row[0])
             if not is_question(record):
                 raise ValueError("Only a question can be deleted")
-            self.checked_actor(db, record["agent"])
+            self.checked_actor(db, record["agent"])  # type: ignore[arg-type]  # typed-suspect: provider questions may lack an owning agent
             if record.get("deletedAt"):
                 return {"id": key, "status": "deleted"}
             if record["status"] == "pending" and record["method"] != "agent/asyncQuestion":
@@ -106,7 +106,7 @@ class QuestionsMixin:
                 raise ValueError("Only a question can be deferred")
             if record["status"] != "pending":
                 raise ValueError("This question is no longer pending")
-            if self.agent(record["agent"], db).get("deletedAt"):
+            if self.agent(record["agent"], db).get("deletedAt"):  # type: ignore[arg-type]  # typed-suspect: provider questions may lack an owning agent
                 raise ValueError("This conversation was deleted")
             if record.get("deferred", False) != deferred:
                 record.update(deferred=deferred, deferredAt=time.time(), deferredBy="user")  # type: ignore[call-arg]  # typed-update

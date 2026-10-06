@@ -424,6 +424,8 @@ class AccountSnapshotRecord(TypedDict):
 class RequestQuestionFieldRecord(TypedDict):
     id: NotRequired[str]
     question: NotRequired[str]
+    options: NotRequired[list[JsonValue]]
+    multiSelect: NotRequired[bool]
     isSecret: NotRequired[bool]
     writeOnly: NotRequired[bool]
     format: NotRequired[str]
@@ -434,16 +436,34 @@ class RequestSchemaRecord(TypedDict):
     properties: NotRequired[dict[str, RequestQuestionFieldRecord]]
 
 
-class RequestParamsRecord(TypedDict):
-    mode: NotRequired[str]
-    questions: NotRequired[list[RequestQuestionFieldRecord]]
-    requestedSchema: NotRequired[RequestSchemaRecord]
-    monitorId: NotRequired[str]
-    command: NotRequired[str]
-    cwd: NotRequired[str]
-    itemId: NotRequired[str]
-    threadId: NotRequired[str]
-    turnId: NotRequired[str]
+class QuestionRequestParamsRecord(TypedDict):
+    questions: list[RequestQuestionFieldRecord]
+
+
+class MonitorApprovalParamsRecord(TypedDict):
+    monitorId: str
+    command: str
+    cwd: str
+
+
+class QuestionRequestRecord(TypedDict):
+    id: str
+    method: Literal["agent/asyncQuestion"]
+    agent: str
+    epoch: int
+    turnId: str | None
+    params: QuestionRequestParamsRecord
+    status: Literal["pending"]
+    createdAt: float
+
+
+class MonitorApprovalRequestRecord(TypedDict):
+    id: str
+    method: Literal["monitor/approve"]
+    agent: str
+    params: MonitorApprovalParamsRecord
+    status: Literal["pending"]
+    createdAt: float
 
 
 class RequestAnswerValuesRecord(TypedDict):
@@ -474,17 +494,17 @@ class RequestAnswerRecord(TypedDict):
 
 class RequestRecord(TypedDict):
     id: NotRequired[str]
-    agent: NotRequired[str]
+    agent: NotRequired[str | None]
     method: NotRequired[str]
     status: NotRequired[str]
     createdAt: NotRequired[float]
-    params: NotRequired[RequestParamsRecord]
+    params: NotRequired[JsonObject]
     accountKey: NotRequired[str]
     connectionId: NotRequired[str]
     epoch: NotRequired[int]
-    turnId: NotRequired[str]
+    turnId: NotRequired[str | None]
     rpcId: NotRequired[str | int]
-    preview: NotRequired[RequestPreviewRecord]
+    preview: NotRequired[JsonValue]
     answerSignature: NotRequired[str]
     answeredAt: NotRequired[float]
     answeredBy: NotRequired[str]
@@ -1611,7 +1631,7 @@ class RecordStore(Protocol):
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
-    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["safety_retries"], record: NativeSafetyRetryRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
