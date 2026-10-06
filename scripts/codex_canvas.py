@@ -163,14 +163,30 @@ class Canvas:
                                                 else self.runtime.snapshot(include_work=False)["agents"]))
         else:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
-                for item in db.execute("SELECT record FROM runtime_agents"):
-                    a = json.loads(item[0])
+                for key, raw in db.execute("SELECT id,record FROM runtime_agents"):
+                    try:
+                        a = json.loads(raw)
+                        if not isinstance(a, dict) or not isinstance(a.get("id"), str):
+                            raise TypeError("agent record must be an object with an id")
+                    except (TypeError, ValueError) as error:
+                        from codex_sync_entities import _report_bad_entity
+                        _report_bad_entity("agent", str(key), error)
+                        continue
                     if a.get("deletedAt"):
                         continue
                     rows.append({**a, "kind": "agent", "source": "managed", "canSend": False,
                                  "launcherAlive": False, "wave": "Managed team"})
         by_thread = {t['threadId']: t for t in rows if t.get('threadId')}
-        registered = [json.loads(r['record']) for r in db.execute("SELECT record FROM graph_agents")]
+        registered = []
+        for key, raw in db.execute("SELECT id,record FROM graph_agents"):
+            try:
+                record = json.loads(raw)
+                if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+                    raise TypeError("graph agent record must be an object with an id")
+                registered.append(record)
+            except (TypeError, ValueError) as error:
+                from codex_sync_entities import _report_bad_entity
+                _report_bad_entity("agent", str(key), error)
         for record in registered:
             existing = by_thread.get(record.get('threadId'))
             if existing:

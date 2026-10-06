@@ -244,10 +244,8 @@ def convert(runtime: "Runtime", data: Any) -> Any:
         # Keep peer-team entities aligned with the same filtered view used by snapshots.
         from codex_peer_teams import sync_entities as sync_peer_team_entities
         sync_peer_team_entities(runtime, db, {path})
-        from codex_sync_entities import put as sync_put
         for room in affected_rooms:
-            visible = next(iter(runtime.chat_rooms(db, room_id=room['id'])), None)
-            sync_put(db, 'room', room['id'], visible or {}, visible is None)
+            runtime.sync_room_entity(db, room['id'])
         result = {'id': source_id, 'parentId': target_id, 'rootId': target_id,
                   'movedAgents': [a['id'] for a in moving], 'peerTeamsRevision': revision + 1}
         runtime.save_receipt(db, receipt, signature, result)

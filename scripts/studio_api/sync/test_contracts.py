@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from pydantic import ValidationError
+import codex_sync_entities
 from codex_account_transfer import AccountTransfers
 from codex_sync_entities import COLLECTION_FIELDS, project, seed, validate_entity_payload
 from studio_api.models import JsonValue
@@ -155,11 +156,14 @@ class SyncEntityContractTests(unittest.TestCase):
                         self.fail("worker defaults were omitted")
                     self.assertEqual(parsed.workerDefaults.model, model)
                     self.assertIn("model", parsed.workerDefaults.model_dump(exclude_unset=True))
-        with self.assertRaises(ValidationError):
-            project("agent", {
+        codex_sync_entities._REPORTED_BAD_ENTITIES.discard(("agent", "agent-a", "ValidationError"))
+        with self.assertLogs("codex_sync_entities", level="WARNING"):
+            projected = project("agent", {
                 "id": "agent-a",
                 "workerDefaults": {"model": 42, "effort": None, "fastMode": False},
             })
+        self.assertIsNotNone(projected)
+        self.assertNotIn("workerDefaults", projected)
 
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
@@ -637,10 +641,14 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIsInstance(state.nodes[1], SnapshotChatGroupDto)
 
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
-        with self.assertRaises(ValidationError):
-            project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}})
-        with self.assertRaises(ValidationError):
-            project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}})
+        with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
+            native = project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}})
+            context = project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}})
+        self.assertIsNotNone(native)
+        self.assertNotIn("nativeSafetyRetry", native)
+        self.assertIsNotNone(context)
+        self.assertNotIn("contextUsage", context)
+        self.assertEqual(len(captured.records), 2)
 
     def test_legacy_status_file_public_row_has_named_external_fields(self) -> None:
         row = {
