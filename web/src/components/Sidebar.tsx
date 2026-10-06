@@ -18,6 +18,7 @@ import {
   FolderOpen,
   MoreHorizontal,
   Pencil,
+  SquarePen,
   Search,
   Folder,
   ChevronDown,
@@ -1061,15 +1062,22 @@ export default function Sidebar(p: Props) {
             leftSection={<Search size={15} />}
             onClick={p.onSearch}
           >
-            Search messages <kbd>⌘K / Ctrl+K</kbd>
+            Search{" "}
+            <kbd>
+              {navigator.platform.toLowerCase().includes("mac")
+                ? "⌘K"
+                : "Ctrl+K"}
+            </kbd>
           </Button>
-          <Button
-            className="sidebar-nav-button"
+          <ActionIcon
+            className="sidebar-new-chat"
+            aria-label="New chat"
+            title="New chat"
             disabled={p.creating}
             onClick={() => p.newChat()}
           >
-            New chat
-          </Button>
+            <SquarePen size={16} />
+          </ActionIcon>
         </div>
         {p.newSharedChat && (
           <Button
@@ -1084,7 +1092,6 @@ export default function Sidebar(p: Props) {
       <TextInput
         id="chat-search"
         type="search"
-        label="Filter sidebar"
         placeholder="Filter sidebar"
         aria-label="Filter projects and chats"
         leftSection={<Search size={15} />}
@@ -1158,7 +1165,7 @@ export default function Sidebar(p: Props) {
                     ) : (
                       <FolderOpen size={18} />
                     )}
-                    <span>{group.name}</span>
+                    <span title={group.name}>{group.name}</span>
                   </UnstyledButton>
                   {!archive && (!compact || !!group.path) && (
                     <ActionIcon

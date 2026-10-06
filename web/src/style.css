@@ -2141,9 +2141,22 @@ html body #root {
   flex: 1;
 }
 #sidebar .sidebar-search .mantine-Button-label {
-  flex-wrap: wrap;
-  gap: 2px 6px;
-  text-align: left;
+  flex: 1;
+  justify-content: space-between;
+  white-space: nowrap;
+  gap: 8px;
+}
+#sidebar .sidebar-new-chat {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  color: var(--muted);
+}
+#sidebar #chat-list .project-tree-toggle span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 #sidebar .sidebar-search kbd {
   color: var(--muted);
