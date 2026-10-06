@@ -297,11 +297,16 @@ function RequestCard({
   useEffect(() => {
     if (!open || !card.current) return;
     const node = card.current;
-    node.scrollIntoView({ block: "start" });
-    onAnswerPosition?.();
     const form = node.querySelector<HTMLElement>(".request-answer-form");
     const transcript = node.closest("#messages");
     if (!form || !transcript) return;
+    const position = () => {
+      transcript.scrollTop +=
+        node.getBoundingClientRect().top -
+        transcript.getBoundingClientRect().top -
+        12;
+      onAnswerPosition?.();
+    };
     const fit = () => {
       const available =
         transcript.clientHeight -
@@ -313,11 +318,14 @@ function RequestCard({
       );
     };
     fit();
-    const observer = new ResizeObserver(fit);
+    position();
+    const observer = new ResizeObserver(() => {
+      fit();
+      position();
+    });
     observer.observe(transcript);
     const frame = requestAnimationFrame(() => {
-      node.scrollIntoView({ block: "start" });
-      onAnswerPosition?.();
+      position();
     });
     return () => {
       cancelAnimationFrame(frame);
