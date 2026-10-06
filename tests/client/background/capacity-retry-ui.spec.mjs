@@ -110,6 +110,25 @@ test("capacity retry ui", async ({ browser: _browser }) => {
         }) + "\n",
       );
     notifyFailure(first);
+    let projectedAgent;
+    await until(
+      async () => {
+        const entityPull = await fetch(
+          `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=500`,
+        );
+        assert.equal(entityPull.status, 200);
+        const entityRows = (await entityPull.json()).documents;
+        projectedAgent = entityRows
+          .map((row) => JSON.parse(row.payload))
+          .find(
+            (payload) => payload.collection === "agent" && payload.id === id,
+          );
+        return projectedAgent?.value.capacityRetry?.status === "scheduled";
+      },
+      "Runtime.put did not publish the scheduled retry in the agent entity",
+      8000,
+    );
+    assert.equal(projectedAgent.value.capacityRetry.status, "scheduled");
     await page
       .locator('.capacity-retry[data-retry-status="scheduled"]')
       .waitFor();
@@ -122,19 +141,6 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       async () => (await agent()).capacityRetry?.status === "scheduled",
       "scheduled retry missing",
       8000,
-    );
-    const entityPull = await fetch(
-      `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=500`,
-    );
-    assert.equal(entityPull.status, 200);
-    const entityRows = (await entityPull.json()).documents;
-    const projectedAgent = entityRows
-      .map((row) => JSON.parse(row.payload))
-      .find((payload) => payload.collection === "agent" && payload.id === id);
-    assert.equal(
-      projectedAgent?.value.capacityRetry?.status,
-      "scheduled",
-      "Runtime.put publishes the scheduled retry in the agent entity",
     );
     const updateDialog = page.locator('[aria-label="Studio update required"]');
     assert.equal(

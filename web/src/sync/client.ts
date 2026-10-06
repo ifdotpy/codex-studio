@@ -389,7 +389,7 @@ async function resetEntityProjection(collection: RxCollection<SyncDocument>) {
     })
     .exec();
   const stored = await collection.storageInstance.findDocumentsById(
-    docs.map((doc: any) => doc.id),
+    docs.map((doc) => doc.id),
     true,
   );
   const rows = stored.map((previous) => {
