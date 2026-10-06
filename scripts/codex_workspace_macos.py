@@ -8,6 +8,7 @@ import plistlib
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -63,24 +64,6 @@ def _device_for_mount(mount):
     return None
 
 
-def _copy_tar(source, dest, excludes):
-    """Copy one tree shard through system tar, omitting repository objects."""
-    source, dest = Path(source), Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-    command = ['tar', '-C', str(source), '-cf', '-', '--no-mac-metadata']
-    for relative in excludes:
-        command.extend(['--exclude', relative])
-        command.extend(['--exclude', relative.rstrip('/') + '/*'])
-    command.append('.')
-    producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
-                              capture_output=True, timeout=900)
-    producer.stdout.close()
-    stderr = producer.communicate(timeout=900)[1]
-    if producer.returncode or consumer.returncode:
-        raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
-
-
 def _copy_tree_parallel(source, dest, excludes=()):
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
@@ -92,25 +75,20 @@ def _copy_tree_parallel(source, dest, excludes=()):
     def copy_shard(names):
         if not names:
             return
-        shard = source.parent / ('.tar-shard-' + str(threading.get_ident()))
-        shard.mkdir(parents=True, exist_ok=True)
-        try:
-            # BSD tar accepts path operands and excludes relative to its cwd.
-            command = ['tar', '-C', str(source), '-cf', '-', '--no-mac-metadata']
-            for relative in exclusions:
-                for name in names:
-                    if relative == name or relative.startswith(name + '/'):
-                        command.extend(['--exclude', relative, '--exclude', relative + '/*'])
-            command.extend(names)
-            producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
-                                      capture_output=True, timeout=1800)
-            producer.stdout.close()
-            stderr = producer.communicate(timeout=1800)[1]
-            if producer.returncode or consumer.returncode:
-                raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
-        finally:
-            shard.rmdir()
+        # BSD tar accepts path operands and excludes relative to its cwd.
+        command = ['tar', '-C', str(source), '-cf', '-', '--no-mac-metadata']
+        for relative in exclusions:
+            for name in names:
+                if relative == name or relative.startswith(name + '/'):
+                    command.extend(['--exclude', relative, '--exclude', relative + '/*'])
+        command.extend(['--', *names])
+        producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
+                                  capture_output=True, timeout=1800)
+        producer.stdout.close()
+        stderr = producer.communicate(timeout=1800)[1]
+        if producer.returncode or consumer.returncode:
+            raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
 
     with ThreadPoolExecutor(max_workers=len(shards), thread_name_prefix='studio-base-tar') as pool:
         futures = [pool.submit(copy_shard, names) for names in shards if names]
@@ -219,47 +197,74 @@ def current_event_id(_root):
     return int(core.FSEventsGetCurrentEventId())
 
 
-def _rsync_folder(source, target, excludes=()):
+def _rsync_folder(source, target, excludes=(), *, destination_root=None):
     source, target = Path(source), Path(target)
-    target.mkdir(parents=True, exist_ok=True)
-    args = ['rsync', '-a', '--delete', '--exclude=**/.git/objects/***']
+    destination_root = Path(destination_root) if destination_root is not None else target
+    _prepare_delta_directory(target, destination_root)
+    args = ['rsync', '-a', '--delete']
     args.extend('--exclude=/' + Path(value).as_posix().rstrip('/') + '/***' for value in excludes)
     result = _run([*args, str(source) + '/', str(target) + '/'], timeout=1800, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
 
 
-def _same_delta_entry(source, target):
-    try:
-        source_info = source.lstat()
-    except FileNotFoundError:
-        return not target.exists() and not target.is_symlink()
-    try:
-        target_info = target.lstat()
-    except FileNotFoundError:
-        return False
-    if source.is_symlink():
-        return target.is_symlink() and os.readlink(source) == os.readlink(target)
-    if not source.is_dir():
-        return (not target.is_dir() and not target.is_symlink()
-                and source_info.st_size == target_info.st_size
-                and source_info.st_mtime_ns == target_info.st_mtime_ns)
-    return target.is_dir() and not target.is_symlink()
+def _prepare_delta_parent(target, destination_root):
+    target, destination_root = Path(target), Path(destination_root)
+    parent = target.parent
+    relative = parent.relative_to(destination_root)
+    current = destination_root
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            current.mkdir()
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                shutil.rmtree(current)
+            else:
+                current.unlink()
+            current.mkdir()
 
 
-def _copy_delta_entry(source, target):
+def _prepare_delta_directory(target, destination_root):
+    target, destination_root = Path(target), Path(destination_root)
+    if target != destination_root:
+        _prepare_delta_parent(target, destination_root)
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        target.mkdir(parents=target == destination_root)
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        target.mkdir()
+
+
+def _copy_delta_entry(source, target, destination_root=None):
     if not source.exists() and not source.is_symlink():
+        if destination_root is not None:
+            _prepare_delta_parent(target, destination_root)
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         else:
             target.unlink(missing_ok=True)
         return
     if source.is_dir() and not source.is_symlink():
+        if destination_root is not None:
+            _prepare_delta_parent(target, destination_root)
         if target.is_symlink() or (target.exists() and not target.is_dir()):
             target.unlink()
         target.mkdir(parents=True, exist_ok=True)
         return
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if destination_root is None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        _prepare_delta_parent(target, destination_root)
     if source.is_symlink():
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
@@ -267,8 +272,15 @@ def _copy_delta_entry(source, target):
             target.unlink(missing_ok=True)
         target.symlink_to(os.readlink(source))
         return
-    if target.is_dir() and not target.is_symlink():
-        shutil.rmtree(target)
+    try:
+        target_info = target.lstat()
+    except FileNotFoundError:
+        target_info = None
+    if target_info is not None:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
     try:
         os.clonefile(source, target)
     except (AttributeError, OSError):
@@ -346,7 +358,7 @@ class Backend:
         version_path.mkdir(parents=True, exist_ok=True)
         mount.mkdir(parents=True, exist_ok=True)
         if _mounted(mount):
-            self.unmount_workspace(mount, force=True)
+            self.unmount_workspace(mount, force=False)
         if image.exists():
             image.unlink()
         _run(['diskutil', 'image', 'create', 'blank', '--format', 'ASIF', '--size', '200g',
@@ -422,22 +434,24 @@ class Backend:
                         nested_excludes.append(item.relative_to(folder))
                     except ValueError:
                         continue
-                _rsync_folder(root / folder, target / folder, nested_excludes)
+                source_folder, target_folder = root / folder, target / folder
+                if source_folder.exists() and source_folder.is_dir() and not source_folder.is_symlink():
+                    _rsync_folder(source_folder, target_folder, nested_excludes,
+                                  destination_root=target)
+                else:
+                    _copy_delta_entry(source_folder, target_folder, target)
                 did_copy = True
             for rel in sorted(paths, key=lambda path: (len(path.parts), str(path))):
                 if any(rel == item or item in rel.parents for item in excluded):
                     continue
-                if '.git' in rel.parts:
-                    git_index = rel.parts.index('.git')
-                    if 'objects' in rel.parts[git_index + 1:]:
-                        continue
-                source, dest = root / rel, target / rel
-                if (not source.is_dir() or source.is_symlink() or '.git' in rel.parts
-                        or not source.exists()):
-                    changed_paths.add(rel.as_posix() or '.')
-                if _same_delta_entry(source, dest):
+                if rel == Path('.'):
+                    _rsync_folder(root, target, excludes)
+                    scan_paths.add('.')
+                    did_copy = True
                     continue
-                _copy_delta_entry(source, dest)
+                source, dest = root / rel, target / rel
+                changed_paths.add(rel.as_posix() or '.')
+                _copy_delta_entry(source, dest, target)
                 did_copy = True
             return did_copy
 
@@ -521,7 +535,7 @@ class Backend:
         path = Path(path)
         mount = path / 'mount' if path.is_dir() else path.parent / 'mount'
         if mount.exists() and _mounted(mount):
-            self.unmount_workspace(mount, force=True)
+            self.unmount_workspace(mount, force=False)
         image = path / 'base.asif' if path.is_dir() else path
         if image.exists():
             image.unlink()
