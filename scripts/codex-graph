@@ -6,12 +6,14 @@ import os
 import sys
 import uuid
 sys.dont_write_bytecode = True
-from codex_canvas import Canvas
+from codex_api_client import desktop_state_dir, pull_entities, session_token
+from codex_canvas import Canvas, identity
 from studio_api.sync.resources.models import ResourceRef, StateResource, WorkspaceResource
 from studio_api.sync.resources.relay.client import NotifyCommittedWriteError, notify_external_write
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('action', choices=['list', 'agent'])
+parser.add_argument('--url', default=os.environ.get('CODEX_CANVAS_URL', 'http://127.0.0.1:4620'))
 parser.add_argument('--id', help='Stable identity returned by the host')
 parser.add_argument('--name')
 parser.add_argument('--parent', help='Exact board identity of the agent that created this agent')
@@ -25,8 +27,20 @@ try:
         raise ValueError("Agent sessions must use their team runtime tools. The graph CLI is for the user.")
     canvas = Canvas(read_only=args.action == 'list')
     if args.action == 'list':
-        snapshot = canvas.snapshot()
-        result = {k: snapshot[k] for k in ('nodes', 'edges')}
+        token = session_token(args.url)
+        state_dir = desktop_state_dir(args.url)
+        if os.path.realpath(state_dir) != os.path.realpath(canvas.root):
+            raise ValueError('Studio API state directory does not match the local graph workspace.')
+        entities = pull_entities(args.url, token)
+        agents = [entity['value'] for entity in entities if entity['collection'] == 'agent']
+        chats = [entity['value'] for entity in entities if entity['collection'] == 'chat']
+        edges = [entity['value'] for entity in entities if entity['collection'] == 'edge']
+        edges.extend(
+            {'id': identity('spawn', agent['parentId'], agent['id']), 'source': agent['parentId'],
+             'target': agent['id'], 'kind': 'spawn'}
+            for agent in agents if isinstance(agent.get('parentId'), str) and agent['parentId']
+        )
+        result = {'nodes': agents + chats, 'edges': edges}
     else:
         result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
         notify_external_write(str(uuid.uuid4()), [

@@ -284,17 +284,44 @@ try {
     "Fixture startup",
     check ? 45_000 : 90_000,
   );
-  const identityResponse = await fetch(`${ready.origin}/api/state?view=chat`);
-  assert.equal(identityResponse.status, 200);
-  const stateData = await identityResponse.json();
+  const entityValues = [];
+  let entityCursor = 0;
+  while (true) {
+    const entityResponse = await fetch(
+      `${ready.origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=500`,
+    );
+    assert.equal(entityResponse.status, 200);
+    const entityPage = await entityResponse.json();
+    assert(Array.isArray(entityPage.documents));
+    assert(Number.isSafeInteger(entityPage.maxSeq));
+    for (const document of entityPage.documents) {
+      if (document._deleted) continue;
+      assert.equal(typeof document.payload, "string");
+      const entity = JSON.parse(document.payload);
+      assert.equal(typeof entity.collection, "string");
+      assert(entity.value && typeof entity.value === "object");
+      entityValues.push(entity);
+    }
+    const checkpoint = entityPage.checkpoint?.seq;
+    assert(Number.isSafeInteger(checkpoint) && checkpoint >= entityCursor);
+    if (checkpoint >= entityPage.maxSeq) break;
+    assert(
+      checkpoint > entityCursor,
+      "entity pull did not advance its checkpoint",
+    );
+    entityCursor = checkpoint;
+  }
+  const agents = entityValues
+    .filter((entity) => entity.collection === "agent")
+    .map((entity) => entity.value);
   const expectedLeads = check ? 1 : teams;
   const expectedWorkers = check ? 2 : teams * workersPerTeam;
   assert.equal(
-    stateData.threads.length,
+    agents.length,
     expectedLeads + expectedWorkers,
     "fixture must expose the requested lead and worker identities",
   );
-  const leads = stateData.threads.filter((agent) => agent.isLead);
+  const leads = agents.filter((agent) => agent.isLead);
   assert.equal(
     leads.length,
     expectedLeads,
@@ -302,12 +329,12 @@ try {
   );
   assert(
     ready.witnesses.every((witness) =>
-      stateData.threads.some((agent) => agent.id === witness.agentId),
+      agents.some((agent) => agent.id === witness.agentId),
     ),
     `each browser witness must be an App identity: ${JSON.stringify(
       ready.witnesses.map((w) => ({
         id: w.agentId,
-        found: stateData.threads.some((agent) => agent.id === w.agentId),
+        found: agents.some((agent) => agent.id === w.agentId),
       })),
     )}`,
   );

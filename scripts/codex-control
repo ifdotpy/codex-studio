@@ -4,7 +4,8 @@ import argparse
 import json
 import os
 import sys
-from codex_api_client import request_json
+from urllib.error import HTTPError
+from codex_api_client import pull_entities, request_json, session_token
 from codex_agent_modes import DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY
 
 p = argparse.ArgumentParser(description=__doc__)
@@ -64,11 +65,14 @@ try:
         raise ValueError('Agents must use their runtime tools; codex-control is for the user')
     import uuid
     from urllib.parse import quote
-    state = request('/api/state') if a.command != 'requests' else {}
-    token = state.get('token', '')
+    token = session_token(a.url) if a.command != 'requests' else ''
+    threads = []
+    if a.command == 'list' or (a.command == 'configure' and a.concurrency is not None):
+        threads = [entity['value'] for entity in pull_entities(a.url, token)
+                   if entity['collection'] == 'agent']
     if a.command == 'list':
         result = [{'id': t['id'], 'name': t['name'], 'parent': t.get('parentId'), 'status': t['status'],
-                   'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in state['threads']]
+                   'model': t.get('model'), 'accountKey': t.get('accountKey'), 'tokens': t.get('tokensUsed')} for t in threads]
     elif a.command == 'accounts':
         result = request('/api/accounts')
     elif a.command == 'requests':
@@ -116,7 +120,7 @@ try:
                 raise ValueError('Set subagent concurrency separately from team storage and token limits')
             if bool(a.request_id) != (a.expected_mode_revision is not None):
                 raise ValueError('Use --request-id and --expected-mode-revision together')
-            lead = next((t for t in state['threads'] if t['id'] == a.agent), None)
+            lead = next((t for t in threads if t['id'] == a.agent), None)
             if not lead or not lead.get('isLead'):
                 raise ValueError('Configure subagent concurrency on a lead chat')
             request_id = a.request_id or str(uuid.uuid4())
@@ -135,7 +139,7 @@ try:
         result = request('/api/transcript?id=' + quote(a.agent))
     print(json.dumps(result, ensure_ascii=False, indent=2))
 except (OSError, ValueError) as error:
-    if isinstance(error, urllib.error.HTTPError):
+    if isinstance(error, HTTPError):
         try: error = json.load(error).get('error', str(error))
         except ValueError: pass
     p.exit(1, f'codex-control: {error}\n')

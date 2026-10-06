@@ -12,12 +12,14 @@ returns HTTP 409. Receipts are intentionally not durable: a server restart or
 receipt eviction may publish an invalidation again, which cannot repeat the
 source write. A new SSE subscription receives a full baseline to reconcile state.
 
-CLI transport reuses the local `codex-control` HTTP URL and token bootstrap.
-Each explicit CLI action reads `/api/state` once to get the session token. The
-CLI passes its source state directory and compares it with the API's `stateDir`
-before sending a notification. A mismatch is reported as an unconfirmed
-invalidation and prevents publication to the wrong workspace. The token read
-and each POST have a five-second timeout. After a committed write it
+CLI transport reuses the local `codex-control` HTTP URL and shared API client.
+Each explicit CLI action reads the token from `/api/session` and the state
+directory identity from `/api/desktop`. It compares that identity with the
+source state directory before sending a notification. A mismatch is reported
+as an unconfirmed invalidation and prevents publication to the wrong workspace.
+The session and desktop reads and each POST have a five-second timeout. A 404
+from either bootstrap endpoint means the connected backend may be older than
+this client. After a committed write it
 retries the same notification identity and payload once, after a 100 ms delay,
 on transport errors, HTTP 429, or server errors. The notification path can take
 up to about 15.1 seconds. A final failure is reported as a committed source

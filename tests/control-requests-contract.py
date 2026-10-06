@@ -13,6 +13,7 @@ import sys
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
+import codex_api_client
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/codex-control"
 
@@ -22,7 +23,7 @@ class ControlRequests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": ""}), \
                 patch.object(sys, "argv", [str(SCRIPT), *arguments]), \
-                patch("urllib.request.urlopen", side_effect=error, return_value=response) as network, \
+                patch.object(codex_api_client, "urlopen", side_effect=error, return_value=response) as network, \
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
@@ -43,7 +44,7 @@ class ControlRequests(unittest.TestCase):
         self.assertEqual(calls[0].args[0].full_url,
                          "http://127.0.0.1:4620/api/tool-requests?agent=agent/a&request_id=account%3Athread%3Acall")
 
-    def test_list_does_not_read_the_full_state(self):
+    def test_requests_does_not_bootstrap_workspace_state(self):
         status, output, errors, calls = self.invoke(
             ["requests", "agent"], response=io.BytesIO(b'{"requests":[]}'))
         self.assertEqual(status, 0, errors)

@@ -168,8 +168,10 @@ class RelayRouteTests(unittest.TestCase):
 
         def request_json(_url: str, path: str, data: object = None, _token: str = "", **_kwargs: object) -> object:
             nonlocal calls
-            if path == relay_client.API_STATE_ENDPOINT:
-                return {"token": "relay-test-token", "stateDir": "/tmp/relay-test-state"}
+            if path == "/api/session":
+                return {"token": "relay-test-token"}
+            if path == "/api/desktop":
+                return {"stateDir": "/tmp/relay-test-state"}
             assert isinstance(data, dict)
             body_calls.append((path, data))
             response = _post(self.client, data)
@@ -179,7 +181,8 @@ class RelayRouteTests(unittest.TestCase):
                 raise URLError("fixture response lost after server accepted request")
             return response.json()
 
-        with patch.object(relay_client, "request_json", side_effect=request_json):
+        with (patch.object(relay_client, "request_json", side_effect=request_json),
+              patch("codex_api_client.request_json", side_effect=request_json)):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
