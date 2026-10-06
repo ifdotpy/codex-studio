@@ -125,9 +125,9 @@ def _allowed(data, now):
 
 class UsageResumeMixin:
     def accounts_snapshot(self):
-        snapshot = self.accounts.snapshot()
+        snapshot = self.accounts.snapshot(refresh=False)
         now = time.time()
-        with self.lock, self.db() as db:
+        with self.read_db() as db:
             rows = db.execute("SELECT record FROM runtime_usage_resumes "
                               "WHERE json_extract(record,'$.status')='scheduled' "
                               "AND json_extract(record,'$.cause')='auth' "

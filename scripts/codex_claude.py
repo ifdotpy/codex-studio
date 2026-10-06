@@ -11,6 +11,7 @@ import time
 
 _lock = threading.Lock()
 _cache = {}
+_inflight = {}
 
 
 def profile_options(profile=None):
@@ -116,14 +117,30 @@ def subscription_env(profile=None):
 
 
 def auth_metadata(profile=None, force=False):
+    requested_at = time.monotonic()
     executable = installed(profile)
     env = subscription_env(profile)
     key = (executable, env.get('CLAUDE_CONFIG_DIR', ''), env.get('HOME', ''))
-    with _lock:
-        cached = _cache.get(key)
-        if not force and cached and time.monotonic() - cached[0] < 15:
-            return dict(cached[1])
-        result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+    result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+    while True:
+        with _lock:
+            pending = _inflight.get(key)
+            cached = _cache.get(key)
+            if pending is None and not force and cached and time.monotonic() - cached[0] < 15:
+                return dict(cached[1])
+            if pending is None:
+                pending = {'done': threading.Event(), 'started': time.monotonic()}
+                _inflight[key] = pending
+                break
+        if not pending['done'].wait(max(0, requested_at + 9 - time.monotonic())):
+            result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            return result
+        if not force or pending['started'] >= requested_at:
+            return dict(pending['result'])
+        if time.monotonic() >= requested_at + 9:
+            result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            return result
+    try:
         if executable:
             try:
                 completed = subprocess.run([executable, 'auth', 'status', '--json'],
@@ -136,10 +153,23 @@ def auth_metadata(profile=None, force=False):
                     result.update(status='ready', accountId='claude:' + identity,
                                   email=identity, plan=data.get('subscriptionType'),
                                   _credentialIdentity='claude:' + identity)
-            except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
-                result.update(status='error', error='Cannot read Claude Code sign-in status')
-        _cache[key] = (time.monotonic(), result)
-        return dict(result)
+            except subprocess.TimeoutExpired:
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            except OSError:
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='spawn')
+            except (ValueError, TypeError, AttributeError):
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='parser')
+    except BaseException:
+        result = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  'error': 'Cannot read Claude Code sign-in status', '_authErrorKind': 'unexpected'}
+        raise
+    finally:
+        with _lock:
+            _cache[key] = (time.monotonic(), result)
+            pending['result'] = result
+            _inflight.pop(key, None)
+            pending['done'].set()
+    return dict(result)
 
 
 def transport(root, profile=None):

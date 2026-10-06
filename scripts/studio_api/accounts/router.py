@@ -78,6 +78,8 @@ class RuntimePort(Protocol):
     root: Path
     accounts: AccountService
 
+    def accounts_snapshot(self) -> JsonValue: ...
+
     def projects(self, data: dict[str, JsonValue] | None = None) -> JsonValue: ...
 
     def rate_limits_for(self, account_key: str) -> dict[str, JsonValue]: ...
@@ -141,7 +143,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/accounts", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
     def accounts(request: Request) -> Response:
-        return context.send(request, _runtime(context).accounts.snapshot())
+        return context.send(request, _runtime(context).accounts_snapshot())
 
     @router.get("/api/projects", response_model=ProjectReadResponse, responses=_ERROR_RESPONSES)
     def projects(request: Request) -> Response:
