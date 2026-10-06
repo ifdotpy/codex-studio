@@ -247,12 +247,25 @@ class SyncStoreTests(unittest.TestCase):
                     "newDocumentState": {"id": key, "payload": json.dumps(value)},
                 }])
 
-    @unittest.expectedFailure
     def test_fresh_store_first_draft_push_reproduces_lazy_schema_lock(self):
         value = {"device": "phone", "session": "chat", "text": "draft"}
         self.assertEqual(self.store.push_drafts([{
             "newDocumentState": {"id": "phone:chat", "payload": json.dumps(value)},
         }]), [])
+        self.assertTrue(self.store._versions_ready)
+        with self.connect() as db:
+            trigger_count = db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'sync_transcript_revision_%'"
+            ).fetchone()[0]
+        self.assertEqual(trigger_count, 6)
+
+        self.store._ensure_versions()
+        with self.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'sync_transcript_revision_%'"
+            ).fetchone()[0], trigger_count)
 
 
 if __name__ == "__main__":
