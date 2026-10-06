@@ -732,12 +732,12 @@ def _park_action(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             signature, previous = rt.operation_receipt(
                 db, request_key, {'action': action, 'event': name})
             if previous is not None:
-                return previous  # type: ignore[no-any-return]  # typed-narrowing: stored receipt remains JSON object
+                return previous
             event_key = 'park-event:' + actor['rootId'] + ':' + name
             event_signature, fired = rt.operation_receipt(
                 db, event_key, {'action': action, 'event': name})
             if fired is not None:
-                return rt.save_receipt(db, request_key, signature, {**fired, 'replayed': True})  # type: ignore[no-any-return]  # typed-narrowing: receipt result is JSON object
+                return rt.save_receipt(db, request_key, signature, {**fired, 'replayed': True})
             woken = []
             for target in _team_agents(rt, db, actor['rootId']):
                 park = target.get('parkReceipt') or {}
@@ -760,7 +760,7 @@ def _park_action(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 woken.append(target['id'])
             result = {'event': name, 'woken': woken, 'count': len(woken)}
             rt.save_receipt(db, event_key, event_signature, result)
-            return rt.save_receipt(db, request_key, signature, result)  # type: ignore[no-any-return]  # typed-narrowing: receipt result is JSON object
+            return rt.save_receipt(db, request_key, signature, result)
         target = rt.agent(args.get('agent_id'), db)  # type: ignore[arg-type]  # typed-suspect: absent agent id might reach runtime lookup
         _park_target(rt, db, actor, target)
         if action == 'park':
