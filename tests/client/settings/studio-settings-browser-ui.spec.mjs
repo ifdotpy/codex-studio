@@ -161,6 +161,33 @@ test("studio settings browser ui", async ({
     await settings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
+    assert.equal(Math.round((await settings.boundingBox()).width), 720);
+    const tabBounds = await settings.getByRole("tablist").boundingBox();
+    const appearancePanel = settings.getByRole("tabpanel", {
+      name: "Appearance",
+      exact: true,
+    });
+    await appearancePanel.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    assert.deepEqual(
+      await settings.getByRole("tablist").boundingBox(),
+      tabBounds,
+      "Settings tabs stay fixed when the content scrolls",
+    );
+    assert.equal(
+      await settings
+        .getByRole("region", { name: "Maintenance", exact: true })
+        .getByRole("button", {
+          name: "Remove all sending messages",
+          exact: true,
+        })
+        .count(),
+      1,
+    );
+    await appearancePanel.evaluate((element) => {
+      element.scrollTop = 0;
+    });
     const avatarToggle = settings.getByLabel("Show message avatars", {
       exact: true,
     });
@@ -640,6 +667,21 @@ test("studio settings browser ui", async ({
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
     await noChatSettings.getByLabel("Studio theme", { exact: true }).waitFor();
+    await emptyPage.setViewportSize({ width: 390, height: 844 });
+    const mobileTabs = await Promise.all(
+      (await noChatSettings.getByRole("tab").all()).map((tab) =>
+        tab.boundingBox(),
+      ),
+    );
+    assert.equal(mobileTabs[0].y, mobileTabs[1].y);
+    assert.equal(mobileTabs[2].y, mobileTabs[3].y);
+    assert.ok(mobileTabs[2].y > mobileTabs[0].y);
+    assert.ok(
+      mobileTabs.every((tab) => Math.abs(tab.width - mobileTabs[0].width) <= 1),
+      "Mobile settings use two balanced tab columns",
+    );
+    await emptyPage.setViewportSize({ width: 1440, height: 960 });
+
     const legacyAvatarToggle = noChatSettings.getByLabel(
       "Show message avatars",
       {

@@ -53,6 +53,8 @@
 }
 .account-row {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 12px 16px;
 }
@@ -72,7 +74,8 @@
   align-items: baseline;
   flex-wrap: wrap;
   gap: 4px 8px;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .account-identity strong {
   font-size: 13px;
@@ -81,7 +84,7 @@
 .account-identity small,
 .account-plan {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
 }
 .account-plan {
   text-transform: capitalize;
@@ -93,7 +96,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
   white-space: nowrap;
 }
@@ -188,7 +191,7 @@
 }
 .account-capacity-window time {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
 @media (max-width: 900px) {
@@ -223,7 +226,7 @@
     gap: 6px;
   }
   .account-capacity-window strong {
-    font-size: 11px;
+    font-size: var(--studio-text-meta);
   }
   .account-capacity-window time {
     font-size: 10px;
@@ -304,4 +307,126 @@
 }
 .account-capacity-pool > div:has(> :only-child) {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.accounts-add-header,
+.account-confirm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.accounts-add-header h3,
+.accounts-runtime h3 {
+  margin: 0;
+  font-size: var(--studio-text-body);
+}
+.accounts-setup {
+  margin-bottom: 16px;
+}
+.account-row-header {
+  align-items: flex-start;
+}
+.account-identity {
+  flex-basis: 100%;
+}
+.account-identity strong {
+  width: 100%;
+  font-size: var(--studio-text-body);
+}
+.account-default {
+  color: var(--mantine-primary-color-light-color);
+  background: var(--mantine-primary-color-light);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.account-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.account-register {
+  font-size: var(--studio-text-body);
+}
+.claude-profile {
+  padding: 12px;
+  background: var(--mantine-color-default-hover);
+  border-radius: 6px;
+}
+.claude-profile summary {
+  font-weight: 600;
+  color: var(--text);
+}
+.claude-profile input[readonly] {
+  background: var(--mantine-color-default-hover);
+  color: var(--muted);
+  cursor: default;
+}
+.claude-advanced {
+  display: grid;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  padding: 16px 0 0;
+  margin: 8px 0;
+  min-width: 0;
+}
+.claude-advanced legend {
+  padding: 0 8px 0 0;
+  color: var(--text);
+  font-weight: 600;
+}
+.account-replacement {
+  padding: 12px;
+  background: var(--mantine-color-default-hover);
+  border-radius: 6px;
+}
+.account-confirm-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+.account-disconnect-effects {
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.accounts-runtime {
+  margin-top: 24px;
+  display: grid;
+  gap: 12px;
+}
+.accounts-runtime summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+@media (max-width: 600px) {
+  .account-register form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .account-identity strong {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
+.accounts-setup h3 {
+  font-size: var(--studio-text-body);
+  margin: 0 0 12px;
+}
+.account-add-heading strong {
+  font-weight: 600;
+}
+.account-identity strong {
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.account-disconnect-identity {
+  overflow-wrap: anywhere;
+  font-size: var(--studio-text-body);
+}
+.account-row-actions .account-destructive-action {
+  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-4));
 }

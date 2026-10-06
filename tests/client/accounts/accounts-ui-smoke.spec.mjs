@@ -1214,9 +1214,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await dialog
       .getByRole("button", { name: "Add account", exact: true })
       .click();
-    await dialog
-      .getByRole("button", { name: "Sign in to another account", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "Sign in", exact: true }).click();
     await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(
       await dialog
@@ -1239,9 +1237,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .click();
     await dialog.getByText("Sign-in cancelled.", { exact: true }).waitFor();
     assert.equal(logins[0].status, "cancelled");
-    await dialog
-      .getByRole("button", { name: "Sign in to another account", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "Sign in", exact: true }).click();
     await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 2);
     assert.notEqual(logins[1].requestId, firstLogin);
@@ -1425,9 +1421,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       name: "Add account",
       exact: true,
     });
-    await addManager
-      .getByText("Add a Claude Code profile", { exact: true })
-      .click();
+    await addManager.getByText("Claude", { exact: true }).click();
     await addManager
       .getByRole("textbox", { name: /^Profile name/ })
       .fill("Second Claude");

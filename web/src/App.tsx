@@ -2346,6 +2346,7 @@ export default function App() {
         onClose={() => setStudioSettingsOpen(false)}
         size={modalSizes.settings}
         title="Studio settings"
+        classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
           <Tabs defaultValue="accounts" className="studio-settings-tabs">
@@ -2357,11 +2358,6 @@ export default function App() {
             </Tabs.List>
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
-                <h2>Accounts</h2>
-                <p className="settings-help">
-                  Manage accounts and choose the default for new chats. Existing
-                  chats keep their account.
-                </p>
                 <Accounts
                   managerOnly
                   onModalOpenChange={setAccountModalOpen}
@@ -2374,8 +2370,7 @@ export default function App() {
               <div className="studio-appearance-groups">
                 <section className="settings-group" aria-label="Theme">
                   <h2>Theme</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Color scheme</span>
+                  <SettingsRow label="Color scheme">
                     <NativeSelect
                       aria-label="Studio theme"
                       value={studioPreferences.theme}
@@ -2392,21 +2387,20 @@ export default function App() {
                         })
                       }
                     />
-                  </div>
+                  </SettingsRow>
                 </section>
                 <section className="settings-group" aria-label="Fonts">
                   <h2>Fonts</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Text style</span>
+                  <SettingsRow label="Text style">
                     <NativeSelect
                       aria-label="Studio text style"
                       value={studioPreferences.typography}
                       data={[
                         {
                           value: "original",
-                          label: "Original fonts and sizes",
+                          label: "Default text",
                         },
-                        { value: "custom", label: "Custom fonts and sizes" },
+                        { value: "custom", label: "Custom text" },
                       ]}
                       onChange={(event) =>
                         updateStudioPreferences({
@@ -2417,13 +2411,10 @@ export default function App() {
                       }
                     />
                     <small>
-                      Original uses the previous fonts and separate sizes for
-                      titles, text, and status labels. Custom keeps your font
-                      settings.
+                      Select Custom text to change the font and text sizes.
                     </small>
-                  </div>
-                  <div className="settings-field">
-                    <span className="settings-label">Font family</span>
+                  </SettingsRow>
+                  <SettingsRow label="Font family">
                     <NativeSelect
                       aria-label="Studio font family"
                       disabled={studioPreferences.typography === "original"}
@@ -2439,57 +2430,66 @@ export default function App() {
                         })
                       }
                     />
-                  </div>
-                  <label className="studio-range-field">
-                    <span>
-                      Sidebar text{" "}
-                      <output>{studioPreferences.sidebarFontSize}px</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Sidebar font size"
-                      disabled={studioPreferences.typography === "original"}
-                      min={12}
-                      max={24}
-                      step={1}
-                      value={studioPreferences.sidebarFontSize}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          sidebarFontSize: value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="studio-range-field">
-                    <span>
-                      Main text{" "}
-                      <output>{studioPreferences.mainFontSize}px</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Main font size"
-                      disabled={studioPreferences.typography === "original"}
-                      min={12}
-                      max={24}
-                      step={1}
-                      value={studioPreferences.mainFontSize}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          mainFontSize: value,
-                        })
-                      }
-                    />
-                  </label>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Sidebar text{" "}
+                        <output>{studioPreferences.sidebarFontSize}px</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Sidebar font size"
+                        disabled={studioPreferences.typography === "original"}
+                        min={12}
+                        max={24}
+                        step={1}
+                        value={studioPreferences.sidebarFontSize}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            sidebarFontSize: value,
+                          })
+                        }
+                      />
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Main text{" "}
+                        <output>{studioPreferences.mainFontSize}px</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Main font size"
+                        disabled={studioPreferences.typography === "original"}
+                        min={12}
+                        max={24}
+                        step={1}
+                        value={studioPreferences.mainFontSize}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            mainFontSize: value,
+                          })
+                        }
+                      />
+                    </div>
+                  </SettingsRow>
                 </section>
-                <section className="settings-group" aria-label="Column">
-                  <h2>Column</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Chat width</span>
+                <section className="settings-group" aria-label="Chat layout">
+                  <h2>Chat layout</h2>
+                  <SettingsRow label="Chat width">
                     <NativeSelect
                       aria-label="Chat width layout"
                       value={studioPreferences.contentLayout}
                       data={[
-                        { value: "original", label: "Original width" },
+                        { value: "original", label: "Default width" },
                         { value: "custom", label: "Custom width" },
                       ]}
                       onChange={(event) =>
@@ -2500,38 +2500,59 @@ export default function App() {
                         })
                       }
                     />
-                    <small>
-                      Original limits message width. Custom uses a percentage of
-                      the window.
-                    </small>
-                  </div>
-                  <label className="studio-range-field">
-                    <span>
-                      Transcript width{" "}
-                      <output>{studioPreferences.contentWidth}%</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Transcript width"
-                      disabled={studioPreferences.contentLayout === "original"}
-                      min={60}
-                      max={100}
-                      step={1}
-                      value={studioPreferences.contentWidth}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          contentWidth: value,
-                        })
-                      }
-                    />
-                    <small>
-                      Applies to messages, progress, and composer. Narrow
-                      screens use the full available width.
-                    </small>
-                  </label>
+                    <small>Select Custom width to change the chat width.</small>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Chat width{" "}
+                        <output>{studioPreferences.contentWidth}%</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Transcript width"
+                        disabled={
+                          studioPreferences.contentLayout === "original"
+                        }
+                        min={60}
+                        max={100}
+                        step={1}
+                        value={studioPreferences.contentWidth}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            contentWidth: value,
+                          })
+                        }
+                      />
+                      <small>
+                        Applies to messages, progress, and composer. Narrow
+                        screens use the full available width.
+                      </small>
+                    </div>
+                  </SettingsRow>
                 </section>
                 <section className="settings-group" aria-label="Messages">
                   <h2>Messages</h2>
+                  <label className="settings-field studio-preference-toggle">
+                    <span className="settings-label">Show message avatars</span>
+                    <input
+                      aria-label="Show message avatars"
+                      type="checkbox"
+                      checked={studioPreferences.showMessageAvatars}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          showMessageAvatars: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Maintenance">
+                  <h2>Maintenance</h2>
                   <Button
                     loading={removingAllSending}
                     onClick={async () => {
@@ -2555,20 +2576,6 @@ export default function App() {
                   >
                     Remove all sending messages
                   </Button>
-                  <label className="settings-field studio-preference-toggle">
-                    <span className="settings-label">Show message avatars</span>
-                    <input
-                      aria-label="Show message avatars"
-                      type="checkbox"
-                      checked={studioPreferences.showMessageAvatars}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          showMessageAvatars: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                  </label>
                 </section>
               </div>
             </Tabs.Panel>
@@ -2586,56 +2593,71 @@ export default function App() {
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">
                 <h2>Keyboard shortcut</h2>
-                <div className="settings-field">
-                  <span className="settings-label">Toggle sidebar</span>
-                  <TextInput
-                    aria-label="Toggle sidebar shortcut"
-                    readOnly
-                    value={formatSidebarShortcut(
-                      studioPreferences.sidebarShortcut,
-                    )}
-                    onKeyDown={(event) => {
-                      if (event.key === "Tab" || event.key === "Escape") {
+                <SettingsRow label="Toggle sidebar">
+                  <div className="studio-shortcut-control">
+                    <TextInput
+                      className="studio-shortcut-input"
+                      aria-describedby="studio-shortcut-hint"
+                      aria-label="Toggle sidebar shortcut"
+                      readOnly
+                      value={formatSidebarShortcut(
+                        studioPreferences.sidebarShortcut,
+                      )}
+                      onKeyDown={(event) => {
+                        if (event.key === "Tab" || event.key === "Escape") {
+                          setSidebarShortcutError("");
+                          return;
+                        }
+                        if (
+                          ["Control", "Meta", "Alt", "Shift"].includes(
+                            event.key,
+                          )
+                        )
+                          return;
+                        if (event.ctrlKey || event.metaKey)
+                          event.stopPropagation();
+                        event.preventDefault();
+                        const mods = [
+                          event.metaKey ? "Meta" : "",
+                          event.ctrlKey ? "Control" : "",
+                          event.altKey ? "Alt" : "",
+                          event.shiftKey ? "Shift" : "",
+                        ].filter(Boolean);
+                        const candidate = [...mods, event.key].join("+");
+                        if (!parseSidebarShortcut(candidate)) {
+                          setSidebarShortcutError(
+                            "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+                          );
+                          return;
+                        }
                         setSidebarShortcutError("");
-                        return;
-                      }
-                      if (
-                        ["Control", "Meta", "Alt", "Shift"].includes(event.key)
-                      )
-                        return;
-                      if (event.ctrlKey || event.metaKey)
-                        event.stopPropagation();
-                      event.preventDefault();
-                      const mods = [
-                        event.metaKey ? "Meta" : "",
-                        event.ctrlKey ? "Control" : "",
-                        event.altKey ? "Alt" : "",
-                        event.shiftKey ? "Shift" : "",
-                      ].filter(Boolean);
-                      const candidate = [...mods, event.key].join("+");
-                      if (!parseSidebarShortcut(candidate)) {
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          sidebarShortcut: candidate,
+                        });
+                      }}
+                      onFocus={() =>
                         setSidebarShortcutError(
-                          "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
-                        );
-                        return;
+                          "Press a modifier and a letter or number to set the shortcut.",
+                        )
                       }
-                      setSidebarShortcutError("");
-                      updateStudioPreferences({
-                        ...studioPreferences,
-                        sidebarShortcut: candidate,
-                      });
-                    }}
-                    onFocus={() =>
-                      setSidebarShortcutError(
-                        "Press a modifier and a letter or number to set the shortcut.",
-                      )
-                    }
-                    onBlur={() => setSidebarShortcutError("")}
-                  />
+                      onBlur={() => setSidebarShortcutError("")}
+                    />
+                    <div className="studio-shortcut-tokens" aria-hidden="true">
+                      {formatSidebarShortcut(studioPreferences.sidebarShortcut)
+                        .split("+")
+                        .map((key, index) => (
+                          <kbd key={`${key}:${index}`}>{key}</kbd>
+                        ))}
+                    </div>
+                  </div>
+                  <small id="studio-shortcut-hint">
+                    Select the field. Press a modifier and a letter or number.
+                  </small>
                   {sidebarShortcutError && (
                     <small role="status">{sidebarShortcutError}</small>
                   )}
-                </div>
+                </SettingsRow>
               </section>
             </Tabs.Panel>
           </Tabs>

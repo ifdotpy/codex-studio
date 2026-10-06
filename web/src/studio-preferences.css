@@ -232,3 +232,86 @@
   align-self: center;
   margin-inline: auto;
 }
+
+.studio-settings-body {
+  overflow: hidden;
+}
+.studio-settings-tabs {
+  min-height: 0;
+  min-width: 0;
+}
+.studio-settings-tabs > .mantine-Tabs-list {
+  flex-shrink: 0;
+  margin: 0;
+}
+.studio-settings-tabs > .mantine-Tabs-panel {
+  min-width: 0;
+  max-height: calc(90dvh - 140px);
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+.studio-settings-panel .ui-row-control {
+  width: 52%;
+}
+.studio-settings-panel .ui-row-control small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.studio-range-label {
+  display: grid;
+  gap: 4px;
+}
+.studio-range-label output {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.studio-shortcut-control {
+  position: relative;
+}
+.studio-shortcut-input input {
+  color: transparent;
+}
+.studio-shortcut-tokens {
+  display: flex;
+  gap: 5px;
+  position: absolute;
+  inset: 0 12px;
+  align-items: center;
+  pointer-events: none;
+}
+.studio-shortcut-tokens kbd {
+  background: var(--mantine-color-default-hover);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: var(--studio-text-meta);
+}
+.federation-invitation {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+.federation-invitation h3 {
+  font-size: var(--studio-text-body);
+  margin: 0;
+}
+.federation-invitation p {
+  font-size: var(--studio-text-meta);
+  color: var(--muted);
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .studio-settings-tabs > .mantine-Tabs-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .studio-settings-tabs > .mantine-Tabs-panel {
+    max-height: calc(90dvh - 190px);
+  }
+  .studio-settings-panel .ui-row-control {
+    width: 100%;
+  }
+}
