@@ -198,7 +198,7 @@ class Backend:
         pid = self._ensure_namespace()
         if not _mount_exists(pid, mount):
             options = f"lowerdir={base_image},upperdir={upper},workdir={work},userxattr"
-            _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_MOUNT,
+            _run(self._nsenter(pid) + [sys.executable, "-c", _OVERLAY_MOUNT,
                                                         "overlay", str(mount), options])
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
@@ -269,7 +269,7 @@ class Backend:
                     except ProcessLookupError:
                         pass
         if _mount_exists(pid, mount):
-            _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_UNMOUNT,
+            _run(self._nsenter(pid) + [sys.executable, "-c", _OVERLAY_UNMOUNT,
                                                         str(mount)])
 
     def remove_layer(self, agent_dir: Path) -> None:
@@ -302,11 +302,8 @@ class Backend:
         return self._nsenter(self._ensure_namespace())
 
     @staticmethod
-    def _nsenter(pid: int, *, keep_caps: bool = False) -> list[str]:
-        args = ["nsenter", "-t", str(pid), "-U", "-m", "--preserve-credentials"]
-        if keep_caps:
-            args.append("--keep-caps")
-        return args + ["--"]
+    def _nsenter(pid: int) -> list[str]:
+        return ["nsenter", "-t", str(pid), "-U", "-m", "--preserve-credentials", "--"]
 
     def _ensure_namespace(self) -> int:
         state_path = _namespace_state_path()
@@ -323,7 +320,7 @@ class Backend:
             stale_pid = record.get("pid")
             if isinstance(stale_pid, int) and stale_pid in _HOLDERS:
                 _HOLDERS.pop(stale_pid).poll()
-            command = ["unshare", "-U", "--map-current-user", "-m", "--propagation", "private",
+            command = ["unshare", "-U", "--map-root-user", "-m", "--propagation", "private",
                        "sleep", "infinity"]
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

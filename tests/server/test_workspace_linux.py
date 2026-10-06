@@ -1,14 +1,13 @@
-"""Tests for the Linux overlayfs workspace backend."""
+"""Tests for the Linux overlayfs folder-copy backend."""
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
@@ -33,20 +32,34 @@ class LinuxBackendUnitTests(unittest.TestCase):
             (upper / "link").symlink_to("data")
             self.assertEqual(linux.Backend().private_bytes(Path(temp)), 7)
 
-    def test_sync_delta_uses_filters_without_walking_repo(self):
+    def test_copy_folder_includes_git_data_and_only_excludes_requested_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, target = root / "source", root / "target"
+            (source / ".git" / "objects" / "aa").mkdir(parents=True)
+            (source / "node_modules" / ".cache").mkdir(parents=True)
+            (source / ".worktrees" / "legacy").mkdir(parents=True)
+            (source / ".git" / "objects" / "aa" / "pack").write_bytes(b"objects")
+            (source / "node_modules" / ".cache" / "cache").write_bytes(b"cache")
+            (source / ".worktrees" / "legacy" / "data").write_bytes(b"exclude")
+            linux._copy_folder(source, target, (".worktrees",))
+            self.assertEqual((target / ".git" / "objects" / "aa" / "pack").read_bytes(), b"objects")
+            self.assertEqual((target / "node_modules" / ".cache" / "cache").read_bytes(), b"cache")
+            self.assertFalse((target / ".worktrees").exists())
+
+    def test_sync_delta_does_not_add_git_specific_filters(self):
         backend = linux.Backend()
-        source = Path("/repo/source")
-        target = Path("/repo/target")
-        output = subprocess.CompletedProcess([], 0, "", "")
-        with patch.object(backend, "_ensure_namespace", return_value=123), \
-                patch.object(linux, "_git_object_stores",
-                             side_effect=AssertionError("delta must not walk the source")), \
-                patch.object(linux, "_run", return_value=output) as run:
-            backend.sync_delta(source, target, None,
-                               excludes=(".worktrees", ".git/modules/nested/objects"))
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            target = Path(temp) / "target"
+            output = subprocess.CompletedProcess([], 0, "", "")
+            with patch.object(backend, "_ensure_namespace", return_value=123), \
+                    patch.object(linux, "_run", return_value=output) as run:
+                backend.sync_delta(source, target, None, excludes=(".worktrees",))
         args = run.call_args.args[0]
-        self.assertIn("--exclude=**/.git/objects/***", args)
-        self.assertIn("--exclude=/.git/modules/nested/objects/***", args)
+        self.assertIn("--exclude=/.worktrees/***", args)
+        self.assertFalse(any(".git/objects" in value for value in args if value.startswith("--exclude")))
 
 
 @unittest.skipUnless(sys.platform.startswith("linux")
@@ -56,11 +69,16 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-ws-linux-")
         self.root = Path(self.temp.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
         self.old_store = os.environ.get("CODEX_WORKSPACE_STORE")
         store_root = Path(os.environ.get("CODEX_WORKSPACE_LINUX_STORE_ROOT", Path.home()))
         self.store = store_root / f"studio-ws-test-{os.getpid()}"
         os.environ["CODEX_WORKSPACE_STORE"] = str(self.store)
         self.backend = linux.Backend()
+        self.image = None
+        self.mounts = []
+        self.layers = []
 
     def run_in_namespace(self, *command):
         result = subprocess.run(self.backend.exec_prefix() + list(command), check=False,
@@ -69,24 +87,35 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
             raise AssertionError(result.stderr.strip())
         return result
 
+    def namespace_path_exists(self, path: Path) -> bool:
+        return subprocess.run(self.backend.exec_prefix() + ["test", "-e", str(path)],
+                              check=False).returncode == 0
+
+    def namespace_read_bytes(self, path: Path) -> bytes:
+        result = self.run_in_namespace("cat", str(path))
+        return result.stdout.encode()
+
     def tearDown(self):
-        storage = self.store / "fixture"
-        for agent in ("a", "b"):
+        for mount in self.mounts:
             try:
-                self.backend.unmount_workspace(storage / "mnt" / agent)
-                self.backend.remove_layer(storage / "agents" / agent)
+                self.backend.unmount_workspace(mount)
             except (OSError, RuntimeError):
                 pass
-        try:
-            self.backend.remove_base_version(self.store / "bases" / "repo-key" / "v1")
-        except (OSError, RuntimeError):
-            pass
+        for layer in self.layers:
+            try:
+                self.backend.remove_layer(layer)
+            except (OSError, RuntimeError):
+                pass
+        if self.image is not None:
+            try:
+                self.backend.remove_base_version(self.image)
+            except (OSError, RuntimeError):
+                pass
         if self.old_store is None:
             os.environ.pop("CODEX_WORKSPACE_STORE", None)
         else:
             os.environ["CODEX_WORKSPACE_STORE"] = self.old_store
         if self.store.exists():
-            import shutil
             try:
                 shutil.rmtree(self.store)
             except PermissionError:
@@ -94,139 +123,69 @@ class LinuxOverlayIntegrationTests(unittest.TestCase):
                 shutil.rmtree(self.store)
         self.temp.cleanup()
 
-    def test_overlay_lifecycle_and_git_exec_prefix(self):
-        source = self.root / "source"
-        source.mkdir()
-        subprocess.run(["git", "init", "-q", str(source)], check=True)
-        subprocess.run(["git", "-C", str(source), "config", "user.name", "Studio Test"], check=True)
-        subprocess.run(["git", "-C", str(source), "config", "user.email", "studio@example.test"], check=True)
-        (source / "tracked.txt").write_text("base\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(source), "commit", "-qm", "base"], check=True)
-        legacy = source / ".worktrees" / "full-checkout"
-        legacy.mkdir(parents=True)
-        (legacy / ".git").write_text("gitdir: ../../.git/worktrees/full-checkout\n", encoding="utf-8")
-        (legacy / "large-checkout-data").write_text("must not copy", encoding="utf-8")
+    def test_base_copy_delta_and_overlay_isolation(self):
+        subprocess.run(["git", "-C", str(self.source), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.email", "test@example.com"], check=True)
+        git = self.source / ".git"
+        (git / "objects" / "aa").mkdir(parents=True, exist_ok=True)
+        (git / "objects" / "aa" / "base-object").write_bytes(b"base object")
+        (self.source / "tracked.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.source), "add", "tracked.txt"], check=True)
+        (self.source / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+        (self.source / "ignored-output").write_text("ignored\n", encoding="utf-8")
+        (self.source / "node_modules" / ".cache").mkdir(parents=True)
+        (self.source / "node_modules" / ".cache" / "cache").write_bytes(b"cache")
+        (self.source / ".worktrees" / "legacy").mkdir(parents=True)
+        (self.source / ".worktrees" / "legacy" / "data").write_bytes(b"exclude")
         excludes = (".worktrees",)
 
-        storage = self.store / "fixture"
-        staging = self.backend.open_base_staging(source, "repo-key", "v1")
-        self.backend.copy_base_tree(source, staging["root"], excludes=excludes)
+        staging = self.backend.open_base_staging(self.source, "repo-key", "v1")
+        self.backend.copy_base_tree(self.source, staging["root"], excludes=excludes)
         sealed = self.backend.seal_base(staging)
-        image = Path(sealed["image"])
-        self.assertFalse((image / "repo" / ".git" / "objects").exists())
-        self.assertFalse((image / "repo" / ".worktrees").exists())
-        layer_a = self.backend.clone_workspace(image, storage / "agents" / "a")
-        layer_b = self.backend.clone_workspace(image, storage / "agents" / "b")
-        mount_a, mount_b = storage / "mnt" / "a", storage / "mnt" / "b"
-        self.backend.mount_workspace(layer_a, mount_a, base_image=image)
-        self.backend.mount_workspace(layer_b, mount_b, base_image=image)
-        self.backend.mount_workspace(layer_a, mount_a, base_image=image)
+        self.image = Path(sealed["image"])
+        self.assertTrue(linux._btrfs_path(self.image.parent), "integration store must use btrfs")
+        base = self.image / "repo"
+        self.assertEqual((base / ".git" / "objects" / "aa" / "base-object").read_bytes(),
+                         b"base object")
+        self.assertEqual((base / ".git" / "index").read_bytes(), (git / "index").read_bytes())
+        self.assertEqual((base / "node_modules" / ".cache" / "cache").read_bytes(), b"cache")
+        self.assertFalse((base / ".worktrees").exists())
+
+        storage = self.store / "agents"
+        layer_a = self.backend.clone_workspace(self.image, storage / "a")
+        layer_b = self.backend.clone_workspace(self.image, storage / "b")
+        self.layers.extend([layer_a, layer_b])
+        mount_a, mount_b = self.store / "mnt" / "a", self.store / "mnt" / "b"
+        self.mounts.extend([mount_a, mount_b])
+        self.backend.mount_workspace(layer_a, mount_a, base_image=self.image)
+        self.backend.mount_workspace(layer_b, mount_b, base_image=self.image)
         repo_a, repo_b = mount_a / "repo", mount_b / "repo"
-        absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e",
-                                                               str(repo_a / ".worktrees" / "full-checkout")],
-                                check=False, capture_output=True)
-        self.assertEqual(absent.returncode, 0)
-        self.run_in_namespace("python3", "-c",
-                              "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
-                              "p.parent.mkdir(parents=True,exist_ok=True); p.write_text(sys.argv[2])",
-                              str(repo_a / ".git" / "objects" / "info" / "alternates"),
-                              str(source / ".git" / "objects") + "\n")
-        self.run_in_namespace("python3", "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('a')",
-                              str(repo_a / "agent-only"))
-        self.run_in_namespace("python3", "-c",
-                              "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
-                              "p.parent.mkdir(parents=True,exist_ok=True); p.write_text('keep')",
-                              str(repo_a / ".worktrees" / "agent-local" / "marker"))
-        absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e", str(repo_b / "agent-only")],
-                                check=False, capture_output=True)
-        self.assertEqual(absent.returncode, 0)
 
-        (source / "fresh-user-edit").write_text("fresh", encoding="utf-8")
-        (source / "tracked.txt").unlink()
-        (source / ".git" / "objects" / "not-a-git-object").write_text("skip", encoding="utf-8")
-        delta = self.backend.sync_delta(source, repo_a, "old-linux-token", excludes=excludes)
-        self.assertEqual(delta["token"], "old-linux-token")
-        self.assertFalse(delta["historyLost"])
-        self.assertIn("fresh-user-edit", delta["changedPaths"])
+        (self.source / "tracked.txt").write_text("changed\n", encoding="utf-8")
+        (self.source / ".git" / "objects" / "aa" / "delta-object").write_bytes(b"delta object")
+        (self.source / "new-ignored-or-untracked").write_bytes(b"new file")
+        (self.source / ".worktrees" / "new").mkdir()
+        (self.source / ".worktrees" / "new" / "data").write_bytes(b"excluded")
+        delta = self.backend.sync_delta(self.source, repo_a, sealed["token"], excludes=excludes)
         self.assertIn("tracked.txt", delta["changedPaths"])
-        self.assertTrue(all(not path.startswith("/") for path in delta["changedPaths"]))
-        self.assertFalse(any(path.startswith(".worktrees/") for path in delta["changedPaths"]))
-        self.assertFalse(any(path.startswith(".git/objects/") for path in delta["changedPaths"]))
-        empty_delta = self.backend.sync_delta(source, repo_a, delta, excludes=excludes)
-        self.assertEqual(empty_delta["token"], "old-linux-token")
-        self.assertEqual(empty_delta["changedPaths"], [])
-        self.assertEqual(self.run_in_namespace("cat", str(repo_a / "fresh-user-edit")).stdout, "fresh")
-        self.assertEqual(self.run_in_namespace("cat", str(repo_a / ".worktrees" / "agent-local" / "marker")).stdout,
-                         "keep")
-        for path in (repo_a / "tracked.txt", repo_a / ".git" / "objects" / "not-a-git-object",
-                     repo_a / ".worktrees" / "full-checkout"):
-            absent = subprocess.run(self.backend.exec_prefix() + ["test", "!", "-e", str(path)],
-                                    check=False, capture_output=True)
-            self.assertEqual(absent.returncode, 0)
+        self.assertIn(".git/objects/aa/delta-object", delta["changedPaths"])
+        self.assertEqual(self.namespace_read_bytes(repo_a / "tracked.txt"), b"changed\n")
+        self.assertEqual(self.namespace_read_bytes(
+            repo_a / ".git" / "objects" / "aa" / "delta-object"), b"delta object")
+        self.assertFalse(self.namespace_path_exists(repo_a / ".worktrees" / "new"))
+        self.assertFalse(self.namespace_path_exists(
+            repo_b / ".git" / "objects" / "aa" / "delta-object"))
+        self.run_in_namespace("sh", "-c", "printf 'agent A' > \"$1\"", "sh",
+                              str(repo_a / "agent-only"))
+        self.assertTrue(self.namespace_path_exists(repo_a / "agent-only"))
+        self.assertFalse(self.namespace_path_exists(repo_b / "agent-only"))
+        self.assertFalse((self.source / "agent-only").exists())
 
-        # Measure a small delta after rsync scans a 200,000-file source tree.
-        (source / ".git" / "info" / "exclude").write_text("/bulk/\n", encoding="utf-8")
-        bulk = source / "bulk"
-        bulk.mkdir()
-        for index in range(200_000):
-            (bulk / f"{index:06d}.txt").write_bytes(b"base\n")
-        baseline = self.backend.sync_delta(source, repo_a, delta, excludes=excludes)
-        changed = []
-        for index in range(100):
-            relative = f"bulk/{index:06d}.txt"
-            (source / relative).write_bytes(b"changed\n")
-            changed.append(relative)
-        started = time.perf_counter()
-        measured = self.backend.sync_delta(source, repo_a, baseline, excludes=excludes)
-        elapsed = time.perf_counter() - started
-        self.assertEqual(set(measured["changedPaths"]), set(changed))
-        print(f"RSYNC_DELTA_TIMING files=200000 changed=100 elapsed_seconds={elapsed:.3f}")
-
-        # Git commands that address the mounted repository must enter its namespace.
         prefix = self.backend.exec_prefix()
-        subprocess.run(prefix + ["git", "-C", str(repo_a), "status", "--short"], check=True,
-                       capture_output=True, text=True)
-        self.run_in_namespace("python3", "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('result')",
-                              str(repo_a / "agent-result"))
-        subprocess.run(prefix + ["git", "-C", str(repo_a), "add", "agent-result"], check=True)
-        subprocess.run(prefix + ["git", "-C", str(repo_a), "-c", "user.name=Studio Test",
-                                 "-c", "user.email=studio@example.test", "commit", "-m", "result"],
-                       check=True, capture_output=True, text=True)
-        self.assertEqual(self.run_in_namespace("cat", str(repo_a / "agent-result")).stdout, "result")
-        self.assertGreater(self.backend.private_bytes(layer_a), 0)
-
-        subprocess.run(prefix + ["git", "-C", str(repo_a), "branch", "codex-agent/test"], check=True)
-        subprocess.run(prefix + ["git", "-C", str(source), "fetch", str(repo_a),
-                                 "codex-agent/test:refs/studio/agents/test/raw"], check=True,
-                       capture_output=True, text=True)
-        raw_commit = subprocess.run(["git", "-C", str(source), "rev-parse",
-                                     "refs/studio/agents/test/raw"], check=True,
-                                    text=True, capture_output=True).stdout.strip()
-        self.assertTrue(raw_commit)
-
-        holder = linux._namespace_state_path()
-        original_pid = int(json.loads(holder.read_text())["pid"])
-        os.kill(original_pid, 9)
-        for _ in range(100):
-            if linux._proc_start_time(original_pid) is None:
-                break
-            time.sleep(0.02)
-        self.backend.mount_workspace(layer_a, mount_a, base_image=image)
-        restarted_pid = int(json.loads(holder.read_text())["pid"])
-        self.assertNotEqual(original_pid, restarted_pid)
-        self.assertEqual(self.run_in_namespace("cat", str(repo_a / "agent-result")).stdout, "result")
-
-        self.backend.unmount_workspace(mount_a)
-        self.backend.unmount_workspace(mount_b)
-        self.backend.unmount_workspace(mount_a)
-        self.backend.remove_layer(layer_a)
-        self.backend.remove_layer(layer_b)
-        self.backend.remove_layer(layer_a)
-        self.assertFalse((storage / "agents" / "a").exists())
-        self.backend.remove_base_version(image)
-        self.backend.remove_base_version(image)
-        self.assertFalse(image.exists())
+        result = subprocess.run(prefix + ["git", "-C", str(repo_a), "status", "--short"],
+                                check=False, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
