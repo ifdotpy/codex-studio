@@ -268,6 +268,7 @@ for definition in TOOLS:
                                       " Studio then switches to the copy and sends its path and copy time. Unsupported platforms use a Git worktree when the folder is in Git, or the original folder otherwise."
                                       " The lead gets the copy path with the result. Ask the worker to commit on a named branch, then read or fetch that branch from the copy path.")
         definition["description"] += (" Optional per-agent base_ref selects a branch, tag, or commit for an implementer."
+                                      " Otherwise Studio uses the closest project's worker base ref when one is set."
                                       " Studio gives the requested ref and resolved commit to the worker in its first input. The worker checks it out.")
         definition["description"] += (" Pass task_id to assign an orchestration_task item to the new worker."
                                       " The worker receives the task id and submits its evidence to it.")
