@@ -32,11 +32,10 @@ def recover_restart(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentR
         return False
     db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
     row = db.execute('SELECT record FROM runtime_safety_retries WHERE id=?', (receipt.get('id'),)).fetchone()
-    op: NativeSafetyRetryRecord
     op = json.loads(row[0]) if row else {
         **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
         'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch'),
-    }
+    }  # type: NativeSafetyRetryRecord
     if op.get('id') != receipt.get('id'):
         op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
               'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch')}
@@ -99,11 +98,10 @@ def action(runtime: "Runtime", key: str, data: Any) -> Any:
         model = b.get('fasterModel')
         if not isinstance(model, str) or not model:
             raise ValueError('Codex did not offer another model')
-        op: NativeSafetyRetryRecord
         op = {'id': identity, 'agent': key, 'accountKey': a.get('accountKey', 'default'),
               'connectionId': b['connectionId'], 'epoch': a['epoch'], 'threadId': a['threadId'],
               'turnId': a['turnId'], 'model': model, 'stage': 'turns', 'created': time.time(),
-              'attemptId': str(uuid.uuid4()), 'sourceThreadId': a['threadId']}
+              'attemptId': str(uuid.uuid4()), 'sourceThreadId': a['threadId']}  # type: NativeSafetyRetryRecord
         save(runtime, db, a, op)
         db.commit()
     issue(runtime, op, 'turns')
@@ -150,8 +148,7 @@ def issue(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str) -> None
         with runtime.lock, runtime.db() as db:
             a = current(runtime, db, op)
             server = runtime.servers[op['accountKey']]
-            params: dict[str, Any]
-            params = {'threadId': op['threadId']}
+            params = {'threadId': op['threadId']}  # type: dict[str, Any]
             if stage in {'turns', 'verify_turns'}:
                 method = 'thread/turns/list'
                 params.update(limit=1, sortDirection='desc', itemsView='notLoaded')
@@ -196,7 +193,7 @@ def issue(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str) -> None
         ticket: Any = dict(op)
         timer = Timer(15, lambda: fail(runtime, ticket, TimeoutError('Waiting for Codex to confirm ' + method), unknown=True))
         timer.daemon = True
-        def receive(future: Any) -> None:
+        def receive(future):  # type: (Any) -> None
             timer.cancel()
             if not runtime.closed:
                 runtime.recovery_pool.submit(complete, runtime, op, stage, future)
