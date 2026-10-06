@@ -1,9 +1,4 @@
-import {
-  readTestState,
-  readLegacySnapshotForS2Assertions,
-  spawnFixture as spawn,
-  test,
-} from "../playwright.mjs";
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Real runtime, SQLite and two browser pages. The native server is a fixture.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
@@ -68,10 +63,6 @@ test("capacity retry ui", async ({ browser: _browser }) => {
     ).id;
     const agent = async () =>
       (await state()).runtime.agents.find((a) => a.id === id);
-    const legacyAgent = async () =>
-      (await readLegacySnapshotForS2Assertions(origin)).runtime.agents.find(
-        (a) => a.id === id,
-      );
     let threadId;
     const starts = async () =>
       (await readFile(join(root, "capacity-starts.jsonl"), "utf8"))
@@ -178,7 +169,7 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       1,
       "cancel survives reload and the original deadline",
     );
-    const retryId = (await legacyAgent()).capacityRetry.id;
+    const retryId = (await agent()).capacityRetry.id;
     let lost = false;
     await page.route("**/api/capacity-retry", async (route) => {
       const response = await route.fetch();
@@ -216,16 +207,11 @@ test("capacity retry ui", async ({ browser: _browser }) => {
     const second = await agent();
     notifyFailure(second);
     await until(
-      async () => (await legacyAgent()).capacityRetry.status === "scheduled",
+      async () => (await agent()).capacityRetry.status === "scheduled",
       "next retry timer",
     );
-    assert.equal(
-      Math.round(
-        (await legacyAgent()).capacityRetry.dueAt -
-          (await legacyAgent()).capacityRetry.updatedAt,
-      ),
-      30,
-    );
+    const nextRetry = (await agent()).capacityRetry;
+    assert.equal(Math.round(nextRetry.dueAt - nextRetry.updatedAt), 30);
     // New user input resets the schedule to the actual ten-second delay.
     await page
       .getByRole("button", { name: "Cancel automatic retry", exact: true })

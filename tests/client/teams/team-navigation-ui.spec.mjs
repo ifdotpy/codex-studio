@@ -1,5 +1,4 @@
 import {
-  readLegacySnapshotForS2Assertions,
   readTestState,
   test,
   expect,
@@ -46,7 +45,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
-    const initialLegacy = await readLegacySnapshotForS2Assertions(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
@@ -114,7 +112,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
               id: "team-navigation-answer",
               method: "agent/asyncQuestion",
               agent: worker(2).id,
-              epoch: initialLegacy.runtime.agents.find(
+              epoch: initial.runtime.agents.find(
                 (agent) => agent.id === worker(2).id,
               ).epoch,
               status: "pending",
