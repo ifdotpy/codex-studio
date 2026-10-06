@@ -321,6 +321,15 @@ test("Draft sync ui", async ({
       "a pulled remote draft is not pushed back",
     );
     const status = desktop.locator("[data-draft-sync-status]");
+    const waitForVisibleNoticeText = async (expected, label) => {
+      for (let attempt = 0; attempt < 160; attempt++) {
+        if (!(await status.isVisible()))
+          throw new Error(`draft sync notice disappeared during ${label}`);
+        if ((await status.innerText()) === expected) return;
+        await desktop.waitForTimeout(10);
+      }
+      throw new Error(`draft sync notice did not update during ${label}`);
+    };
     failPull = true;
     await push({
       id: "idle-probe-a:unused",
@@ -373,6 +382,36 @@ test("Draft sync ui", async ({
     failPush = true;
     await desktop.locator("#message").fill("Retained during sync outage");
     await until(() => pushFailures > 0, "push failure observed");
+    await waitForVisibleNoticeText(
+      "Draft sync paused. Retrying automatically.",
+      "pull-to-push failure change",
+    );
+    const successfulPushesBeforeDirectionChange = successfulDraftPosts;
+    failPush = false;
+    await desktop
+      .locator("#message")
+      .fill("Push recovered while pull remains failed");
+    await until(
+      () => successfulDraftPosts > successfulPushesBeforeDirectionChange,
+      "push recovers while the draft pull remains failed",
+    );
+    await waitForVisibleNoticeText(
+      "Draft sync paused. Resumes when reconnected or drafts change.",
+      "push-to-pull failure change",
+    );
+    const pushFailuresBeforeSecondOutage = pushFailures;
+    failPush = true;
+    await desktop
+      .locator("#message")
+      .fill("Push outage resumes beside pull failure");
+    await until(
+      () => pushFailures > pushFailuresBeforeSecondOutage,
+      "push failure resumes while pull still fails",
+    );
+    await waitForVisibleNoticeText(
+      "Draft sync paused. Retrying automatically.",
+      "pull-to-push failure change after push recovery",
+    );
     const pullsBeforeRecovery = successfulPulls;
     const requestsBeforeRecovery = draftPullRequests;
     failPull = false;
