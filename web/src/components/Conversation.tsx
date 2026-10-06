@@ -1626,6 +1626,8 @@ export default function Conversation(p: {
             <AgentPhase agent={agent} connection={connection} wait={wait} />
           )}
           <Requests
+            onAnswerOpen={() => setFollow(false)}
+            onAnswerPosition={remember}
             mainAgentId={
               !p.room && agent?.isLead === false
                 ? agent.rootId || undefined

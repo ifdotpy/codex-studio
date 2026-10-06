@@ -19,6 +19,8 @@ import { requestApprovalDetails, requestQuestions } from "./requestData";
 type Props = {
   mainAgentId?: string;
   showDates?: boolean;
+  onAnswerOpen?: () => void;
+  onAnswerPosition?: () => void;
   requests: components["schemas"]["RequestEntityDto"][];
   allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
@@ -272,6 +274,8 @@ function AnswerForm({
 
 function RequestCard({
   request: r,
+  onAnswerOpen,
+  onAnswerPosition,
   showDates = true,
   agents,
   refresh,
@@ -294,6 +298,7 @@ function RequestCard({
     if (!open || !card.current) return;
     const node = card.current;
     node.scrollIntoView({ block: "start" });
+    onAnswerPosition?.();
     const form = node.querySelector<HTMLElement>(".request-answer-form");
     const transcript = node.closest("#messages");
     if (!form || !transcript) return;
@@ -312,6 +317,7 @@ function RequestCard({
     observer.observe(transcript);
     const frame = requestAnimationFrame(() => {
       node.scrollIntoView({ block: "start" });
+      onAnswerPosition?.();
     });
     return () => {
       cancelAnimationFrame(frame);
@@ -520,7 +526,10 @@ function RequestCard({
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}
-                onClick={() => setOpen(!open)}
+                onClick={() => {
+                  if (!open) onAnswerOpen?.();
+                  setOpen(!open);
+                }}
               >
                 {open ? "Hide" : "Answer"}
               </Button>
