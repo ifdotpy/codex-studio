@@ -467,3 +467,41 @@
     flex: 1 1 calc(100% - 12ch - 8px);
   }
 }
+
+/* The composer footer keeps context, estimate and allowance in one row. */
+.usage-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.usage-footer .context-use {
+  position: static;
+  order: -1;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.usage-footer .session-cost-summary {
+  font-size: 12px;
+  flex: 1 1 auto;
+}
+.account-cost-values strong {
+  font-size: 14px;
+}
+.account-limits-panel small,
+.account-limits-heading p,
+.account-costs p,
+.account-cost-values span,
+.account-costs > header,
+.account-costs > header > span {
+  font-size: 12px;
+}
+
+.usage-footer .context-use {
+  flex-shrink: 0;
+}
+.usage-footer .account-limits-group {
+  flex-shrink: 1;
+}

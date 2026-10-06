@@ -1,4 +1,5 @@
 import SearchOverlay from "./components/shell/SearchOverlay";
+import { SettingsSection, SettingsRow } from "./components/ui/primitives";
 import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
@@ -2655,30 +2656,25 @@ export default function App() {
         }
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
+        size={modalSizes.settings}
       >
         <div className="chat-settings-panel">
-          <section
-            className="settings-group"
-            aria-label="Conversation settings"
-          >
-            <h2>Conversation</h2>
-            {mobileClient && lead?.source === "managed" && (
-              <div className="settings-field">
-                <span className="settings-label">Subagent parallelism</span>
+          <SettingsSection title="Conversation">
+            {lead?.source === "managed" && (
+              <SettingsRow label="Subagent parallelism">
                 <SubagentConcurrencyControl
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
                   refresh={refresh}
                 />
-              </div>
+              </SettingsRow>
             )}
             <BrowserAccessNotice
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}
             />
-            <div className="settings-field">
-              <span className="settings-label">Account</span>
+            <SettingsRow label="Account">
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
@@ -2715,10 +2711,9 @@ export default function App() {
                   }
                 }}
               />
-            </div>
+            </SettingsRow>
             {agent?.cwd && (
-              <div className="settings-field">
-                <span className="settings-label">Project</span>
+              <SettingsRow label="Project">
                 <Button
                   id="project"
                   className="project-picker"
@@ -2731,18 +2726,17 @@ export default function App() {
                   }}
                 >
                   {projectName}
+                  <span className="settings-change-label">Change</span>
                 </Button>
-              </div>
+              </SettingsRow>
             )}
-          </section>
-          <section
-            className="settings-group settings-models"
-            aria-label="Model settings"
-          >
-            <h2>Models</h2>
+          </SettingsSection>
+          <SettingsSection title="Models">
             {agent?.source === "managed" && (
               <ExecutionSettings
                 key={"execution:" + agent.id}
+                permissionsTargetId="chat-settings-permissions"
+                inline
                 onOpenChange={setMainSettingsOpen}
                 agent={agent}
                 catalog={agentModels}
@@ -2752,6 +2746,7 @@ export default function App() {
             {lead?.isLead && (
               <ExecutionSettings
                 key={"defaults:" + lead.id}
+                inline
                 onOpenChange={setSubagentSettingsOpen}
                 agent={lead}
                 catalog={workerModels}
@@ -2761,7 +2756,8 @@ export default function App() {
                 teamDefaults
               />
             )}
-          </section>
+          </SettingsSection>
+          <div id="chat-settings-permissions" />
           {agent?.provider === "claude" && (
             <Suspense fallback={null}>
               <ClaudeSettings
@@ -2775,18 +2771,20 @@ export default function App() {
             </Suspense>
           )}
           {agent?.cwd && (
-            <Button
-              variant="subtle"
-              className="settings-new-chat"
-              leftSection={<Plus size={14} />}
-              disabled={creating}
-              onClick={() => {
-                setSettingsOpen(false);
-                void newChat(agent.cwd ?? undefined);
-              }}
-            >
-              New chat in this project
-            </Button>
+            <div className="chat-settings-footer">
+              <Button
+                variant="default"
+                className="settings-new-chat"
+                leftSection={<Plus size={14} />}
+                disabled={creating}
+                onClick={() => {
+                  setSettingsOpen(false);
+                  void newChat(agent.cwd ?? undefined);
+                }}
+              >
+                New chat in this project
+              </Button>
+            </div>
           )}
         </div>
       </Modal>

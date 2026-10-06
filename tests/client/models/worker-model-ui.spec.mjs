@@ -114,7 +114,13 @@ test("Worker model", async () => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await page.getByRole("button", { name, exact: true }).click();
+      await settings.getByRole("button", { name, exact: true }).click();
+      await settings.getByRole("region", { name, exact: true }).waitFor();
+      assert.equal(
+        await page.getByRole("dialog").count(),
+        1,
+        "Model settings stay within the Chat settings dialog",
+      );
     };
     const closeSettings = async () => {
       await page.keyboard.press("Escape");
@@ -262,7 +268,7 @@ test("Worker model", async () => {
     );
     await page.keyboard.press("Escape");
     await openSettings("Subagent defaults");
-    const defaults = page.getByRole("dialog", {
+    const defaults = page.getByRole("region", {
       name: "Subagent defaults",
       exact: true,
     });

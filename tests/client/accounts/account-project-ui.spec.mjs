@@ -408,9 +408,11 @@ test("account project ui", async ({ browser: _browser }) => {
       exact: true,
     });
     await folder.getByLabel("Folder path").fill("/anywhere/arbitrary");
-    await folder.getByRole("button", { name: "Go", exact: true }).click();
     await folder
-      .getByRole("button", { name: "Use this folder", exact: true })
+      .getByRole("button", { name: "Open path", exact: true })
+      .click();
+    await folder
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     await folder.waitFor({ state: "hidden" });
     assert.equal(

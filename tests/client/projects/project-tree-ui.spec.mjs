@@ -457,9 +457,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
       exact: true,
     });
     await dialog.getByLabel("Folder path").fill(folders["Empty project"]);
-    await dialog.getByRole("button", { name: "Go", exact: true }).click();
     await dialog
-      .getByRole("button", { name: "Use this folder", exact: true })
+      .getByRole("button", { name: "Open path", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     await dialog.waitFor({ state: "hidden" });
     await group("Empty project")

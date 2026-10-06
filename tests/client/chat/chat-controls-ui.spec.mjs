@@ -124,9 +124,11 @@ test("Chat controls", async ({ page }) => {
     exact: true,
   });
   await folderDialog.getByLabel("Folder path").fill(folder);
-  await folderDialog.getByRole("button", { name: "Go", exact: true }).click();
   await folderDialog
-    .getByRole("button", { name: "Use this folder", exact: true })
+    .getByRole("button", { name: "Open path", exact: true })
+    .click();
+  await folderDialog
+    .getByRole("button", { name: "Add project", exact: true })
     .click();
   await folderDialog.waitFor({ state: "hidden" });
   await poll(

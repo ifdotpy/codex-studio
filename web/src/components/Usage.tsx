@@ -28,6 +28,11 @@ export type UsageAccount = {
   reload: (force?: boolean) => void | Promise<void>;
 };
 
+const humanAccountLabel = (account?: UsageAccount) =>
+  account?.email ||
+  (account?.label && account.label !== account.key ? account.label : "") ||
+  "Account name unavailable";
+
 type LimitWindow = {
   label: string;
   remaining: number | null;
@@ -177,7 +182,7 @@ export default function Usage({
     : [
         {
           key: fallbackKey,
-          label: accountLabel || "Allowance left",
+          label: accountLabel || "",
           limits: reportedLimits,
           loading: limitsLoading ?? !reportedLimits,
           reload: () => reload(),
@@ -582,7 +587,7 @@ export default function Usage({
                     item.provider !== "openai"
                   ? item.provider
                   : "Codex";
-            const label = [item.label, item.email].filter(Boolean).join(" · ");
+            const label = humanAccountLabel(item);
             const details = [
               `${label} (${provider})${current ? ", current chat account" : ""}`,
               ...(item.signedOut
@@ -625,7 +630,7 @@ export default function Usage({
                   type="button"
                   className="account-limits-dot-target"
                   data-account-key={item.key}
-                  aria-label={`Open ${item.email || item.label} weekly allowance (${provider}). ${details}`}
+                  aria-label={`Open ${humanAccountLabel(item)} weekly allowance (${provider}). ${details}`}
                   aria-current={current ? "true" : undefined}
                   aria-haspopup="dialog"
                   aria-expanded={
@@ -688,12 +693,14 @@ export default function Usage({
               <header className="account-limits-heading">
                 <div>
                   <h3>Account limits</h3>
-                  <p>
-                    {activeAccount?.email ||
-                      activeAccount?.label ||
-                      accountLabel ||
-                      "Allowance left"}
-                  </p>
+                  <p>{humanAccountLabel(activeAccount)}</p>
+                  {!activeAccount?.email &&
+                    (!activeAccount?.label ||
+                      activeAccount.label === activeAccount.key) && (
+                      <small>
+                        {activeAccount?.key || agent.accountKey || "default"}
+                      </small>
+                    )}
                 </div>
                 <Button
                   size="compact-xs"
@@ -723,9 +730,13 @@ export default function Usage({
                         value={item.key}
                         id={`usage-account-tab-${index}`}
                         aria-controls="usage-account-panel"
-                        aria-label={`${item.email || item.label}${item.provider ? `, ${item.provider}` : ""} account limits`}
+                        aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
                       >
-                        <span>{item.email || item.label}</span>
+                        <span>{humanAccountLabel(item)}</span>
+                        {!item.email &&
+                          (!item.label || item.label === item.key) && (
+                            <small>{item.key}</small>
+                          )}
                         {item.provider && <small>{item.provider}</small>}
                       </Tabs.Tab>
                     ))}
@@ -745,7 +756,7 @@ export default function Usage({
                       role: "tabpanel" as const,
                       id: "usage-account-panel",
                       "aria-labelledby": `usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`,
-                      "aria-label": `${activeAccount?.email || activeAccount?.label || "Account"} limits`,
+                      "aria-label": `${humanAccountLabel(activeAccount)} limits`,
                     }
                   : {})}
               >
@@ -1020,7 +1031,7 @@ export default function Usage({
                 aria-label="Local cost estimates"
               >
                 <header>
-                  <strong>API cost estimate</strong>
+                  <strong>Estimated API cost</strong>
                   <span>USD</span>
                 </header>
                 <div className="account-cost-values">

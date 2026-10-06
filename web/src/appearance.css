@@ -496,3 +496,231 @@
     width: var(--studio-action-size);
   }
 }
+
+/* Chat configuration and composer context share the existing section layout. */
+.chat-settings-panel .execution-inline {
+  width: 100%;
+}
+.chat-settings-panel .execution-menu {
+  width: 100%;
+  justify-content: space-between;
+  height: auto;
+  min-height: 36px;
+}
+.execution-inline-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 0;
+}
+.execution-inline-body .ui-settings-section {
+  margin: 0;
+}
+.chat-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.chat-settings-panel .agent-mode-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-panel .agent-mode-visible-label {
+  display: none;
+}
+.chat-settings-panel .agent-mode-limit-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-panel .agent-mode-limit-label input {
+  width: 64px;
+}
+.chat-settings-panel .account-picker-label {
+  flex: 1;
+}
+.chat-settings-panel .account-picker .mantine-Button-label::after {
+  content: "Change";
+  margin-left: 12px;
+  color: var(--muted);
+}
+.settings-change-label {
+  color: var(--muted);
+  margin-left: 12px;
+}
+.composer-context-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 8px;
+  flex-wrap: wrap;
+}
+.composer-context-row .execution-menu {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+.composer-context-values {
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+.composer-context-values > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.composer-timing {
+  font-size: 12px;
+  color: var(--muted);
+}
+.message-queue-preview:not(.expanded) {
+  -webkit-line-clamp: 1;
+}
+.message-queue-row {
+  align-items: center;
+}
+.message-queue-actions {
+  flex-wrap: nowrap;
+  max-width: none;
+  flex-shrink: 0;
+}
+.queue-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .composer-submit-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .composer-timing {
+    width: 100%;
+    text-align: right;
+  }
+  .message-queue-row {
+    flex-wrap: nowrap;
+  }
+  .message-queue-actions {
+    width: auto;
+    padding-left: 0;
+  }
+  .message-queue-actions button {
+    width: 44px;
+    height: 44px;
+  }
+  .message-queue-number {
+    min-width: 16px;
+  }
+  .message-queue-expand {
+    font-size: 12px !important;
+  }
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.composer-tools .attachment-list {
+  flex-basis: 100%;
+}
+.outbox-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.outbox-controls p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  justify-content: space-between;
+}
+.execution-selected {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.execution-role {
+  flex-shrink: 0;
+}
+
+.message-queue-content:has(.message-queue-preview) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.message-queue-content .message-queue-preview {
+  flex: 1;
+  min-width: 0;
+}
+.message-queue-content .message-queue-assets {
+  flex-basis: 100%;
+}
+.message-queue-content .message-queue-expand {
+  padding: 0 4px;
+}
+
+.chat-settings-panel .execution-menu {
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+}
+.chat-settings-panel .execution-menu .mantine-Button-inner {
+  width: 100%;
+  min-width: 0;
+}
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.chat-settings-panel .execution-menu .mantine-Button-section {
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-settings-panel #project {
+  border: 0;
+  background: transparent;
+}
+.chat-settings-panel .model-refresh {
+  justify-self: end;
+}
+.composer-tools .composer-context-row {
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+}
+.composer-tools .execution-menu {
+  padding: 0 6px;
+  height: 30px;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+}
+.composer-tools .execution-menu .mantine-Button-section {
+  display: flex;
+  margin-left: 4px;
+}
+.chat-settings-panel
+  .execution-menu
+  .mantine-Button-section[data-position="right"],
+.composer-tools .execution-menu .mantine-Button-section[data-position="right"] {
+  position: static;
+  width: 14px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
