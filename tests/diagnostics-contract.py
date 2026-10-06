@@ -151,7 +151,9 @@ class DiagnosticsContract(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             fixture = minimal_model_instance(DiagnosticsResponse).wire_dump()
+            fixture.pop("supervisor")
             expected_supervisor = {"mode": False, "fallback": False, "notice": None}
+            connection = None
             try:
                 with patch("codex_diagnostics.snapshot", return_value=fixture):
                     connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
@@ -165,7 +167,6 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(body, {key: value for key, value in fixture.items()
                                             if key not in {"processTree", "supervisor"}})
                     self.assertIs(type(expected_supervisor["mode"]), bool)
-                    connection.close()
                     cli = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]
                                            / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
@@ -176,6 +177,8 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(printed, {key: value for key, value in fixture.items()
                                                if key not in {"processTree", "supervisor"}})
             finally:
+                if connection is not None:
+                    connection.close()
                 server.shutdown()
                 server.server_close()
                 thread.join()
