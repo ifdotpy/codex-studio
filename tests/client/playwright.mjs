@@ -853,6 +853,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       protocol: RESOURCE_STREAM_PROTOCOL,
       reason: "initial",
       resources: [{ kind: "state" }],
+      // No per-resource versions: the page must always pull after a fixture frame.
+      resourceVersions: [],
       revision: ++revision,
       workspaceId: identity.workspaceId,
     };
@@ -889,6 +891,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         protocol: RESOURCE_STREAM_PROTOCOL,
         reason: "change",
         resources,
+        resourceVersions: [],
         revision: ++revision,
         workspaceId: identity.workspaceId,
       };
