@@ -4000,11 +4000,28 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
         self.stop(key, True, "Conversation deleted")
+        cleanup_failures = {}
         if image_ids:
-            from codex_workspace_images import remove_workspace
-            for agent_id in image_ids:
-                remove_workspace(agent_id)
-        return {"deleted": sorted(ids)}
+            try:
+                from codex_workspace_images import remove_workspace
+            except Exception as error:
+                cleanup_failures.update({agent_id: error for agent_id in image_ids})
+            else:
+                for agent_id in image_ids:
+                    try:
+                        remove_workspace(agent_id)
+                    except Exception as error:
+                        cleanup_failures[agent_id] = error
+            for agent_id, error in cleanup_failures.items():
+                with self.lock, self.db() as db:
+                    current = self.agent(agent_id, db)
+                    current["imageWorkspaceError"] = (
+                        "Image removal after deletion failed: " + str(error)[:1000])
+                    self.put(db, "agents", current)
+        result = {"deleted": sorted(ids)}
+        if cleanup_failures:
+            result["imageCleanupFailed"] = sorted(cleanup_failures)
+        return result
 
     def conversation_settings(self, key, data):
         if ("agent_mode" in data or "expected_mode_revision" in data
@@ -4381,7 +4398,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except (ImportError, OSError, RuntimeError) as error:
             return False, str(error)
 
-    def start_image_base(self, repo_root, agent_id=None, *, retry_failed=True):
+    def start_image_base(self, repo_root, agent_id=None, *, retry_failed=False):
         from codex_workspace_images import start_base_build
         callback = None
         if agent_id:
@@ -4787,7 +4804,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  "image-workspace-ready:" + a["id"])
         elif a.get("imageWorkspace") and a.get("imageWorkspacePhase") == "read_only":
             try:
-                self.start_image_base(a["imageWorkspaceRepo"], a["id"], retry_failed=True)
+                self.start_image_base(a["imageWorkspaceRepo"], a["id"])
             except Exception as error:
                 self.image_base_completed(a["id"], {"state": "failed", "error": str(error)})
         elif a.get("imageWorkspacePhase") == "fallback" and not a.get("imageWorkspaceNoticeSent"):

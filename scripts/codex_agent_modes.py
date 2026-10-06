@@ -107,25 +107,43 @@ def change_mode(runtime, key, data):
                              {'applied': True, 'concurrency': concurrency(canonical),
                               'agentMode': canonical['agentMode'],
                               'agentModeRevision': canonical.get('agentModeRevision', 0)})
-        if limit > 0:
-            from codex_runtime import git_toplevel
-            repo = git_toplevel(canonical.get('cwd', ''))
-            if repo:
-                supported, reason = runtime.image_workspace_support(repo)
-                if supported:
-                    canonical['imageWorkspaceBaseRepo'] = repo
-                    runtime.put(db, 'agents', canonical)
-                    try:
-                        runtime.start_image_base(repo)
-                        canonical.pop('imageWorkspaceBaseError', None)
-                    except Exception as error:
-                        canonical['imageWorkspaceBaseError'] = str(error)[:1200]
-                        runtime.put(db, 'agents', canonical)
-                else:
-                    canonical['imageWorkspaceBaseError'] = reason
-                    runtime.put(db, 'agents', canonical)
         runtime.changed.set()
-        return canonical
+    if limit > 0:
+        from codex_runtime import git_toplevel
+        repo = git_toplevel(canonical.get('cwd', ''))
+        if repo:
+            supported, reason = runtime.image_workspace_support(repo)
+            if supported:
+                with runtime.lock, runtime.db() as db:
+                    current = runtime.agent(key, db)
+                    if concurrency(current) > 0:
+                        current['imageWorkspaceBaseRepo'] = repo
+                        runtime.put(db, 'agents', current)
+                if concurrency(current) > 0:
+                    canonical['imageWorkspaceBaseRepo'] = repo
+                    error_text = None
+                    try:
+                        runtime.start_image_base(repo, retry_failed=True)
+                    except Exception as error:
+                        error_text = str(error)[:1200]
+                    with runtime.lock, runtime.db() as db:
+                        latest = runtime.agent(key, db)
+                        if latest.get('imageWorkspaceBaseRepo') == repo:
+                            if error_text:
+                                latest['imageWorkspaceBaseError'] = error_text
+                                canonical['imageWorkspaceBaseError'] = error_text
+                            else:
+                                latest.pop('imageWorkspaceBaseError', None)
+                                canonical.pop('imageWorkspaceBaseError', None)
+                            runtime.put(db, 'agents', latest)
+            else:
+                canonical['imageWorkspaceBaseError'] = reason
+                with runtime.lock, runtime.db() as db:
+                    latest = runtime.agent(key, db)
+                    latest['imageWorkspaceBaseError'] = reason
+                    runtime.put(db, 'agents', latest)
+    runtime.changed.set()
+    return canonical
 
 
 def guidance(root):

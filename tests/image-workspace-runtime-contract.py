@@ -49,7 +49,10 @@ class ImageWorkspaceRuntime(unittest.TestCase):
     def test_multi_switch_starts_the_supported_repository_base(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         engine = types.ModuleType('codex_workspace_images')
-        engine.start_base_build = Mock(return_value={'state': 'building'})
+        def start(repo, on_done=None, retry_failed=False):
+            self.assertFalse(self.rt.lock._is_owned())
+            return {'state': 'building'}
+        engine.start_base_build = Mock(side_effect=start)
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             self.rt.conversation_settings(self.lead['id'], {
                 'agent_mode': 'single', 'expected_mode_revision': 0, 'request_id': 'mode-single'})
@@ -65,6 +68,15 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             result = self.rt.start_image_base(str(self.repo), retry_failed=True)
         self.assertEqual(result, {'state': 'building'})
         engine.start_base_build.assert_called_once_with(str(self.repo), on_done=None, retry_failed=True)
+
+    def test_start_image_base_does_not_retry_failed_build_by_default(self):
+        engine = types.ModuleType('codex_workspace_images')
+        engine.start_base_build = Mock(return_value={'state': 'failed'})
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            result = self.rt.start_image_base(str(self.repo))
+        self.assertEqual(result, {'state': 'failed'})
+        engine.start_base_build.assert_called_once_with(str(self.repo), on_done=None,
+                                                        retry_failed=False)
 
     def test_spawn_starts_image_base_after_transaction_and_lock(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
@@ -379,7 +391,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         worker = self.spawn()['id']
         self.rt.start_image_base.reset_mock()
         self.rt.prepare(self.rt.agent(worker))
-        self.rt.start_image_base.assert_called_once_with(str(self.repo), worker, retry_failed=True)
+        self.rt.start_image_base.assert_called_once_with(str(self.repo), worker)
 
     def test_child_spawn_maps_parent_image_path_to_the_user_repository(self):
         worker = self.spawn()['id']
@@ -474,18 +486,38 @@ class ImageWorkspaceRuntime(unittest.TestCase):
     def test_delete_agent_removes_retained_image_outside_lock(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
-        worker = self.spawn()['id']
+        worker = self.spawn('Delete root')['id']
+        child = self.spawn('Delete child')['id']
+        with self.rt.lock, self.rt.db() as db:
+            child_record = self.rt.agent(child, db)
+            child_record['parentId'] = worker
+            self.rt.put(db, 'agents', child_record)
         self.assertTrue(self.rt.agent(worker)['imageWorkspace'])
+        self.assertTrue(self.rt.agent(child)['imageWorkspace'])
         engine = types.ModuleType('codex_workspace_images')
+        attempted = []
         def remove(agent_id):
             self.assertFalse(self.rt.lock._is_owned())
-            self.assertEqual(agent_id, worker)
+            attempted.append(agent_id)
+            if agent_id == worker:
+                raise RuntimeError('image mount busy')
             return {'state': 'removed', 'freedBytes': 12}
         engine.remove_workspace = Mock(side_effect=remove)
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             result = self.rt.delete_conversation(worker)
-        self.assertIn(worker, result['deleted'])
-        engine.remove_workspace.assert_called_once_with(worker)
+        self.assertEqual(set(result['deleted']), {worker, child})
+        self.assertEqual(result['imageCleanupFailed'], [worker])
+        self.assertCountEqual(attempted, [worker, child])
+        self.assertTrue(self.rt.agent(worker)['imageWorkspace'])
+        self.assertIn('image mount busy', self.rt.agent(worker)['imageWorkspaceError'])
+        engine.list_workspaces = Mock(return_value=[{'agentId': worker, 'state': 'ready',
+                                                      'mount': '/retained/image'}])
+        engine.base_bytes = Mock(return_value=0)
+        engine.base_status = Mock(return_value={'state': 'ready'})
+        from codex_agent_management import worktree_maintenance_report
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            report = worktree_maintenance_report(self.rt, self.lead['id'])
+        self.assertIn(worker, [row['id'] for row in report['workspaces']])
 
     def test_maintenance_and_disk_reports_include_workspace_and_base_bytes(self):
         from codex_agent_management import worktree_maintenance_report
