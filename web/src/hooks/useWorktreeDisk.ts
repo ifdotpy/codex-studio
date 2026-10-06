@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { get } from "../api";
 import type { GetResult } from "../api";
 import { watchResourceReads } from "../components/watchResourceReads";
+import { getShared } from "../sharedRead";
 
 export type WorktreeDiskSnapshot = GetResult<"/api/worktree-disk">;
 
@@ -27,7 +27,7 @@ export function useWorktreeDisk(
       async () => {
         const query =
           prioritize && workerKey ? { workers: workerKey } : undefined;
-        const result = await get("/api/worktree-disk", { query });
+        const result = await getShared("/api/worktree-disk", { query });
         if (!stopped)
           setDisk((old) =>
             JSON.stringify(old) === JSON.stringify(result) ? old : result,

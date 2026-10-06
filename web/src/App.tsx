@@ -3,6 +3,7 @@ import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
+import { getShared } from "./sharedRead";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
@@ -60,7 +61,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  get,
   post,
   ApiError,
   errorText,
@@ -784,10 +784,14 @@ export default function App() {
       )
         return Promise.resolve();
       setLimitsLoading((old) => ({ ...old, [key]: true }));
-      const request = get("/api/limits", {
-        query: key === "default" ? undefined : { account_key: key },
-        timeoutMs: 25000,
-      })
+      const request = getShared(
+        "/api/limits",
+        {
+          query: key === "default" ? undefined : { account_key: key },
+          timeoutMs: 25000,
+        },
+        force,
+      )
         .then((result) => {
           if (!accountLimits(result, key, selectedId))
             throw new Error("Codex returned limits for another account.");
@@ -814,7 +818,7 @@ export default function App() {
       limitsRequests.current.set(key, request);
       return request;
     },
-    [accounts.data.accounts],
+    [accounts.data.accounts, data?.stateDir],
   );
   const reloadLimits = useCallback(
     (force = false) => reloadLimitsFor(accountKey, force),
@@ -905,7 +909,9 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accounts.data.accounts.find((item) => item.id === key);
       if (account?.disconnected) continue;
-      void get("/api/limits", { query: { account_key: key, cached: "1" } })
+      void getShared("/api/limits", {
+        query: { account_key: key, cached: "1" },
+      })
         .then((result) => {
           if (!accountLimits(result, key, account?.accountId) || !result.data)
             return;
@@ -928,7 +934,7 @@ export default function App() {
       watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsFor(key, true);
+          await reloadLimitsFor(key);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.

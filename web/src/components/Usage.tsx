@@ -11,6 +11,7 @@ import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
 import { watchResourceReads } from "./watchResourceReads";
+import { getShared } from "../sharedRead";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import TokenRate from "./TokenRate";
@@ -370,7 +371,7 @@ export default function Usage({
     let active = true;
     const load = async () => {
       try {
-        const result = await get("/api/costs", {
+        const result = await getShared("/api/costs", {
           query: { account_key: accountKey },
           timeoutMs: 15000,
         });

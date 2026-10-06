@@ -35,6 +35,7 @@ export type ResourceConnectionState =
   | "offline"
   | "schema-mismatch";
 type Listener = (version?: ResourceVersion) => void;
+type ResourceObserver = (event: ResourceChangeEvent) => void;
 type TabSubscriptions = {
   kind: "subscriptions";
   workspaceId: string;
@@ -112,6 +113,7 @@ const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
 const resourceValues = new Map<string, Version>();
+const resourceObservers = new Set<ResourceObserver>();
 const baselineReconciliations = new Set<string>();
 const transportStatusListeners = new Set<
   (status: ResourceConnectionState) => void
@@ -299,6 +301,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
   const isDuplicate = event.revision === lastRevision;
   if (!staleRevision && !isDuplicate) lastRevision = event.revision;
   if (source) refreshHeartbeatTimeout();
+  for (const observer of resourceObservers) observer(event);
   const active = new Set(aggregateResources().map(resourceKey));
   for (const resource of event.resources) {
     const key = resourceKey(resource);
@@ -325,6 +328,12 @@ function dispatchEvent(event: ResourceChangeEvent) {
   setStatus("live");
   if (owner || independent) broadcast({ kind: "resource-event", event });
   scheduleFlush();
+}
+
+/** Observe accepted typed resource events without adding a stream subscription. */
+export function observeResourceEvents(observer: ResourceObserver) {
+  resourceObservers.add(observer);
+  return () => resourceObservers.delete(observer);
 }
 
 function receiveTokenRateEvent(value: unknown, fromPeer = false) {

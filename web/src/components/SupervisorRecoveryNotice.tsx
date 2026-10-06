@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { get } from "../api";
+import { getShared } from "../sharedRead";
 import { watchResourceReads } from "./watchResourceReads";
 import "./supervisor-recovery-notice.css";
 
@@ -8,13 +8,10 @@ export default function SupervisorRecoveryNotice() {
 
   useEffect(() => {
     let live = true;
-    const controller = new AbortController();
     const stop = watchResourceReads(
       { kind: "desktop" },
       async () => {
-        const data = await get("/api/desktop", {
-          signal: controller.signal,
-        });
+        const data = await getShared("/api/desktop");
         if (live) setNotice(data.supervisorNotice || null);
       },
       () => {
@@ -23,7 +20,6 @@ export default function SupervisorRecoveryNotice() {
     );
     return () => {
       live = false;
-      controller.abort();
       stop();
     };
   }, []);
