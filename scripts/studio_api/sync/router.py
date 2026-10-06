@@ -328,13 +328,32 @@ def create_router(context: ApiContext) -> APIRouter:
 
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
+                shutdown_notifier = request.scope.get("state", {}).get("studio_shutdown_event")
+                shutdown_wait = (
+                    asyncio.create_task(shutdown_notifier.async_event().wait())
+                    if shutdown_notifier is not None else None
+                )
                 try:
                     if renderer_hash is not None:
                         yield _schema_event({"hash": server_hash})
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):
-                        event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                        if shutdown_wait is not None:
+                            next_event = asyncio.create_task(
+                                subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                            )
+                            done, _pending = await asyncio.wait(
+                                (next_event, shutdown_wait),
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if shutdown_wait in done:
+                                next_event.cancel()
+                                await asyncio.gather(next_event, return_exceptions=True)
+                                break
+                            event = next_event.result()
+                        else:
+                            event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
                         if isinstance(event, ResourceTokenRatesEvent):
                             yield _resource_event("token-rates", event)
                         elif isinstance(event, ResourceChangeEvent):
@@ -342,6 +361,9 @@ def create_router(context: ApiContext) -> APIRouter:
                         elif event is None:
                             yield _resource_event("heartbeat", subscription.heartbeat())
                 finally:
+                    if shutdown_wait is not None:
+                        shutdown_wait.cancel()
+                        await asyncio.gather(shutdown_wait, return_exceptions=True)
                     subscription.close()
 
             return _stream_response(resource_events())

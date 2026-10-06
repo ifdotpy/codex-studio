@@ -5,6 +5,12 @@ const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function backendExitStatus(child) {
+  if (child.exitCode !== null) return child.exitCode;
+  if (child.signalCode !== null) return child.signalCode;
+  return null;
+}
+
 const excludedSourceDirectories = new Set([
   "tests",
   "benchmarks",
@@ -426,9 +432,10 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
         owned: ready.pid === child.pid,
       };
     }
-    if (child.exitCode !== null)
+    const exitStatus = backendExitStatus(child);
+    if (exitStatus !== null)
       throw new Error(
-        `Backend exited (${child.exitCode}). Read ${log}. Another runtime may own this state directory.`,
+        `Backend exited (${exitStatus}). Read ${log}. Another runtime may own this state directory.`,
       );
   }
   // The detached runtime may still be starting. Never kill it or launch a replacement.
@@ -444,4 +451,5 @@ module.exports = {
   stateDirectory,
   backendBuild,
   updateStatus,
+  backendExitStatus,
 };

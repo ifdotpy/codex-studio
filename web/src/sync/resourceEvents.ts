@@ -1086,7 +1086,6 @@ function stopCoordinator() {
   lastTokenEpoch = undefined;
   lastTokenRevision = undefined;
   lastTokenEvent = undefined;
-  streamUpdateGeneration = 0;
   resourceValues.clear();
   baselineReconciliations.clear();
   deliveredEntitySequenceBatches.clear();
