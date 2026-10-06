@@ -5,6 +5,7 @@
   "scripts": {
     "api:generate": "python3 scripts/codex_python.py --exec -m studio_api.generate_types",
     "api:check": "python3 scripts/codex_python.py --exec -m studio_api.generate_types --check",
+    "typecheck:runtime": "python3 scripts/codex_mypy_runtime.py",
     "test:client": "npm --prefix web test",
     "test:client:unit": "npm --prefix web run test:unit",
     "test:client:browser": "npm --prefix web run test:browser",

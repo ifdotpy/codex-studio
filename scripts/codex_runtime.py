@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from codex_accounts import AccountStore
 from codex_account_transfer import transfer_store
@@ -55,6 +55,18 @@ from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_messag
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from codex_records import (
+        AccountTransferRecord,
+        AgentRecord,
+        CheckpointRecord,
+        ComplaintRecord,
+        JsonValue,
+        ProjectRecord,
+        RoomRecord,
+        WorkRecord,
+        WorkspaceOperationRecord,
+    )
     from studio_api.sync.resources.models import ResourceRef
 
 MAX_STAGED_RESOURCE_CHANGES = 256
@@ -2453,6 +2465,42 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("PRAGMA query_only=ON")
             yield db
 
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[True]) -> tuple["AgentRecord", ...]: ...
+
+    @overload
+    def records(self: sqlite3.Connection, db: Literal["complaints"], *, shared: bool = False) -> list["ComplaintRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[False] = False) -> list["AgentRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: bool) -> list["AgentRecord"] | tuple["AgentRecord", ...]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["work"], *, shared: bool = False) -> list["WorkRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["checkpoints"], *, shared: bool = False) -> list["CheckpointRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["complaints"], *, shared: bool = False) -> list["ComplaintRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["projects"], *, shared: bool = False) -> list["ProjectRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["account_transfers"], *, shared: bool = False) -> list["AccountTransferRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["workspace_operations"], *, shared: bool = False) -> list["WorkspaceOperationRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["rooms"], *, shared: bool = False) -> list["RoomRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: str, *, shared: bool = False) -> list[Any]: ...
+
     def records(self, db, table=None, *, shared=False):
         # Calls already in progress may still use the former static form.
         if table is None:
@@ -2491,7 +2539,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
-    def team_agents(self, db, root_id, *, include_deleted=False, include_id=None):
+    def team_agents(
+        self, db: sqlite3.Connection, root_id: str, *,
+        include_deleted: bool = False, include_id: str | None = None,
+    ) -> list["AgentRecord"]:
         """Decode one team's agents without loading unrelated workspace records."""
         from codex_agent_modes import mode_fields
         live = "" if include_deleted else f"AND {LIVE_AGENT_SQL}"
@@ -2505,7 +2556,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             (root_id,))]
 
     @staticmethod
-    def account_agents(db, account_key):
+    def account_agents(db: sqlite3.Connection, account_key: str) -> list["AgentRecord"]:
         """Decode an account's roster through the existing account-scope index."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2514,7 +2565,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid", (account_key,))]
 
     @staticmethod
-    def thread_agents(db, account_key, thread_id):
+    def thread_agents(
+        db: sqlite3.Connection, account_key: str, thread_id: str,
+    ) -> list["AgentRecord"]:
         """Decode one native thread's agents through the thread/account index."""
         from codex_agent_modes import mode_fields
         account_expression = ("CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
@@ -2524,7 +2577,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"AND {account_expression}=? ORDER BY rowid", (thread_id, account_key))]
 
     @staticmethod
-    def pending_restart_agents(db):
+    def pending_restart_agents(db: sqlite3.Connection) -> list["AgentRecord"]:
         """Load only agents with pending restart receipts."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2532,7 +2585,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "json_extract(record,'$.restartRecovery.stage')='pending' ORDER BY rowid")]
 
     @staticmethod
-    def descendant_agents(db, root_id):
+    def descendant_agents(db: sqlite3.Connection, root_id: str) -> list["AgentRecord"]:
         """Load a parentId subtree, including inconsistent cross-root children."""
         from codex_agent_modes import mode_fields
         seen = {root_id}
@@ -2552,7 +2605,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"SELECT record FROM runtime_agents WHERE id IN ({marks}) ORDER BY rowid", tuple(seen))]
 
     @staticmethod
-    def release_work_agents(db):
+    def release_work_agents(db: sqlite3.Connection) -> list["AgentRecord"]:
         """Select current failed/deleted owners with releasable work, bypassing caches."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2562,7 +2615,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "WHERE json_extract(record,'$.status') IN ('ready','running','blocked')) ORDER BY rowid")]
 
     @staticmethod
-    def named_agents(db, agent_ids):
+    def named_agents(
+        db: sqlite3.Connection, agent_ids: "Iterable[object]",
+    ) -> dict[str, "AgentRecord"]:
         """Decode only agents referenced by a set of entity IDs."""
         from codex_agent_modes import mode_fields
         ids = sorted({key for key in agent_ids if isinstance(key, str) and key})
@@ -2573,7 +2628,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return {record["id"]: record for record in
                 (mode_fields(json.loads(row[0])) for row in rows)}
 
-    def scheduler_agents(self, db):
+    def scheduler_agents(self, db: sqlite3.Connection) -> list["AgentRecord"]:
         """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
         guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
@@ -2781,7 +2836,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' "
             "AND json_extract(record,'$.projectPath')=?", (project_path,))}
 
-    def agent_entity_view(self, db, record):
+    def agent_entity_view(
+        self, db: sqlite3.Connection, record: "AgentRecord",
+    ) -> dict[str, "JsonValue"]:
         # Match the renderer-facing fields added by snapshot(), so later
         # internal agent writes cannot erase visible source/team details.
         view = dict(record)
@@ -2810,6 +2867,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             }
 
         return view
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["complaints"], record: "ComplaintRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["projects"], record: "ProjectRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["account_transfers"], record: "AccountTransferRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["workspace_operations"], record: "WorkspaceOperationRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db, table, record, *, sync_rooms=True, include_last_message=False):
         if table in {"checkpoints", "tool_requests"}:
@@ -2952,7 +3036,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Runtime.lock through transcript while holding the opposite lock order.
         return current, self.transcript(key) if current != revision else None
 
-    def agent(self, key, db=None):
+    def agent(self, key: str, db: sqlite3.Connection | None = None) -> "AgentRecord":
         if db is None:
             with self.lock, self.db() as own:
                 return self.agent(key, own)
