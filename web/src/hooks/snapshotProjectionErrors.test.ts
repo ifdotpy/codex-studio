@@ -1,20 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { snapshotErrorMessage } from "../hooks";
+import {
+  initialSnapshotProjectionStatus,
+  snapshotProjectionError,
+  snapshotProjectionStatusReducer,
+} from "./snapshotProjectionStatus";
 
-describe("snapshot projection errors", () => {
-  it("surfaces a first-load projection failure in the startup alert", () => {
-    expect(snapshotErrorMessage("Entity database is unavailable", "", "")).toBe(
-      "Entity database is unavailable",
+describe("snapshot projection status", () => {
+  it("shows the startup alert after an initial projection failure and clears on data", () => {
+    const failed = snapshotProjectionStatusReducer(
+      initialSnapshotProjectionStatus,
+      { type: "startup-failed", error: "Workspace identity unavailable" },
     );
+    expect(snapshotProjectionError(failed)).toBe(
+      "Workspace identity unavailable",
+    );
+
+    const recovered = snapshotProjectionStatusReducer(failed, {
+      type: "data-received",
+    });
+    expect(snapshotProjectionError(recovered)).toBe("");
   });
 
-  it("surfaces a projection subscription failure in the app alert", () => {
-    expect(
-      snapshotErrorMessage(
-        "",
-        "Entity pull failed",
-        "Live updates are reconnecting.",
-      ),
-    ).toBe("Entity pull failed");
+  it("shows a later subscription error and clears it after a successful pull", () => {
+    const failed = snapshotProjectionStatusReducer(
+      initialSnapshotProjectionStatus,
+      { type: "projection-failed", error: "Entity pull failed" },
+    );
+    expect(snapshotProjectionError(failed)).toBe("Entity pull failed");
+
+    const recovered = snapshotProjectionStatusReducer(failed, {
+      type: "projection-recovered",
+    });
+    expect(snapshotProjectionError(recovered)).toBe("");
   });
 });

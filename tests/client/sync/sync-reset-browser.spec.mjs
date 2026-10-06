@@ -186,10 +186,9 @@ test("sync reset browser", async ({ browser: _browser }) => {
         seq: 1,
       });
       window.entityValues = [];
-      window.stopProjection = await (
+      window.stopProjection = (
         await import("/src/sync/client.ts")
-      ).watchProjection(
-        "state",
+      ).subscribeStateProjection(
         (value) =>
           window.entityValues.push(
             value.runtime.agents.map((agent) => agent.name).sort(),

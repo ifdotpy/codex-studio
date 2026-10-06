@@ -173,8 +173,7 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.values = [];
-      window.stopSync = await client.watchProjection(
-        "state",
+      window.stopSync = client.subscribeStateProjection(
         (value) => {
           if (value) window.values.push(value.threads[0]?.name);
         },

@@ -212,10 +212,12 @@ export function useChatReadState(
           // Reconcile a lost success from the entity projection before a
           // queued Unread can use local state.
           try {
-            const snapshot = await refreshProjection("state");
+            const snapshot = await refreshProjection({
+              afterCurrentPull: true,
+            });
             if (!valid()) return;
             const canonical =
-              snapshot?.stateDir === latest.current.data?.stateDir
+              snapshot.stateDir === latest.current.data?.stateDir
                 ? matchingCompletedAgent(snapshot.threads, proof)
                 : null;
             if (canonical) {

@@ -147,8 +147,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
         window.syncErrors = [];
-        window.stopState = await client.watchProjection(
-          "state",
+        window.stopState = client.subscribeStateProjection(
           (value) => (window.state = value),
           (error) => {
             if (error) window.syncErrors.push(String(error));

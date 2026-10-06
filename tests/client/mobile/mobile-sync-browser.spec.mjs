@@ -113,17 +113,18 @@ test("mobile sync browser", async ({ page }) => {
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.values = {};
-      window.stops = await Promise.all(
-        ["state", "team", "history:lead", "state"].map((scope) =>
-          client.watchProjection(
-            scope,
-            (value) => {
-              window.values[scope] = value;
-            },
-            () => {},
-          ),
-        ),
-      );
+      window.stops = ["state", "team", "history:lead", "state"].map((scope) => {
+        const accept = (value) => {
+          window.values[scope] = value;
+        };
+        return scope === "state"
+          ? client.subscribeStateProjection(accept, () => {})
+          : client.subscribeTranscriptProjection(
+              `transcript:${scope}`,
+              accept,
+              () => {},
+            );
+      });
       window.stops.push(await client.startDraftReplication(() => {}));
       window.resumeCalls = 0;
       window.stopResume = (await import("/src/sync/resume.ts")).onResume(
@@ -271,10 +272,9 @@ test("mobile sync browser", async ({ page }) => {
     await page.reload();
     await page.evaluate(async () => {
       window.value = null;
-      window.stopCompact = await (
+      window.stopCompact = (
         await import("/src/sync/client.ts")
-      ).watchProjection(
-        "state",
+      ).subscribeStateProjection(
         (value) => (window.value = value),
         () => {},
       );

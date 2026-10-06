@@ -3,7 +3,14 @@ import {
   boundTranscriptItems,
   trimTranscriptPageCache,
 } from "./transcriptPageBounds";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   syncGet,
   ApiError,
@@ -25,23 +32,21 @@ import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
+import {
+  initialSnapshotProjectionStatus,
+  snapshotProjectionError,
+  snapshotProjectionStatusReducer,
+} from "./hooks/snapshotProjectionStatus";
 import type { GetResult } from "./api";
 import type { Agent, Json, Message, Snapshot } from "./types";
 type TranscriptPageData = GetResult<"/api/transcript">;
 
-export function snapshotErrorMessage(
-  error: string,
-  syncError: string,
-  transportError: string,
-): string {
-  return error || syncError || transportError;
-}
-
 export function useSnapshot() {
-  const [data, setData] = useState<Snapshot | null>(null),
-    [error, setError] = useState("");
-  const [syncError, setSyncError] = useState("");
-  const [transportError, setTransportError] = useState("");
+  const [data, setData] = useState<Snapshot | null>(null);
+  const [projectionStatus, dispatchProjectionStatus] = useReducer(
+    snapshotProjectionStatusReducer,
+    initialSnapshotProjectionStatus,
+  );
   const [workspaceId, setWorkspaceId] = useState("");
   const [created, setCreated] = useState<{ scope: string; agents: Agent[] }>(
     () => {
@@ -56,7 +61,7 @@ export function useSnapshot() {
         : { scope: "", agents: [] };
     },
   );
-  // Match the durable creation request's workspace scope, including HTTP fallback.
+  // Match the durable creation request's workspace scope.
   const scope = data?.stateDir || "";
   const currentScope = useRef(scope);
   currentScope.current = scope;
@@ -142,18 +147,19 @@ export function useSnapshot() {
             : old,
         );
         if (!credentialsOnly) {
-          const projection = await refreshProjection("state");
+          const projection = await refreshProjection();
           if (request !== generation.current) return;
-          if (!projection)
-            throw new Error("The entity projection is not ready yet.");
           setData({ ...projection, token: session.token });
         }
         if (request !== generation.current) return;
         credentialFailures.current = 0;
-        setError("");
+        dispatchProjectionStatus({ type: "startup-recovered" });
       } catch (e) {
         if (request !== generation.current) return;
-        setError(errorText(e));
+        dispatchProjectionStatus({
+          type: "startup-failed",
+          error: errorText(e),
+        });
         // Retry this read without waiting for the healthy 30-second poll. Writes
         // retain their own receipt rules and never use this retry.
         const transient =
@@ -190,11 +196,17 @@ export function useSnapshot() {
         await refresh(true);
       } catch (error) {
         if (stopped) return;
-        setError(errorText(error));
+        dispatchProjectionStatus({
+          type: "startup-failed",
+          error: errorText(error),
+        });
       }
     };
     const offline = () =>
-      setError("Offline. Your chats and drafts are saved here.");
+      dispatchProjectionStatus({
+        type: "startup-failed",
+        error: "Offline. Your chats and drafts are saved here.",
+      });
     window.addEventListener("offline", offline);
     if (navigator.onLine === false) offline();
     const stopResume = onResume(() => void refresh(true));
@@ -211,13 +223,15 @@ export function useSnapshot() {
   useEffect(
     () =>
       watchResourceConnection((status) => {
-        setTransportError(
-          status === "degraded"
-            ? "Live updates are reconnecting."
-            : status === "offline"
-              ? "Offline. Live updates will resume when connected."
-              : "",
-        );
+        dispatchProjectionStatus({
+          type: "transport-changed",
+          error:
+            status === "degraded"
+              ? "Live updates are reconnecting."
+              : status === "offline"
+                ? "Offline. Live updates will resume when connected."
+                : "",
+        });
       }),
     [],
   );
@@ -227,19 +241,23 @@ export function useSnapshot() {
         (next) => {
           if (next) {
             replicated.current = true;
-            setSyncError("");
+            dispatchProjectionStatus({ type: "data-received" });
             setData({ ...next, token: sessionToken.current });
           }
         },
         (error) => {
-          setSyncError(error === null ? "" : errorText(error));
+          dispatchProjectionStatus(
+            error === null
+              ? { type: "projection-recovered" }
+              : { type: "projection-failed", error: errorText(error) },
+          );
         },
       ),
     [],
   );
   return {
     data: visibleData,
-    error: snapshotErrorMessage(error, syncError, transportError),
+    error: snapshotProjectionError(projectionStatus),
     refresh,
     workspaceId,
     rememberCreated,

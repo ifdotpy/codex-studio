@@ -96,8 +96,7 @@ test("sync initial resume browser", async ({ page }) => {
         return write(...args);
       };
       window.snapshots = [];
-      window.stop = await client.watchProjection(
-        "state",
+      window.stop = client.subscribeStateProjection(
         (value) => window.snapshots.push(value),
         (error) => {
           if (error) window.syncError = String(error);

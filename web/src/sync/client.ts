@@ -28,6 +28,8 @@ import {
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
+import { readRetryDelay, retryableReadError } from "./readRetry";
+import { refreshAfterCurrentPull } from "./refreshAfterCurrentPull";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
   cacheTranscriptValue,
@@ -569,6 +571,7 @@ type ProjectionState = {
   foreground: number;
   stop: () => Promise<unknown>;
   refresh: (signal?: AbortSignal) => Promise<void>;
+  refreshAfterCurrent: () => Promise<void>;
   activateInvalidation: () => void;
   listeners: Set<(error: unknown | null) => void>;
 };
@@ -896,6 +899,7 @@ async function acquireProjection(
         });
       return pending;
     };
+    const refreshAfterCurrent = () => refreshAfterCurrentPull(pending, refresh);
     const transcriptId = scope.startsWith("transcript:")
       ? scope.slice(11)
       : null;
@@ -931,6 +935,7 @@ async function acquireProjection(
       foreground: 0,
       listeners,
       refresh,
+      refreshAfterCurrent,
       activateInvalidation,
       stop: async () => {
         stopped = true;
@@ -1040,10 +1045,13 @@ async function watchTranscriptProjection(
 }
 
 /** Pull and return the current entity projection for state reconciliation. */
-export async function refreshProjection(scope: "state"): Promise<Snapshot> {
-  const handle = await acquireProjection(scope);
+export async function refreshProjection(
+  options: { afterCurrentPull?: boolean } = {},
+): Promise<Snapshot> {
+  const handle = await acquireProjection("state");
   try {
-    await handle.state.refresh();
+    if (options.afterCurrentPull) await handle.state.refreshAfterCurrent();
+    else await handle.state.refresh();
     const [ready, documents] = await Promise.all([
       handle.db.projections.findOne("state:entities:ready").exec(),
       handle.db.projections
@@ -1500,23 +1508,59 @@ function subscribeProjection<T>(
   ) => Promise<() => void>,
   accept: (payload: T) => void,
   report: (error: unknown | null) => void,
+  retryBeforeData?: () => Promise<unknown>,
 ) {
   let stopped = false,
     connecting = false,
     attached = false;
   let dispose = () => {};
+  let hasData = false;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearRetry = () => {
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+  const onFailure = (error: unknown | null) => {
+    if (stopped) return;
+    report(error);
+    if (error === null) {
+      retryCount = 0;
+      clearRetry();
+      return;
+    }
+    if (
+      !retryBeforeData ||
+      hasData ||
+      retryTimer !== undefined ||
+      !retryableReadError(error) ||
+      document.hidden ||
+      navigator.onLine === false
+    )
+      return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (stopped || hasData) return;
+      if (attached) void retryBeforeData().catch(onFailure);
+      else void connect();
+    }, readRetryDelay(retryCount++));
+  };
   const connect = async () => {
     if (stopped || connecting || attached) return;
+    clearRetry();
     connecting = true;
     try {
-      const stop = await watch(
-        (value) => {
-          if (!stopped) accept(value);
-        },
-        (error) => {
-          if (!stopped) report(error);
-        },
-      );
+      const stop = await watch((value) => {
+        if (!stopped) {
+          if (value !== null) {
+            hasData = true;
+            clearRetry();
+            retryCount = 0;
+            onFailure(null);
+          }
+          accept(value);
+        }
+      }, onFailure);
       if (stopped) stop();
       else {
         dispose = stop;
@@ -1524,7 +1568,7 @@ function subscribeProjection<T>(
       }
     } catch (error) {
       if (!stopped) {
-        report(error);
+        onFailure(error);
       }
     } finally {
       connecting = false;
@@ -1540,6 +1584,7 @@ function subscribeProjection<T>(
     stopResume();
     stopConnection();
     dispose();
+    clearRetry();
   };
 }
 
@@ -1547,7 +1592,9 @@ export function subscribeStateProjection(
   accept: (payload: StateProjectionPayload) => void,
   report: (error: unknown | null) => void,
 ) {
-  return subscribeProjection(watchStateProjection, accept, report);
+  return subscribeProjection(watchStateProjection, accept, report, () =>
+    refreshProjection(),
+  );
 }
 
 export function subscribeTranscriptProjection(
