@@ -50,9 +50,15 @@ test("committed entities propagate between renderer tabs @sync", async ({
     );
     fixture.once("exit", () => reject(new Error(log)));
   });
-  const contexts = [await browser.newContext(), await browser.newContext()];
+  const contexts = [
+    await browser.newContext(),
+    await browser.newContext(),
+    await browser.newContext(),
+  ];
   const pages = [];
-  const pulls = [[], []];
+  const pulls = contexts.map(() => []);
+  const statePullRequestCounts = contexts.map(() => 0);
+  const pullStarts = contexts.map(() => new WeakMap());
   const waitFor = async (predicate, message, timeoutMs = 8000) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
@@ -74,18 +80,32 @@ test("committed entities propagate between renderer tabs @sync", async ({
     return reply;
   };
   try {
-    for (let index = 0; index < 2; index++) {
+    for (let index = 0; index < contexts.length; index++) {
       const page = await contexts[index].newPage();
       page.setDefaultTimeout(10000);
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === "state:entities:v1"
+        ) {
+          statePullRequestCounts[index]++;
+          pullStarts[index].set(request, Date.now());
+        }
+      });
       await page.addInitScript(() => {
         const OriginalEventSource = window.EventSource;
         window.__entityFrames = [];
+        window.__entityStreamUrls = [];
         window.EventSource = class extends OriginalEventSource {
           constructor(...args) {
             super(...args);
+            const streamIndex = window.__entityStreamUrls.length;
+            window.__entityStreamUrls.push(String(args[0]));
             this.addEventListener("resources", (event) =>
               window.__entityFrames.push({
                 at: Date.now(),
+                streamIndex,
                 event: JSON.parse(event.data),
               }),
             );
@@ -103,6 +123,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           const body = await response.json();
           pulls[index].push({
             at: Date.now(),
+            startedAt: pullStarts[index].get(response.request()) ?? Date.now(),
             documents: body.documents || [],
           });
         } catch {}
@@ -116,8 +137,40 @@ test("committed entities propagate between renderer tabs @sync", async ({
     }
     await waitFor(
       () => pulls.every((rows) => rows.length > 0),
-      "both tabs did not finish their initial entity pull",
+      "all tabs did not finish their initial entity pull",
     );
+    await waitFor(
+      () =>
+        Promise.all(
+          pages.map((page) =>
+            page.evaluate(() => {
+              const lastStream = window.__entityStreamUrls.length - 1;
+              return (
+                // The fourth URL is the chat transcript stage after the shell
+                // baseline, drafts/state, foreground transcript, and prefetch stages.
+                window.__entityStreamUrls.length >= 4 &&
+                window.__entityFrames.some(
+                  ({ event, streamIndex }) =>
+                    streamIndex === lastStream &&
+                    event.reason === "initial" &&
+                    event.resources.some(
+                      (resource) => resource.kind === "state",
+                    ),
+                )
+              );
+            }),
+          ),
+        ).then((ready) => ready.every(Boolean)),
+      "all tabs did not complete the shell, drafts/state, foreground transcript, prefetch, and opened-chat stream stages",
+    );
+    for (const page of pages) {
+      const urls = await page.evaluate(() => window.__entityStreamUrls);
+      assert.equal(
+        new Set(urls).size,
+        urls.length,
+        "a stream URL was reopened unchanged",
+      );
+    }
     const leadId = await pages[0].evaluate(async () => {
       const response = await fetch("/api/state");
       const state = await response.json();
@@ -164,8 +217,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
       },
     ];
     for (const [index, params] of operations.entries()) {
-      const previousPulls = pulls[1].length;
-      const actingTabPreviousPulls = pulls[0].length;
+      const previousPulls = pulls.map((rows) => rows.length);
       const previousFrames = await Promise.all(
         pages.map((page) => page.evaluate(() => window.__entityFrames.length)),
       );
@@ -208,6 +260,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
               deliveredSequences: createdBody._syncEntities.map(
                 (document) => document.seq,
               ),
+              acknowledgedAt: Date.now(),
               collection: "agent",
               deleted: false,
             };
@@ -218,12 +271,6 @@ test("committed entities propagate between renderer tabs @sync", async ({
         reply = await command(commandId, params);
       }
       assert.equal(reply.ok, true, JSON.stringify(reply));
-      if (params.operation === "chat")
-        assert.equal(
-          pulls[0].length,
-          actingTabPreviousPulls,
-          "tab A must not pull entity rows already present in its mutation response",
-        );
       const entityId = reply.entityId;
       const matchingDocument = (pull) =>
         pull.documents.find(
@@ -232,11 +279,15 @@ test("committed entities propagate between renderer tabs @sync", async ({
             document.seq >= reply.seq &&
             document._deleted === params.deleted,
         );
+      const tabsToConfirm = params.operation === "chat" ? [1, 2] : [0, 1, 2];
       let staleAfterMs;
       try {
         await waitFor(
-          () => pulls[1].slice(previousPulls).some(matchingDocument),
-          `${params.operation} did not reach tab B through its entity pull within 8s`,
+          () =>
+            tabsToConfirm.every((tab) =>
+              pulls[tab].slice(previousPulls[tab]).some(matchingDocument),
+            ),
+          `${params.operation} did not reach required tabs through entity pulls within 8s`,
         );
       } catch {
         staleAfterMs = 8000;
@@ -251,29 +302,27 @@ test("committed entities propagate between renderer tabs @sync", async ({
         });
         continue;
       }
-      const observed = pulls[1]
-        .slice(previousPulls)
+      const observedTab = params.operation === "chat" ? 1 : 0;
+      const observed = pulls[observedTab]
+        .slice(previousPulls[observedTab])
         .find((pull) => matchingDocument(pull));
       const document = matchingDocument(observed);
       if (params.operation === "chat") {
-        const delivered = new Set(reply.deliveredSequences);
-        const actorPulls = pulls[0].slice(actingTabPreviousPulls);
+        const responseSequences = new Set(reply.deliveredSequences);
+        const actorRowsAfterResponse = pulls[0]
+          .slice(previousPulls[0])
+          .filter((pull) => pull.startedAt >= reply.acknowledgedAt)
+          .flatMap((pull) => pull.documents);
         assert.ok(
-          actorPulls.every((pull) =>
-            pull.documents.some((row) => !delivered.has(row.seq)),
+          actorRowsAfterResponse.every(
+            (row) => !responseSequences.has(row.seq),
           ),
-          JSON.stringify({
-            message:
-              "an actor cursor pull must not repeat only entity rows already delivered in the response envelope",
-            delivered: [...delivered],
-            actorPulls: actorPulls.map((pull) =>
-              pull.documents.map((row) => row.seq),
-            ),
-          }),
+          "the acting tab must not pull entity rows already in its mutation response",
         );
       }
       if (params.operation === "chat") {
         await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
+        await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
       }
       if (params.operation === "rename") {
         assert.equal(JSON.parse(document.payload).value.name, params.name);
@@ -302,18 +351,98 @@ test("committed entities propagate between renderer tabs @sync", async ({
         ...(params.operation === "chat"
           ? {
               deliveredSequences: reply.deliveredSequences,
-              actorPullSequences: pulls[0]
-                .slice(actingTabPreviousPulls)
-                .flatMap((pull) => pull.documents.map((row) => row.seq)),
             }
           : {}),
         elapsedMs: observedAt - startedAt,
         changedFrames,
-        pulls: pulls.map(
-          (rows, tab) =>
-            rows.length - (tab === 0 ? actingTabPreviousPulls : previousPulls),
-        ),
+        pulls: pulls.map((rows, tab) => rows.length - previousPulls[tab]),
       });
+    }
+    const batchPulls = pulls.map((rows) => rows.length);
+    const batchFrames = await Promise.all(
+      pages.map((page) =>
+        page.evaluate(
+          () =>
+            window.__entityFrames.filter(({ event }) =>
+              event.resources.some((resource) => resource.kind === "state"),
+            ).length,
+        ),
+      ),
+    );
+    const batch = await command("entity-change-batch-30", {
+      operation: "batch",
+      agent: leadId,
+      count: 30,
+    });
+    assert.equal(batch.ok, true, JSON.stringify(batch));
+    try {
+      await waitFor(
+        () =>
+          pulls.every((rows, index) =>
+            rows
+              .slice(batchPulls[index])
+              .some((pull) =>
+                pull.documents.some((row) => row.seq >= batch.seq),
+              ),
+          ),
+        "both tabs did not pull the final sequence from the 30-commit burst",
+      );
+    } catch {
+      // The base has no commit publisher; retain zero-event counts in its red run.
+    }
+    const afterBatchFrames = await Promise.all(
+      pages.map((page) =>
+        page.evaluate(
+          () =>
+            window.__entityFrames.filter(({ event }) =>
+              event.resources.some((resource) => resource.kind === "state"),
+            ).length,
+        ),
+      ),
+    );
+    const batchCounts = {
+      commits: 30,
+      frames: afterBatchFrames.map(
+        (count, index) => count - batchFrames[index],
+      ),
+      pulls: pulls.map((rows, index) => rows.length - batchPulls[index]),
+    };
+    console.log(`ENTITY_BATCH_30 ${JSON.stringify(batchCounts)}`);
+    for (let tab = 0; tab < pages.length; tab++) {
+      assert.ok(
+        batchCounts.frames[tab] >= 1,
+        `tab ${tab} should receive a publication for the 30-commit burst`,
+      );
+      assert.ok(
+        batchCounts.pulls[tab] >= 1 &&
+          batchCounts.pulls[tab] <= batchCounts.frames[tab],
+        `tab ${tab} should coalesce pulls without missing state publications`,
+      );
+      const deliveredRows = pulls[tab]
+        .slice(batchPulls[tab])
+        .flatMap((pull) => pull.documents);
+      assert.ok(deliveredRows.length > 0);
+      assert.equal(
+        Math.max(...deliveredRows.map((row) => row.seq)),
+        batch.seq,
+        `tab ${tab} must pull the final entity sequence`,
+      );
+    }
+    // Browser scheduling varies under load, so publication counts are not
+    // capped here. The deterministic cap is proven by
+    // test_entity_commit_publisher.py::test_scheduler_coalesces_with_a_controlled_clock.
+    await waitFor(
+      () =>
+        statePullRequestCounts.every(
+          (count, tab) => count === pulls[tab].length,
+        ),
+      "every state pull response must be observed before assertions",
+    );
+    for (let tab = 0; tab < pulls.length; tab++) {
+      assert.ok(
+        pulls[tab].every((pull) => pull.documents.length > 0),
+        `every state pull in tab ${tab} must contain changed entity rows`,
+      );
     }
     console.log(
       `ENTITY_PROPAGATION ${JSON.stringify({ results, tabPullCounts: pulls.map((rows) => rows.length) })}`,

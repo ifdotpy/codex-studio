@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Sequence
 from typing import cast
 from unittest.mock import patch
 from urllib.error import URLError
@@ -107,12 +108,38 @@ class RelayRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = _Context()
         self.client = _client(self.context)
+        self.entity_publication = threading.Event()
+        publish = self.context.hub.publish_entity_sequence
+
+        def observe_publication(
+            sequence: int,
+            entity_sequences: Sequence[int] = (),
+            *,
+            reset: bool = False,
+        ) -> int:
+            result = publish(sequence, entity_sequences, reset=reset)
+            self.entity_publication.set()
+            return result
+
+        self.publication_patch = patch.object(
+            self.context.hub,
+            "publish_entity_sequence",
+            side_effect=observe_publication,
+        )
+        self.publication_patch.start()
+        self.addCleanup(self.publication_patch.stop)
+
+    def wait_for_entity_publication(self) -> None:
+        self.assertTrue(
+            self.entity_publication.wait(timeout=5),
+            "entity publisher did not complete its observable hub update",
+        )
 
     def test_authenticated_typed_post_publishes_and_exact_retry_is_deduplicated(self) -> None:
         body = {"requestId": "stable-notify-1", "resources": [{"kind": "state"}]}
         first = _post(self.client, body)
         second = _post(self.client, body)
-        time.sleep(0.04)
+        self.wait_for_entity_publication()
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(first.json(), {"requestId": "stable-notify-1", "accepted": True})
         self.assertEqual(second.json(), first.json())
@@ -191,7 +218,7 @@ class RelayRouteTests(unittest.TestCase):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
-        time.sleep(0.04)
+        self.wait_for_entity_publication()
         connect.assert_not_called()
         socket_connect.assert_not_called()
         self.assertEqual(ack.requestId, "response-loss-id")

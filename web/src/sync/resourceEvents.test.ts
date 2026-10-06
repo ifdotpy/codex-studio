@@ -228,7 +228,11 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges(state, onChange);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const stream = Source.instances[0]!;
-    const emit = (revision: number, entitySequences?: number[]) =>
+    const emit = (
+      revision: number,
+      entitySequences?: number[],
+      resourceRevision = revision,
+    ) =>
       stream.emit("resources", {
         protocol: 3,
         workspaceId,
@@ -241,7 +245,7 @@ describe("shared resource event transport", () => {
               resourceVersions: [
                 {
                   resource: state,
-                  revision,
+                  revision: resourceRevision,
                   entitySequences,
                 },
               ],
@@ -251,6 +255,11 @@ describe("shared resource event transport", () => {
 
     emit(1, []);
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 1,
+      entitySequence: 1,
+    });
     transport.acknowledgeEntitySequences([2, 3], workspaceId);
     emit(3, [2, 3]);
     await Promise.resolve();
@@ -258,6 +267,11 @@ describe("shared resource event transport", () => {
 
     emit(4, [2, 4]);
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 4,
+      entitySequence: 4,
+    });
     stream.emitRaw("resources", {
       protocol: 3,
       workspaceId,
@@ -268,8 +282,11 @@ describe("shared resource event transport", () => {
     });
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(3));
 
-    emit(6, [5, 6]);
     transport.acknowledgeEntitySequences([5, 6], workspaceId);
+    emit(6, [5, 6]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(onChange).toHaveBeenCalledTimes(3);
+    emit(7, [5, 6], 6);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(onChange).toHaveBeenCalledTimes(3);
     stop();

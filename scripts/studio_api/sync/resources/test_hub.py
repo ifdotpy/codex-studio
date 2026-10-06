@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 from studio_api.sync.resources.hub import (
+    MAX_ENTITY_SEQUENCE_IDS,
     MAX_PENDING_RESOURCES,
     MAX_RESOURCE_REVISION_ENTRIES,
     ResourceHub,
@@ -140,6 +141,25 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
             if item.resource.root.kind == "state"
         )
         self.assertEqual(state_version, 6)
+        subscription.close()
+
+    async def test_entity_sequence_payload_is_bounded_and_signals_reset(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        hub = ResourceHub("workspace-state-bounded")
+        subscription = hub.subscribe([state], loop=loop)
+
+        hub.publish_entity_sequence(
+            MAX_ENTITY_SEQUENCE_IDS + 1,
+            list(range(1, MAX_ENTITY_SEQUENCE_IDS + 2)),
+        )
+        event = await subscription.next_event(timeout=1)
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        version = event.resourceVersions[0]
+        self.assertIsNone(version.entitySequences)
+        self.assertTrue(version.entitySequenceReset)
         subscription.close()
 
     async def test_atomic_baseline_and_change_coalescing(self) -> None:

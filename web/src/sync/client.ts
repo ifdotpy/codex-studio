@@ -12,6 +12,7 @@ import {
   watchResourceConnection,
   type ResourceConnectionState,
   type ResourceRef,
+  type ResourceVersion,
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
@@ -228,12 +229,12 @@ function resourceForScope(scope: string): ResourceRef {
 }
 
 export function watchSyncInvalidations(
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
   scope?: string,
 ): () => void;
 export function watchSyncInvalidations(
   scope: string,
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
 ): () => void;
 export function watchSyncInvalidations(
   first: string | (() => void),
@@ -598,6 +599,11 @@ async function acquireProjection(
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
+    let unversionedInvalidation = false;
+    let requiredEntitySequence: number | undefined;
+    // Sequence zero is a valid initial baseline. Keep a sentinel until the
+    // first pull establishes that the local projection already has that row.
+    let latestEntitySequence = -1;
     let resetReadySeq: number | undefined;
     let invalidationBlocked = false;
     let readFailed = false;
@@ -659,6 +665,7 @@ async function acquireProjection(
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
           invalidated = false;
+          unversionedInvalidation = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
             (document.hidden || navigator.onLine === false)
@@ -703,6 +710,17 @@ async function acquireProjection(
             remoteScope === "state:entities:v1" && !complete
               ? (initialMarker?.seq ?? 0)
               : undefined;
+          if (complete && remoteScope === "state:entities:v1") {
+            const [checkpoint] =
+              await db.projections.storageInstance.findDocumentsById(
+                [checkpointId],
+                true,
+              );
+            latestEntitySequence = Math.max(
+              latestEntitySequence,
+              checkpoint?.seq ?? 0,
+            );
+          }
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -854,6 +872,10 @@ async function acquireProjection(
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),
                 seq: result.checkpoint.seq,
               });
+              latestEntitySequence = Math.max(
+                latestEntitySequence,
+                result.checkpoint.seq,
+              );
               if (!readyPublished) {
                 await persistProjection(db.projections, {
                   id: "state:entities:ready",
@@ -873,6 +895,15 @@ async function acquireProjection(
             } else {
               more = false;
             }
+          }
+          if (
+            invalidated &&
+            !unversionedInvalidation &&
+            requiredEntitySequence !== undefined &&
+            latestEntitySequence >= requiredEntitySequence
+          ) {
+            invalidated = false;
+            requiredEntitySequence = undefined;
           }
           report(null);
         } while (invalidated && !stopped);
@@ -902,10 +933,22 @@ async function acquireProjection(
       ? scope.slice(11)
       : null;
     let stopInvalidation: (() => void) | undefined;
-    const invalidate = () => {
+    const invalidate = (version?: ResourceVersion) => {
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
       if (invalidationBlocked) return;
+      if (
+        remoteScope === "state:entities:v1" &&
+        version?.entitySequence !== undefined
+      ) {
+        if (version.entitySequence <= latestEntitySequence) return;
+        requiredEntitySequence = Math.max(
+          requiredEntitySequence ?? 0,
+          version.entitySequence,
+        );
+      } else {
+        unversionedInvalidation = true;
+      }
       invalidated = true;
       void refresh().catch(() => {});
     };

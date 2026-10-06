@@ -144,6 +144,7 @@ class ResourceRevisionEntry(ContractModel):
     resource: ResourceRef
     revision: ResourceRevision
     entitySequences: list[ResourceRevision] | None = None
+    entitySequenceReset: bool | None = None
 
 
 class ResourceChangeEvent(ContractModel):

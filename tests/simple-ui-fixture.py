@@ -252,7 +252,15 @@ def fixture_events():
         elif message.get('method') == 'fixture/entity-change':
             params = message['params']
             operation = params['operation']
-            if operation == 'rename':
+            if operation == 'batch':
+                agent_id = params['agent']
+                for _ in range(params['count']):
+                    with c.runtime.lock, c.runtime.db() as db:
+                        agent = c.runtime.agent(agent_id, db)
+                        agent['tokensUsed'] = int(agent.get('tokensUsed', 0)) + 1
+                        c.runtime.put(db, 'agents', agent)
+                collection, entity_id, deleted = 'agent', agent_id, False
+            elif operation == 'rename':
                 with c.runtime.lock, c.runtime.db() as db:
                     agent = c.runtime.agent(params['agent'], db)
                     agent['name'] = params['name']

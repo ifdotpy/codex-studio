@@ -430,6 +430,8 @@ export default function App() {
     [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
   useEffect(() => {
     if (mobileClient || !data?.stateDir) return;
+    // Include terminals in the first typed subscription set; TerminalDock can
+    // mount later, and its watcher then shares this resource without a reopen.
     return watchResourceChanges({ kind: "terminals" }, () => {});
   }, [mobileClient, data?.stateDir]);
   useEffect(() => {
@@ -912,20 +914,34 @@ export default function App() {
   useEffect(() => {
     if (!data?.stateDir || !usageAccountKeys) return;
     for (const key of usageAccountKeys.split("\n")) {
-      const account = accounts.data.accounts.find((item) => item.id === key);
+      const account = accountsForLimits.current.find((item) => item.id === key);
       if (account?.disconnected) continue;
       void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
-          if (!accountLimits(result, key, account?.accountId) || !result.data)
+          const currentAccount = accountsForLimits.current.find(
+            (item) => item.id === key,
+          );
+          if (
+            currentAccount?.disconnected ||
+            !accountLimits(result, key, currentAccount?.accountId) ||
+            !result.data
+          )
             return;
           setLimitsByAccount((old) => {
-            const previous = accountLimits(old[key], key, account?.accountId);
+            const previous = accountLimits(
+              old[key],
+              key,
+              currentAccount?.accountId,
+            );
             if (previous && (previous.at || 0) >= (result.at || 0)) return old;
             return { ...old, [key]: result };
           });
         })
         .catch(() => {});
     }
+    // Account metadata validates this key through the ref above; the request
+    // identity depends only on workspace + usageAccountKeys. Replacing the
+    // accounts array during its initial load must not repeat the same read.
   }, [data?.stateDir, usageAccountKeys]);
   useEffect(() => {
     if (!data?.stateDir) return;

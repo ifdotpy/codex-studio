@@ -26,7 +26,12 @@ export type ResourceHeartbeatEvent =
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
-export type ResourceVersion = { epoch: string; revision: number };
+export type ResourceVersion = {
+  epoch: string;
+  revision: number;
+  /** Highest entity row represented by this StateResource revision, when present. */
+  entitySequence?: number;
+};
 type Version = ResourceVersion;
 export type ResourceConnectionState =
   | "connecting"
@@ -157,7 +162,6 @@ let activeQueryKey = "";
 let streamUpdateGeneration = 0;
 let keepLiveOnReconfigure = false;
 let pendingResources = new Set<string>();
-const pendingEntitySequenceBatches = new Map<string, Set<string>>();
 let pendingReset = false;
 let currentStatus: ResourceConnectionState = "connecting";
 let stopResume: (() => void) | undefined;
@@ -342,32 +346,35 @@ function dispatchEvent(event: ResourceChangeEvent) {
     : undefined;
   for (const resource of event.resources) {
     const key = resourceKey(resource);
-    const version = versions?.get(key) ?? {
+    const version: Version = versions?.get(key) ?? {
       epoch: event.epoch,
       revision: event.revision,
     };
+    const revisionEntry = event.resourceVersions?.find(
+      (entry) => resourceKey(entry.resource) === key,
+    );
     const entitySequences =
-      resource.kind === "state"
-        ? event.resourceVersions?.find(
-            (entry) => resourceKey(entry.resource) === key,
-          )?.entitySequences
-        : undefined;
+      resource.kind === "state" ? revisionEntry?.entitySequences : undefined;
     if (
+      resource.kind === "state" &&
+      revisionEntry &&
+      !revisionEntry.entitySequenceReset
+    )
+      version.entitySequence = entitySequences?.length
+        ? Math.max(...entitySequences)
+        : revisionEntry.revision;
+    if (
+      !revisionEntry?.entitySequenceReset &&
       entitySequences?.length &&
       deliveredEntitySequenceBatches.delete(
         entitySequenceBatchKey(entitySequences),
       )
     ) {
+      rememberResourceVersion(resource, version);
       continue;
     }
     if (active.has(key)) {
       dispatchResource(resource, version, !versions);
-      if (resource.kind === "state" && entitySequences?.length) {
-        const batches =
-          pendingEntitySequenceBatches.get(key) ?? new Set<string>();
-        batches.add(entitySequenceBatchKey(entitySequences));
-        pendingEntitySequenceBatches.set(key, batches);
-      }
     } else if (!rememberResourceVersion(resource, version) && !versions) {
       resourceValues.set(key, version);
     }
@@ -438,24 +445,13 @@ function scheduleFlush() {
           }
         }
         pendingResources = new Set();
-        pendingEntitySequenceBatches.clear();
       } else {
         for (const key of pendingResources) {
-          const batches = pendingEntitySequenceBatches.get(key);
-          if (batches) {
-            let changed = false;
-            for (const batch of batches) {
-              if (!deliveredEntitySequenceBatches.delete(batch)) changed = true;
-            }
-            pendingEntitySequenceBatches.delete(key);
-            if (!changed) continue;
-          }
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of subscribers.get(key) || []) listener(version);
         }
         pendingResources = new Set();
-        pendingEntitySequenceBatches.clear();
       }
       retryCount = 0;
     } catch (error) {

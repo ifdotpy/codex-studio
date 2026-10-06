@@ -18,6 +18,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
+from codex_sqlite import connect as sqlite_connect
 
 from codex_payloads import (
     EXTERNALIZE_THRESHOLD,
@@ -48,7 +49,7 @@ TARGETS = {
 
 
 def _connect(database: Path) -> sqlite3.Connection:
-    db = sqlite3.connect(database, timeout=30)
+    db = sqlite_connect(database, timeout=30, site="payload_migrate")
     db.row_factory = sqlite3.Row
     # Migration writers yield quickly when the serving process owns SQLite.
     db.execute("PRAGMA busy_timeout=40")

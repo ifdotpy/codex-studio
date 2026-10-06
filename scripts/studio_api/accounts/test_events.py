@@ -155,12 +155,12 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                 loop=asyncio.get_running_loop(),
             )
             try:
-                event = await subscription.next_event(timeout=1)
-                self.assertIsNotNone(event)
-                assert event is not None
-                self.assertEqual(event.reason, "change")
-                self.assertEqual(event.resourceVersions[0].revision, 5)
-                self.assertEqual(event.resourceVersions[0].entitySequences, [5])
+                # The commit happens while the hub is registered but before
+                # context initialization returns, so a later subscriber must
+                # receive it in its baseline rather than as a second event.
+                self.assertEqual(subscription.initial.reason, "initial")
+                self.assertEqual(subscription.initial.resourceVersions[0].revision, 5)
+                self.assertIsNone(await subscription.next_event(timeout=0))
             finally:
                 subscription.close()
                 context.close()

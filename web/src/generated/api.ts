@@ -8336,6 +8336,8 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      /** Entitysequencereset */
+      entitySequenceReset?: boolean | null;
       /** Entitysequences */
       entitySequences?: number[] | null;
       resource: components["schemas"]["ResourceRef"];
