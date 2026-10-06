@@ -4162,6 +4162,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
         self.stop(key, True, "Conversation deleted")
+        # turn/completed is intentionally ignored for tombstones so a late
+        # native callback cannot recreate deleted conversation state. Settle
+        # the deleted turn here after stop has had a chance to interrupt it.
+        with self.lock, self.db() as db:
+            for agent_id in ids:
+                agent = self.agent(agent_id, db)
+                if not agent.get("deletedAt"):
+                    continue
+                agent.update(inFlight=False, turnId=None, activity=None, activeTools=[])
+                self.put(db, "agents", agent)
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
