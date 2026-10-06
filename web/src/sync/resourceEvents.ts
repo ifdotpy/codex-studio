@@ -257,8 +257,10 @@ function dispatchResource(
   version: Version,
   force = false,
 ) {
-  if (!rememberResourceVersion(resource, version) && !force) return;
-  pendingResources.add(resourceKey(resource));
+  const key = resourceKey(resource);
+  if (force) resourceValues.set(key, version);
+  else if (!rememberResourceVersion(resource, version)) return;
+  pendingResources.add(key);
 }
 
 function entitySequenceBatchKey(sequences: number[]) {
@@ -387,7 +389,11 @@ function dispatchEvent(event: ResourceChangeEvent) {
       continue;
     }
     if (active.has(key)) {
-      dispatchResource(resource, version, !versions);
+      dispatchResource(
+        resource,
+        version,
+        !versions || !!revisionEntry?.entitySequenceReset,
+      );
     } else if (!rememberResourceVersion(resource, version) && !versions) {
       resourceValues.set(key, version);
     }

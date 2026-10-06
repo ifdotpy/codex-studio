@@ -197,31 +197,8 @@ if (typeof window !== "undefined")
     try {
       for (const document of entities)
         await persistProjection(db.projections, document);
-      const stateProjection = scopes.get("state");
-      const sequences = entities.map((document) => document.seq);
-      const [checkpointBefore] =
-        await db.projections.storageInstance.findDocumentsById(
-          ["state:entities:checkpoint"],
-          true,
-        );
-      await stateProjection?.acknowledgeEntitySequences(sequences);
-      const [checkpointAfter] =
-        await db.projections.storageInstance.findDocumentsById(
-          ["state:entities:checkpoint"],
-          true,
-        );
-      // Precise browser-test diagnostic: distinguishes the completed renderer
-      // persister from the earlier HTTP response and UI selection transition.
-      performance.mark("studio-sync-entity-persister-done", {
-        detail: {
-          sequences,
-          checkpointBefore: checkpointBefore?.seq ?? null,
-          checkpointAfter: checkpointAfter?.seq ?? null,
-          activeProjection: !!stateProjection,
-        },
-      });
     } catch (error) {
-      await refreshProjection("state:entities:v1").catch(() => {});
+      await refreshProjection().catch(() => {});
       throw error;
     }
   });
@@ -612,7 +589,6 @@ type ProjectionState = {
   refresh: (signal?: AbortSignal) => Promise<void>;
   refreshAfterCurrent: () => Promise<void>;
   activateInvalidation: () => void;
-  acknowledgeEntitySequences: (sequences: number[]) => Promise<void>;
   listeners: Set<(error: unknown | null) => void>;
 };
 const scopes = new Map<string, ProjectionState>();
@@ -1037,23 +1013,6 @@ async function acquireProjection(
       refresh,
       refreshAfterCurrent,
       activateInvalidation,
-      acknowledgeEntitySequences: async (sequences) => {
-        // Mutation response rows are part of the local projection. Advance
-        // the server cursor only when they exactly fill the next sequence span;
-        // otherwise the next pull must retrieve the gap before skipping ahead.
-        const advanced = latestEntitySequence.advanceContiguous(sequences);
-        if (!advanced) return;
-        const [checkpoint] =
-          await db.projections.storageInstance.findDocumentsById(
-            [checkpointId],
-            true,
-          );
-        await persistProjection(db.projections, {
-          id: checkpointId,
-          payload: checkpoint?.payload ?? JSON.stringify({ initialHigh: 0 }),
-          seq: latestEntitySequence.value,
-        });
-      },
       stop: async () => {
         stopped = true;
         stopInvalidation?.();

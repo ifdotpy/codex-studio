@@ -245,36 +245,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
           .waitFor();
-        const responseSequences = createdBody._syncEntities.map(
-          (doc) => doc.seq,
-        );
-        const persister = await pages[0].evaluate((sequences) => {
-          const entry = performance
-            .getEntriesByName("studio-sync-entity-persister-done", "mark")
-            .reverse()
-            .find((mark) =>
-              sequences.every((sequence) =>
-                mark.detail?.sequences?.includes(sequence),
-              ),
-            );
-          if (!entry)
-            throw new Error("sync entity persister completion mark missing");
-          return {
-            at: performance.timeOrigin + entry.startTime,
-            ...entry.detail,
-          };
-        }, responseSequences);
         reply = {
           ok: true,
           entityId: createdBody.id,
           seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
           deliveredSequences: createdBody._syncEntities.map((doc) => doc.seq),
-          // S3's post() resolves only after the renderer persister finishes.
           responseReceivedAt,
-          persisterDoneAt: persister.at,
-          checkpointBefore: persister.checkpointBefore,
-          checkpointAfter: persister.checkpointAfter,
-          activeProjection: persister.activeProjection,
           collection: "agent",
           deleted: false,
         };
@@ -332,17 +308,48 @@ test("committed entities propagate between renderer tabs @sync", async ({
         .find((pull) => matchingDocument(pull));
       const document = matchingDocument(observed);
       if (params.operation === "chat") {
+        await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
+        await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
+      }
+      // Attribute the delayed stream-reopen baseline to this operation before
+      // starting the next one. The baseline can arrive after the other tabs
+      // have already pulled the mutation response.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const operationFrames = await Promise.all(
+        pages.map((page, tab) =>
+          page.evaluate(
+            (from) =>
+              window.__entityFrames.slice(from).map(({ at, event }) => ({
+                at,
+                reason: event.reason,
+                resources: event.resources,
+                resourceVersions: event.resourceVersions,
+              })),
+            previousFrames[tab],
+          ),
+        ),
+      );
+      const operationFrameCounts = operationFrames.map(
+        (frames) =>
+          frames.filter((frame) =>
+            frame.resources.some((resource) => resource.kind === "state"),
+          ).length,
+      );
+      const operationPullCounts = pulls.map(
+        (rows, tab) => rows.length - previousPulls[tab],
+      );
+      console.log(
+        `ENTITY_OPERATION_COUNTS ${JSON.stringify({ operation: params.operation, frames: operationFrameCounts, pulls: operationPullCounts })}`,
+      );
+      assert.ok(
+        operationPullCounts.every(
+          (count, tab) => count <= operationFrameCounts[tab],
+        ),
+        `${params.operation} must not pull more times than it publishes state`,
+      );
+      if (params.operation === "chat") {
         const responseSequences = new Set(reply.deliveredSequences);
-        const actorFramesAfterMutation = await pages[0].evaluate(
-          (from) =>
-            window.__entityFrames.slice(from).map(({ at, event }) => ({
-              at,
-              reason: event.reason,
-              resources: event.resources,
-              resourceVersions: event.resourceVersions,
-            })),
-          previousFrames[0],
-        );
+        const actorFramesAfterMutation = operationFrames[0];
         const actorPullTimings = pulls[0]
           .slice(previousPulls[0])
           .map(({ startedAt, after, at, documents }) => ({
@@ -354,59 +361,67 @@ test("committed entities propagate between renderer tabs @sync", async ({
         console.log(
           `ENTITY_MUTATION_ORDER ${JSON.stringify({
             responseReceivedAt: reply.responseReceivedAt,
-            persisterDoneAt: reply.persisterDoneAt,
-            checkpointBefore: reply.checkpointBefore,
-            checkpointAfter: reply.checkpointAfter,
-            activeProjection: reply.activeProjection,
             frameArrivals: actorFramesAfterMutation,
             actorPulls: actorPullTimings,
           })}`,
         );
         const actorDuplicatePulls = pulls[0]
           .slice(previousPulls[0])
-          .filter(
-            (pull) =>
-              pull.startedAt > reply.persisterDoneAt &&
-              pull.documents.some((row) => responseSequences.has(row.seq)),
+          .filter((pull) =>
+            pull.documents.some((row) => responseSequences.has(row.seq)),
           );
+        const duplicateCauses = actorDuplicatePulls.map((pull) => {
+          const precedingStateFrame = actorFramesAfterMutation
+            .filter(
+              (frame) =>
+                frame.at <= pull.startedAt &&
+                frame.resources.some((resource) => resource.kind === "state"),
+            )
+            .at(-1);
+          const stateIndex = precedingStateFrame?.resources.findIndex(
+            (resource) => resource.kind === "state",
+          );
+          const stateVersion =
+            precedingStateFrame?.resourceVersions?.find(
+              (version) => version.resource?.kind === "state",
+            ) ??
+            (stateIndex === undefined || stateIndex < 0
+              ? undefined
+              : precedingStateFrame?.resourceVersions?.[stateIndex]);
+          return {
+            startedAt: pull.startedAt,
+            after: pull.after,
+            sequences: pull.documents.map((row) => row.seq),
+            precedingFrame: precedingStateFrame
+              ? {
+                  at: precedingStateFrame.at,
+                  reason: precedingStateFrame.reason,
+                  entitySequences: stateVersion?.entitySequences,
+                }
+              : null,
+            permitted:
+              precedingStateFrame !== undefined &&
+              ["initial", "reconnect", "overflow", "workspace"].includes(
+                precedingStateFrame.reason,
+              ) &&
+              !stateVersion?.entitySequences?.length,
+          };
+        });
         console.log(
           `ENTITY_ACTOR_DUPLICATE_PULLS ${JSON.stringify({
             count: actorDuplicatePulls.length,
-            pulls: actorDuplicatePulls.map(
-              ({ startedAt, after, documents }) => ({
-                startedAt,
-                after,
-                sequences: documents.map((row) => row.seq),
-              }),
-            ),
+            causes: duplicateCauses,
             responseSequences: [...responseSequences],
           })}`,
         );
         assert.ok(
           actorDuplicatePulls.length <= 1,
-          `the acting tab may make at most one already-in-flight duplicate pull per mutation: ${JSON.stringify(
-            {
-              operation: params.operation,
-              responseReceivedAt: reply.responseReceivedAt,
-              persisterDoneAt: reply.persisterDoneAt,
-              checkpointBefore: reply.checkpointBefore,
-              checkpointAfter: reply.checkpointAfter,
-              responseSequences: [...responseSequences],
-              pullStarts: pulls[0]
-                .slice(previousPulls[0])
-                .map(({ startedAt, after, documents }) => ({
-                  startedAt,
-                  after,
-                  sequences: documents.map((row) => row.seq),
-                })),
-              frameArrivals: actorFramesAfterMutation,
-            },
-          )}`,
+          `one create mutation must cause at most one redundant actor pull: ${JSON.stringify(duplicateCauses)}`,
         );
-      }
-      if (params.operation === "chat") {
-        await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
-        await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
+        assert.ok(
+          duplicateCauses.every((cause) => cause.permitted),
+          `a redundant actor pull is permitted only after a baseline without entity ids: ${JSON.stringify(duplicateCauses)}`,
+        );
       }
       if (params.operation === "rename") {
         assert.equal(JSON.parse(document.payload).value.name, params.name);
@@ -435,7 +450,6 @@ test("committed entities propagate between renderer tabs @sync", async ({
         ...(params.operation === "chat"
           ? {
               responseReceivedAt: reply.responseReceivedAt,
-              persisterDoneAt: reply.persisterDoneAt,
               frameArrivals: changedFrames[0].map(
                 ({ elapsedMs }) => startedAt + elapsedMs,
               ),

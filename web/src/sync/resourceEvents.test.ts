@@ -291,6 +291,58 @@ describe("shared resource event transport", () => {
     stop();
   });
 
+  it("dispatches a reset frame even when the state revision is unchanged", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const state = { kind: "state" } as const;
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(state, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const stream = Source.instances[0]!;
+    stream.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 8,
+      reason: "change",
+      resources: [state],
+      resourceVersions: [{ revision: 8 }],
+    });
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+
+    stream.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 8,
+      reason: "change",
+      resources: [state],
+      resourceVersions: [{ revision: 8, entitySequenceReset: true }],
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 8,
+      entitySequenceReset: true,
+    });
+    stop();
+  });
+
   it("rechecks peer subscriptions before the coordinator idle stop", async () => {
     vi.useFakeTimers();
     syncDatabase.mockResolvedValue({ workspaceId });

@@ -273,8 +273,8 @@ test("Shell ux ui", async ({
         },
       },
     ];
-    // Stand-in for the state commit notification missing from entity commits
-    // on this base; update assigns sequences above the client's saved cursor.
+    // This synthetic snapshot edit is not persisted through Runtime.db; use
+    // the fixture publisher to notify the page and test the promoted fields.
     await compactStub.update(compactSnapshot, {
       origin,
       token: snapshot.token,

@@ -42,16 +42,6 @@ export class EntitySequenceCheckpoint {
     this.resetGeneration++;
   }
 
-  advanceContiguous(sequences: number[]): boolean {
-    if (this.sequence < 0 || !sequences.length) return false;
-    const ordered = [...new Set(sequences)].sort((left, right) => left - right);
-    if (ordered[0] !== this.sequence + 1) return false;
-    for (let index = 1; index < ordered.length; index++)
-      if (ordered[index] !== ordered[index - 1] + 1) return false;
-    this.sequence = ordered.at(-1)!;
-    return true;
-  }
-
   covers(sequence: number): boolean {
     return sequence <= this.sequence;
   }

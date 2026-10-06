@@ -174,6 +174,23 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(version.entitySequenceReset)
         subscription.close()
 
+    async def test_entity_sequence_without_frame_does_not_advance_hub_revision(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        hub = ResourceHub("workspace-sequence-no-op", entity_sequence=10)
+        subscription = hub.subscribe([state], loop=loop)
+
+        self.assertEqual(hub.publish_entity_sequence(20), 0)
+        self.assertEqual(hub._resource_revision(state), 10)
+
+        hub.publish_entity_sequence(11, [11])
+        event = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.resourceVersions[0].revision, 11)
+        self.assertEqual(event.resourceVersions[0].entitySequences, [11])
+        subscription.close()
+
     async def test_atomic_baseline_and_change_coalescing(self) -> None:
         loop = asyncio.get_running_loop()
         hub = ResourceHub("workspace-a")

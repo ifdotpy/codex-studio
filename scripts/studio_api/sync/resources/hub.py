@@ -52,10 +52,6 @@ ENTITY_SEQUENCE_THROTTLE_SECONDS = 0.1
 # Bound the trailing quiet window so continuous entity writes still reach peers.
 MAX_ENTITY_SEQUENCE_DELAY_SECONDS = 0.5
 MAX_ENTITY_SEQUENCE_IDS = 512
-NON_TRANSCRIPT_ENTITY_COLLECTIONS = (
-    "agent", "room", "task", "monitor", "complaint", "request",
-    "rule", "project", "peerTeam", "chat", "edge", "event", "work", "workspace",
-)
 _LOGGER = logging.getLogger(__name__)
 
 ResourceKey = tuple[str, str | None]
@@ -342,9 +338,9 @@ class ResourceHub:
             }
             if sequence <= self._published_entity_sequence and not unpublished and not reset:
                 return self._revision
-            self._entity_sequence = max(self._entity_sequence, sequence)
             if not unpublished and not reset:
                 return self._revision
+            self._entity_sequence = max(self._entity_sequence, sequence)
             self._published_entity_sequence = max(
                 self._published_entity_sequence, sequence
             )
@@ -590,6 +586,7 @@ class EntityPublicationScheduler:
         self._worker: threading.Thread | None = None
         self._clock = clock
         self._start_worker = start_worker
+        self._failure_attempts: dict[str, int] = {}
 
     def schedule(
         self,
@@ -648,8 +645,41 @@ class EntityPublicationScheduler:
             try:
                 self._publish(root, *pending)
             except Exception:
-                _LOGGER.exception("Unable to publish committed entity sequence")
+                self._retry_failed(root, pending)
+            else:
+                self._failure_attempts.pop(root, None)
         return len(due)
+
+    def _retry_failed(
+        self,
+        root: str,
+        pending: tuple[Path, float, float, int, set[int], bool],
+    ) -> None:
+        attempts = self._failure_attempts.get(root, 0) + 1
+        self._failure_attempts[root] = attempts
+        if attempts == 1:
+            _LOGGER.exception("Unable to publish committed entity sequence")
+        else:
+            _LOGGER.warning(
+                "Retrying committed entity publication (attempt %s)", attempts
+            )
+        database_path, _, _deadline, sequence, ids, reset = pending
+        now = self._clock()
+        retry_delay = min(0.25 * (2 ** min(attempts - 1, 5)), 5.0)
+        with self._condition:
+            current = self._pending.get(root)
+            pending_sequence = max(sequence, current[3] if current else 0)
+            pending_ids = set(ids) | (set(current[4]) if current else set())
+            pending_reset = reset or bool(current and current[5])
+            self._pending[root] = (
+                database_path,
+                now + retry_delay,
+                now + MAX_ENTITY_SEQUENCE_DELAY_SECONDS,
+                pending_sequence,
+                pending_ids,
+                pending_reset,
+            )
+            self._condition.notify()
 
     def _run(self) -> None:
         while True:
@@ -665,26 +695,9 @@ class EntityPublicationScheduler:
             try:
                 self._publish(root, *pending)
             except Exception:
-                _LOGGER.exception("Unable to publish committed entity sequence")
-                # Keep the final commit observable even when the scan/handoff
-                # fails once. Backoff is bounded and reuses this worker.
-                database_path, _, _deadline, sequence, ids, reset = pending
-                now = self._clock()
-                retry_at = now + 0.25
-                with self._condition:
-                    current = self._pending.get(root)
-                    pending_sequence = max(sequence, current[3] if current else 0)
-                    pending_ids = set(ids) | (set(current[4]) if current else set())
-                    pending_reset = reset or bool(current and current[5])
-                    self._pending[root] = (
-                        database_path,
-                        retry_at,
-                        now + MAX_ENTITY_SEQUENCE_DELAY_SECONDS,
-                        pending_sequence,
-                        pending_ids,
-                        pending_reset,
-                    )
-                    self._condition.notify()
+                self._retry_failed(root, pending)
+            else:
+                self._failure_attempts.pop(root, None)
 
     @staticmethod
     def _publish(
@@ -706,19 +719,19 @@ class EntityPublicationScheduler:
         try:
             database_uri = database_path.resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(database_uri, uri=True, timeout=0.2)) as database:
-                # Collection-leading index ranges exclude transcript snapshots
-                # without scanning their often very large trailing sequence.
-                non_transcript = NON_TRANSCRIPT_ENTITY_COLLECTIONS
-                placeholders = ",".join("?" for _ in non_transcript)
+                # This predicate matches the renderer pull contract and uses a
+                # partial seq index so arbitrarily many transcript rows remain
+                # outside the scan without maintaining a collection allowlist.
                 row = database.execute(
-                    f"SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection IN ({placeholders})",
-                    non_transcript,
+                    "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%'",
                 ).fetchone()
                 sequence = max(sequence, int(row[0]) if row else 0)
                 rows = database.execute(
-                    f"SELECT seq FROM sync_entities WHERE collection IN ({placeholders}) "
+                    "SELECT seq FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%' "
                     "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                    (*non_transcript, watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
+                    (watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
                 ).fetchall()
         except sqlite3.Error:
             if sequence <= watermark and not explicit_reset:

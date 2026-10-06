@@ -525,8 +525,8 @@ test("shared entity stub converges on one matching stream", async ({
     );
     assert.ok(snapshot.runtime.projects.length > 0, "fixture has a project");
     const removedProject = snapshot.runtime.projects[0];
-    // Mutate the fixture snapshot directly, as the request fixtures do, then
-    // publish the base-server stand-in resource notification.
+    // Mutate the fixture snapshot directly, as the request fixtures do. This
+    // does not commit through Runtime.db, so announce it through the stub.
     snapshot.runtime.tasksHistoryLimit++;
     snapshot.runtime.projects = snapshot.runtime.projects.slice(1);
     const notification = await stub.update(snapshot, {
@@ -535,9 +535,8 @@ test("shared entity stub converges on one matching stream", async ({
       resources: [{ kind: "state" }],
     });
     assert.ok(notification, "state update receives a sync notification ack");
-    // The fixture notification stands in for the base server's missing
-    // state-resource commit notification; production entity commits do not
-    // publish this event on this base revision.
+    // This explicitly tests the fixture notification path; the direct snapshot
+    // mutation above bypasses the production entity publisher.
     await page.waitForFunction(() =>
       window.__entityFixtureResourceEvents?.some(
         (event) =>

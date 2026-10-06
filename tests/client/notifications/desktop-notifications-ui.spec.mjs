@@ -134,7 +134,8 @@ test("Desktop Notifications Ui", async ({
       .waitFor();
     const refresh = async () => {
       const before = reads;
-      // Stand-in for the entity commit notification absent on this base.
+      // These direct snapshot edits do not commit through Runtime.db, so the
+      // production entity publisher has no change to announce in this fixture.
       await entityStub.update(snapshot, {
         origin,
         token: snapshot.token,

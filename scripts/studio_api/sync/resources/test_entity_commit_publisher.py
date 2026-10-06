@@ -140,9 +140,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
         finally:
             autocommit.close()
 
-    async def test_non_transcript_checkpoint_scan_uses_collection_index(self) -> None:
-        from studio_api.sync.resources.hub import NON_TRANSCRIPT_ENTITY_COLLECTIONS
-
+    async def test_non_transcript_checkpoint_scan_uses_partial_seq_index(self) -> None:
         with self.database:
             self.database.executemany(
                 "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
@@ -154,15 +152,22 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
                 "VALUES ('project',?,?,?,NULL,0)",
                 [(f"project-{index}", index + 1, str(index)) for index in range(20)],
             )
-        placeholders = ",".join("?" for _ in NON_TRANSCRIPT_ENTITY_COLLECTIONS)
+        plan = self.database.execute(
+            "EXPLAIN QUERY PLAN SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+            "WHERE collection NOT LIKE 'transcript:%'"
+        ).fetchall()
         started = time.perf_counter()
         maximum = self.database.execute(
-            f"SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection IN ({placeholders})",
-            NON_TRANSCRIPT_ENTITY_COLLECTIONS,
+            "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+            "WHERE collection NOT LIKE 'transcript:%'",
         ).fetchone()[0]
         elapsed_ms = (time.perf_counter() - started) * 1000
         self.assertEqual(maximum, 20)
-        print({"checkpointRows": 300_000, "elapsedMs": round(elapsed_ms, 3)})
+        print({"checkpointRows": 300_000, "plan": plan, "elapsedMs": round(elapsed_ms, 3)})
+        self.assertIn(
+            "sync_entities_non_transcript_seq",
+            " ".join(str(row) for row in plan),
+        )
         self.assertLess(elapsed_ms, 250)
 
     async def test_restarted_hub_reuses_entity_sequence_in_a_new_epoch(self) -> None:
@@ -242,6 +247,70 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await asyncio.to_thread(failed.wait, 5))
             await self.assert_entity_event([1])
         self.assertGreaterEqual(calls, 2)
+
+    async def test_scheduler_retries_with_capped_backoff_and_quiet_logging(self) -> None:
+        clock = [0.0]
+        scheduler = EntityPublicationScheduler(
+            clock=lambda: clock[0], start_worker=False
+        )
+        attempts: list[float] = []
+
+        def fail_eight_times(
+            _root: str,
+            _database_path: Path,
+            _due_at: float,
+            _deadline: float,
+            _sequence: int,
+            _ids: set[int],
+            _reset: bool,
+        ) -> None:
+            attempts.append(clock[0])
+            if len(attempts) <= 8:
+                raise RuntimeError("transient publication failure")
+
+        scheduler.schedule(self.root, self.root / "canvas.sqlite3", 1, (1,))
+        clock[0] = ENTITY_SEQUENCE_THROTTLE_SECONDS
+        with self.assertLogs("studio_api.sync.resources.hub", level="WARNING") as logs:
+            scheduler._publish = fail_eight_times  # type: ignore[assignment]
+            scheduler.flush_due()
+            for delay in (0.25, 0.5, 1.0, 2.0, 4.0, 5.0, 5.0, 5.0):
+                clock[0] += delay
+                scheduler.flush_due()
+
+        self.assertEqual(len(attempts), 9)
+        self.assertEqual(
+            attempts,
+            [0.1, 0.35, 0.85, 1.85, 3.85, 7.85, 12.85, 17.85, 22.85],
+        )
+        self.assertEqual(len(logs.records), 8)
+        self.assertIsNotNone(logs.records[0].exc_info)
+        self.assertTrue(all(record.exc_info is None for record in logs.records[1:]))
+        self.assertEqual(scheduler._pending, {})
+
+    async def test_publication_scan_includes_unlisted_entity_collections(self) -> None:
+        with self.database:
+            # Model a collection added to the storage contract after this
+            # publisher was written; the current DTO projector correctly
+            # rejects unknown collections, so seed the committed row directly.
+            self.database.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES ('futureCollection','future-1',1,'digest',?,0)",
+                ('{"collection":"futureCollection","id":"future-1","value":{}}',),
+            )
+
+        EntityPublicationScheduler._publish(
+            str(self.root),
+            self.root / "canvas.sqlite3",
+            0.0,
+            1.0,
+            0,
+            set(),
+            False,
+        )
+        event = await self.subscription.next_event(timeout=1)
+        self.assertIsNotNone(event)
+        assert isinstance(event, ResourceChangeEvent)
+        self.assertEqual(event.resourceVersions[0].entitySequences, [1])
 
     async def test_scheduler_coalesces_with_a_controlled_clock(self) -> None:
         clock = [0.0]
