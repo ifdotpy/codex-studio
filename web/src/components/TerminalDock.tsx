@@ -245,7 +245,9 @@ export default function TerminalDock({
         >
           <TerminalIcon size={15} />
           <strong>Terminals</strong>
-          <span className="terminal-dock-count">{entries.length}</span>
+          {entries.length > 0 && (
+            <span className="terminal-dock-count">{entries.length}</span>
+          )}
           {entries.some((entry) => running(entry.status)) && (
             <span className="terminal-dock-running">
               {entries.filter((entry) => running(entry.status)).length} active
@@ -314,6 +316,7 @@ export default function TerminalDock({
                     key={entry.key}
                     onClick={() => setSelected(entry.key)}
                     aria-pressed={current?.key === entry.key}
+                    aria-label={`${entry.title} Your terminal · ${owner(entry.agent)}`}
                     style={{
                       position: "absolute",
                       top: (start + index) * rowHeight,
@@ -327,7 +330,9 @@ export default function TerminalDock({
                     />
                     <span className="terminal-session-description">
                       <strong>{entry.title}</strong>
-                      <small>Your terminal · {owner(entry.agent)}</small>
+                      <small>
+                        {owner(entry.agent)} · {entry.status}
+                      </small>
                     </span>
                   </button>
                 ))}

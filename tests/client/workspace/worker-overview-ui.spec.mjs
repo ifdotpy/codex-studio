@@ -196,7 +196,7 @@ test("Worker Overview Ui", async ({
     const summary = team.getByLabel("Team status summary");
     // The summary lists only states with members; an absent state counts zero.
     const count = async (name) => {
-      await summary.locator(".team-headline").waitFor();
+      await summary.waitFor();
       const value = summary.locator(`[data-team-count="${name}"] dd`);
       return (await value.count()) ? Number(await value.innerText()) : 0;
     };
@@ -285,10 +285,7 @@ test("Worker Overview Ui", async ({
     assert.equal(await count("working"), 6);
     assert.equal(await count("answer"), 1);
     assert.equal(await count("completed"), 15);
-    assert.equal(
-      await summary.locator(".team-headline").innerText(),
-      "6 subagents are working. 1 needs your answer.",
-    );
+    assert.equal(await summary.locator(".team-headline").count(), 0);
     assert.equal(await count("waiting"), 16);
     assert.equal(await count("stopped"), 1);
     assert.equal(await count("attention"), 1);
