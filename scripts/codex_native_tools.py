@@ -246,9 +246,9 @@ def replace_header(path: str | Path, thread_id: str, tools: list[dict[str, "Any"
     # Descendant history_base records use byte offsets into this file.
     new_header = new_header[:-1] + b" " * (len(first) - len(new_header)) + b"\n"
     temporary = path.with_name("." + path.name + ".studio-tools-" + str(uuid.uuid4()) + ".tmp")
-    record: dict[str, "Any"] = {"path": str(path), "threadId": thread_id, "temporary": str(temporary), "status": "copying",
+    record = {"path": str(path), "threadId": thread_id, "temporary": str(temporary), "status": "copying",
               "originalHeader": base64.b64encode(first).decode(),
-              "newHeader": base64.b64encode(new_header).decode(), "sourceIdentity": _identity(info)}
+              "newHeader": base64.b64encode(new_header).decode(), "sourceIdentity": _identity(info)}  # type: dict[str, Any]
     persist(copy.deepcopy(record))
     old_hash, new_hash, tail_hash = hashlib.sha256(first), hashlib.sha256(new_header), hashlib.sha256()
     try:
@@ -385,7 +385,7 @@ def _growth_target(rt: "Runtime", server: "Any", agent: "AgentRecord") -> tuple[
                     _save(rt, latest)
                     raise ValueError("The native tool fork outcome is unknown. Its request was not repeated.") from error
         else:
-            completed: "Future[Any]" = concurrent.futures.Future()
+            completed = concurrent.futures.Future()  # type: Future[Any]
             completed.set_result(result)
             _receive_fork(rt, ticket["id"], completed)
         ticket = _ticket(rt, ticket["id"])
@@ -418,8 +418,8 @@ def refresh_account(rt: "Runtime", account_key: str = "default",
     tools_for_agent = tools_for_agent or rt.tool_definitions
     if rt.accounts.get(account_key).get("provider", "codex") != "codex":
         return {"status": "not_applicable", "accountKey": account_key}
-    operation: dict[str, "Any"] = {"id": str(uuid.uuid4()), "accountKey": account_key, "status": "checking", "files": {},
-                 "created": time.time()}
+    operation = {"id": str(uuid.uuid4()), "accountKey": account_key, "status": "checking", "files": {},
+                 "created": time.time()}  # type: dict[str, Any]
     with rt.start_lock:
         with rt.lock, rt.db() as db:
             server = rt.servers.get(account_key)
@@ -435,8 +435,7 @@ def refresh_account(rt: "Runtime", account_key: str = "default",
             if server is None:
                 return {**operation, "status": "waiting", "reason": "Connect the account before its tool update"}
             sources = _native_idle(server)
-            requested = [a for a in agents  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
-                         if a.get("threadId") and not a.get("deletedAt")
+            requested = [a for a in agents if a.get("threadId") and not a.get("deletedAt")  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                          and (agent_ids is None or a["id"] in agent_ids or
                               (a.get("status") == "queued" and a.get("autoWake") and
                                needs_refresh(a, tools_for_agent(a))))]
