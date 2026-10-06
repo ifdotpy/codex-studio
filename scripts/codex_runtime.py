@@ -4161,17 +4161,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.release_failed_work(db, self.release_work_agents(db), force=True)
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
-        self.stop(key, True, "Conversation deleted")
-        # turn/completed is intentionally ignored for tombstones so a late
-        # native callback cannot recreate deleted conversation state. Settle
-        # the deleted turn here after stop has had a chance to interrupt it.
-        with self.lock, self.db() as db:
-            for agent_id in ids:
-                agent = self.agent(agent_id, db)
-                if not agent.get("deletedAt"):
-                    continue
-                agent.update(inFlight=False, turnId=None, activity=None, activeTools=[])
-                self.put(db, "agents", agent)
+        try:
+            self.stop(key, True, "Conversation deleted")
+        finally:
+            # A timed-out interrupt frees capacity although the old native turn
+            # may still run; a late accepted start is interrupted by its receipt.
+            with self.lock, self.db() as db:
+                for agent_id in ids:
+                    agent = self.agent(agent_id, db)
+                    if not agent.get("deletedAt"):
+                        continue
+                    attempt = agent.get("startAttempt") or {}
+                    if not (agent.get("inFlight") or agent.get("turnId")
+                            or attempt.get("activeAtReservation")
+                            or agent.get("status") in {"running", "starting", "approval"}):
+                        continue
+                    agent.update(status="paused", inFlight=False, turnId=None,
+                                 activity=None, activeTools=[])
+                    if attempt.get("activeAtReservation"):
+                        attempt["activeAtReservation"] = False
+                        agent["startAttempt"] = attempt
+                    self.put(db, "agents", agent, sync_rooms=False)
         return {"deleted": sorted(ids)}
 
     def conversation_settings(self, key, data):
@@ -5937,50 +5947,71 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        (json.dumps(deliveries), message_id))
 
     def start_accepted(self, agent_id, attempt, result):
+        deleted_server = None
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
-            if not self.operation_current(a, attempt, epoch=False) or a["threadId"] != attempt["threadId"]:
-                return
-            from codex_claude_input_recovery import rejected_start_saved
-            if a.get('provider') == 'claude' and rejected_start_saved(db, agent_id, attempt):
-                return
-            turn = result["turn"]["id"]
-            if not isinstance(turn, str) or not turn:
-                raise ValueError("Native response has no turn identity; outcome unknown")
-            if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
-                return
-            self.mark_event_timing(db, attempt.get("events", []), "acceptedAt")
-            if attempt.get("events") and db.execute(
-                    "SELECT 1 FROM runtime_events WHERE id=? AND kind='radio_turn'",
-                    (attempt["events"][0],)).fetchone():
-                self.changed.set()
-            if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
-                return
-            a.pop("startOutcomeHold", None)
-            self.capacity_started(db, a, attempt, turn)
-            completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
-            if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
-                self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
-                                               "error": a.get("error")}, True)
-                self.usage_resume_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+            if a.get("deletedAt"):
+                saved_attempt = a.get("startAttempt") or {}
+                turn = (result.get("turn") or {}).get("id")
+                if (saved_attempt.get("id") != attempt.get("id")
+                        or a.get("threadId") != attempt.get("threadId")
+                        or not isinstance(turn, str) or not turn):
+                    return
+                deleted_thread = a["threadId"]
+                deleted_account = a.get("accountKey", "default")
+                if not self.connection_current(deleted_account, attempt.get("connectionId")):
+                    return
+                deleted_server = self.servers.get(deleted_account)
+            if not deleted_server:
+                if (a.get("deletedAt") or not self.operation_current(a, attempt, epoch=False)
+                        or a["threadId"] != attempt["threadId"]):
+                    return
+                from codex_claude_input_recovery import rejected_start_saved
+                if a.get('provider') == 'claude' and rejected_start_saved(db, agent_id, attempt):
+                    return
+                turn = result["turn"]["id"]
+                if not isinstance(turn, str) or not turn:
+                    raise ValueError("Native response has no turn identity; outcome unknown")
+                if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
+                    return
+                self.mark_event_timing(db, attempt.get("events", []), "acceptedAt")
+                if attempt.get("events") and db.execute(
+                        "SELECT 1 FROM runtime_events WHERE id=? AND kind='radio_turn'",
+                        (attempt["events"][0],)).fetchone():
+                    self.changed.set()
+                if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
+                    return
+                a.pop("startOutcomeHold", None)
+                self.capacity_started(db, a, attempt, turn)
+                completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
+                if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
+                    self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
                                                    "error": a.get("error")}, True)
-                if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
-                        and not a.get("nativeFailureHold")
-                    and not a.get("accountTransferId") and db.execute(
-                            "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
-                            (a["id"], a["epoch"])).fetchone()):
-                    a["status"] = "queued"
-            stopped = not a["autoWake"] or a["epoch"] != attempt["epoch"]
-            if not completed:
-                # Studio submits each reserved batch once. The client message ID
-                # helps recovery identify it; native deduplication is not assumed.
-                # Codex returns the containing turn ID for either start or steer.
-                # A busy agent needs no new slot before submission. If native
-                # starts a new turn anyway, record it even when slots are full.
-                a.update(turnId=turn, inFlight=True)
-                if not stopped:
-                    a.update(status="running", error=None)
-            self.put(db, "agents", a)
+                    self.usage_resume_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+                                                       "error": a.get("error")}, True)
+                    if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
+                            and not a.get("nativeFailureHold")
+                        and not a.get("accountTransferId") and db.execute(
+                                "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                                (a["id"], a["epoch"])).fetchone()):
+                        a["status"] = "queued"
+                stopped = not a["autoWake"] or a["epoch"] != attempt["epoch"]
+                if not completed:
+                    # Studio submits each reserved batch once. The client message ID
+                    # helps recovery identify it; native deduplication is not assumed.
+                    # Codex returns the containing turn ID for either start or steer.
+                    # A busy agent needs no new slot before submission. If native
+                    # starts a new turn anyway, record it even when slots are full.
+                    a.update(turnId=turn, inFlight=True)
+                    if not stopped:
+                        a.update(status="running", error=None)
+                self.put(db, "agents", a)
+        if deleted_server:
+            try:
+                deleted_server.call("turn/interrupt", {"threadId": deleted_thread, "turnId": turn})
+            except Exception:
+                pass
+            return
         if stopped and not completed:
             self.interrupt(a)
 
@@ -6928,6 +6959,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             p = message.get("params", {})
             request_thread = p.get("threadId")
             a = self.tool_request_actor(db, request_thread, account_key)
+            if a and a.get("deletedAt"):
+                method = message["method"]
+                if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+                    self.reply({"id": message["id"], "result": {"decision": "decline"}},
+                               account_key, connection_id)
+                elif method == "item/permissions/requestApproval":
+                    self.reply({"id": message["id"], "result": {"permissions": {}, "scope": "turn"}},
+                               account_key, connection_id)
+                elif method == "mcpServer/elicitation/request":
+                    self.reply({"id": message["id"], "result": {"action": "decline", "content": None}},
+                               account_key, connection_id)
+                else:
+                    self.reply({"id": message["id"], "error": {"code": -32600,
+                        "message": "The conversation was deleted before this request could be handled."}},
+                        account_key, connection_id)
+                return
             if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
                 self.reply({"id": message["id"], "error": {"code": -32600,
                     "message": "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."}},
