@@ -3,6 +3,11 @@
 **Audience:** maintainers migrating the local Python HTTP boundary and renderer API.
 **Status:** implementation complete; isolated migration evidence verified; live startup against existing state remains unverified.
 
+**Current sync contract:** `/api/state` and the `state` / `state:chat` pull scopes
+were removed in the pull request that completed the move to sync entities
+(round 3), `#TBD-ROUND3`. Route measurements and rollout evidence below retain
+the older names as historical records.
+
 This page records the compatibility contract and evidence for replacing the
 Python `BaseHTTPRequestHandler` boundary with FastAPI. The implementation owns
 the mechanically enforced details; route models, code, and tests are the
@@ -95,16 +100,16 @@ behavior the migration relies on.
 
 ### GET routes
 
-| Route group                    | Paths                                                                                                                                                                                                                                                                             | Special behavior                                                                                                                                                                          |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Session and sync               | `/api/session`; `/api/sync/identity`, `/protocol`, `/pull`, `/stream`                                                                                                                                                                                                             | Session returns the token; stream validates query/header protocol versions and may return 426; pull uses exact cursor/scope/reset query semantics; workspace identity gates writes.       |
-| State and observability        | `/api/state`, `/worktree-disk`, `/costs`, `/session-cost`, `/desktop`, `/diagnostics`                                                                                                                                                                                             | `/api/state` retains full/chat snapshot views; `state?view=chat` excludes work; diagnostics/desktop have runtime-dependent fields; worktree scan and costs may initialize cached readers. |
-| Terminal                       | `/api/terminals`, `/terminals/output`                                                                                                                                                                                                                                             | Output supports history mode and offset/limit query values.                                                                                                                               |
-| Runtime workspace and settings | `/api/tool-requests`, `/analytics`, `/accounts/claude/login`, `/accounts`, `/projects`, `/questions`, `/workspace`, `/workspace/tasks`, `/work`, `/queue`, `/messages/receipts`, `/changes`, `/plan`, `/checkpoints`, `/capabilities`, `/skills`, `/panel`, `/profiles`, `/rules` | Workspace/plan/checkpoints/capabilities/rules/changes include conditional ETag behavior; analytics accepts query-driven reports and optional export.                                      |
-| History and search             | `/api/transcript`, `/transcript/page`, `/transcript/item`, `/transcript/search`, `/search`, `/search/item`, `/task`, `/complaint`, `/agent-chat`, `/import`                                                                                                                       | Transcript and sync/terminal streams remain streams; task/chat/import queries preserve current defaults and parsing.                                                                      |
-| Files and local discovery      | `/api/monitor/log`, `/file-info`, `/file`, `/directories`                                                                                                                                                                                                                         | File content returns base64 JSON; monitor logs preserve their specialized response; directory lookup defaults to current working directory.                                               |
-| Limits and model catalog       | `/api/limits`, `/models`                                                                                                                                                                                                                                                          | Cached limit query and worker catalog flag remain distinct; pending catalog has its existing 400 body.                                                                                    |
-| Canvas chat                    | `/api/messages`                                                                                                                                                                                                                                                                   | Read dispatches to canvas message history, distinct from POST's multi-owner dispatch.                                                                                                     |
+| Route group                    | Paths                                                                                                                                                                                                                                                                             | Special behavior                                                                                                                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session and sync               | `/api/session`; `/api/sync/identity`, `/protocol`, `/pull`, `/stream`                                                                                                                                                                                                             | Session returns the token; stream validates query/header protocol versions and may return 426; pull uses exact cursor/scope/reset query semantics; workspace identity gates writes. |
+| Observability                  | `/worktree-disk`, `/costs`, `/session-cost`, `/desktop`, `/diagnostics`                                                                                                                                                                                                           | Diagnostics/desktop have runtime-dependent fields; worktree scan and costs may initialize cached readers.                                                                           |
+| Terminal                       | `/api/terminals`, `/terminals/output`                                                                                                                                                                                                                                             | Output supports history mode and offset/limit query values.                                                                                                                         |
+| Runtime workspace and settings | `/api/tool-requests`, `/analytics`, `/accounts/claude/login`, `/accounts`, `/projects`, `/questions`, `/workspace`, `/workspace/tasks`, `/work`, `/queue`, `/messages/receipts`, `/changes`, `/plan`, `/checkpoints`, `/capabilities`, `/skills`, `/panel`, `/profiles`, `/rules` | Workspace/plan/checkpoints/capabilities/rules/changes include conditional ETag behavior; analytics accepts query-driven reports and optional export.                                |
+| History and search             | `/api/transcript`, `/transcript/page`, `/transcript/item`, `/transcript/search`, `/search`, `/search/item`, `/task`, `/complaint`, `/agent-chat`, `/import`                                                                                                                       | Transcript and sync/terminal streams remain streams; task/chat/import queries preserve current defaults and parsing.                                                                |
+| Files and local discovery      | `/api/monitor/log`, `/file-info`, `/file`, `/directories`                                                                                                                                                                                                                         | File content returns base64 JSON; monitor logs preserve their specialized response; directory lookup defaults to current working directory.                                         |
+| Limits and model catalog       | `/api/limits`, `/models`                                                                                                                                                                                                                                                          | Cached limit query and worker catalog flag remain distinct; pending catalog has its existing 400 body.                                                                              |
+| Canvas chat                    | `/api/messages`                                                                                                                                                                                                                                                                   | Read dispatches to canvas message history, distinct from POST's multi-owner dispatch.                                                                                               |
 
 ### POST routes
 
@@ -165,6 +170,9 @@ rather than preserve a legacy dispatch class solely for a source pattern.
 
 ## Isolated fixture comparison
 
+Historical measurement: the `scope=state` pull below predates removal of the
+legacy pull scopes.
+
 Measured 2026-10-04 against the archived legacy handler and current FastAPI
 server with a reconstructed, matching Canvas-only fixture. Each source tree
 used a fresh temporary state directory with the same `Canvas` initialization;
@@ -191,6 +199,9 @@ and environment details were retained outside the checkout in
 `http-fastapi-paired-evidence.json` under the task cache.
 
 ### Response allocation optimization
+
+Historical measurement: this comparison's `scope=state` pull predates removal
+of the legacy pull scopes.
 
 That earlier follow-up retained strict validation of every response and the then-existing JSON
 serializer. A bounded cache holds up to 256 response adapters, keyed by model
@@ -401,6 +412,9 @@ supervisor suite is not claimed to pass.
 
 ## State measurements before direct encoding
 
+Historical measurements: the `/api/state` endpoint and legacy pull scopes shown
+below were removed in the round 3 sync-entities pull request.
+
 Two state optimizations are integrated at `d4dfeb6`, compared with `29f678d`.
 The existing two-second, generation-invalidated legacy state cache now retains
 canonical encoded JSON and its digest instead of the raw object. Unchanged pulls
@@ -467,6 +481,9 @@ thread/file-descriptor warnings despite passing their assertions.
 
 ## Approved response encoding contract
 
+Historical prototype measurements below include `/api/state`; that endpoint was
+removed in the round 3 sync-entities pull request.
+
 On 2026-10-04 the user approved replacing the intermediate JSON-mode Python
 tree and standard-library JSON encoder with direct Pydantic JSON encoding,
 after the existing strict response validation. The change is integrated at
@@ -508,6 +525,9 @@ layer. The implementation remains reversible by restoring the previous response
 encoding path; affected cache validators refresh normally after either change.
 
 ## Integrated three-iteration state measurements
+
+Historical measurements: `/api/state` and the legacy pull scopes in these
+tables were removed in the round 3 sync-entities pull request.
 
 The final isolated TCP comparison measures `29f678d` against `cf505bf`, including
 encoded snapshot reuse, snapshot assembly, and direct response encoding. It uses
@@ -561,10 +581,12 @@ weak-ETag oversized-integer correction and reuse of the existing adapter cache.
 
 ## Final recovery integration with main `1f4bc09`
 
-Full snapshots retain `connectionRecovery`, `lastContextRepairCheck`, and
+Historical contract verification, recorded before the round 3 sync-entities
+pull request removed `/api/state` and its legacy pull scopes:
+full snapshots retained `connectionRecovery`, `lastContextRepairCheck`, and
 `lastContextRepairWait` as named JSON-object receipts. They remain outside the
 durable agent sync projection; chat snapshots still omit the two context-repair
-receipts. The connection-recovery HTTP contract exercises actual recovery and
+receipts. The connection-recovery HTTP contract exercised actual recovery and
 then both full and chat `/api/state`, preventing strict response-validation 500s
 when these persisted receipts are present.
 

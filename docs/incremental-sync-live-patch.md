@@ -1,12 +1,17 @@
 # Incremental sync live patch inventory
 
+The compatibility window is closed: the pull request that completed the move to
+sync entities (round 3), `#TBD-ROUND3`, removed `/api/state` and the legacy
+`state` / `state:chat` pull scopes. The install sequence and dry-run notes below
+record the earlier rollout plan; they are not current deployment instructions.
+
 The guarded server patch artifact is [`scripts/codex_sync_live_patch.py`](../scripts/codex_sync_live_patch.py). It is built for the live server method layout at `a1ede55` and the rebased renderer/server source. Do not start another backend or point this patch at a live database during fixture verification.
 
 ## Install order
 
 1. Apply the guarded server patch and install `codex_sync_entities.py` in the running server's `scripts` directory. This updates the server while preserving its existing `Runtime`, `Canvas`, `SyncStore`, and HTTP handler instances.
 2. After the server patch is active, install the web assets.
-3. New clients use `state:entities:v1` on reload. Old clients continue to use `state` and `state:chat` until they reload.
+3. At the time of this rollout plan, new clients used `state:entities:v1` on reload; old clients used `state` and `state:chat` until reloading. That compatibility window is now closed.
 
 ## Lazy initialization and schema inventory
 
@@ -60,10 +65,10 @@ Every method on the closure-created `Handler` class is listed here:
 
 ## Client scope transition order
 
-1. Install server support. Keep `/api/sync/pull?scope=state`, `state:chat`, and the legacy stream behavior available. Existing clients continue receiving their old full snapshots and `"RESYNC"` events.
+1. Historical rollout step: install server support while keeping `/api/sync/pull?scope=state`, `state:chat`, and the legacy stream behavior available. Existing clients then continued receiving their old full snapshots and `"RESYNC"` events.
 2. Install the renderer bundle. On reload, new clients map the local `state` projection to remote scope `state:entities:v1`, pull and persist entity documents by global sequence, and use numeric entity SSE as a pull hint. Initial pulls page until they reach the server's returned `maxSeq`; successful actions can apply their returned entity documents immediately.
 3. Old clients switch only when they reload into the new renderer. They then begin using the entity scope. Until that happens, their requests remain on the legacy scopes; the server keeps both routes active, so the cutover is per client and requires no forced migration.
-4. Keep legacy `state` and `state:chat` behavior for the compatibility window. Removing those routes is a separate future change after old clients are no longer supported.
+4. Historical rollout step: keep legacy `state` and `state:chat` behavior during the compatibility window. The round 3 sync-entities pull request listed above closed that window and removed the legacy routes and scopes.
 
 Transcript and drafts retain their independent scopes. Transcript item revisions use `sync_entities` hashes and tombstones only; pull responses derive current payloads from the transcript and do not persist transcript text in `sync_documents` or `sync_entities`.
 
