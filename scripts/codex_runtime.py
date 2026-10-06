@@ -1645,7 +1645,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
                 from codex_connection_recovery import preparation_eligible
-                if not preparation_eligible(a):
+                from codex_claude_auth_wait import retained_wait as retained_auth_wait
+                if not preparation_eligible(a) and not retained_auth_wait(self, db, a):
                     a.pop("startAttempt", None)
                 from codex_safety_buffering import recover_restart as recover_safety_restart
                 recover_safety_restart(self, db, a)
@@ -5217,6 +5218,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return self.dispatch_candidates(agent_id)
 
     def dispatch_all(self):
+        from codex_claude_auth_wait import tick as claude_auth_wait_tick
+        claude_auth_wait_tick(self)
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
         from codex_provider_versions import tick as provider_version_tick
@@ -5690,6 +5693,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.put(db, "agents", current)
                 a = current
                 timing["validatedAt"] = time.monotonic_ns()
+            if a.get("provider") == "claude" and not a["startAttempt"].get("activeAtReservation"):
+                from codex_claude_auth_wait import require_auth
+                require_auth(self, a)
             program = turn_program(self, a)
             timing["programReadyAt"] = time.monotonic_ns()
             busy_at_reservation = a["startAttempt"].get("activeAtReservation")
@@ -6144,6 +6150,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "pending" if preparation and not attempt.get("submitted") else "failed")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
+            from codex_claude_auth_wait import record_wait
+            record_wait(self, db, a, error, unknown=unknown)
             if current_epoch and not unknown and a.get("status") == "failed":
                 if not self.worker_continuation_pending(a):
                     self.child_stopped_event(db, a, "failed", str(error),

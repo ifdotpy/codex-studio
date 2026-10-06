@@ -39,6 +39,15 @@ class ClaudePreInputRecovery(unittest.TestCase):
         f.WorkspaceContract.setUp(self)
         self.agent = self.agent_update(self.lead(), provider='claude')
         self.agent = self.runtime.prepare(self.agent)
+        identity = 'claude:input-fixture@example.test'
+        with self.runtime.accounts.lock:
+            self.runtime.accounts._row('default').update(provider='claude', accountId=identity,
+                _credentialIdentity=identity, claudeOptions=None)
+        authentication = patch('codex_claude.auth_metadata', return_value={
+            'status': 'ready', 'accountId': identity, '_credentialIdentity': identity,
+            'email': 'input-fixture@example.test', 'plan': 'fixture'})
+        authentication.start()
+        self.addCleanup(authentication.stop)
         self.server = self.runtime.server
         self.connection = self.runtime.connection_ids['default']
         self.ids = ['original-a', 'original-b']
